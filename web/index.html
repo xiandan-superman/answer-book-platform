@@ -1,0 +1,1276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智能真题解析系统</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="visually-hidden" aria-hidden="true">
+    开工前检查 准备教材库 创建真题项目 生成与复核 验收与交付
+    第二步只做一件事 页码校准在生成后进行
+    选择真题文件 选择教材文件 上传真题 上传教材 教材可多选 重复文件审查 建立教材索引 已建立索引可复用
+    逐题复核
+  </div>
+  <nav class="app-nav">
+    <div class="nav-inner">
+      <button class="brand-button" type="button" onclick="goToPage('home')">
+        <span class="brand-mark"><i class="fas fa-book-open"></i></span>
+        <span>
+          <strong>智能真题解析系统</strong>
+          <small>AI 驱动的教材精准解析</small>
+        </span>
+      </button>
+      <div class="nav-actions">
+        <button class="ghost-button nav-practice-button" type="button" onclick="goToPage('practice')">
+          <i class="fas fa-layer-group"></i>专项练习
+        </button>
+        <button class="ghost-button nav-task-button" type="button" onclick="goToPage('tasks'); loadTasks();">
+          <i class="fas fa-tasks"></i>任务管理
+          <span id="taskReviewBadge" class="nav-review-badge hidden">1条信息</span>
+        </button>
+        <button class="ghost-button" type="button" onclick="goToPage('monitor'); loadSystemStatus();"><i class="fas fa-server"></i>运行监控</button>
+        <button class="ghost-button" type="button" onclick="goToPage('textbook')"><i class="fas fa-database"></i>教材管理</button>
+      </div>
+    </div>
+  </nav>
+
+  <div id="stepIndicator" class="step-indicator hidden">
+    <div class="step-track">
+      <button class="step-pill active" type="button" data-page="env"><span>1</span>环境配置</button>
+      <i></i>
+      <button class="step-pill" type="button" data-page="exam"><span>2</span>选择真题</button>
+      <i></i>
+      <button class="step-pill" type="button" data-page="task"><span>3</span>执行解析</button>
+      <i></i>
+      <button class="step-pill" type="button" data-page="result"><span>4</span>查看结果</button>
+    </div>
+  </div>
+
+  <main class="app-shell">
+    <section id="page-home" class="page active">
+      <div class="home-hero">
+        <div class="hero-icon"><i class="fas fa-magic"></i></div>
+        <h1>智能真题解析系统</h1>
+        <p>基于教材内容，利用 AI 大模型自动生成精准、专业的真题解析。程序负责固定流程、质量审查、Word/PDF 渲染与交付包。</p>
+        <button class="primary-cta" type="button" onclick="startWizard()"><i class="fas fa-rocket"></i>开始解析</button>
+        <button class="secondary-button home-secondary-cta" type="button" onclick="goToPage('textbook')"><i class="fas fa-book"></i>教材管理</button>
+        <small id="versionBox">版本加载中...</small>
+      </div>
+
+      <div class="feature-grid">
+        <article>
+          <span class="feature-icon blue"><i class="fas fa-brain"></i></span>
+          <h3>AI 智能分析</h3>
+          <p>先判断题目考查内容，再围绕知识点检索与确认教材依据。</p>
+        </article>
+        <article>
+          <span class="feature-icon purple"><i class="fas fa-search-plus"></i></span>
+          <h3>教材精准检索</h3>
+          <p>教材索引可复用；文件无变动时不会重复处理。</p>
+        </article>
+        <article>
+          <span class="feature-icon green"><i class="fas fa-clipboard-check"></i></span>
+          <h3>质量自动审查</h3>
+          <p>覆盖率、公式对象、内容质量、渲染结果与交付包自动检查。</p>
+        </article>
+      </div>
+
+      <div class="flow-preview">
+        <h2>解析流程</h2>
+        <div class="flow-row">
+          <div><span>0</span><strong>先准备教材库</strong><p>独立上传教材并建立索引</p></div>
+          <i class="fas fa-arrow-right"></i>
+          <div><span>1</span><strong>选择已索引教材与真题</strong><p>任务流程只消费已有索引</p></div>
+          <i class="fas fa-arrow-right"></i>
+          <div><span>2</span><strong>生成交付文件</strong><p>Word、PDF、审查文档与交付包</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-practice" class="page">
+      <!-- ===== Design prototype styles & deps (scoped to this page) ===== -->
+      <style id="theme-vars">
+/* 专项练习工作台重设计 — 学术靛蓝主色体系 */
+:root {
+  color-scheme: light;
+  --brand-background: #f5f7fb;
+  --brand-foreground: #1a2233;
+  --brand-card: #ffffff;
+  --brand-card-foreground: #1a2233;
+  --brand-popover: #ffffff;
+  --brand-popover-foreground: #1a2233;
+  --brand-muted: #eef1f6;
+  --brand-muted-foreground: #5b6678;
+  --brand-border: #e2e7f0;
+  --brand-input: #e2e7f0;
+  --brand-ring: #1e3a8a;
+  --brand-primary: #1e3a8a;
+  --brand-primary-foreground: #ffffff;
+  --brand-radius-sm: 6px;
+  --brand-radius-md: 10px;
+  --brand-radius-lg: 16px;
+  --state-success: #047857;
+  --state-success-bg: #ecfdf5;
+  --state-warning: #b45309;
+  --state-warning-bg: #fffbeb;
+  --state-error: #b91c1c;
+  --state-error-bg: #fef2f2;
+  --state-info: #1e3a8a;
+  --state-info-bg: #eef2ff;
+  --font-sans: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", monospace;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.02);
+  --shadow-float: 0 8px 24px -8px rgba(15, 23, 42, 0.12);
+  --shadow-overlay: 0 24px 60px -20px rgba(15, 23, 42, 0.22);
+  --shadow-primary: 0 12px 28px -8px rgba(30, 58, 138, 0.25);
+  --workbench-left: 380px;
+  --nav-height: 60px;
+}
+      </style>
+      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+      <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+      <style type="text/tailwindcss">
+@theme inline {
+  --color-background: var(--brand-background);
+  --color-foreground: var(--brand-foreground);
+  --color-card: var(--brand-card);
+  --color-card-foreground: var(--brand-card-foreground);
+  --color-popover: var(--brand-popover);
+  --color-popover-foreground: var(--brand-popover-foreground);
+  --color-primary: var(--brand-primary);
+  --color-primary-foreground: var(--brand-primary-foreground);
+  --color-muted: var(--brand-muted);
+  --color-muted-foreground: var(--brand-muted-foreground);
+  --color-border: var(--brand-border);
+  --color-input: var(--brand-input);
+  --color-ring: var(--brand-ring);
+  --radius-sm: var(--brand-radius-sm);
+  --radius-md: var(--brand-radius-md);
+  --radius-lg: var(--brand-radius-lg);
+}
+@layer base {
+  body { background: var(--brand-background); color: var(--brand-foreground); }
+}
+      </style>
+      <style id="semantic-token-fallback">
+.bg-background { background-color: var(--brand-background); }
+.text-background { color: var(--brand-background); }
+.border-background { border-color: var(--brand-background); }
+.bg-foreground { background-color: var(--brand-foreground); }
+.text-foreground { color: var(--brand-foreground); }
+.border-foreground { border-color: var(--brand-foreground); }
+.bg-card { background-color: var(--brand-card); }
+.text-card { color: var(--brand-card); }
+.border-card { border-color: var(--brand-card); }
+.bg-card-foreground { background-color: var(--brand-card-foreground); }
+.text-card-foreground { color: var(--brand-card-foreground); }
+.border-card-foreground { border-color: var(--brand-card-foreground); }
+.bg-popover { background-color: var(--brand-popover); }
+.text-popover { color: var(--brand-popover); }
+.border-popover { border-color: var(--brand-popover); }
+.bg-popover-foreground { background-color: var(--brand-popover-foreground); }
+.text-popover-foreground { color: var(--brand-popover-foreground); }
+.border-popover-foreground { border-color: var(--brand-popover-foreground); }
+.bg-primary { background-color: var(--brand-primary); }
+.text-primary { color: var(--brand-primary); }
+.border-primary { border-color: var(--brand-primary); }
+.bg-primary-foreground { background-color: var(--brand-primary-foreground); }
+.text-primary-foreground { color: var(--brand-primary-foreground); }
+.border-primary-foreground { border-color: var(--brand-primary-foreground); }
+.bg-muted { background-color: var(--brand-muted); }
+.text-muted { color: var(--brand-muted); }
+.border-muted { border-color: var(--brand-muted); }
+.bg-muted-foreground { background-color: var(--brand-muted-foreground); }
+.text-muted-foreground { color: var(--brand-muted-foreground); }
+.border-muted-foreground { border-color: var(--brand-muted-foreground); }
+.bg-border { background-color: var(--brand-border); }
+.text-border { color: var(--brand-border); }
+.border-border { border-color: var(--brand-border); }
+.bg-input { background-color: var(--brand-input); }
+.text-input { color: var(--brand-input); }
+.border-input { border-color: var(--brand-input); }
+.bg-ring { background-color: var(--brand-ring); }
+.text-ring { color: var(--brand-ring); }
+.border-ring { border-color: var(--brand-ring); }
+      </style>
+      <style>
+        /* Reset styles.css global button override inside this page */
+        #page-practice button { all: revert; }
+        #page-practice .no-scrollbar::-webkit-scrollbar { display: none; }
+        #page-practice .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        #page-practice [data-icon] {
+          display: inline-flex; align-items: center; justify-content: center;
+          -webkit-mask-size: contain; mask-size: contain;
+          -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+          -webkit-mask-position: center; mask-position: center;
+          background-color: currentColor;
+        }
+      </style>
+
+      <main class="mx-auto max-w-[1400px] px-6 py-8">
+        <style>
+          .workbench-grid { display: flex; gap: 24px; align-items: flex-start; }
+          .workbench-rail { position: sticky; top: 76px; align-self: flex-start; flex: 0 0 auto; width: 380px; max-height: calc(100vh - 92px); overflow-y: auto; overflow-x: hidden; transition: width 160ms cubic-bezier(.2,.8,.2,1); }
+          .workbench-rail.sidebar-collapsed { width: 64px; }
+          .sidebar-collapsed .sidebar-full { display: none; }
+          .sidebar-collapsed .sidebar-icons { display: flex; flex-direction: column; align-items: center; }
+          .sidebar-full { display: block; }
+          .sidebar-icons { display: none; }
+          .stage-bar { display: flex; align-items: center; gap: 6px; list-style: none; margin: 0; padding: 0; }
+          .stage-step { flex: 1 1 0; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border-radius: var(--brand-radius-sm); font-size: 12px; font-weight: 600; white-space: nowrap; }
+          .stage-step b { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; font-size: 12px; font-weight: 700; }
+          .stage-step--active { color: var(--brand-primary); background: var(--state-info-bg); }
+          .stage-step--active b { background: var(--brand-primary); color: #fff; }
+          .stage-step--idle { color: var(--brand-muted-foreground); }
+          .stage-step--idle b { background: var(--brand-muted); color: var(--brand-muted-foreground); }
+          .stage-step--done { color: var(--state-success); }
+          .stage-step--done b { background: var(--state-success-bg); color: var(--state-success); }
+          .stage-step--skipped { color: var(--state-warning); }
+          .stage-step--skipped b { background: var(--state-warning-bg); color: var(--state-warning); }
+          .stage-arrow { color: var(--brand-border); flex-shrink: 0; }
+          .preset-card { padding: 10px 12px; border: 1px solid var(--brand-border); border-radius: var(--brand-radius-md); background: var(--brand-card); text-align: left; cursor: pointer; transition: border-color 0.18s, background 0.18s; }
+          .preset-card:hover { border-color: #93c5fd; background: #f8fbff; }
+          .preset-card.active { border-color: var(--brand-primary); background: var(--state-info-bg); box-shadow: 0 0 0 2px rgba(59,130,246,0.12); }
+          .rail-icon-btn { display: grid; place-items: center; width: 40px; height: 40px; border-radius: var(--brand-radius-md); color: var(--brand-muted-foreground); transition: background 0.15s, color 0.15s; cursor: pointer; }
+          .rail-icon-btn:hover { background: var(--brand-muted); color: var(--brand-foreground); }
+          .rail-icon-btn--primary { color: #fff; background: linear-gradient(135deg, #1e3a8a, #2d4ba8); box-shadow: var(--shadow-primary); }
+          .rail-icon-btn--primary:hover { filter: brightness(1.1); background: linear-gradient(135deg, #1e3a8a, #2d4ba8); }
+          .rail-toggle { display: grid; place-items: center; width: 40px; height: 40px; border-radius: var(--brand-radius-md); color: var(--brand-muted-foreground); transition: background 0.15s, color 0.15s; cursor: pointer; }
+          .rail-toggle:hover { background: var(--brand-muted); color: var(--brand-foreground); }
+          @media (max-width: 1023px) {
+            .workbench-grid { flex-direction: column; }
+            .workbench-rail { position: static; max-height: none; width: 100%; }
+            .workbench-rail.sidebar-collapsed { width: 100%; }
+            .sidebar-collapsed .sidebar-full { display: block; }
+            .sidebar-collapsed .sidebar-icons { display: none; }
+          }
+          /* Dynamic result containers (driven by app.js) */
+          .practice-loading, .practice-plan-review, .practice-results { display: flex; flex-direction: column; gap: 16px; }
+          .practice-error { padding: 10px 12px; border-radius: 9px; background: var(--state-error-bg); color: var(--state-error); font-size: 12px; }
+        </style>
+
+        <div class="workbench-grid">
+          <!-- ============ LEFT: Collapsible Sidebar ============ -->
+          <aside id="workbench-sidebar" class="workbench-rail space-y-5">
+
+            <!-- ===== Expanded view ===== -->
+            <div class="sidebar-full space-y-5">
+
+              <!-- Page Header -->
+              <header class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">研究生专项训练 · 两阶段生成</p>
+                  <h1 class="mt-1 text-[24px] font-bold leading-tight text-[var(--brand-foreground)]">专项练习</h1>
+                  <p class="mt-1 text-[13px] text-[var(--brand-muted-foreground)]">从一道题或一套题，生成真正练到点上的专项题</p>
+                </div>
+                <span class="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-[var(--state-success-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--state-success)]">
+                  <i data-lucide="check-circle-2" class="h-3.5 w-3.5"></i>当前可用：上传题目
+                </span>
+              </header>
+
+              <!-- Toggle button -->
+              <button id="practiceSidebarCollapse" class="flex items-center justify-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3 py-2 text-[12px] font-semibold text-[var(--brand-muted-foreground)] transition hover:bg-[var(--brand-muted)] hover:text-[var(--brand-foreground)]" title="折叠侧栏">
+                <i data-lucide="chevron-left" class="h-4 w-4"></i>
+                <span>折叠侧栏</span>
+              </button>
+
+              <!-- Input Section -->
+              <form id="practiceForm" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)] space-y-4">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-muted-foreground)]">原题</p>
+                    <h3 class="text-[15px] font-bold text-[var(--brand-foreground)]">上传或粘贴题目</h3>
+                  </div>
+                  <span id="practiceSourceStatus" class="inline-flex items-center gap-1 rounded-full bg-[var(--state-warning-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--state-warning)]">
+                    <i data-lucide="clock" class="h-3.5 w-3.5"></i>等待输入
+                  </span>
+                </div>
+
+                <!-- Tab switcher -->
+                <div class="flex gap-1 rounded-[var(--brand-radius-md)] bg-[var(--brand-muted)] p-1">
+                  <button type="button" class="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-[var(--brand-primary)] px-3 py-1.5 text-[13px] font-semibold text-white">
+                    <i data-lucide="clipboard-paste" class="h-3.5 w-3.5"></i>粘贴文字
+                  </button>
+                  <label for="practiceFile" class="flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[6px] px-3 py-1.5 text-[13px] font-medium text-[var(--brand-muted-foreground)] hover:text-[var(--brand-foreground)]">
+                    <i data-lucide="upload-cloud" class="h-3.5 w-3.5"></i>上传文件
+                  </label>
+                </div>
+
+                <textarea id="practiceQuestionText" name="practiceQuestionText" rows="7"
+                  class="min-h-[160px] w-full resize-y rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] p-3.5 text-[14px] leading-[1.7] text-[var(--brand-foreground)] outline-none transition focus:border-[var(--brand-primary)] focus:bg-[var(--brand-card)] focus:ring-2 focus:ring-[rgba(30,58,138,0.12)]"
+                  placeholder="粘贴题目文字，或在这里按 Command/Ctrl + V 直接粘贴截图。公式可以使用 LaTeX。"></textarea>
+
+                <div class="flex flex-col gap-2">
+                  <label class="flex cursor-pointer items-center gap-2 rounded-[var(--brand-radius-md)] border border-dashed border-[var(--brand-border)] bg-[var(--brand-muted)] px-3 py-2 text-[12px] text-[var(--brand-muted-foreground)] hover:border-[var(--brand-primary)] hover:text-[var(--brand-foreground)] transition">
+                    <i data-lucide="paperclip" class="h-4 w-4"></i>
+                    <span><strong>上传题目文件</strong><small class="ml-2">图片、PDF、Word，可多选</small></span>
+                    <input id="practiceFile" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,.pdf,.docx,.txt,.md" hidden>
+                  </label>
+                  <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择文件，也可以直接粘贴截图</span></div>
+                </div>
+
+                <p class="flex items-center gap-1.5 text-[12px] text-[var(--brand-muted-foreground)]">
+                  <i data-lucide="paperclip" class="h-3.5 w-3.5"></i>也可以直接粘贴截图 (Cmd+V)
+                </p>
+              </form>
+
+              <!-- Presets -->
+              <section id="section-presets">
+                <p class="mb-2 text-[12px] font-bold text-[var(--brand-muted-foreground)]">快速预设</p>
+                <div id="practicePresets" class="grid grid-cols-3 gap-2" role="group" aria-label="训练配置预设">
+                  <button type="button" class="preset-card practice-preset active" data-practice-preset="basic">
+                    <i data-lucide="sprout" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                    <p class="mt-1.5 text-[12px] font-bold text-[var(--brand-foreground)]">基础巩固</p>
+                    <p class="text-[10px] text-[var(--brand-muted-foreground)]">5 题 · 基础到进阶</p>
+                  </button>
+                  <button type="button" class="preset-card practice-preset" data-practice-preset="error">
+                    <i data-lucide="target" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                    <p class="mt-1.5 text-[12px] font-bold text-[var(--brand-foreground)]">易错强化</p>
+                    <p class="text-[10px] text-[var(--brand-muted-foreground)]">8 题 · 同等难度</p>
+                  </button>
+                  <button type="button" class="preset-card practice-preset" data-practice-preset="advanced">
+                    <i data-lucide="rocket" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                    <p class="mt-1.5 text-[12px] font-bold text-[var(--brand-foreground)]">综合提升</p>
+                    <p class="text-[10px] text-[var(--brand-muted-foreground)]">10 题 · 进阶到挑战</p>
+                  </button>
+                </div>
+              </section>
+
+              <!-- Advanced Config -->
+              <details id="practiceConfigCard" class="practice-config-card practice-config-card--collapsed rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-muted)]">
+                <summary id="practiceConfigToggle" class="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-3" aria-expanded="false">
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="sliders-horizontal" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                    <span class="text-[13px] font-bold text-[var(--brand-foreground)]">训练配置</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <strong id="practiceConfigSummary" class="text-[11px] text-[var(--brand-muted-foreground)] font-normal">5 题 · 基础到进阶 · 题型随机</strong>
+                    <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
+                  </div>
+                </summary>
+                <div id="practiceConfigBody" class="px-3.5 pb-3.5 pt-0 space-y-3">
+                  <div class="grid grid-cols-2 gap-2">
+                    <label class="text-[11px] font-semibold text-[var(--brand-foreground)]">题量
+                      <select id="practiceCount" class="mt-1 w-full rounded-[var(--brand-radius-sm)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1.5 text-[12px]">
+                        <option value="3">3 题</option>
+                        <option value="5" selected>5 题</option>
+                        <option value="8">8 题</option>
+                      </select>
+                    </label>
+                    <label class="text-[11px] font-semibold text-[var(--brand-foreground)]">难度梯度
+                      <select id="practiceDifficulty" class="mt-1 w-full rounded-[var(--brand-radius-sm)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1.5 text-[12px]">
+                        <option value="基础到进阶" selected>基础 → 进阶</option>
+                        <option value="同等难度">同等难度</option>
+                        <option value="进阶到挑战">进阶 → 挑战</option>
+                      </select>
+                    </label>
+                  </div>
+                  <fieldset class="border-0 p-0">
+                    <legend class="text-[11px] font-semibold text-[var(--brand-foreground)]">输出题型 <small class="text-[var(--brand-muted-foreground)]">可多选；不选则随机</small></legend>
+                    <div class="mt-1 flex flex-wrap gap-1.5">
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="单选题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">单选题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="多选题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">多选题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="判断题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">判断题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="填空题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">填空题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="简答题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">简答题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="计算题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">计算题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="作图题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">作图题</span></label>
+                      <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="综合题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">综合题</span></label>
+                    </div>
+                  </fieldset>
+                  <label class="text-[11px] font-semibold text-[var(--brand-foreground)]">专项要求
+                    <input id="practiceFocus" type="text" placeholder="例如：重点练习受力分析，不增加超纲知识" class="mt-1 w-full rounded-[var(--brand-radius-sm)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1.5 text-[12px]">
+                  </label>
+                  <p class="flex items-start gap-1.5 rounded-[var(--brand-radius-sm)] bg-[var(--state-info-bg)] p-2 text-[11px] text-[var(--state-info)]">
+                    <i data-lucide="link" class="h-3.5 w-3.5 mt-0.5"></i>
+                    自动使用原平台"结构化解析"模型与已保存的 API Key；上传图片时自动使用原平台"有图题读图"模型。
+                  </p>
+                </div>
+              </details>
+
+              <!-- Generate Button -->
+              <button id="practiceGenerateBtn" type="submit" form="practiceForm"
+                class="flex h-12 w-full items-center justify-center gap-2 rounded-[var(--brand-radius-md)] text-[14px] font-bold text-white shadow-[var(--shadow-primary)] transition hover:brightness-110 active:scale-[0.99]"
+                style="background: linear-gradient(135deg, #1e3a8a, #2d4ba8);">
+                <i data-lucide="workflow" class="h-4 w-4"></i>先解析并生成训练蓝图
+              </button>
+              <p id="practiceError" class="practice-error hidden" role="alert"></p>
+
+              <!-- History -->
+              <details class="rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)]">
+                <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-3">
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="history" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
+                    <span class="text-[13px] font-bold text-[var(--brand-foreground)]">历史练习</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button type="button" id="practiceShowAllHistory" class="text-[11px] font-semibold text-[var(--brand-primary)] hover:underline">查看全部</button>
+                    <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
+                  </div>
+                </summary>
+                <div class="px-3.5 pb-3.5 pt-0 space-y-2">
+                  <div id="practiceRecentList" class="space-y-1"><p class="text-[12px] text-[var(--brand-muted-foreground)]">暂无历史记录</p></div>
+                  <div id="practiceHistoryList" class="hidden"></div>
+                </div>
+              </details>
+
+            </div>
+
+            <!-- ===== Collapsed icon rail ===== -->
+            <div class="sidebar-icons flex-col items-center gap-2 pt-1">
+              <button id="practiceSidebarExpand" class="rail-toggle" title="展开侧栏">
+                <i data-lucide="chevron-right" class="h-5 w-5"></i>
+              </button>
+              <div class="my-1 h-px w-8 bg-[var(--brand-border)]"></div>
+              <button class="rail-icon-btn" title="原题输入"><i data-lucide="clipboard-paste" class="h-5 w-5"></i></button>
+              <button class="rail-icon-btn" title="快速预设"><i data-lucide="sprout" class="h-5 w-5"></i></button>
+              <button class="rail-icon-btn" title="训练配置"><i data-lucide="sliders-horizontal" class="h-5 w-5"></i></button>
+              <button type="button" class="rail-icon-btn rail-icon-btn--primary" title="先解析并生成训练蓝图" onclick="document.getElementById('practiceForm').requestSubmit()">
+                <i data-lucide="workflow" class="h-5 w-5"></i>
+              </button>
+              <button class="rail-icon-btn" title="历史练习"><i data-lucide="history" class="h-5 w-5"></i></button>
+            </div>
+
+          </aside>
+
+          <!-- ============ RIGHT: Stage + Result Containers ============ -->
+          <section class="min-w-0 space-y-5">
+
+            <!-- Stage Indicator -->
+            <section id="section-stage" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-3.5 shadow-[var(--shadow-card)]">
+              <div class="flex items-center gap-2 mb-2">
+                <i data-lucide="workflow" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                <span class="text-[13px] font-semibold text-[var(--brand-foreground)]">生成进度</span>
+              </div>
+              <ol id="practiceStageBar" class="stage-bar">
+                <li class="stage-step stage-step--active practice-step" data-stage="submit"><b>1</b><span>提交原题</span></li>
+                <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
+                <li class="stage-step stage-step--idle practice-step" data-stage="analyze"><b>2</b><span>解析考点</span></li>
+                <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
+                <li class="stage-step stage-step--idle practice-step" data-stage="scope"><b>3</b><span>范围确认</span></li>
+                <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
+                <li class="stage-step stage-step--idle practice-step" data-stage="plan"><b>4</b><span>设计蓝图</span></li>
+                <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
+                <li class="stage-step stage-step--idle practice-step" data-stage="generate"><b>5</b><span>生成练习</span></li>
+              </ol>
+              <p id="practiceStageDescription" class="mt-3 text-[12px] leading-relaxed text-[var(--brand-muted-foreground)]">提交题目后，平台会先判断是单题还是题目集；单题将直接进入蓝图，题目集需要先选择训练范围。</p>
+            </section>
+
+            <!-- Status Meta Row -->
+            <div class="flex flex-wrap items-center gap-2">
+              <span id="practiceQualityBadge" class="inline-flex items-center gap-1.5 rounded-full bg-[var(--state-info-bg)] px-3 py-1.5 text-[12px] font-semibold text-[var(--state-info)]">
+                <i data-lucide="info" class="h-3.5 w-3.5"></i>等待生成结果
+              </span>
+              <span id="practiceStatusBanner" class="inline-flex items-center gap-1.5 rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">
+                <i data-lucide="circle-dot" class="h-3.5 w-3.5"></i>就绪
+              </span>
+            </div>
+
+            <!-- Empty State -->
+            <div id="practiceEmpty" class="flex min-h-[500px] flex-col items-center justify-center rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-12 text-center shadow-[var(--shadow-card)]">
+              <div class="grid h-20 w-20 place-items-center rounded-2xl" style="background: linear-gradient(135deg, var(--state-info-bg), #f3e8ff);">
+                <i data-lucide="route" class="h-8 w-8 text-[var(--brand-primary)]"></i>
+              </div>
+              <h2 class="mt-5 text-[20px] font-bold text-[var(--brand-foreground)]">练习方案将在这里生成</h2>
+              <p class="mt-2 max-w-[440px] text-[14px] leading-relaxed text-[var(--brand-muted-foreground)]">系统会先判断单题或题目集；题目集需选择原题后，再生成训练蓝图。</p>
+              <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+                <span class="rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">考点识别</span>
+                <span class="rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">训练蓝图</span>
+                <span class="rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">结构检查</span>
+              </div>
+              <div class="mt-8 flex items-center justify-center gap-3">
+                <div class="flex items-center gap-2 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] px-3.5 py-2.5">
+                  <i data-lucide="upload" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                  <span class="text-[12px] font-semibold text-[var(--brand-foreground)]">上传原题</span>
+                </div>
+                <i data-lucide="arrow-right" class="h-4 w-4 text-[var(--brand-border)]"></i>
+                <div class="flex items-center gap-2 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] px-3.5 py-2.5">
+                  <i data-lucide="scan-search" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                  <span class="text-[12px] font-semibold text-[var(--brand-foreground)]">解析与蓝图</span>
+                </div>
+                <i data-lucide="arrow-right" class="h-4 w-4 text-[var(--brand-border)]"></i>
+                <div class="flex items-center gap-2 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] px-3.5 py-2.5">
+                  <i data-lucide="notebook-pen" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                  <span class="text-[12px] font-semibold text-[var(--brand-foreground)]">生成练习</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Loading -->
+            <div id="practiceLoading" class="practice-loading hidden min-h-[500px] flex-col items-center justify-center rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-12 text-center shadow-[var(--shadow-card)]">
+              <div class="grid h-20 w-20 place-items-center rounded-2xl" style="background: linear-gradient(135deg, var(--state-info-bg), #f3e8ff);">
+                <span class="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[var(--brand-border)] border-t-[var(--brand-primary)]"></span>
+              </div>
+              <h3 id="practiceLoadingTitle" class="mt-5 text-[20px] font-bold text-[var(--brand-foreground)]">正在解析原题并设计训练梯度</h3>
+              <p class="mt-2 max-w-[440px] text-[14px] leading-relaxed text-[var(--brand-muted-foreground)]">复杂题目可能需要一点时间，请保持页面打开。</p>
+            </div>
+
+            <!-- Plan Review -->
+            <div id="practicePlanReview" class="practice-plan-review hidden rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)]">
+              <header class="mb-4">
+                <p class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">第一阶段完成</p>
+                <h3 id="practicePlanGoal" class="mt-1 text-[18px] font-bold text-[var(--brand-foreground)]">训练蓝图</h3>
+              </header>
+              <section id="practicePlanAnalysis" class="mb-4 rounded-[var(--brand-radius-md)] bg-[var(--brand-muted)] p-3 text-[13px]"></section>
+              <div id="practicePlanList" class="mb-4 space-y-2"></div>
+              <footer class="flex items-center justify-end gap-3 pt-3 border-t border-[var(--brand-border)]">
+                <button id="practicePlanBackBtn" type="button" class="flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] hover:bg-[var(--brand-muted)] transition">
+                  <i data-lucide="arrow-left" class="h-4 w-4"></i>返回调整
+                </button>
+                <button id="practicePlanConfirmBtn" type="button" class="flex items-center gap-1.5 rounded-[var(--brand-radius-md)] bg-[var(--brand-primary)] px-3.5 py-2 text-[12px] font-semibold text-white shadow-[var(--shadow-primary)] hover:brightness-110 transition">
+                  <i data-lucide="wand-2" class="h-4 w-4"></i>按此蓝图生成练习
+                </button>
+              </footer>
+            </div>
+
+            <!-- Results -->
+            <div id="practiceResults" class="practice-results hidden space-y-5">
+              <section class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)]">
+                <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div class="min-w-0">
+                    <p id="practiceResultMode" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">专项练习已生成</p>
+                    <h3 id="practiceTrainingGoal" class="mt-1 text-lg font-bold leading-snug text-[var(--brand-foreground)]">训练目标</h3>
+                  </div>
+                  <div id="practicePrimaryActions" class="flex flex-shrink-0 flex-wrap items-center gap-2">
+                    <button id="practiceWordBtn" type="button" disabled class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] bg-[var(--brand-primary)] px-3.5 py-2 text-[12px] font-semibold text-white opacity-60 cursor-not-allowed">
+                      <i data-lucide="download" class="h-4 w-4"></i>下载 Word
+                    </button>
+                    <button id="practiceCopyBtn" type="button" disabled class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] opacity-60 cursor-not-allowed">
+                      <i data-lucide="copy" class="h-4 w-4"></i>复制全部
+                    </button>
+                    <button id="practiceSaveBtn" type="button" disabled class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] opacity-60 cursor-not-allowed">
+                      <i data-lucide="save" class="h-4 w-4"></i>保存修改
+                    </button>
+                    <button id="practiceBackToPlanBtn" type="button" class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] hover:bg-[var(--brand-muted)] transition">
+                      <i data-lucide="layout-grid" class="h-4 w-4"></i>回到蓝图
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <div id="practiceQuality" class="rounded-xl p-4"></div>
+
+              <details id="practiceAnalysisSummary" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] shadow-[var(--shadow-card)]">
+                <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4">
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="microscope" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                    <span class="text-[14px] font-bold text-[var(--brand-foreground)]">原题诊断</span>
+                    <span id="practiceAnalysisMeta" class="text-[11px] text-[var(--brand-muted-foreground)]"></span>
+                  </div>
+                  <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
+                </summary>
+                <div class="border-t border-[var(--brand-border)] px-5 py-4">
+                  <h4 id="practiceAnalysisTitle" class="mb-2 text-[13px] font-bold text-[var(--brand-foreground)]">题型与难度</h4>
+                  <div id="practiceKnowledgeTags" class="mb-3 flex flex-wrap gap-1.5"></div>
+                  <ol id="practiceStrategy" class="list-decimal pl-5 space-y-1 text-[13px] text-[var(--brand-foreground)]"></ol>
+                </div>
+              </details>
+
+              <section id="practiceBlueprintSummary" class="rounded-[var(--brand-radius-lg)] border border-[#ddd6fe] p-5 shadow-[var(--shadow-card)]" style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);">
+                <div class="mb-4 flex items-center gap-2">
+                  <i data-lucide="layout-grid" class="h-4 w-4" style="color: #7c3aed;"></i>
+                  <span class="text-[11px] font-semibold uppercase tracking-wider" style="color: #7c3aed;">训练蓝图</span>
+                </div>
+                <h4 class="mb-4 text-[15px] font-bold text-[var(--brand-foreground)]">知识点与难度分布</h4>
+                <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                  <div>
+                    <div class="mb-2.5 text-[11px] font-semibold text-[var(--brand-muted-foreground)]">知识点分布</div>
+                    <div id="practiceKnowledgeBars" class="space-y-3"></div>
+                  </div>
+                  <div>
+                    <div class="mb-2.5 text-[11px] font-semibold text-[var(--brand-muted-foreground)]">难度分布</div>
+                    <div id="practiceDifficultyBars" class="space-y-3"></div>
+                  </div>
+                </div>
+              </section>
+
+              <div id="practiceExerciseFilters" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-4 shadow-[var(--shadow-card)]">
+                <div class="flex flex-col gap-3">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--brand-muted-foreground)]">题型</span>
+                    <div id="practiceTypeFilterChips" class="flex flex-wrap gap-1.5"></div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--brand-muted-foreground)]">难度</span>
+                    <div id="practiceDifficultyFilterChips" class="flex flex-wrap gap-1.5"></div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-[11px] font-semibold uppercase tracking-wider text-[var(--brand-muted-foreground)]">知识点</span>
+                    <div id="practiceTagFilterChips" class="flex flex-wrap gap-1.5"></div>
+                  </div>
+                  <div class="flex items-center justify-between border-t border-[var(--brand-border)] pt-3">
+                    <span id="practiceExerciseCount" class="text-[12px] font-semibold text-[var(--brand-foreground)]"></span>
+                    <i data-lucide="sliders-horizontal" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
+                  </div>
+                </div>
+              </div>
+
+              <div id="practiceExerciseList" class="space-y-4"></div>
+            </div>
+
+          </section>
+        </div>
+      </main>
+
+      <script>
+        lucide.createIcons();
+
+        function togglePracticeSidebar() {
+          const sidebar = document.getElementById('workbench-sidebar');
+          const grid = document.querySelector('.workbench-grid');
+          sidebar.classList.toggle('sidebar-collapsed');
+          grid.classList.toggle('sidebar-collapsed');
+          const isCollapsed = sidebar.classList.contains('sidebar-collapsed');
+          try { localStorage.setItem('practiceSidebarCollapsed', isCollapsed ? '1' : '0'); } catch (e) {}
+          document.querySelectorAll('[id^="practiceSidebar"] [data-lucide], [id^="practiceSidebar"] svg').forEach(function(el) {
+            var iconName = isCollapsed ? 'chevron-right' : 'chevron-left';
+            if (el.tagName === 'I') { el.setAttribute('data-lucide', iconName); }
+            else if (el.tagName === 'svg') {
+              var newIcon = document.createElement('i');
+              newIcon.setAttribute('data-lucide', iconName);
+              newIcon.className = el.getAttribute('class') || 'h-5 w-5';
+              el.replaceWith(newIcon);
+            }
+          });
+          lucide.createIcons();
+        }
+
+        document.getElementById('practiceSidebarCollapse')?.addEventListener('click', togglePracticeSidebar);
+        document.getElementById('practiceSidebarExpand')?.addEventListener('click', togglePracticeSidebar);
+
+        // Restore sidebar state
+        try {
+          if (localStorage.getItem('practiceSidebarCollapsed') === '1') {
+            document.getElementById('workbench-sidebar')?.classList.add('sidebar-collapsed');
+            document.querySelector('.workbench-grid')?.classList.add('sidebar-collapsed');
+          }
+        } catch (e) {}
+      </script>
+    </section>
+    <section id="page-env" class="page">
+      <div class="reference-narrow">
+        <div class="page-title reference-title">
+          <h2>环境配置</h2>
+          <p>检查运行环境并配置 AI 模型 API</p>
+        </div>
+
+        <div class="env-config-grid">
+        <article class="reference-card env-card">
+          <h3><i class="fas fa-server text-blue"></i>环境自检</h3>
+          <div class="check-list reference-check-list">
+            <div class="check-row"><span><i id="runtimeCheckIcon" class="fas fa-circle-notch fa-spin"></i>运行环境检测</span><strong id="environmentSummary">检测中...</strong></div>
+            <div class="check-row"><span><i id="toolsCheckIcon" class="fas fa-circle-notch fa-spin"></i>依赖工具完整性</span><strong id="environmentHint">检测中...</strong></div>
+            <div class="check-row"><span><i id="networkCheckIcon" class="fas fa-circle-notch fa-spin"></i>网络连通性</span><strong id="networkSummary">检测中...</strong></div>
+          </div>
+          <div id="environmentVisualResult" class="status-result result-info"><i class="fas fa-circle-notch fa-spin"></i><strong>正在检查运行环境...</strong></div>
+          <div id="environmentRepairBox" class="env-repair-box hidden"></div>
+          <details class="technical-details reference-extra">
+            <summary>查看技术详情</summary>
+            <pre id="environmentBox">加载中...</pre>
+          </details>
+        </article>
+
+        <article class="reference-card provider-card">
+          <div class="model-config-header">
+            <div>
+              <h3><i class="fas fa-key text-purple"></i>模型 API 配置</h3>
+              <p>按解析职责分配模型。每个环节可以选择不同服务商和模型，全局设置用于 API Key、默认模型和连接测试。</p>
+            </div>
+            <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置 API Key、默认模型、Thinking 模式和连接测试"><i class="fas fa-sliders"></i>全局设置</button>
+          </div>
+          <div class="reference-form-stack">
+            <p id="modelCapabilityRisk" class="model-capability-risk hidden"></p>
+            <div class="model-role-config-grid">
+              <section class="model-role-config-card">
+                <div class="model-role-card-head">
+                  <span class="model-role-icon indigo"><i class="fas fa-magnifying-glass-chart"></i></span>
+                  <div>
+                    <strong>知识点识别与证据确认</strong>
+                    <p>识别考查内容，并匹配教材证据。</p>
+                  </div>
+                </div>
+                <div class="model-role-card-body">
+                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <select id="reasoningProviderSelect"></select>
+                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <select id="reasoningModelSelect"></select>
+                  <input id="reasoningModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <p id="reasoningModelHint" class="safe-note"><i class="fas fa-list-check"></i>用于判断考查内容、检索意图和二次确认教材依据。</p>
+                  <span id="reasoningRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
+                </div>
+              </section>
+              <section class="model-role-config-card">
+                <div class="model-role-card-head">
+                  <span class="model-role-icon blue"><i class="fas fa-file-lines"></i></span>
+                  <div>
+                    <strong>结构化解析</strong>
+                    <p>生成结构化解析与完整答案。</p>
+                  </div>
+                </div>
+                <div class="model-role-card-body">
+                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <select id="answerProviderSelect"></select>
+                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <select id="answerModelSelect"></select>
+                  <input id="answerModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <p id="answerModelHint" class="safe-note"><i class="fas fa-pen-to-square"></i>用于生成最终结构化答案、解析和答案修复。</p>
+                  <span id="answerRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
+                </div>
+              </section>
+              <section class="model-role-config-card">
+                <div class="model-role-card-head">
+                  <span class="model-role-icon teal"><i class="fas fa-image"></i></span>
+                  <div>
+                    <strong>有图题读图</strong>
+                    <p>解析图片、图表和复杂表格内容。</p>
+                  </div>
+                </div>
+                <div class="model-role-card-body">
+                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <select id="visionProviderSelect"></select>
+                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <select id="visionModelSelect"></select>
+                  <input id="visionModelInput" type="text" hidden placeholder="填写 vision model ID">
+                  <p id="visionModelHint" class="safe-note"><i class="fas fa-eye"></i>有图片或复杂表格时，先用该模型提取图像/表格信息。</p>
+                  <span id="visionRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
+                </div>
+              </section>
+              <section class="model-role-config-card">
+                <div class="model-role-card-head">
+                  <span class="model-role-icon orange"><i class="fas fa-wand-magic-sparkles"></i></span>
+                  <div>
+                    <strong>作图题生图</strong>
+                    <p>根据规格生成专业图形兜底图片。</p>
+                  </div>
+                </div>
+                <div class="model-role-card-body">
+                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <select id="imageProviderSelect"></select>
+                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <select id="imageModelSelect"></select>
+                  <input id="imageModelInput" type="text" placeholder="填写 image model ID">
+                  <p id="imageModelHint" class="safe-note"><i class="fas fa-image"></i>规则化绘图失败时，使用该模型做兜底生图。</p>
+                  <span id="imageRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
+                </div>
+              </section>
+            </div>
+            <details id="modelAdvancedDetails" class="model-advanced-details">
+              <summary>全局模型设置</summary>
+              <div class="model-advanced-copy">
+                <strong>全局设置用于管理所有题型共用的基础能力</strong>
+                <span>包括 API Key、默认模型、Thinking 模式、连接测试和本机 Key 保存。</span>
+              </div>
+              <div class="model-base-settings">
+                <label>API 服务商</label>
+                <select id="providerSelect"></select>
+                <label>API Key</label>
+                <div class="api-key-field">
+                  <input id="providerKeyInput" type="password" autocomplete="off" placeholder="请输入您的 API Key">
+                  <button id="toggleProviderKeyBtn" class="icon-plain-button" type="button" title="显示或隐藏 API Key"><i class="fas fa-eye"></i></button>
+                </div>
+                <p id="providerKeyHint" class="safe-note"><i class="fas fa-info-circle"></i>API Key 仅保存在本机，不会进入交付包。</p>
+                <label>默认模型</label>
+                <select id="modelSelect"></select>
+                <input id="modelInput" type="text" hidden placeholder="留空使用默认模型">
+              </div>
+              <label>Thinking 模式</label>
+              <div class="thinking-mode-box">
+                <select id="thinkingModeSelect">
+                  <option value="auto">自动使用模型默认设置</option>
+                  <option value="disabled">关闭 thinking 模式</option>
+                  <option value="enabled">开启 thinking 模式</option>
+                </select>
+                <p class="safe-note"><i class="fas fa-info-circle"></i>不同模型对 thinking 支持不同；如测试失败，可切换为自动或关闭后重试。</p>
+              </div>
+              <button id="testProviderBtn" class="outline-button reference-test-button" type="button"><i class="fas fa-plug"></i>测试连接</button>
+              <button id="saveProviderKeysBtn" class="secondary-button reference-save-button" type="button">保存本机 API Key</button>
+              <div id="providerVisualResult" class="result-card muted-card">模型测试结果会显示在这里。</div>
+              <details class="technical-details reference-extra"><summary>查看技术详情</summary><pre id="providerResult"></pre></details>
+            </details>
+          </div>
+        </article>
+        </div>
+
+        <div class="page-actions reference-actions">
+          <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
+          <button id="envNextBtn" class="primary-button" type="button" onclick="goToPage('exam')" disabled>下一步<i class="fas fa-arrow-right"></i></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-textbook" class="page">
+      <div class="reference-medium">
+        <div class="page-title reference-title">
+          <h2>教材管理</h2>
+          <p>先上传并建立教材索引；后续解析任务只选择已索引教材，不再临时处理教材。</p>
+        </div>
+        <div class="tab-row reference-tabs">
+          <button id="tab-existing" class="tab-button active" type="button" onclick="switchTextbookTab('existing')"><i class="fas fa-folder-open"></i>选择已有教材</button>
+          <button id="tab-upload" class="tab-button" type="button" onclick="switchTextbookTab('upload')"><i class="fas fa-cloud-upload-alt"></i>上传新教材</button>
+        </div>
+        <article id="textbook-existing" class="reference-card textbook-card">
+          <input id="textbooksDir" type="hidden">
+          <div class="textbook-format-note">
+            <strong><i class="fas fa-circle-info"></i> 推荐教材格式</strong>
+            <p>新流程推荐上传 MinerU 教材 ZIP 包，包内应包含 content_list.json、images 文件夹，建议同时保留 full.md、layout.json、origin.pdf。这样图、表、公式可以被定位，视觉模型也能读取对应图片。</p>
+            <p>当前库里的旧 JSON、PDF、Word、Markdown、TXT 仍可用，是因为程序还能读取其中的文字内容做检索和引用；但这些格式通常缺少教材图片文件或版面结构，遇到必须看图、复杂表格、公式截图的证据时只能作为文字证据使用，不能等同于完整教材包。</p>
+          </div>
+          <div id="textbookMergeBox" class="merge-box hidden"></div>
+          <div id="textbookChecklist" class="file-card-grid"></div>
+          <section id="sharedTextbookLibraryPanel" class="shared-library-panel">
+            <div class="shared-library-heading">
+              <div>
+                <h3><i class="fas fa-share-nodes"></i>共享教材库</h3>
+                <p>从 Tailnet 内的教材库主机下载已验证版本。下载完成后，教材与索引保存在本机，后续任务不依赖教材库主机在线。</p>
+              </div>
+              <button id="refreshSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-rotate"></i>刷新目录</button>
+            </div>
+            <div class="shared-library-connect">
+              <label for="sharedLibraryUrl">教材库地址</label>
+              <input id="sharedLibraryUrl" type="url" placeholder="https://textbook-host.your-tailnet.ts.net">
+              <button id="saveSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-link"></i>连接教材库</button>
+            </div>
+            <div id="sharedLibraryCatalog" class="shared-library-catalog"><p class="empty-hint">填写教材库地址后，可查看已发布教材。</p></div>
+            <details class="shared-library-publish">
+              <summary>管理员发布已建立索引的教材</summary>
+              <p>只在教材库主机上执行。发布包包含源教材、图片资源与当前索引缓存；客户端仅能下载和安装。</p>
+              <div class="shared-library-publish-fields">
+                <label>教材标识<input id="sharedLibraryId" type="text" placeholder="material-analysis"></label>
+                <label>显示名称<input id="sharedLibraryTitle" type="text" placeholder="材料现代分析测试方法"></label>
+                <label>版本号<input id="sharedLibraryVersion" type="text" placeholder="20260710-001"></label>
+              </div>
+              <button id="publishSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-upload"></i>发布当前已选教材</button>
+            </details>
+          </section>
+        </article>
+        <article id="textbook-upload" class="reference-card hidden">
+          <div class="textbook-format-note upload-note">
+            <strong><i class="fas fa-box-archive"></i> MinerU 教材 ZIP 包要求</strong>
+            <p>推荐直接压缩 MinerU 解析输出文件夹。必须包含 content_list.json 和 images/；建议包含 content_list_v2.json、layout.json、full.md、origin.pdf。旧 JSON/PDF/DOCX 仍允许上传，但只保证文字检索能力。</p>
+          </div>
+          <label class="upload-zone" for="textbookUploadInput">
+            <input id="textbookUploadInput" type="file" multiple accept=".pdf,.docx,.json,.md,.txt,.zip">
+            <span><i class="fas fa-cloud-upload-alt"></i></span>
+            <strong>拖拽文件到此处，或点击上传</strong>
+            <small>支持 PDF、Word、JSON、Markdown、TXT、MinerU 教材 ZIP 包。</small>
+          </label>
+          <div id="textbookUploadList" class="upload-file-list hidden"></div>
+          <button id="uploadTextbooksBtn" class="secondary-button" type="button">上传教材</button>
+        </article>
+        <div id="selectedTextbookBar" class="selection-bar hidden"></div>
+        <div id="duplicateReviewBox" class="helper-box reference-extra"><strong>重复文件审查</strong><p>正在检查教材库和真题库是否存在重复文件。</p></div>
+        <div id="textbookIndexActionRow" class="action-row reference-extra">
+          <button id="prepareTextbookIndexBtn" type="button"><i class="fas fa-database"></i>建立教材索引</button>
+        </div>
+        <div id="textbookIndexBox" class="helper-box reference-extra">
+          <strong>教材索引状态</strong>
+          <p>选择教材后点击“建立教材索引”。索引完成后，真题解析流程会直接复用这份索引；未索引教材不能开始解析。</p>
+        </div>
+        <div id="libraryVisualResult" class="result-card muted-card reference-extra">教材扫描结果会显示在这里。</div>
+        <details class="technical-details reference-extra"><summary>查看技术详情</summary><pre id="libraryResult"></pre></details>
+        <div class="page-actions reference-actions">
+          <button class="text-button" type="button" onclick="goToPage('env')"><i class="fas fa-arrow-left"></i>上一步</button>
+          <button id="textbookPrimaryActionBtn" class="primary-button" type="button" onclick="goToPage('exam')">去创建解析任务<i class="fas fa-arrow-right"></i></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-exam" class="page">
+      <div class="page-title">
+        <h2>选择真题</h2>
+        <p>选择已有真题或上传新的真题 DOCX。教材只允许使用上一步已建立索引的内容。</p>
+      </div>
+      <div id="currentTextbookDisplay" class="selection-bar">当前教材：正在读取选择结果。</div>
+      <article class="panel-card">
+        <div class="task-textbook-head">
+          <div>
+            <h3><i class="fas fa-book-open"></i> 本次解析教材</h3>
+            <p>这里只选择已有教材；上传教材和建立索引请到独立的教材管理页完成。</p>
+          </div>
+          <button class="secondary-button" type="button" onclick="goToPage('textbook')"><i class="fas fa-database"></i>打开教材管理</button>
+        </div>
+        <div id="taskTextbookChecklist" class="file-card-grid"></div>
+      </article>
+      <div class="tab-row">
+        <button id="tab-exam-existing" class="tab-button active" type="button" onclick="switchExamTab('existing')"><i class="fas fa-folder-open"></i>选择已有真题</button>
+        <button id="tab-exam-upload" class="tab-button" type="button" onclick="switchExamTab('upload')"><i class="fas fa-cloud-upload-alt"></i>上传新真题</button>
+      </div>
+      <article id="exam-existing" class="panel-card">
+        <select id="examSelect" class="visually-hidden"></select>
+        <input id="examPath" type="hidden">
+        <div id="examCardList" class="file-card-grid two"></div>
+      </article>
+      <article id="exam-upload" class="panel-card hidden">
+        <label class="upload-zone purple-zone" for="examUploadInput">
+          <input id="examUploadInput" type="file" accept=".docx">
+          <span><i class="fas fa-cloud-upload-alt"></i></span>
+          <strong>拖拽真题到此处，或点击上传</strong>
+          <small>当前生产流程支持 DOCX 真题。</small>
+        </label>
+        <div id="examUploadList" class="upload-file-list hidden"></div>
+        <button id="uploadExamBtn" class="secondary-button" type="button">上传真题并刷新列表</button>
+      </article>
+      <div id="taskVisualResult" class="result-card muted-card reference-extra">创建结果会显示在这里。</div>
+      <details class="technical-details reference-extra"><summary>查看技术详情</summary><pre id="taskResult"></pre></details>
+      <div class="page-actions">
+        <button class="text-button" type="button" onclick="goToPage('env')"><i class="fas fa-arrow-left"></i>上一步</button>
+        <button id="createTaskBtn" class="primary-button" type="button">开始解析<i class="fas fa-play"></i></button>
+      </div>
+    </section>
+
+    <section id="page-task" class="page">
+      <div class="page-title inline-title">
+        <button class="icon-button" type="button" onclick="goToPage('exam')" title="返回选择真题"><i class="fas fa-arrow-left"></i></button>
+        <div>
+          <h2>执行解析</h2>
+          <p>平台会依次完成抽题、教材索引、考点判断、证据确认、解析生成、审计与文档生成。</p>
+        </div>
+      </div>
+
+      <article class="progress-card">
+        <div class="progress-heading">
+          <span>任务总体进度</span>
+          <strong id="totalProgressText">0%</strong>
+        </div>
+        <div class="total-progress"><span id="totalProgressBar"></span></div>
+        <p id="currentStepText"><i class="fas fa-circle-notch fa-spin"></i>创建任务并开始生成后，这里会显示当前步骤。</p>
+      </article>
+
+      <article id="diagnosticsPanel" class="panel-card diagnostics-panel hidden">
+        <h3><i class="fas fa-magnifying-glass-chart text-blue"></i>问题排查</h3>
+        <div id="diagnosticsSummary" class="diagnostics-summary">正在读取任务日志...</div>
+        <div id="diagnosticsRecommendations" class="diagnostics-section"></div>
+        <div id="diagnosticsQuestions" class="diagnostics-section"></div>
+        <div id="diagnosticsIssues" class="diagnostics-section"></div>
+        <div id="diagnosticsFiles" class="diagnostics-section"></div>
+        <div id="diagnosticsEvents" class="diagnostics-section"></div>
+      </article>
+
+      <div class="task-grid">
+        <article class="panel-card">
+          <h3><i class="fas fa-tasks text-blue"></i>执行步骤</h3>
+          <p id="taskStepCaption" class="task-step-caption">按核心阶段展示任务进展。</p>
+          <div id="taskStepList" class="task-step-list"></div>
+        </article>
+        <article class="panel-card">
+          <h3><i class="fas fa-wave-square text-green"></i>当前执行详情</h3>
+          <label class="reference-extra">当前任务 ID</label>
+          <input id="taskIdInput" class="reference-extra" placeholder="创建任务后自动填入，也可以从任务列表选择">
+          <label class="inline-check reference-extra"><input id="renderCheck" type="checkbox" checked>生成 PDF/PNG 渲染复核</label>
+          <div class="action-row primary-actions reference-extra">
+            <button id="runTaskBtn" type="button"><i class="fas fa-play"></i>开始生成</button>
+            <button id="runTaskReuseBtn" class="secondary-button reference-extra" type="button">用已修正结果重新生成</button>
+            <button id="runTaskNoModelBtn" class="secondary-button reference-extra" type="button">无模型自测</button>
+          </div>
+          <div class="action-row reference-extra">
+            <button id="taskStatusBtn" class="secondary-button" type="button">查看进度</button>
+            <button id="taskQualityBtn" class="secondary-button" type="button">查看质量检查</button>
+            <button id="loadTasksBtn" class="secondary-button" type="button">刷新任务列表</button>
+            <button id="taskFilesBtn" class="secondary-button" type="button">查看文件</button>
+          </div>
+          <div id="progressPanel" class="progress-panel">
+            <div class="execution-detail-head">
+              <span id="executionStageBadge" class="execution-stage-badge">等待开始</span>
+              <strong id="executionTitle">创建任务后开始执行</strong>
+            </div>
+            <p id="progressText">创建任务并开始生成后，这里会显示当前进行到哪一步。</p>
+            <div class="execution-stage-progress-heading"><span>本阶段进度</span><strong id="executionProgressText">--</strong></div>
+            <div class="progress-bar stage-progress-bar"><span id="executionProgressBar"></span></div>
+            <div id="executionMetrics" class="execution-metrics"></div>
+            <div id="executionEvents" class="execution-events"></div>
+            <div id="answerProgressDetails" class="answer-progress-details hidden"></div>
+          </div>
+          <div id="runVisualResult" class="result-card muted-card">任务进度和质量结果会显示在这里。</div>
+        </article>
+      </div>
+
+      <article class="panel-card compact-section reference-extra">
+        <h3><i class="fas fa-list-check text-purple"></i>任务列表</h3>
+        <div id="taskList" class="task-list"></div>
+      </article>
+
+      <article class="panel-card compact-section reference-extra">
+        <h3><i class="fas fa-folder-tree text-green"></i>任务文件</h3>
+        <div id="fileList" class="file-list"></div>
+      </article>
+
+      <article class="panel-card compact-section reference-extra">
+        <h3>教材页码校准</h3>
+        <p>页码校准在生成后进行。读取表格后可保存人工校准结果。</p>
+        <div class="action-row">
+          <button id="pageMapBtn" class="secondary-button" type="button">读取页码校准表</button>
+          <button id="seedPageMapBtn" class="secondary-button" type="button">插入示例行</button>
+          <button id="savePageMapBtn" type="button">保存页码校准</button>
+        </div>
+        <textarea id="pageMapInput" spellcheck="false" placeholder='生成后点击“读取页码校准表”；也可以粘贴 JSON 数组。'></textarea>
+        <details class="technical-details"><summary>查看技术详情</summary><pre id="pageMapResult"></pre></details>
+      </article>
+      <details class="technical-details reference-extra"><summary>查看任务技术详情</summary><pre id="runResult"></pre></details>
+      <div class="page-actions">
+        <button class="text-button" type="button" onclick="goToPage('exam')"><i class="fas fa-arrow-left"></i>上一步</button>
+        <button class="primary-button" type="button" onclick="goToPage('result'); taskFiles(); loadReview();">查看结果<i class="fas fa-arrow-right"></i></button>
+      </div>
+    </section>
+
+    <section id="page-result" class="page">
+      <div class="page-title">
+        <div class="result-icon"><i class="fas fa-check"></i></div>
+        <h2>查看结果与交付</h2>
+        <p>最终验收后导出交付包；有存疑题目时在审查文档中统一查看。</p>
+      </div>
+      <div class="metric-grid">
+        <article><strong id="metricQuestionCount">--</strong><span>题目总数</span></article>
+        <article><strong id="metricCoveredCount">--</strong><span>成功覆盖</span></article>
+        <article><strong id="metricReviewCount">--</strong><span>存疑提示</span></article>
+        <article><strong id="metricFileCount">--</strong><span>生成文件</span></article>
+      </div>
+      <div class="tab-row result-tabs">
+        <button id="tab-result-analysis" class="tab-button active" type="button" onclick="switchResultTab('analysis')"><i class="fas fa-file-alt"></i>解析内容</button>
+        <button id="tab-result-review" class="tab-button" type="button" onclick="switchResultTab('review')"><i class="fas fa-clipboard-check"></i>质量审查报告</button>
+      </div>
+      <section id="result-analysis" class="result-panel">
+        <aside class="question-nav-pane">
+          <h3>题目列表</h3>
+          <div id="resultQuestionList" class="result-question-list"></div>
+        </aside>
+        <div class="question-detail-pane">
+          <div id="resultQuestionDetail" class="question-detail-empty">任务完成后，这里会显示原题和解析内容。</div>
+          <div class="result-download-strip">
+            <div class="action-row primary-actions">
+              <button id="finalAcceptanceBtn" type="button">最终验收</button>
+              <button id="deliveryPackageBtn" type="button">导出交付包</button>
+            </div>
+            <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查和审查报告。</div>
+            <div id="resultFileList" class="file-list compact-file-list"></div>
+          </div>
+        </div>
+      </section>
+      <section id="result-review" class="result-panel hidden">
+        <aside>
+          <h3>审查报告映射</h3>
+          <p>按输出审查报告逐题展示题号、原题、审查提示和教材依据状态。</p>
+          <div class="action-row">
+            <button id="loadReviewBtn" class="secondary-button" type="button">读取审查报告映射</button>
+            <button id="exportReviewBtn" class="secondary-button reference-extra" type="button">导出复核 CSV</button>
+          </div>
+        </aside>
+        <div id="reviewList" class="review-list"></div>
+      </section>
+
+      <details class="advanced-tools compact-section reference-extra">
+        <summary><i class="fas fa-screwdriver-wrench"></i>高级修正工具</summary>
+        <div class="advanced-tool-grid">
+          <article class="panel-card">
+            <h3>结构化答案编辑与修正</h3>
+            <p>仅在需要人工修正结构化结果时使用。保存后回到执行页选择“用已修正结果重新生成”。</p>
+            <div class="action-row">
+              <button id="loadFragmentsBtn" class="secondary-button" type="button">读取结构化答案</button>
+              <button id="saveFragmentsBtn" type="button">保存并校验</button>
+            </div>
+            <textarea id="fragmentsInput" spellcheck="false" placeholder="读取当前任务的 answer_fragments.json 后编辑。"></textarea>
+            <details class="technical-details"><summary>查看技术详情</summary><pre id="fragmentsResult"></pre></details>
+          </article>
+
+          <article class="panel-card">
+            <h3>单题片段校验</h3>
+            <textarea id="fragmentInput" spellcheck="false"></textarea>
+            <button id="validateFragmentBtn" class="secondary-button" type="button">校验片段</button>
+            <details class="technical-details"><summary>查看技术详情</summary><pre id="fragmentResult"></pre></details>
+          </article>
+        </div>
+      </details>
+      <details class="technical-details reference-extra"><summary>查看复核技术详情</summary><pre id="reviewResult"></pre></details>
+      <div class="page-actions">
+        <button class="text-button" type="button" onclick="goToPage('task')"><i class="fas fa-arrow-left"></i>返回执行页</button>
+      </div>
+    </section>
+
+    <section id="page-tasks" class="page">
+      <div class="task-manager-shell">
+        <div class="task-manager-header">
+          <div>
+            <h2>任务管理</h2>
+            <p>查看和管理所有解析任务</p>
+          </div>
+          <button class="primary-button" type="button" onclick="startWizard()"><i class="fas fa-plus"></i>新建任务</button>
+        </div>
+
+        <div class="task-stat-grid">
+          <article>
+            <div><strong id="taskStatTotal">0</strong><span>全部任务</span></div>
+            <i class="fas fa-list"></i>
+          </article>
+          <article>
+            <div><strong id="taskStatRunning">0</strong><span>进行中</span></div>
+            <i class="fas fa-spinner"></i>
+          </article>
+          <article>
+            <div><strong id="taskStatQueued">0</strong><span>排队中</span></div>
+            <i class="fas fa-clock"></i>
+          </article>
+          <article>
+            <div><strong id="taskStatCompleted">0</strong><span>已完成</span></div>
+            <i class="fas fa-check"></i>
+          </article>
+        </div>
+
+        <div class="task-filter-row">
+          <div class="task-filter-tabs">
+            <button class="task-filter-btn active" type="button" data-filter="all" onclick="filterTasks('all')">全部</button>
+            <button class="task-filter-btn" type="button" data-filter="running" onclick="filterTasks('running')">进行中</button>
+            <button class="task-filter-btn" type="button" data-filter="queued" onclick="filterTasks('queued')">排队中</button>
+            <button class="task-filter-btn" type="button" data-filter="completed" onclick="filterTasks('completed')">已完成</button>
+            <button class="task-filter-btn" type="button" data-filter="failed" onclick="filterTasks('failed')">失败</button>
+          </div>
+          <label class="task-sort-control" title="切换任务列表排序方式">
+            <i class="fas fa-sort-amount-down"></i>
+            <span>排序</span>
+            <select id="taskSortSelect">
+              <option value="smart">智能排序</option>
+              <option value="updated">最近更新</option>
+              <option value="created">最新创建</option>
+              <option value="name">任务名称</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="taskManagerList" class="task-manager-list"></div>
+        <div id="taskManagerEmpty" class="task-empty-state hidden">
+          <div><i class="fas fa-inbox"></i></div>
+          <h3>暂无任务</h3>
+          <p>当前筛选条件下没有找到任务</p>
+          <button class="primary-button" type="button" onclick="startWizard()"><i class="fas fa-plus"></i>创建第一个任务</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-monitor" class="page">
+      <div class="monitor-shell">
+        <div class="monitor-page-title">
+          <h2><i class="fas fa-server"></i>运行监控</h2>
+          <p>查看当前打开服务所在电脑的运行状态、最近服务日志和任务事件。</p>
+        </div>
+        <article id="lanAccessPanel" class="lan-access-panel">
+          <div>
+            <span class="lan-access-icon"><i class="fas fa-network-wired"></i></span>
+            <div>
+              <h3>局域网监控入口</h3>
+              <p id="lanAccessHint">正在读取本机局域网访问地址……</p>
+            </div>
+          </div>
+          <div class="lan-access-values">
+            <label>
+              <span>访问地址</span>
+              <code id="lanAccessUrl">读取中</code>
+            </label>
+            <label>
+              <span>监控账号</span>
+              <code id="lanAccessUsername">monitor</code>
+            </label>
+            <label id="lanAccessPasswordRow">
+              <span>监控密码</span>
+              <code id="lanAccessPassword">仅本机显示</code>
+            </label>
+            <button id="copyLanAccessBtn" class="task-card-button blue-action" type="button">
+              <i class="far fa-copy"></i>复制访问信息
+            </button>
+          </div>
+        </article>
+        <article class="system-monitor-panel">
+          <div class="system-monitor-header">
+            <div>
+              <h3><i class="fas fa-server"></i>运行监控</h3>
+              <p id="systemMonitorSubtitle">显示当前打开服务所在电脑的运行状态</p>
+            </div>
+            <button id="refreshSystemBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新</button>
+          </div>
+          <div class="system-monitor-grid">
+            <div><span>运行电脑</span><strong id="systemHostName">读取中</strong></div>
+            <div><span>服务进程</span><strong id="systemPid">-</strong></div>
+            <div><span>服务时间</span><strong id="systemTime">-</strong></div>
+            <div><span>异常任务</span><strong id="systemIssueCount">0</strong></div>
+          </div>
+          <div class="system-monitor-columns">
+            <section>
+              <h4>最近服务日志</h4>
+              <div id="systemRecentLogs" class="system-log-list"></div>
+            </section>
+            <section>
+              <h4>最近任务事件</h4>
+              <div id="systemRecentEvents" class="system-log-list"></div>
+            </section>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <div id="reviewDecisionModal" class="review-decision-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="reviewDecisionTitle">
+    <section class="review-decision-card">
+      <header class="review-decision-header">
+        <div class="review-decision-title">
+          <span><i class="fas fa-clipboard-check"></i></span>
+          <div>
+            <h2 id="reviewDecisionTitle">审查问题需要确认</h2>
+            <p id="reviewDecisionSubtitle">模型回修和本地修复后仍存在以下问题，请决定是否允许继续。</p>
+          </div>
+        </div>
+        <strong id="reviewDecisionStage">质量审查</strong>
+      </header>
+      <div class="review-decision-body">
+        <div class="review-report-grid">
+          <article>
+            <span>任务阶段</span>
+            <strong id="reviewDecisionStageName">-</strong>
+          </article>
+          <article>
+            <span>涉及题目</span>
+            <strong id="reviewDecisionQuestionCount">0 题</strong>
+          </article>
+          <article>
+            <span>后续处理</span>
+            <strong>允许后继续，并写入审查报告</strong>
+          </article>
+        </div>
+        <div class="review-issue-panel">
+          <div class="review-issue-panel-title">
+            <strong>审查问题明细</strong>
+            <span id="reviewDecisionIssueCount">0 项</span>
+          </div>
+          <div id="reviewDecisionIssues" class="review-decision-issues"></div>
+        </div>
+      </div>
+      <footer class="review-decision-actions">
+        <button id="reviewDecisionRejectBtn" class="secondary-button danger-outline" type="button"><i class="fas fa-times"></i>拒绝通过</button>
+        <button id="reviewDecisionAllowBtn" class="primary-button" type="button"><i class="fas fa-check"></i>允许继续</button>
+      </footer>
+    </section>
+  </div>
+  <div id="examStructureReviewModal" class="review-decision-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="examStructureReviewTitle">
+    <section class="review-decision-card exam-structure-review-card">
+      <header class="review-decision-header">
+        <div class="review-decision-title">
+          <span><i class="fas fa-list-check"></i></span>
+          <div>
+            <h2 id="examStructureReviewTitle">确认真题结构、题型与分值</h2>
+            <p id="examStructureReviewSubtitle">请核对每道题抽取、题型和分值。后续解析复杂度会按确认后的分值执行。</p>
+          </div>
+        </div>
+        <strong id="examStructureReviewCount">0 题</strong>
+      </header>
+      <div class="review-decision-body exam-structure-review-body">
+        <div id="examStructureCapabilityRisk" class="model-capability-risk hidden"></div>
+        <div id="examStructureReviewBody" class="exam-structure-review-list"></div>
+      </div>
+      <footer class="review-decision-actions">
+        <button id="examStructureRejectBtn" class="secondary-button danger-outline" type="button"><i class="fas fa-times"></i>结构有误，停止任务</button>
+        <button id="examStructureConfirmBtn" class="primary-button" type="button"><i class="fas fa-check"></i>确认题型和分值并继续</button>
+      </footer>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

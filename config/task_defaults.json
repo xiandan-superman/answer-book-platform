@@ -1,0 +1,10 @@
+{
+  "textbooks_dir": "textbooks",
+  "exams_dir": "exams",
+  "outputs_dir": "outputs",
+  "tasks_dir": "tasks",
+  "require_microsoft_word": true,
+  "forbid_toolchain_edits_during_task": true,
+  "formula_policy": "v4_strict_formula_objects"
+}
+

@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>首页 · 视觉升级</title>
+    <style id="theme-vars">
+/* 智能真题解析系统 · 视觉升级 — 学术靛蓝主色体系 */
+:root {
+  color-scheme: light;
+
+  /* ===== Surface neutrals (warm paper undertone) ===== */
+  --brand-background: #f7f8fb;
+  --brand-foreground: #1a2233;
+  --brand-card: #ffffff;
+  --brand-card-foreground: #1a2233;
+  --brand-popover: #ffffff;
+  --brand-popover-foreground: #1a2233;
+  --brand-muted: #eef1f6;
+  --brand-muted-foreground: #5b6678;
+  --brand-border: #e2e7f0;
+  --brand-input: #e2e7f0;
+  --brand-ring: #1e3a8a;
+
+  /* ===== Single primary brand hue: academic indigo ===== */
+  --brand-primary: #1e3a8a;
+  --brand-primary-foreground: #ffffff;
+
+  /* ===== Radius scale (2/4/8/16) ===== */
+  --brand-radius-sm: 4px;
+  --brand-radius-md: 8px;
+  --brand-radius-lg: 16px;
+
+  /* ===== Semantic state colors (not brand) ===== */
+  --state-success: #047857;
+  --state-warning: #b45309;
+  --state-error: #b91c1c;
+  --state-info: #1e3a8a;
+
+  /* ===== Typography stacks ===== */
+  --font-sans: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", monospace;
+
+  /* ===== Depth ===== */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.02);
+  --shadow-float: 0 8px 24px -8px rgba(15, 23, 42, 0.12);
+  --shadow-overlay: 0 24px 60px -20px rgba(15, 23, 42, 0.22);
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--brand-background);
+    --color-foreground: var(--brand-foreground);
+    --color-card: var(--brand-card);
+    --color-card-foreground: var(--brand-card-foreground);
+    --color-popover: var(--brand-popover);
+    --color-popover-foreground: var(--brand-popover-foreground);
+    --color-primary: var(--brand-primary);
+    --color-primary-foreground: var(--brand-primary-foreground);
+    --color-muted: var(--brand-muted);
+    --color-muted-foreground: var(--brand-muted-foreground);
+    --color-border: var(--brand-border);
+    --color-input: var(--brand-input);
+    --color-ring: var(--brand-ring);
+    --radius-sm: var(--brand-radius-sm);
+    --radius-md: var(--brand-radius-md);
+    --radius-lg: var(--brand-radius-lg);
+  }
+  @layer base {
+    body { background: var(--brand-background); color: var(--brand-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--brand-background); }
+      .text-background { color: var(--brand-background); }
+      .border-background { border-color: var(--brand-background); }
+      .ring-background { --tw-ring-color: var(--brand-background); }
+      .bg-foreground { background-color: var(--brand-foreground); }
+      .text-foreground { color: var(--brand-foreground); }
+      .border-foreground { border-color: var(--brand-foreground); }
+      .ring-foreground { --tw-ring-color: var(--brand-foreground); }
+      .bg-card { background-color: var(--brand-card); }
+      .text-card { color: var(--brand-card); }
+      .border-card { border-color: var(--brand-card); }
+      .ring-card { --tw-ring-color: var(--brand-card); }
+      .bg-card-foreground { background-color: var(--brand-card-foreground); }
+      .text-card-foreground { color: var(--brand-card-foreground); }
+      .border-card-foreground { border-color: var(--brand-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--brand-card-foreground); }
+      .bg-popover { background-color: var(--brand-popover); }
+      .text-popover { color: var(--brand-popover); }
+      .border-popover { border-color: var(--brand-popover); }
+      .ring-popover { --tw-ring-color: var(--brand-popover); }
+      .bg-popover-foreground { background-color: var(--brand-popover-foreground); }
+      .text-popover-foreground { color: var(--brand-popover-foreground); }
+      .border-popover-foreground { border-color: var(--brand-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--brand-popover-foreground); }
+      .bg-primary { background-color: var(--brand-primary); }
+      .text-primary { color: var(--brand-primary); }
+      .border-primary { border-color: var(--brand-primary); }
+      .ring-primary { --tw-ring-color: var(--brand-primary); }
+      .bg-primary-foreground { background-color: var(--brand-primary-foreground); }
+      .text-primary-foreground { color: var(--brand-primary-foreground); }
+      .border-primary-foreground { border-color: var(--brand-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--brand-primary-foreground); }
+      .bg-muted { background-color: var(--brand-muted); }
+      .text-muted { color: var(--brand-muted); }
+      .border-muted { border-color: var(--brand-muted); }
+      .ring-muted { --tw-ring-color: var(--brand-muted); }
+      .bg-muted-foreground { background-color: var(--brand-muted-foreground); }
+      .text-muted-foreground { color: var(--brand-muted-foreground); }
+      .border-muted-foreground { border-color: var(--brand-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--brand-muted-foreground); }
+      .bg-border { background-color: var(--brand-border); }
+      .text-border { color: var(--brand-border); }
+      .border-border { border-color: var(--brand-border); }
+      .ring-border { --tw-ring-color: var(--brand-border); }
+      .bg-input { background-color: var(--brand-input); }
+      .text-input { color: var(--brand-input); }
+      .border-input { border-color: var(--brand-input); }
+      .ring-input { --tw-ring-color: var(--brand-input); }
+      .bg-ring { background-color: var(--brand-ring); }
+      .text-ring { color: var(--brand-ring); }
+      .border-ring { border-color: var(--brand-ring); }
+      .ring-ring { --tw-ring-color: var(--brand-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+
+    <style id="critical-layout">
+      /* Responsive-safe static CSS for first-screen stability */
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 3rem;
+        align-items: center;
+      }
+      @media (min-width: 1024px) {
+        .hero-grid {
+          grid-template-columns: 7fr 5fr;
+          gap: 4rem;
+        }
+      }
+      .feature-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+      @media (min-width: 768px) {
+        .feature-grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
+      .process-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 2rem;
+        position: relative;
+      }
+      @media (min-width: 768px) {
+        .process-grid {
+          grid-template-columns: repeat(3, 1fr);
+          gap: 2rem;
+        }
+        .process-grid::before {
+          content: '';
+          position: absolute;
+          top: 18px;
+          left: 60px;
+          right: 60px;
+          border-top: 1px solid var(--brand-border);
+          z-index: 0;
+        }
+      }
+      @media (max-width: 767px) {
+        .process-grid::before {
+          content: '';
+          position: absolute;
+          top: 24px;
+          bottom: 24px;
+          left: 17px;
+          border-left: 1px solid var(--brand-border);
+          z-index: 0;
+        }
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+      }
+      @media (min-width: 768px) {
+        .stats-grid {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      /* ===== Scroll-reveal base ===== */
+      .reveal {
+        opacity: 0;
+        transform: translateY(28px);
+        transition: opacity 0.7s cubic-bezier(.22,1,.36,1), transform 0.7s cubic-bezier(.22,1,.36,1);
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .reveal-left {
+        opacity: 0;
+        transform: translateX(-32px);
+        transition: opacity 0.7s cubic-bezier(.22,1,.36,1), transform 0.7s cubic-bezier(.22,1,.36,1);
+      }
+      .reveal-left.visible {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      .reveal-right {
+        opacity: 0;
+        transform: translateX(32px);
+        transition: opacity 0.7s cubic-bezier(.22,1,.36,1), transform 0.7s cubic-bezier(.22,1,.36,1);
+      }
+      .reveal-right.visible {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      .reveal-scale {
+        opacity: 0;
+        transform: scale(0.92);
+        transition: opacity 0.6s cubic-bezier(.22,1,.36,1), transform 0.6s cubic-bezier(.22,1,.36,1);
+      }
+      .reveal-scale.visible {
+        opacity: 1;
+        transform: scale(1);
+      }
+      /* Stagger children */
+      .stagger > * { transition-delay: calc(var(--stagger-idx, 0) * 120ms); }
+
+      /* ===== CTA & card interactions ===== */
+      .cta-primary {
+        transition: transform 200ms cubic-bezier(.2,.8,.2,1), box-shadow 200ms ease, filter 200ms ease;
+        position: relative;
+        overflow: hidden;
+      }
+      .cta-primary::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.12) 45%, rgba(255,255,255,0.18) 50%, rgba(255,255,255,0.12) 55%, transparent 60%);
+        transform: translateX(-100%);
+        transition: transform 500ms ease;
+        pointer-events: none;
+      }
+      .cta-primary:hover::after {
+        transform: translateX(100%);
+      }
+      .cta-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px -4px rgba(30, 58, 138, 0.35);
+        filter: brightness(1.05);
+      }
+      .cta-primary:active {
+        transform: translateY(0);
+        box-shadow: 0 2px 8px -2px rgba(30, 58, 138, 0.25);
+      }
+      .cta-secondary {
+        transition: transform 200ms cubic-bezier(.2,.8,.2,1), border-color 200ms, box-shadow 200ms;
+      }
+      .cta-secondary:hover {
+        transform: translateY(-2px);
+        border-color: var(--brand-primary);
+        box-shadow: 0 4px 16px -4px rgba(30, 58, 138, 0.12);
+      }
+      .cta-secondary:active {
+        transform: translateY(0);
+      }
+
+      /* ===== Feature card enhanced ===== */
+      .feature-card {
+        transition: transform 260ms cubic-bezier(.2,.8,.2,1), border-color 260ms, box-shadow 260ms;
+        position: relative;
+      }
+      .feature-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: var(--brand-primary);
+        transform: scaleX(0);
+        transform-origin: left;
+        transition: transform 300ms cubic-bezier(.22,1,.36,1);
+        border-radius: var(--brand-radius-lg) var(--brand-radius-lg) 0 0;
+      }
+      .feature-card:hover::before {
+        transform: scaleX(1);
+      }
+      .feature-card:hover {
+        transform: translateY(-4px);
+        border-color: var(--brand-primary);
+        box-shadow: 0 12px 32px -8px rgba(30, 58, 138, 0.14);
+      }
+      .feature-card:hover .feature-icon-wrap {
+        transform: scale(1.08);
+        background: rgba(30, 58, 138, 0.08);
+      }
+      .feature-icon-wrap {
+        transition: transform 260ms cubic-bezier(.22,1,.36,1), background 260ms;
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(30, 58, 138, 0.04);
+      }
+
+      /* ===== Process step pulse ===== */
+      .process-step {
+        transition: transform 260ms cubic-bezier(.22,1,.36,1);
+      }
+      .process-step:hover {
+        transform: translateY(-2px);
+      }
+      .step-circle {
+        position: relative;
+        transition: transform 300ms cubic-bezier(.22,1,.36,1), box-shadow 300ms;
+      }
+      .step-circle::after {
+        content: '';
+        position: absolute;
+        inset: -4px;
+        border-radius: 50%;
+        border: 2px solid var(--brand-primary);
+        opacity: 0;
+        transform: scale(0.8);
+        transition: opacity 300ms, transform 300ms;
+      }
+      .process-step:hover .step-circle {
+        transform: scale(1.08);
+        box-shadow: 0 4px 16px -4px rgba(30, 58, 138, 0.3);
+      }
+      .process-step:hover .step-circle::after {
+        opacity: 0.3;
+        transform: scale(1);
+      }
+
+      /* ===== Stats counter ===== */
+      .stat-value {
+        display: inline-block;
+        transition: transform 200ms;
+      }
+      .stats-grid .stat-item {
+        transition: background 260ms;
+      }
+      .stats-grid .stat-item:hover {
+        background: rgba(30, 58, 138, 0.03);
+      }
+
+      /* ===== Decorative background elements ===== */
+      .hero-decoration {
+        position: absolute;
+        pointer-events: none;
+        opacity: 0.06;
+      }
+      @keyframes float-slow {
+        0%, 100% { transform: translateY(0) rotate(0deg); }
+        50% { transform: translateY(-12px) rotate(3deg); }
+      }
+      @keyframes float-slower {
+        0%, 100% { transform: translateY(0) rotate(0deg); }
+        50% { transform: translateY(-8px) rotate(-2deg); }
+      }
+      .float-anim {
+        animation: float-slow 6s ease-in-out infinite;
+      }
+      .float-anim-alt {
+        animation: float-slower 8s ease-in-out infinite;
+      }
+
+      /* ===== Section divider ===== */
+      .section-divider {
+        width: 48px;
+        height: 3px;
+        background: var(--brand-primary);
+        border-radius: 2px;
+        margin-bottom: 1.25rem;
+        transform: scaleX(0);
+        transition: transform 0.6s cubic-bezier(.22,1,.36,1);
+      }
+      .section-divider.visible {
+        transform: scaleX(1);
+      }
+
+      /* ===== Nav link underline ===== */
+      .nav-link {
+        position: relative;
+        transition: color 200ms;
+      }
+      .nav-link::after {
+        content: '';
+        position: absolute;
+        bottom: -2px;
+        left: 0;
+        width: 0;
+        height: 2px;
+        background: var(--brand-primary);
+        transition: width 200ms cubic-bezier(.22,1,.36,1);
+        border-radius: 1px;
+      }
+      .nav-link:hover::after {
+        width: 100%;
+      }
+
+      /* ===== Hero image parallax-like hover ===== */
+      .hero-image-wrap {
+        transition: transform 400ms cubic-bezier(.22,1,.36,1);
+      }
+      .hero-image-wrap:hover {
+        transform: scale(1.02);
+      }
+      .hero-image-wrap img {
+        transition: transform 400ms cubic-bezier(.22,1,.36,1), box-shadow 400ms;
+      }
+      .hero-image-wrap:hover img {
+        box-shadow: 0 16px 40px -12px rgba(15, 23, 42, 0.18);
+      }
+
+      /* ===== Footer link hover ===== */
+      .footer-link {
+        position: relative;
+        transition: color 200ms;
+      }
+      .footer-link::after {
+        content: '';
+        position: absolute;
+        bottom: -1px;
+        left: 0;
+        width: 0;
+        height: 1px;
+        background: currentColor;
+        transition: width 200ms cubic-bezier(.22,1,.36,1);
+      }
+      .footer-link:hover::after {
+        width: 100%;
+      }
+
+      /* ===== Gradient text accent ===== */
+      .gradient-accent {
+        background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      /* ===== Section background rhythm ===== */
+      .section-tinted {
+        background: linear-gradient(180deg, #f0f3fa 0%, #f7f8fb 100%);
+      }
+      .section-grad {
+        background: linear-gradient(180deg, #f7f8fb 0%, #eef1f6 100%);
+      }
+
+      /* ===== Hero gradient atmosphere ===== */
+      .hero-atmosphere {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(ellipse 600px 400px at 75% 30%, rgba(30, 58, 138, 0.06) 0%, transparent 70%),
+          radial-gradient(ellipse 500px 300px at 20% 70%, rgba(59, 130, 246, 0.04) 0%, transparent 70%);
+        z-index: 0;
+      }
+
+      /* ===== Process connector animated draw ===== */
+      @media (min-width: 768px) {
+        .process-grid.animated-line::before {
+          content: '';
+          position: absolute;
+          top: 18px;
+          left: 60px;
+          right: 60px;
+          height: 1px;
+          background: linear-gradient(90deg, var(--brand-primary) 0%, var(--brand-border) 100%);
+          transform: scaleX(0);
+          transform-origin: left;
+          transition: transform 1.2s cubic-bezier(.22,1,.36,1) 0.3s;
+          z-index: 0;
+        }
+        .process-grid.animated-line.visible::before {
+          transform: scaleX(1);
+        }
+      }
+      @media (max-width: 767px) {
+        .process-grid.animated-line::before {
+          content: '';
+          position: absolute;
+          top: 24px;
+          bottom: 24px;
+          left: 17px;
+          width: 1px;
+          background: linear-gradient(180deg, var(--brand-primary) 0%, var(--brand-border) 100%);
+          transform: scaleY(0);
+          transform-origin: top;
+          transition: transform 1s cubic-bezier(.22,1,.36,1) 0.3s;
+          z-index: 0;
+        }
+        .process-grid.animated-line.visible::before {
+          transform: scaleY(1);
+        }
+      }
+
+      /* ===== Stats section gradient card ===== */
+      .stats-card {
+        background: linear-gradient(135deg, #ffffff 0%, #f8faff 100%);
+        box-shadow: 0 4px 24px -8px rgba(30, 58, 138, 0.08), inset 0 1px 0 rgba(255,255,255,0.8);
+      }
+      .stat-value {
+        position: relative;
+      }
+      .stat-value::after {
+        content: '';
+        position: absolute;
+        bottom: -6px;
+        left: 50%;
+        transform: translateX(-50%) scaleX(0);
+        width: 20px;
+        height: 2px;
+        background: var(--brand-primary);
+        border-radius: 1px;
+        opacity: 0.3;
+        transition: transform 300ms cubic-bezier(.22,1,.36,1), opacity 300ms;
+      }
+      .stats-grid .stat-item:hover .stat-value::after {
+        transform: translateX(-50%) scaleX(1);
+        opacity: 0.6;
+      }
+      .stats-grid .stat-item:hover .stat-value {
+        transform: scale(1.1);
+      }
+
+      /* ===== Section header with eyebrow ===== */
+      .section-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--brand-primary);
+        margin-bottom: 0.75rem;
+      }
+      .section-eyebrow::before {
+        content: '';
+        width: 16px;
+        height: 1px;
+        background: var(--brand-primary);
+      }
+
+      /* ===== Feature card subtle gradient sheen ===== */
+      .feature-card {
+        background: linear-gradient(180deg, #ffffff 0%, #fdfdff 100%);
+      }
+      .feature-card::after {
+        content: '';
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 60%;
+        background: radial-gradient(ellipse at bottom, rgba(30, 58, 138, 0.03) 0%, transparent 70%);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 300ms;
+        border-radius: 0 0 var(--brand-radius-lg) var(--brand-radius-lg);
+      }
+      .feature-card:hover::after {
+        opacity: 1;
+      }
+
+      /* ===== CTA section ===== */
+      .cta-section {
+        background: linear-gradient(135deg, #1e3a8a 0%, #2d4ba8 100%);
+        position: relative;
+        overflow: hidden;
+      }
+      .cta-section::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        right: -10%;
+        width: 400px;
+        height: 400px;
+        background: radial-gradient(circle, rgba(255,255,255,0.06) 0%, transparent 70%);
+        border-radius: 50%;
+      }
+      .cta-section::after {
+        content: '';
+        position: absolute;
+        bottom: -30%;
+        left: -5%;
+        width: 300px;
+        height: 300px;
+        background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
+        border-radius: 50%;
+      }
+      .cta-glow-btn {
+        background: rgba(255, 255, 255, 0.12);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        transition: all 260ms cubic-bezier(.22,1,.36,1);
+      }
+      .cta-glow-btn:hover {
+        background: rgba(255, 255, 255, 0.2);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.2);
+      }
+
+      /* ===== Nav blur on scroll ===== */
+      .nav-blur {
+        backdrop-filter: blur(12px) saturate(180%);
+        background: rgba(255, 255, 255, 0.85);
+      }
+
+      /* ===== Reduced motion ===== */
+      @media (prefers-reduced-motion: reduce) {
+        .reveal, .reveal-left, .reveal-right, .reveal-scale,
+        .cta-primary, .cta-secondary, .feature-card,
+        .process-step, .step-circle, .feature-icon-wrap,
+        .hero-image-wrap, .hero-image-wrap img,
+        .section-divider, .nav-link::after, .footer-link::after,
+        .feature-card::before, .feature-card::after, .cta-primary::after,
+        .stat-value, .stat-value::after, .cta-glow-btn,
+        .process-grid.animated-line::before {
+          transition: none !important;
+          animation: none !important;
+        }
+        .reveal, .reveal-left, .reveal-right, .reveal-scale {
+          opacity: 1 !important;
+          transform: none !important;
+        }
+        .feature-card::before { transform: scaleX(0) !important; }
+        .feature-card::after { opacity: 0 !important; }
+        .cta-primary::after { transform: translateX(-100%) !important; }
+        .process-grid.animated-line::before { transform: scaleX(1) !important; }
+        .process-grid.animated-line::before { transform: scaleY(1) !important; }
+        .section-divider { transform: scaleX(1) !important; }
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+    <main>
+      <!-- A. Top Navigation Bar -->
+      <nav id="topnav" class="sticky top-0 z-50 bg-card border-b border-border transition-all duration-300" style="height: 64px;">
+        <div class="max-w-7xl mx-auto h-full px-6 flex items-center justify-between">
+          <!-- Left: Brand mark -->
+          <div class="flex items-center gap-3">
+            <div class="bg-primary rounded-md flex items-center justify-center" style="width: 36px; height: 36px;">
+              <i data-lucide="book-open" class="text-primary-foreground" style="width: 20px; height: 20px;"></i>
+            </div>
+            <div class="flex flex-col">
+              <span class="font-serif text-foreground" style="font-weight: 600; font-size: 15px; line-height: 1.3;">智能真题解析系统</span>
+              <span class="text-muted-foreground" style="font-size: 11px;">AI 驱动的教材精准解析</span>
+            </div>
+          </div>
+          <!-- Right: Nav links -->
+          <div class="hidden md:flex items-center gap-8">
+            <a href="#" class="nav-link flex items-center gap-2 text-muted-foreground hover:text-primary" style="font-size: 14px;">
+              <i data-lucide="layer-group" style="width: 16px; height: 16px;"></i>
+              <span>专项练习</span>
+            </a>
+            <a href="#" class="nav-link flex items-center gap-2 text-muted-foreground hover:text-primary" style="font-size: 14px;">
+              <i data-lucide="tasks" style="width: 16px; height: 16px;"></i>
+              <span>任务管理</span>
+            </a>
+            <a href="#" class="nav-link flex items-center gap-2 text-muted-foreground hover:text-primary" style="font-size: 14px;">
+              <i data-lucide="server" style="width: 16px; height: 16px;"></i>
+              <span>运行监控</span>
+            </a>
+            <a href="#" class="nav-link flex items-center gap-2 text-muted-foreground hover:text-primary" style="font-size: 14px;">
+              <i data-lucide="database" style="width: 16px; height: 16px;"></i>
+              <span>教材管理</span>
+            </a>
+          </div>
+          <!-- Mobile: icons only -->
+          <div class="flex md:hidden items-center gap-4">
+            <a href="#" class="text-muted-foreground hover:text-primary"><i data-lucide="layer-group" style="width: 20px; height: 20px;"></i></a>
+            <a href="#" class="text-muted-foreground hover:text-primary"><i data-lucide="tasks" style="width: 20px; height: 20px;"></i></a>
+            <a href="#" class="text-muted-foreground hover:text-primary"><i data-lucide="server" style="width: 20px; height: 20px;"></i></a>
+            <a href="#" class="text-muted-foreground hover:text-primary"><i data-lucide="database" style="width: 20px; height: 20px;"></i></a>
+          </div>
+        </div>
+      </nav>
+
+      <!-- B. Hero Section -->
+      <section class="bg-background relative overflow-hidden">
+        <!-- Gradient atmosphere -->
+        <div class="hero-atmosphere"></div>
+        <!-- Decorative background elements -->
+        <div class="hero-decoration float-anim" style="top: 12%; right: 8%; width: 120px; height: 120px;">
+          <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="60" cy="60" r="58" stroke="#1e3a8a" stroke-width="1.5"/>
+            <circle cx="60" cy="60" r="40" stroke="#1e3a8a" stroke-width="1"/>
+            <circle cx="60" cy="60" r="22" stroke="#1e3a8a" stroke-width="1"/>
+          </svg>
+        </div>
+        <div class="hero-decoration float-anim-alt" style="bottom: 15%; left: 5%; width: 80px; height: 80px;">
+          <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="8" y="8" width="64" height="64" stroke="#1e3a8a" stroke-width="1.5" rx="4"/>
+            <rect x="20" y="20" width="40" height="40" stroke="#1e3a8a" stroke-width="1" rx="2"/>
+          </svg>
+        </div>
+        <div class="hero-decoration float-anim" style="top: 45%; left: 45%; width: 60px; height: 60px; animation-delay: 2s;">
+          <svg viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M30 5 L55 50 L5 50 Z" stroke="#1e3a8a" stroke-width="1.5"/>
+          </svg>
+        </div>
+
+        <div class="max-w-7xl mx-auto px-6 relative" style="padding-top: 80px; padding-bottom: 80px; z-index: 1;">
+          <div class="hero-grid">
+            <!-- Left column (7/12) -->
+            <div class="flex flex-col justify-center" style="max-width: 580px;">
+              <span class="reveal text-primary" style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 1rem; transition-delay: 100ms;">AI 驱动 · 教材精准解析</span>
+              <h1 class="reveal font-serif text-foreground" style="font-size: clamp(40px, 6vw, 64px); font-weight: 600; line-height: 1.1; text-wrap: balance; margin-bottom: 1.25rem; transition-delay: 200ms;">智能真题<span class="gradient-accent">解析</span></h1>
+              <p class="reveal text-muted-foreground" style="font-size: 16px; line-height: 1.7; max-width: 480px; margin-bottom: 2rem; transition-delay: 300ms;">基于教材内容，利用 AI 大模型自动生成精准、专业的真题解析。程序负责固定流程、质量审查、Word/PDF 渲染与交付包。</p>
+              <div class="reveal flex flex-wrap items-center gap-4" style="margin-bottom: 1.5rem; transition-delay: 400ms;">
+                <a href="#" class="cta-primary inline-flex items-center gap-2 bg-primary text-primary-foreground rounded-md px-6 py-3" style="font-size: 15px; font-weight: 500; text-decoration: none;" data-dom-id="cta-start">
+                  <i data-lucide="rocket" style="width: 18px; height: 18px;"></i>
+                  开始解析
+                </a>
+                <a href="#" class="cta-secondary inline-flex items-center gap-2 rounded-md px-6 py-3 bg-transparent border border-border text-foreground" style="font-size: 15px; font-weight: 500; text-decoration: none;" data-dom-id="cta-textbook">
+                  <i data-lucide="book" style="width: 18px; height: 18px;"></i>
+                  教材管理
+                </a>
+              </div>
+              <span class="reveal text-muted-foreground" style="font-size: 12px; transition-delay: 500ms;">版本 v6.8 · 独立部署版</span>
+            </div>
+            <!-- Right column (5/12) -->
+            <div class="reveal-right flex items-center justify-center lg:justify-end">
+              <div class="hero-image-wrap w-full">
+                <img src="../assets/hero-academic.jpg" alt="教材解析知识图谱意象" class="w-full h-auto rounded-lg" style="box-shadow: var(--shadow-float);">
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- C. Feature Section -->
+      <section class="section-tinted" style="padding-top: 5rem; padding-bottom: 5rem;">
+        <div class="max-w-7xl mx-auto px-6">
+          <div class="reveal" style="margin-bottom: 3rem;">
+            <span class="section-eyebrow">核心能力</span>
+            <h2 class="font-serif text-foreground" style="font-size: clamp(28px, 3.5vw, 36px); font-weight: 600; margin-bottom: 0.5rem; line-height: 1.2;">三层智能解析架构</h2>
+            <p class="text-muted-foreground" style="font-size: 15px; max-width: 560px;">从内容理解到依据检索再到质量保障，系统化地完成真题解析全流程</p>
+          </div>
+          <div class="feature-grid stagger">
+            <!-- Card 1 -->
+            <div class="reveal feature-card bg-card rounded-lg border border-border p-8" style="--stagger-idx: 0;">
+              <div class="feature-icon-wrap text-primary mb-4">
+                <i data-lucide="brain" style="width: 24px; height: 24px;"></i>
+              </div>
+              <h3 class="font-serif text-foreground" style="font-size: 20px; font-weight: 600; margin-bottom: 0.5rem;">AI 智能分析</h3>
+              <p class="text-muted-foreground" style="font-size: 14px; line-height: 1.6;">先判断题目考查内容，再围绕知识点检索与确认教材依据。</p>
+            </div>
+            <!-- Card 2 -->
+            <div class="reveal feature-card bg-card rounded-lg border border-border p-8" style="--stagger-idx: 1;">
+              <div class="feature-icon-wrap text-primary mb-4">
+                <i data-lucide="search" style="width: 24px; height: 24px;"></i>
+              </div>
+              <h3 class="font-serif text-foreground" style="font-size: 20px; font-weight: 600; margin-bottom: 0.5rem;">教材精准检索</h3>
+              <p class="text-muted-foreground" style="font-size: 14px; line-height: 1.6;">教材索引可复用；文件无变动时不会重复处理。</p>
+            </div>
+            <!-- Card 3 -->
+            <div class="reveal feature-card bg-card rounded-lg border border-border p-8" style="--stagger-idx: 2;">
+              <div class="feature-icon-wrap text-primary mb-4">
+                <i data-lucide="clipboard-check" style="width: 24px; height: 24px;"></i>
+              </div>
+              <h3 class="font-serif text-foreground" style="font-size: 20px; font-weight: 600; margin-bottom: 0.5rem;">质量自动审查</h3>
+              <p class="text-muted-foreground" style="font-size: 14px; line-height: 1.6;">覆盖率、公式对象、内容质量、渲染结果与交付包自动检查。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- D. Process Flow Section -->
+      <section class="bg-background" style="padding-top: 5rem; padding-bottom: 5rem;">
+        <div class="max-w-7xl mx-auto px-6">
+          <div class="reveal" style="margin-bottom: 3rem;">
+            <span class="section-eyebrow">工作流程</span>
+            <div class="section-divider" style="margin-top: 0.5rem;"></div>
+            <h2 class="font-serif text-foreground" style="font-size: clamp(28px, 3.5vw, 36px); font-weight: 600; margin-bottom: 0.5rem;">解析流程</h2>
+            <p class="text-muted-foreground" style="font-size: 15px;">从教材准备到交付文件，三步完成真题解析</p>
+          </div>
+          <div class="process-grid animated-line stagger" id="process-grid">
+            <!-- Step 0 -->
+            <div class="reveal process-step relative z-10 flex flex-row md:flex-col items-start md:items-center gap-4 md:gap-3" style="--stagger-idx: 0;">
+              <div class="step-circle flex-shrink-0 bg-primary text-primary-foreground font-serif rounded-full flex items-center justify-center" style="width: 36px; height: 36px; font-size: 16px; font-weight: 600;">0</div>
+              <div>
+                <h3 class="text-foreground" style="font-size: 16px; font-weight: 600; margin-bottom: 0.25rem;">先准备教材库</h3>
+                <p class="text-muted-foreground" style="font-size: 14px; line-height: 1.5;">独立上传教材并建立索引</p>
+              </div>
+            </div>
+            <!-- Step 1 -->
+            <div class="reveal process-step relative z-10 flex flex-row md:flex-col items-start md:items-center gap-4 md:gap-3" style="--stagger-idx: 1;">
+              <div class="step-circle flex-shrink-0 bg-primary text-primary-foreground font-serif rounded-full flex items-center justify-center" style="width: 36px; height: 36px; font-size: 16px; font-weight: 600;">1</div>
+              <div>
+                <h3 class="text-foreground" style="font-size: 16px; font-weight: 600; margin-bottom: 0.25rem;">选择已索引教材与真题</h3>
+                <p class="text-muted-foreground" style="font-size: 14px; line-height: 1.5;">任务流程只消费已有索引</p>
+              </div>
+            </div>
+            <!-- Step 2 -->
+            <div class="reveal process-step relative z-10 flex flex-row md:flex-col items-start md:items-center gap-4 md:gap-3" style="--stagger-idx: 2;">
+              <div class="step-circle flex-shrink-0 bg-primary text-primary-foreground font-serif rounded-full flex items-center justify-center" style="width: 36px; height: 36px; font-size: 16px; font-weight: 600;">2</div>
+              <div>
+                <h3 class="text-foreground" style="font-size: 16px; font-weight: 600; margin-bottom: 0.25rem;">生成交付文件</h3>
+                <p class="text-muted-foreground" style="font-size: 14px; line-height: 1.5;">Word、PDF、审查文档与交付包</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- E. Stats Strip -->
+      <section class="section-grad" style="padding-top: 3rem; padding-bottom: 5rem;">
+        <div class="max-w-7xl mx-auto px-6">
+          <div class="reveal" style="margin-bottom: 2rem; text-align: center;">
+            <span class="section-eyebrow" style="justify-content: center;">系统指标</span>
+          </div>
+          <div class="reveal-scale stats-grid stats-card rounded-lg border border-border divide-x divide-border" style="padding: 2.5rem 0;">
+            <div class="stat-item flex flex-col items-center justify-center px-6 py-4">
+              <span class="stat-value font-serif text-primary" style="font-size: 28px; font-weight: 600;" data-target="3">0</span>
+              <span class="text-muted-foreground" style="font-size: 13px; margin-top: 8px;">大模型分工</span>
+            </div>
+            <div class="stat-item flex flex-col items-center justify-center px-6 py-4">
+              <span class="stat-value font-serif text-primary" style="font-size: 28px; font-weight: 600;" data-target="5">0</span>
+              <span class="text-muted-foreground" style="font-size: 13px; margin-top: 8px;">步质量审查</span>
+            </div>
+            <div class="stat-item flex flex-col items-center justify-center px-6 py-4">
+              <span class="stat-value font-serif text-primary" style="font-size: 28px; font-weight: 600;" data-target="2">0</span>
+              <span class="text-muted-foreground" style="font-size: 13px; margin-top: 8px;">种交付格式</span>
+            </div>
+            <div class="stat-item flex flex-col items-center justify-center px-6 py-4">
+              <span class="stat-value font-serif text-primary" style="font-size: 28px; font-weight: 600;" data-target="100" data-suffix="%">0</span>
+              <span class="text-muted-foreground" style="font-size: 13px; margin-top: 8px;">教材依据可追溯</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- G. CTA Section -->
+      <section class="cta-section" style="padding-top: 4rem; padding-bottom: 4rem;">
+        <div class="max-w-7xl mx-auto px-6 relative" style="z-index: 1;">
+          <div class="reveal flex flex-col md:flex-row items-center justify-between gap-6">
+            <div>
+              <h2 class="font-serif text-white" style="font-size: clamp(24px, 3vw, 32px); font-weight: 600; margin-bottom: 0.5rem; line-height: 1.2;">准备好开始了吗？</h2>
+              <p style="font-size: 15px; color: rgba(255,255,255,0.8);">上传教材，建立索引，三步生成专业真题解析</p>
+            </div>
+            <a href="#" class="cta-glow-btn inline-flex items-center gap-2 text-white rounded-md px-7 py-3" style="font-size: 15px; font-weight: 500; text-decoration: none; white-space: nowrap;" data-dom-id="cta-final">
+              <i data-lucide="arrow-right" style="width: 18px; height: 18px;"></i>
+              立即开始
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- F. Footer -->
+      <footer class="border-t border-border">
+        <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4" style="padding: 2rem 0;">
+          <div class="flex flex-col">
+            <span class="font-serif text-foreground" style="font-weight: 600; font-size: 15px;">智能真题解析系统</span>
+            <span class="text-muted-foreground" style="font-size: 12px;">&copy; 2026 &middot; 基于 AI 大模型的教材精准解析平台</span>
+          </div>
+          <div class="flex items-center gap-6">
+            <a href="#" class="footer-link text-muted-foreground hover:text-foreground" style="font-size: 14px; text-decoration: none;">使用文档</a>
+            <a href="#" class="footer-link text-muted-foreground hover:text-foreground" style="font-size: 14px; text-decoration: none;">版本日志</a>
+            <a href="#" class="footer-link text-muted-foreground hover:text-foreground" style="font-size: 14px; text-decoration: none;">问题反馈</a>
+          </div>
+        </div>
+      </footer>
+    </main>
+    <script>
+      lucide.createIcons();
+
+      // ===== Scroll reveal via IntersectionObserver =====
+      (function () {
+        var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var revealEls = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, .section-divider');
+
+        if (prefersReduced || !('IntersectionObserver' in window)) {
+          revealEls.forEach(function (el) { el.classList.add('visible'); });
+          // Also show animated process line
+          var pg = document.getElementById('process-grid');
+          if (pg) pg.classList.add('visible');
+          animateCounters();
+          return;
+        }
+
+        var observer = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              // Trigger counters when stats section becomes visible
+              if (entry.target.classList.contains('reveal-scale')) {
+                animateCounters();
+              }
+              // Trigger process line animation when process grid becomes visible
+              if (entry.target.id === 'process-grid' || entry.target.classList.contains('process-step')) {
+                var pg = document.getElementById('process-grid');
+                if (pg) pg.classList.add('visible');
+              }
+              observer.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.15, rootMargin: '0px 0px -60px 0px' });
+
+        revealEls.forEach(function (el) { observer.observe(el); });
+
+        // Also observe process grid for line animation
+        var processGrid = document.getElementById('process-grid');
+        if (processGrid) {
+          var lineObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add('visible');
+                lineObserver.unobserve(entry.target);
+              }
+            });
+          }, { threshold: 0.2 });
+          lineObserver.observe(processGrid);
+        }
+      })();
+
+      // ===== Animated counters =====
+      function animateCounters() {
+        var counters = document.querySelectorAll('.stat-value[data-target]');
+        var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        counters.forEach(function (el) {
+          if (prefersReduced) {
+            el.textContent = el.dataset.target + (el.dataset.suffix || '');
+            return;
+          }
+          var target = parseInt(el.dataset.target, 10);
+          var suffix = el.dataset.suffix || '';
+          var duration = 1400;
+          var startTime = null;
+          function step(timestamp) {
+            if (!startTime) startTime = timestamp;
+            var progress = Math.min((timestamp - startTime) / duration, 1);
+            var eased = 1 - Math.pow(1 - progress, 3);
+            el.textContent = Math.round(target * eased) + suffix;
+            if (progress < 1) requestAnimationFrame(step);
+          }
+          requestAnimationFrame(step);
+        });
+      }
+
+      // ===== Subtle parallax on hero decorations =====
+      (function () {
+        var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (prefersReduced) return;
+        var decorations = document.querySelectorAll('.hero-decoration');
+        if (!decorations.length) return;
+        var heroSection = document.querySelector('section.bg-background.relative');
+        if (!heroSection) return;
+        heroSection.addEventListener('mousemove', function (e) {
+          var rect = heroSection.getBoundingClientRect();
+          var x = (e.clientX - rect.left) / rect.width - 0.5;
+          var y = (e.clientY - rect.top) / rect.height - 0.5;
+          decorations.forEach(function (el, i) {
+            var depth = (i + 1) * 8;
+            el.style.transform = 'translate(' + (x * depth) + 'px, ' + (y * depth) + 'px)';
+          });
+        });
+        heroSection.addEventListener('mouseleave', function () {
+          decorations.forEach(function (el) { el.style.transform = ''; });
+        });
+      })();
+
+      // ===== Nav blur on scroll =====
+      (function () {
+        var nav = document.getElementById('topnav');
+        if (!nav) return;
+        var scrolled = false;
+        window.addEventListener('scroll', function () {
+          var shouldBlur = window.scrollY > 20;
+          if (shouldBlur !== scrolled) {
+            scrolled = shouldBlur;
+            if (scrolled) {
+              nav.classList.add('nav-blur');
+              nav.classList.remove('bg-card');
+              nav.style.borderColor = 'rgba(226, 231, 240, 0.6)';
+            } else {
+              nav.classList.remove('nav-blur');
+              nav.classList.add('bg-card');
+              nav.style.borderColor = '';
+            }
+          }
+        }, { passive: true });
+      })();
+    </script>
+</body>
+</html>

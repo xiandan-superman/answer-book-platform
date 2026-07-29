@@ -1,0 +1,100 @@
+{
+  "success": true,
+  "outcome": "passed",
+  "repairable": true,
+  "terminalViolations": [],
+  "terminalBlockingSummary": null,
+  "skillProvenance": {
+    "name": "solo-design",
+    "version": "2026.07.22.00.00.00",
+    "version_source": "skill-release-manifest.json",
+    "runtime_skill_dir": null,
+    "recorded_at": null,
+    "expected_version": "2026.07.22.00.00.00",
+    "status": "matched",
+    "read_status": "ok"
+  },
+  "operatingMode": "free-explore",
+  "renderBlockingErrorCount": 0,
+  "softWarningCount": 3,
+  "renderBlockingErrors": [],
+  "errorSignatures": [],
+  "softWarnings": [
+    "[html-head-style] home.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
+    "[repair-ledger] validationRepairLedger[0].repairActions[0].preEditFileHashes[] is missing (legacy optional evidence)",
+    "[repair-ledger] validationRepairLedger[0].repairActions[0].postEditFileHashes[] is missing (legacy optional evidence)"
+  ],
+  "repairPlanHints": [],
+  "repairActionTable": [],
+  "errorCount": 0,
+  "warningCount": 3,
+  "errors": [],
+  "warnings": [
+    "[html-head-style] home.html: found 1 custom <style> block(s) in <head>. The <head> is owned by apply-html-head-contract.mjs; move custom styles before </body> or re-run apply-html-head-contract.mjs <css-path> <html-file> --replace-head to relocate them.",
+    "[repair-ledger] validationRepairLedger[0].repairActions[0].preEditFileHashes[] is missing (legacy optional evidence)",
+    "[repair-ledger] validationRepairLedger[0].repairActions[0].postEditFileHashes[] is missing (legacy optional evidence)"
+  ],
+  "validationRunDisciplineStatus": {
+    "declared": true,
+    "restoreMode": false,
+    "maxFullValidationRuns": 2,
+    "validationHistoryCount": 2,
+    "repairLedgerCount": 1,
+    "softWarningsTriggerRepair": false,
+    "terminalState": null,
+    "nextAction": null,
+    "violations": [],
+    "success": true
+  },
+  "terminalState": null,
+  "nextCheck": {
+    "type": "finish-readiness",
+    "command": "node '/Users/ljj/.trae-cn/builtin/design/hebe/skills/solo-design/shared-runtime/deterministic-tooling/validate-finish-readiness.mjs' '/Users/ljj/Documents/分析多模态问题/answer_book_platform_v1_v6.8_material_figure_schema_flow_standalone/truth-exam-redesign' --check=all",
+    "fullValidationAllowed": false,
+    "reason": "workspace validation passed; run complete finish readiness before final delivery"
+  },
+  "repairBatch": [],
+  "repairContextPacket": {
+    "schema_version": "1.0",
+    "purpose": "small-context repair packet; read this before full validation-report.json",
+    "success": true,
+    "terminalState": null,
+    "skillProvenance": {
+      "name": "solo-design",
+      "version": "2026.07.22.00.00.00",
+      "version_source": "skill-release-manifest.json",
+      "runtime_skill_dir": null,
+      "recorded_at": null,
+      "expected_version": "2026.07.22.00.00.00",
+      "status": "matched",
+      "read_status": "ok"
+    },
+    "renderBlockingErrorCount": 0,
+    "softWarningCount": 3,
+    "renderBlockingErrors": [],
+    "repairActionTable": [],
+    "nextCheck": {
+      "type": "finish-readiness",
+      "command": "node '/Users/ljj/.trae-cn/builtin/design/hebe/skills/solo-design/shared-runtime/deterministic-tooling/validate-finish-readiness.mjs' '/Users/ljj/Documents/分析多模态问题/answer_book_platform_v1_v6.8_material_figure_schema_flow_standalone/truth-exam-redesign' --check=all",
+      "fullValidationAllowed": false,
+      "reason": "workspace validation passed; run complete finish readiness before final delivery"
+    },
+    "forbidden": [
+      "do not read validator source",
+      "do not rerun full validation when nextCheck.fullValidationAllowed=false",
+      "do not start preview/browser unless user explicitly asks",
+      "do not hand-edit repair ledger fields"
+    ]
+  },
+  "projectFileHashes": {
+    ".design": "1db0c7622b869d7984f01fdf3a9b29d36abc3c706b82497708483677d31393c8",
+    "colors_and_type.css": "943ba39c790c08ded59a6152454e924f7d9a110cfb1c9c7cd2cf194136b3f47a",
+    "runtime-orchestration-summary.json": "d2dc973a14759958173b4be42a94baf0fe7ac12f7661cf7eac5c07b0ef6f4875",
+    "pages/home.html": "f8679b02411f26c96e0a1e2b6b8384b91969968dced0a355f7b3110035aed8e4",
+    "assets/hero-academic.jpg": "9c8ddc8b7ff4bd36f673c9d8bd76aa7c8a67a9e6075660b4adf64f7cd1dbb29b"
+  },
+  "designDir": "/Users/ljj/Documents/分析多模态问题/answer_book_platform_v1_v6.8_material_figure_schema_flow_standalone/truth-exam-redesign",
+  "expectedPages": null,
+  "requireInteractions": null,
+  "checkedAt": "2026-07-28T10:54:38.486Z"
+}

@@ -1,0 +1,344 @@
+{
+  "schema_version": "answer_book.model_pricing.snapshot.v1",
+  "snapshot_date": "2026-07-08",
+  "timezone": "Asia/Shanghai",
+  "pricing_policy": "one_time_official_snapshot",
+  "default_cost_calculation": {
+    "token_unit": "per_1m_tokens",
+    "image_unit": "per_image",
+    "use_cached_input_when_usage_reports_cached_tokens": true,
+    "fallback_when_price_missing": "mark_missing_price"
+  },
+  "sources": {
+    "openai_gpt_4_1": {
+      "provider": "OpenAI",
+      "url": "https://openai.com/index/gpt-4-1/",
+      "retrieved_date": "2026-07-08"
+    },
+    "openai_api_pricing": {
+      "provider": "OpenAI",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "retrieved_date": "2026-07-08"
+    },
+    "deepseek_pricing": {
+      "provider": "DeepSeek",
+      "url": "https://api-docs.deepseek.com/quick_start/pricing",
+      "retrieved_date": "2026-07-08"
+    },
+    "aliyun_bailian_model_pricing": {
+      "provider": "Alibaba Cloud Bailian",
+      "url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "retrieved_date": "2026-07-08"
+    },
+    "zhipu_pricing": {
+      "provider": "Zhipu/Z.ai",
+      "url": "https://docs.z.ai/guides/overview/pricing",
+      "retrieved_date": "2026-07-08"
+    },
+    "volcengine_ark_pricing": {
+      "provider": "Volcengine Ark",
+      "url": "https://www.volcengine.com/docs/82379/1544106?lang=zh",
+      "retrieved_date": "2026-07-08"
+    }
+  },
+  "providers": {
+    "openai": {
+      "currency": "USD",
+      "models": {
+        "gpt-4.1-mini": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 0.4,
+          "cached_input": 0.1,
+          "output": 1.6,
+          "source": "openai_gpt_4_1"
+        },
+        "gpt-image-1": {
+          "pricing_status": "missing_price",
+          "unit": "per_image",
+          "source": "openai_api_pricing",
+          "reason": "Official pricing guide references legacy per-image pricing for GPT Image 1, but the current fetched official page did not expose a reliable extractable table value."
+        }
+      }
+    },
+    "deepseek": {
+      "currency": "USD",
+      "models": {
+        "deepseek-v4-flash": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input_cache_hit": 0.0028,
+          "input_cache_miss": 0.14,
+          "output": 0.28,
+          "source": "deepseek_pricing"
+        },
+        "deepseek-v4-pro": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input_cache_hit": 0.003625,
+          "input_cache_miss": 0.435,
+          "output": 0.87,
+          "source": "deepseek_pricing"
+        }
+      }
+    },
+    "bailian": {
+      "currency": "CNY",
+      "models": {
+        "qwen3.7-max": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "tiers": [
+            {
+              "context_window": "0<Token<=1M",
+              "input": 12,
+              "output": 36
+            }
+          ],
+          "source": "aliyun_bailian_model_pricing",
+          "notes": [
+            "Official current alias. This text model does not support response_format structured output; the client uses prompt-constrained JSON."
+          ]
+        },
+        "qwen3.7-plus": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "tiers": [
+            {
+              "context_window": "0<Token<=256K",
+              "input": 2,
+              "output": 8,
+              "source_extra_price": 8
+            },
+            {
+              "context_window": "256K<Token<=1M",
+              "input": 6,
+              "output": 24,
+              "source_extra_price": 24
+            }
+          ],
+          "source": "aliyun_bailian_model_pricing",
+          "notes": [
+            "The official page exposed three numeric price columns for this model. The third value is preserved as source_extra_price until the exact column semantic is bound in the calculator."
+          ]
+        },
+        "qwen3.6-plus": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "tiers": [
+            {
+              "context_window": "0<Token<=256K",
+              "input": 2,
+              "output": 12,
+              "source_extra_price": 12
+            },
+            {
+              "context_window": "256K<Token<=1M",
+              "input": 8,
+              "output": 48,
+              "source_extra_price": 48
+            }
+          ],
+          "source": "aliyun_bailian_model_pricing",
+          "notes": [
+            "The official page exposed three numeric price columns for this model. The third value is preserved as source_extra_price until the exact column semantic is bound in the calculator."
+          ]
+        },
+        "qwen3.6-flash": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "tiers": [
+            {
+              "context_window": "0<Token<=256K",
+              "input": 1.2,
+              "output": 7.2
+            },
+            {
+              "context_window": "256K<Token<=1M",
+              "input": 4.8,
+              "output": 28.8
+            }
+          ],
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen3-vl-plus": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "tiers": [
+            {
+              "context_window": "0<Token<=32K",
+              "input": 1,
+              "output": 10
+            },
+            {
+              "context_window": "32K<Token<=128K",
+              "input": 1.5,
+              "output": 15
+            }
+          ],
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen3-vl-flash": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "tiers": [
+            {
+              "context_window": "0<Token<=32K",
+              "input": 0.15,
+              "output": 1.5
+            },
+            {
+              "context_window": "32K<Token<=128K",
+              "input": 0.3,
+              "output": 3
+            }
+          ],
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen-vl-max": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 1.6,
+          "output": 4,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen-vl-plus": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 0.8,
+          "output": 2,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen-vl-ocr": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 0.3,
+          "output": 0.5,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "deepseek-v4-flash": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 1,
+          "output": 2,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "deepseek-v4-pro": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 12,
+          "output": 24,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "wan2.7-image-pro": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_image",
+          "image": 0.5,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "wan2.7-image": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_image",
+          "image": 0.2,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen-image-2.0-pro": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_image",
+          "image": 0.5,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen-image-2.0": {
+          "pricing_status": "missing_price",
+          "unit": "per_image",
+          "source": "aliyun_bailian_model_pricing",
+          "reason": "The current official page fetch did not yield a distinct reliable price value for this model name."
+        },
+        "qwen-image-max": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_image",
+          "image": 0.5,
+          "source": "aliyun_bailian_model_pricing"
+        },
+        "qwen-image-plus": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_image",
+          "image": 0.2,
+          "source": "aliyun_bailian_model_pricing"
+        }
+      }
+    },
+    "zhipu": {
+      "currency": "USD",
+      "models": {
+        "glm-5v-turbo": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 1.2,
+          "cached_input": 0.24,
+          "output": 4,
+          "source": "zhipu_pricing"
+        },
+        "glm-4.6v": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_1m_tokens",
+          "input": 0.3,
+          "cached_input": 0.05,
+          "output": 0.9,
+          "source": "zhipu_pricing"
+        },
+        "glm-image": {
+          "pricing_status": "official_snapshot",
+          "unit": "per_image",
+          "image": 0.015,
+          "source": "zhipu_pricing"
+        }
+      }
+    },
+    "ark": {
+      "currency": "CNY",
+      "models": {
+        "doubao-seed-2-1-pro-260628": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "doubao-seed-2-1-turbo-260628": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "doubao-seed-2-0-pro-260215": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "deepseek-v4-flash-260425": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "deepseek-v4-pro-260425": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "glm-5-2-260617": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "kimi-k2": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        },
+        "doubao-seedream-5-0-260128": {
+          "pricing_status": "missing_price",
+          "source": "volcengine_ark_pricing",
+          "reason": "Official pricing page was reachable, but the model price table was not reliably extractable in this snapshot fetch."
+        }
+      }
+    }
+  }
+}

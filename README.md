@@ -1,0 +1,458 @@
+# Answer Book Platform v1
+
+本项目是脱离 Codex 执行环境的本地真题解析生产平台第一版。
+
+核心原则：
+
+- 程序主控任务流程，模型只作为局部判断器。
+- 第一版内置 OpenAI 与 DeepSeek，均通过 OpenAI-compatible Chat Completions 接口调用。
+- API Key 只保存在本地配置或环境变量中，不写入任务产物和日志。
+- v4 公式链路强制要求：公式不得混入普通正文，必须进入公式对象字段。
+- 生成、审计、渲染由平台程序控制，执行任务时不得临时修改工具链。
+
+## 快速启动
+
+```bash
+cd /Users/ljj/Documents/真题解析/answer_book_platform_v1
+python3 scripts/install_dependencies.py
+python3 scripts/check_environment.py
+python3 scripts/start_platform.py
+```
+
+启动后访问：
+
+```text
+http://127.0.0.1:8766
+```
+
+macOS 也可以双击或运行：
+
+```bash
+./start_platform.command
+```
+
+Windows 可运行：
+
+```bat
+start_platform_windows.bat
+```
+
+## 桌面 App 与局域网监控
+
+项目已提供 macOS `.app` 和 Windows 桌面版构建配置。桌面版会将 Python 和运行依赖一起打包，并在独立窗口中打开平台。
+
+App 默认允许局域网监控。在“运行监控”页面可以复制本机访问地址、监控账号和随机密码；同一局域网中的管理电脑输入该地址后即可查看这台电脑的任务状态、运行日志和任务事件。
+
+详细构建、数据目录、防火墙和访问认证说明见：
+
+[桌面 App 与局域网监控](docs/DESKTOP_APP.md)
+
+## 配置模型
+
+复制示例配置：
+
+```bash
+cp config/providers.example.json config/providers.local.json
+```
+
+填入 API Key，或使用环境变量：
+
+```bash
+export OPENAI_API_KEY="..."
+export DEEPSEEK_API_KEY="..."
+export ARK_API_KEY="..."
+export DASHSCOPE_API_KEY="..."
+export ARK_IMAGE_MODEL="doubao-seedream-5-0-260128"
+export BAILIAN_IMAGE_MODEL="qwen-image-2.0-pro"
+export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
+```
+
+`providers.local.json` 不应提交或打包给他人。
+
+也可以直接创建 `.env`：
+
+```bash
+OPENAI_API_KEY=...
+DEEPSEEK_API_KEY=...
+ARK_API_KEY=...
+DASHSCOPE_API_KEY=...
+ARK_IMAGE_MODEL=doubao-seedream-5-0-260128
+BAILIAN_IMAGE_MODEL=qwen-image-2.0-pro
+ANSWER_BOOK_IMAGE_SIZE=2048x2048
+```
+
+平台会自动读取 `.env`。`.env` 已被 `.gitignore` 排除。
+
+Web 控制台也可以在“模型配置”中保存 OpenAI / DeepSeek / 火山方舟 / 阿里云百炼 API Key。保存动作只写入本机 `.env`，页面和接口只返回 `api_key_set`，不会回显密钥；发布包脚本会排除 `.env`。
+
+火山方舟使用 OpenAI 兼容接口，默认地址为 `https://ark.cn-beijing.volces.com/api/v3`。模型选择处可以直接填写方舟控制台里的模型 ID 或推理接入点 ID，例如 `doubao-seed-1-6-250615` 或 `ep-...`。
+
+阿里云百炼使用 OpenAI 兼容 Chat Completions 接口调用通义千问多模态模型，默认地址为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如需使用百炼业务空间专属域名，可在 `providers.local.json` 中把 `bailian.base_url` 改为 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。百炼图片生成默认使用 Qwen-Image `qwen-image-2.0-pro`，通过 DashScope 多模态生成接口调用。
+
+作图题会优先使用图片模型直接生成 PNG，再插入最终文档；如果图片接口不可用，会自动回退到程序绘图。图片模型可在 `providers.local.json` 中配置 `image_model`，或用 `ARK_IMAGE_MODEL` / `ANSWER_BOOK_IMAGE_MODEL` 环境变量指定。
+
+Seedream 4.5 / 5.0 系列要求 2K 级以上输出尺寸，建议 `ANSWER_BOOK_IMAGE_SIZE=2048x2048`。程序会在调用 Seedream 4.5 / 5.0 时把过小的像素尺寸自动提升到合规范围，避免 `1024x1024` 被方舟接口拒绝。
+
+## 命令行完整流程
+
+1. 检查环境：
+
+```bash
+python3 scripts/check_environment.py
+```
+
+2. 创建任务：
+
+```bash
+python3 scripts/create_task.py \
+  --exam "/absolute/path/to/exam.docx" \
+  --textbooks "/absolute/path/to/textbooks" \
+  --provider deepseek
+```
+
+3. 执行任务：
+
+```bash
+python3 scripts/run_task.py "<task_id>" --render
+```
+
+正式执行默认要求高质量公式链路就绪，即 `check_environment.py` 中：
+
+```text
+formula_conversion.preferred_chain_ready = true
+```
+
+如果只验证程序主控流程，不调用模型：
+
+```bash
+python3 scripts/run_task.py "<task_id>" --no-model --render
+```
+
+如果已经人工或程序修复了：
+
+```text
+tasks/<task_id>/stage_outputs/answer_fragments.json
+```
+
+并且只想重新生成 Word、PDF 与审计结果，不允许再次调用模型覆盖结构化答案：
+
+```bash
+python3 scripts/run_task.py "<task_id>" --reuse-fragments --render
+```
+
+仅在排查环境时，才允许临时放宽公式链路：
+
+```bash
+python3 scripts/run_task.py "<task_id>" --allow-formula-fallback --render
+```
+
+该参数不作为正式生产流程使用。
+
+4. 查看产物：
+
+```text
+outputs/<task_id>/answer_book.docx
+outputs/<task_id>/word_rendered/answer_book.pdf
+outputs/<task_id>/word_rendered/page-*.png
+tasks/<task_id>/stage_outputs/pipeline_status.json
+tasks/<task_id>/stage_outputs/acceptance_report.json
+```
+
+## 本地 Demo 自测
+
+```bash
+python3 scripts/create_demo_inputs.py
+python3 scripts/create_task.py \
+  --exam "/Users/ljj/Documents/真题解析/answer_book_platform_v1/exams/demo_物理化学真题.docx" \
+  --textbooks "/Users/ljj/Documents/真题解析/answer_book_platform_v1/textbooks" \
+  --provider deepseek
+python3 scripts/run_task.py "<task_id>" --render
+```
+
+## 生成移植包
+
+统一使用脚本打包，避免夹带 API key、任务历史、输出结果或缓存：
+
+```bash
+python3 scripts/package_release.py
+python3 scripts/verify_release_package.py
+python3 scripts/audit_project_completeness.py
+python3 scripts/run_quality_gates.py
+```
+
+默认输出：
+
+```text
+/Users/ljj/Documents/真题解析/answer_book_platform_v1_release.zip
+```
+
+发布包内包含：
+
+```text
+VERSION
+RELEASE_MANIFEST.json
+```
+
+`RELEASE_MANIFEST.json` 记录版本、文件清单和排除项；`verify_release_package.py` 会反向校验清单和 zip 内容。
+
+跨设备迁移说明见：
+
+[MIGRATION_README.md](/Users/ljj/Documents/真题解析/answer_book_platform_v1/MIGRATION_README.md)
+
+## 当前版本范围
+
+v1 已实现：
+
+- 本地平台目录结构。
+- 本地 Web 控制台。
+- Web 任务列表与任务选择。
+- Web 任务执行自动轮询状态。
+- Web 任务文件列表与安全下载。
+- 任务级交付包导出，打包 DOCX、PDF、渲染页和关键审计报告。
+- macOS / Windows 启动入口。
+- 依赖安装脚本。
+- Windows 专用依赖文件 `requirements-windows.txt`，用于 Word COM 自动化。
+- OpenAI / DeepSeek / 火山方舟 / 阿里云百炼 provider 配置。
+- Web 本机 API Key 保存，写入 `.env` 且不回显密钥。
+- `/api/version` 版本接口与 Web 顶部版本显示。
+- API Key 脱敏读取。
+- 发布包内置 `VERSION` 与 `RELEASE_MANIFEST.json`。
+- 发布包反向验证，检查密钥、任务历史、输出结果和缓存是否被误打包。
+- 项目完整度审计，检查关键模块、脚本、Web 入口和文档是否齐备。
+- 发布前一键质量门禁，串联编译、自测、公式、完整度、打包和 release 反向验证。
+- OpenAI-compatible 调用适配层。
+- v4 结构化答案 schema 文档。
+- v4 公式泄漏审计。
+- 任务创建与任务状态文件。
+- 环境检查。
+- Provider 配置自检。
+- DOCX 真题结构抽取。
+- MinerU JSON / Markdown / TXT 教材索引。
+- 教材候选检索。
+- 逐题 API 结构化生成。
+- v4 公式对象校验。
+- DOCX 生成。
+- DOCX 普通正文公式泄漏审计。
+- Microsoft Word 导出 PDF。
+- PDF 渲染 PNG。
+- PNG 渲染页尺寸/非空审计。
+- 验收报告。
+- Web 审计摘要查看。
+- Web 页码校准查看与保存。
+- Web 结构化答案读取、编辑、保存与 v4 校验。
+- 答案覆盖率审计：防止漏题、重复题、未知题号进入正式 Word。
+- 逐题复核视图与 CSV 导出：合并题干、答案、覆盖率提示和教材证据候选。
+- 最终验收门禁：统一检查环境、题目结构、检索、覆盖率、DOCX、渲染和输出文件存在性。
+- 复用已存在 v4 结构化答案片段重新生成 DOCX / PDF，避免模型覆盖修复结果。
+- `textbook_page_map.manual.csv` 手工页码覆盖。
+- 基础图形重绘：相图、折线图、电子衍射斑点图。
+- matplotlib 中文字体自动配置；随包内置 `dolbydu/font` 仓库中的完整字体集合，其他用户下载完整程序包后可直接使用这些字体渲染图中文字。
+- 公式优先使用 `latex2mathml -> mathml2omml.xsl -> Word OMML` 专业链路；缺少依赖时降级为内置最小转换器。
+- 内置最小 OMML 转换支持分式、上下标、上下标组合。
+
+v1 尚未完成：
+
+- 页码校准的批量预览、教材原文对照和冲突提示。
+- 大规模题库任务队列。
+- 桌面软件壳打包。
+- 极复杂 LaTeX 的公式语义修正与人工复核界面。
+
+当前 v1 已经能完成一条平台主控流水线；后续会继续增强图形、页码校准和复杂公式排版能力。不复用 v3 中有问题的空 OMML 绕过逻辑。
+
+## 质量约束
+
+- 执行任务时不允许模型修改工具链。
+- 模型输出必须通过 v4 schema。
+- 高质量公式链路要求 `latex2mathml`、`lxml`、Microsoft Word 自带 `mathml2omml.xsl` 同时存在；`check_environment.py` 会显示 `preferred_chain_ready`。
+- 正式流水线默认要求 `preferred_chain_ready=true`，否则环境阶段失败。
+- 使用 `--reuse-fragments` 时，平台必须先重新校验已有 `answer_fragments.json`，不合格则停止。
+- 普通 text segment 中出现公式样式内容会失败。
+- `answer` 字段中出现公式样式内容会失败或被程序归一化为“见解析”。
+- DOCX 中 `<w:t>` 普通文本残留公式会失败。
+- OMML 公式对象不能为空。
+- OMML 显示文本中不得残留 LaTeX 反斜杠命令。
+
+## 手工页码校准
+
+如果教材自动页码识别不准，在教材文件夹放置：
+
+```text
+textbook_page_map.manual.csv
+```
+
+字段参考：
+
+```csv
+textbook,pdf_page_idx,printed_page,citation_textbook,page_source,verified,confidence,notes
+物理化学第6版下3,12,210,物理化学第6版下,manual,true,high,manual checked
+```
+
+平台会用该文件覆盖自动页码映射。
+
+Web 控制台中可以点击：
+
+```text
+页码校准
+```
+
+读取当前任务生成的 `textbook_page_map.csv` 和教材目录下的 `textbook_page_map.manual.csv`。编辑区保存的是 JSON 数组，保存后会写回教材目录：
+
+```text
+textbooks/textbook_page_map.manual.csv
+```
+
+保存页码后，需要重新执行任务，手工页码才会重新参与教材索引与引用生成。
+
+## 结构化答案复核
+
+Web 控制台中可以点击：
+
+```text
+读取结构化答案
+保存并校验
+```
+
+读取和编辑当前任务：
+
+```text
+tasks/<task_id>/stage_outputs/answer_fragments.json
+```
+
+保存时必须通过 v4 校验；否则平台拒绝覆盖文件。命令行也可以校验：
+
+```bash
+python3 scripts/audit_answer_fragments.py "<task_id>"
+```
+
+答案覆盖率也可以单独校验：
+
+```bash
+python3 scripts/audit_answer_coverage.py "<task_id>"
+```
+
+覆盖率硬失败包括：真题题目缺少答案片段、答案片段重复、答案片段题号不存在于真题结构、答案为空。教材证据为空、章节/小题号不一致会进入警告，用于人工复核。
+
+修复并保存后，用复用模式重新生成正式文档：
+
+```bash
+python3 scripts/run_task.py "<task_id>" --reuse-fragments --render
+```
+
+## 逐题复核
+
+Web 控制台中可以点击：
+
+```text
+读取逐题复核
+导出复核 CSV
+```
+
+逐题复核会合并：
+
+- 真题题干
+- 结构化答案
+- 答案覆盖率提示
+- 已引用教材证据
+- 前 5 个检索候选
+
+命令行导出：
+
+```bash
+python3 scripts/export_question_review.py "<task_id>"
+```
+
+默认输出：
+
+```text
+tasks/<task_id>/stage_outputs/question_review.csv
+```
+
+## 渲染复核
+
+Web 控制台默认勾选：
+
+```text
+生成 PDF/PNG 渲染复核
+```
+
+正式任务应保持勾选。macOS 下平台会优先尝试 Microsoft Word 导出 PDF，默认 25 秒超时、尝试 1 次；失败后使用 LibreOffice/soffice 兜底。可用环境变量调整：
+
+```bash
+export WORD_EXPORT_TIMEOUT_SECONDS=25
+export WORD_EXPORT_ATTEMPTS=1
+```
+
+## 最终验收
+
+Web 控制台中可以点击：
+
+```text
+最终验收
+```
+
+命令行：
+
+```bash
+python3 scripts/audit_final_acceptance.py "<task_id>"
+```
+
+最终验收会写出：
+
+```text
+tasks/<task_id>/stage_outputs/final_acceptance_report.json
+```
+
+硬门禁包括：专业公式链路就绪、题目结构通过、教材检索通过、答案覆盖率通过、DOCX 审计通过、渲染审计通过、DOCX/PDF 文件存在、流水线没有失败阶段。
+
+最终验收状态：
+
+- `passed`：硬门禁通过且无警告。
+- `passed_with_warnings`：硬门禁通过，但存在需要人工确认的警告。
+- `failed`：存在硬错误，不能交付。
+
+## 文件下载
+
+Web 控制台中点击：
+
+```text
+查看文件
+```
+
+会列出当前任务的阶段文件和输出文件，可直接下载。下载接口只允许访问当前任务的 `stage_outputs` 和 `outputs` 下的文件。
+
+## 任务交付包
+
+Web 控制台中点击：
+
+```text
+导出交付包
+```
+
+会在任务输出目录生成：
+
+```text
+outputs/<task_id>/delivery/<task_id>_delivery.zip
+```
+
+交付包包含：
+
+- `answer_book.docx`
+- `answer_book.pdf`
+- 渲染页 PNG
+- 最终验收报告
+- 逐题复核 CSV
+- 关键审计 JSON
+
+如果最终验收为 `failed`，默认拒绝生成交付包。`passed_with_warnings` 可以生成，但警告必须人工确认。
+
+## 图形重绘
+
+任务阶段目录可放置：
+
+```text
+tasks/<task_id>/stage_outputs/figure_specs.json
+```
+
+支持 `phase_diagram`、`line_chart`、`diffraction_pattern`。示例见：
+
+[figure_specs.example.json](/Users/ljj/Documents/真题解析/answer_book_platform_v1/config/figure_specs.example.json)

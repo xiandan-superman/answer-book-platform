@@ -1,0 +1,210 @@
+{
+  "active_provider": "openai",
+  "providers": {
+    "openai": {
+      "type": "openai_compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "api_key": "",
+      "default_model": "gpt-4.1-mini",
+      "vision_model": "gpt-4.1-mini",
+      "supports_vision": true,
+      "image_model": "gpt-image-1",
+      "image_size": "1024x1024",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "deepseek": {
+      "type": "openai_compatible",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "api_key": "",
+      "default_model": "deepseek-v4-flash",
+      "vision_model": "",
+      "supports_vision": false,
+      "image_model": "",
+      "image_size": "1024x1024",
+      "model_options": ["deepseek-v4-flash", "deepseek-v4-pro"],
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "ark": {
+      "type": "openai_compatible",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key_env": "ARK_API_KEY",
+      "api_key": "",
+      "default_model": "doubao-seed-2-1-pro-260628",
+      "vision_model": "doubao-seed-2-1-pro-260628",
+      "supports_vision": true,
+      "image_model_env": "ARK_IMAGE_MODEL",
+      "image_model": "doubao-seedream-5-0-260128",
+      "image_size": "2048x2048",
+      "model_options": [
+        "doubao-seed-2-1-pro-260628",
+        "doubao-seed-2-1-turbo-260628",
+        "doubao-seed-2-0-pro-260215",
+        "deepseek-v4-flash-260425",
+        "deepseek-v4-pro-260425",
+        "glm-5-2-260617",
+        "kimi-k2"
+      ],
+      "model_option_labels": {
+        "doubao-seed-2-1-pro-260628": "Doubao-Seed-2.1-pro",
+        "doubao-seed-2-1-turbo-260628": "Doubao-Seed-2.1-turbo",
+        "doubao-seed-2-0-pro-260215": "Doubao-Seed-2.0-pro",
+        "deepseek-v4-flash-260425": "DeepSeek-V4-flash",
+        "deepseek-v4-pro-260425": "DeepSeek-V4-pro",
+        "glm-5-2-260617": "GLM-5.2",
+        "kimi-k2": "Kimi-K2"
+      },
+      "allow_custom_model": true,
+      "model_hint": "可填写火山方舟文档中的 Model ID，或控制台 API 调用页复制的 ep- 接入点 ID。",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "zhipu": {
+      "type": "openai_compatible",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key_env": "ZHIPU_API_KEY",
+      "api_key": "",
+      "default_model": "glm-5v-turbo",
+      "vision_model": "glm-5v-turbo",
+      "supports_vision": true,
+      "image_model": "glm-image",
+      "image_size": "1024x1024",
+      "model_options": [
+        "glm-5v-turbo",
+        "glm-4.6v"
+      ],
+      "model_option_labels": {
+        "glm-5v-turbo": "GLM-5V-Turbo",
+        "glm-4.6v": "GLM-4.6V"
+      },
+      "allow_custom_model": true,
+      "model_hint": "可填写智谱开放平台模型 ID，例如 glm-5v-turbo、glm-4.6v，或后续新增的兼容模型 ID。",
+      "temperature": 0.1,
+      "max_tokens": 24576,
+      "thinking_mode": "disabled"
+    },
+    "bailian": {
+      "type": "openai_compatible",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "api_key": "",
+      "default_model": "qwen3.7-plus",
+      "vision_model": "qwen3-vl-plus",
+      "supports_vision": true,
+      "image_model_env": "BAILIAN_IMAGE_MODEL",
+      "image_model": "qwen-image-2.0-pro",
+      "image_model_options": [
+        "qwen-image-2.0-pro",
+        "qwen-image-2.0",
+        "qwen-image-max",
+        "qwen-image-plus"
+      ],
+      "image_model_option_labels": {
+        "qwen-image-2.0-pro": "Qwen-Image-2.0-Pro",
+        "qwen-image-2.0": "Qwen-Image-2.0",
+        "qwen-image-max": "Qwen-Image-Max",
+        "qwen-image-plus": "Qwen-Image-Plus"
+      },
+      "image_size": "2K",
+      "json_mode_unsupported_models": [
+        "qwen3.7-max",
+        "qwen3.7-max-2026-05-20",
+        "qwen3.7-max-preview"
+      ],
+      "model_options": [
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+        "qwen3.6-flash",
+        "qwen3-vl-plus",
+        "qwen3-vl-flash",
+        "qwen-vl-max",
+        "qwen-vl-plus",
+        "qwen-vl-ocr"
+      ],
+      "model_option_labels": {
+        "qwen3.7-max": "Qwen3.7-Max 文本旗舰",
+        "qwen3.7-plus": "Qwen3.7-Plus 多模态旗舰",
+        "qwen3.6-plus": "Qwen3.6-Plus 多模态",
+        "qwen3.6-flash": "Qwen3.6-Flash 多模态低成本",
+        "qwen3-vl-plus": "Qwen3-VL-Plus 视觉理解",
+        "qwen3-vl-flash": "Qwen3-VL-Flash 视觉理解低成本",
+        "qwen-vl-max": "Qwen-VL-Max 视觉理解",
+        "qwen-vl-plus": "Qwen-VL-Plus 视觉理解",
+        "qwen-vl-ocr": "Qwen-VL-OCR 试题/OCR"
+      },
+      "allow_custom_model": true,
+      "model_hint": "可填写百炼模型市场中的 Model ID；北京地域默认使用 dashscope.aliyuncs.com，若要用业务空间专属域名，请把 base_url 改为 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1。",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "yunwu": {
+      "type": "openai_compatible",
+      "base_url": "https://yunwu.ai/v1",
+      "api_key_env": "YUNWU_API_KEY",
+      "api_key": "",
+      "default_model": "gpt-5.6-sol",
+      "vision_model": "gpt-5.6-sol",
+      "vision_model_options": [
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.5",
+        "gpt-4o",
+        "claude-opus-4-7",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "grok-4.5"
+      ],
+      "supports_vision": true,
+      "supports_image_generation": true,
+      "image_model": "gpt-image-2",
+      "image_model_options": [
+        "gpt-image-2",
+        "gpt-image-1.5",
+        "gpt-image-1",
+        "gpt-image-1-mini",
+        "qwen-image-max",
+        "qwen-image-2.0-2026-03-03"
+      ],
+      "image_model_option_labels": {
+        "gpt-image-2": "GPT-Image-2",
+        "gpt-image-1.5": "GPT-Image-1.5",
+        "gpt-image-1": "GPT-Image-1",
+        "gpt-image-1-mini": "GPT-Image-1 Mini",
+        "qwen-image-max": "Qwen-Image-Max",
+        "qwen-image-2.0-2026-03-03": "Qwen-Image-2.0"
+      },
+      "image_size": "1024x1024",
+      "model_options": [
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.5",
+        "gpt-4o",
+        "claude-opus-4-7",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "grok-4.5"
+      ],
+      "model_option_labels": {
+        "gpt-5.6-luna": "GPT-5.6 Luna",
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+        "gpt-5.6-terra": "GPT-5.6 Terra",
+        "gpt-5.5": "GPT-5.5",
+        "gpt-4o": "GPT-4o",
+        "claude-opus-4-7": "Claude Opus 4.7",
+        "gemini-3.5-flash": "Gemini 3.5 Flash（已实测可用）",
+        "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+        "grok-4.5": "Grok 4.5"
+      },
+      "allow_custom_model": true,
+      "model_hint": "请先用云雾 /v1/models 确认当前 Key 可用的模型。作图题生图默认走 /v1/images/generations，默认模型为 gpt-image-2。",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    }
+  }
+}

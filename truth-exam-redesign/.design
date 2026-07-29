@@ -1,0 +1,58 @@
+{
+  "data": [
+    {
+      "id": "page-home",
+      "title": "首页 · 视觉升级",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785234716000,
+      "canvasData": {
+        "x": 200,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/home.html",
+        "interactions": [
+          {
+            "domId": "cta-start",
+            "label": "开始解析",
+            "targetPageId": "page-home",
+            "type": "navigation"
+          },
+          {
+            "domId": "cta-textbook",
+            "label": "教材管理",
+            "targetPageId": "page-home",
+            "type": "navigation"
+          },
+          {
+            "domId": "cta-final",
+            "label": "立即开始",
+            "targetPageId": "page-home",
+            "type": "navigation"
+          }
+        ]
+      }
+    },
+    {
+      "id": "image-001",
+      "title": "Hero · 学术教材解析意象",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1785234716000,
+      "canvasData": {
+        "x": 0,
+        "y": 756
+      },
+      "devMetadata": {
+        "imageSrc": "assets/hero-academic.jpg"
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "projectName": "智能真题解析系统 · 视觉升级"
+  }
+}
