@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .concurrency import ModelRequestAborted
+from .model_diagnostics import delete_model_diagnostics
 from .paths import OUTPUTS_DIR
 from .pipeline_checkpoints import reconcile_answer_generation_checkpoint
 from .resource_ids import bounded_resource_path
@@ -161,4 +162,5 @@ def delete_task(task_id: str) -> dict[str, Any]:
         shutil.rmtree(task_root)
     if output_root.exists():
         shutil.rmtree(output_root)
+    delete_model_diagnostics(task_id)
     return {"ok": True, "message": "任务和输出文件已删除。", "task_id": task_id}

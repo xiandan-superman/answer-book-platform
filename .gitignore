@@ -1,5 +1,6 @@
 config/providers.local.json
 config/api_keys.json
+config/support_reporting.json
 .env
 textbooks/textbook_page_map.manual.csv
 textbooks/*.zip
@@ -21,6 +22,8 @@ __pycache__/
 
 # Platform runtime/build outputs. These are local state, never source files.
 practice_jobs/
+model_diagnostics/
+support_reports/
 build/*
 !build/answer_book_platform.spec
 dist/

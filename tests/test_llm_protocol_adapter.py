@@ -108,6 +108,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         for item in raw["providers"].values():
             item["api_protocol"] = "chat_completions"
             item["responses_fallback_to_chat"] = True
+            item["responses_streaming"] = False
 
         with patch("app.settings.load_provider_config_file", return_value=raw):
             providers = list_providers()
@@ -116,6 +117,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
             with self.subTest(provider=name):
                 self.assertEqual("responses", provider.api_protocol)
                 self.assertFalse(provider.responses_fallback_to_chat)
+                self.assertTrue(provider.responses_streaming)
 
     def test_unknown_protocol_fails_before_making_a_request(self):
         from app.llm_client import OpenAICompatibleClient

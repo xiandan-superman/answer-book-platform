@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .concurrency import ModelRequestAborted, model_request_slot
+from .model_diagnostics import model_diagnostic_hint, record_model_diagnostic
 from .runtime_monitor import record_model_call_usage, track_model_call
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 
@@ -160,14 +161,26 @@ class OpenAICompatibleClient:
                     purpose="chat_json" if use_response_format else "chat_text",
                     timeout=timeout,
                 ) as call_record:
-                    with self._urlopen(req, timeout=timeout) as resp:
-                        raw = json.loads(resp.read().decode("utf-8"))
+                    try:
+                        with self._urlopen(req, timeout=timeout) as resp:
+                            raw = json.loads(resp.read().decode("utf-8"))
+                    except urllib.error.HTTPError as exc:
+                        body = exc.read().decode("utf-8", errors="replace")
+                        record_model_diagnostic(
+                            call_record,
+                            payload,
+                            response_payload={"http_status": exc.code, "error_body": body},
+                            error=f"Provider HTTP {exc.code}",
+                            outcome="failed",
+                        )
+                        raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+                    except Exception as exc:
+                        record_model_diagnostic(call_record, payload, error=exc, outcome="failed")
+                        raise
                     record_model_call_usage(call_record, raw)
+                    record_model_diagnostic(call_record, payload, response_payload=raw)
         except (LLMError, ModelRequestAborted):
             raise
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
         except Exception as exc:
             raise LLMError(f"Provider request failed: {exc}") from exc
 
@@ -220,14 +233,15 @@ class OpenAICompatibleClient:
             if callable(attempt_callback):
                 attempt_callback("started", self._json_attempt_report(plan))
             try:
-                result = self.chat_json(
-                    current_messages,
-                    model=plan["model"],
-                    temperature=temperature,
-                    max_tokens=plan["max_tokens"],
-                    thinking=plan.get("thinking"),
-                    timeout=timeout,
-                )
+                with model_diagnostic_hint(strategy=plan.get("strategy"), compact_prompt=plan.get("strategy") == "compact_fallback_disable_thinking"):
+                    result = self.chat_json(
+                        current_messages,
+                        model=plan["model"],
+                        temperature=temperature,
+                        max_tokens=plan["max_tokens"],
+                        thinking=plan.get("thinking"),
+                        timeout=timeout,
+                    )
                 if _finish_reason(result) == "length":
                     detail = _provider_response_detail(result)
                     raise LLMError(f"Model JSON output reached max_tokens; {detail}" if detail else "Model JSON output reached max_tokens")
@@ -355,14 +369,28 @@ class OpenAICompatibleClient:
                     purpose="image_generation" if "/images/" in url or "generateContent" in url else "responses",
                     timeout=timeout,
                 ) as call_record:
-                    with self._urlopen(req, timeout=timeout) as resp:
-                        raw = json.loads(resp.read().decode("utf-8"))
+                    try:
+                        with self._urlopen(req, timeout=timeout) as resp:
+                            raw = json.loads(resp.read().decode("utf-8"))
+                    except urllib.error.HTTPError as exc:
+                        body = exc.read().decode("utf-8", errors="replace")
+                        record_model_diagnostic(
+                            call_record,
+                            payload,
+                            response_payload={"http_status": exc.code, "error_body": body},
+                            error=f"Provider HTTP {exc.code}",
+                            outcome="failed",
+                        )
+                        raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+                    except Exception as exc:
+                        record_model_diagnostic(call_record, payload, error=exc, outcome="failed")
+                        raise
                     record_model_call_usage(call_record, raw)
+                    record_model_diagnostic(call_record, payload, response_payload=raw)
         except ModelRequestAborted:
             raise
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+        except LLMError:
+            raise
         except Exception as exc:
             raise LLMError(f"Provider request failed: {exc}") from exc
         if not isinstance(raw, dict):
@@ -397,20 +425,32 @@ class OpenAICompatibleClient:
                     purpose="responses_stream",
                     timeout=timeout,
                 ) as call_record:
-                    with self._urlopen(req, timeout=timeout) as resp:
-                        if not hasattr(resp, "readline"):
-                            raw = json.loads(resp.read().decode("utf-8"))
-                            if not isinstance(raw, dict):
-                                raise LLMError(f"Unexpected provider response shape: {raw}")
-                        else:
-                            raw = _consume_responses_sse(resp)
-                        record_model_call_usage(call_record, raw)
-                        return raw
+                    try:
+                        with self._urlopen(req, timeout=timeout) as resp:
+                            if not hasattr(resp, "readline"):
+                                raw = json.loads(resp.read().decode("utf-8"))
+                                if not isinstance(raw, dict):
+                                    raise LLMError(f"Unexpected provider response shape: {raw}")
+                            else:
+                                raw = _consume_responses_sse(resp)
+                    except urllib.error.HTTPError as exc:
+                        body = exc.read().decode("utf-8", errors="replace")
+                        record_model_diagnostic(
+                            call_record,
+                            streaming_payload,
+                            response_payload={"http_status": exc.code, "error_body": body},
+                            error=f"Provider HTTP {exc.code}",
+                            outcome="failed",
+                        )
+                        raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+                    except Exception as exc:
+                        record_model_diagnostic(call_record, streaming_payload, error=exc, outcome="failed")
+                        raise
+                    record_model_call_usage(call_record, raw)
+                    record_model_diagnostic(call_record, streaming_payload, response_payload=raw)
+                    return raw
         except (LLMError, ModelRequestAborted):
             raise
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
         except Exception as exc:
             raise LLMError(f"Provider streaming request failed: {exc}") from exc
 

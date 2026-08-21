@@ -14,7 +14,7 @@ python3 scripts/data_inventory.py --json > /tmp/answer-book-data-inventory.json
 ## 保留边界
 
 - `tasks/`、`outputs/`、`practice_history/`、`textbooks/` 属于保护数据；清理前必须核对任务 ID、历史 ID、引用关系和恢复位置。
-- `practice_jobs/`、`cache/`、`logs/`、`runtime/`、`tmp/` 是运行数据；只能在确认没有排队、运行或待恢复任务后按保留期处理。
+- `practice_jobs/`、`cache/`、`logs/`、`runtime/`、`tmp/`、`model_diagnostics/`、`support_reports/` 是运行数据；只能在确认没有排队、运行、待恢复任务或待提交问题反馈后按保留期处理。模型诊断副本与问题反馈不得进入 Git 或发布包。
 - `archive/local/` 保存从源码树移出的历史二进制证据，Git 忽略但本机保留。
 - `docs/archive/` 保存轻量报告和原型，只作审计参考，不参与运行。
 - 桌面 App 的 `build/`、`dist/`、图标和打包脚本仍冻结，不由平台清理流程处理。

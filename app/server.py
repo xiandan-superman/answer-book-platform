@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import time
@@ -87,8 +88,15 @@ from .process_lock import platform_process_lock
 from .prompts import build_answer_fragment_prompt
 from .read_snapshot import READ_SNAPSHOTS
 from .review_export import build_question_review, write_question_review_csv
-from .runtime_monitor import append_runtime_log, build_system_status, read_runtime_logs, task_health_summary
-from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, list_providers, provider_model_supports_vision, provider_supports_image_generation, resolve_provider_model
+from .runtime_monitor import append_exception_log, append_runtime_log, build_system_status, read_runtime_logs, task_health_summary
+from .settings import (
+    DEFAULT_MODEL_MAX_TOKENS,
+    get_provider,
+    list_providers,
+    provider_model_supports_vision,
+    provider_supports_image_generation,
+    resolve_provider_model,
+)
 from .shared_textbook_library import (
     fetch_remote_shared_library_catalog,
     get_shared_library_settings,
@@ -98,6 +106,7 @@ from .shared_textbook_library import (
     shared_library_package_path,
     sync_shared_textbook_library,
 )
+from .support_reporting import start_support_retry_worker, stop_support_retry_worker, submit_support_report, support_status
 from .task_contracts import present_error
 from .task_control import delete_task
 from .task_diagnostics import build_task_diagnostics
@@ -611,6 +620,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
     # 监控鉴权部署下也能加载（“版本号没加上”根因）。
     PUBLIC_LAN_PATHS = {"/api/version"}
 
+    def request_id(self) -> str:
+        current = getattr(self, "_support_request_id", "")
+        if current:
+            return current
+        supplied = str(self.headers.get("X-Request-ID") or "").strip()
+        current = supplied if re.fullmatch(r"[A-Za-z0-9_.-]{6,80}", supplied) else secrets.token_hex(8)
+        self._support_request_id = current
+        return current
+
     def log_message(self, fmt: str, *args) -> None:
         message = fmt % args
         print(f"[server] {self.address_string()} {message}")
@@ -622,6 +640,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-ID", self.request_id())
         self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
@@ -725,6 +744,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 "warning",
                 {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
             )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
             self.send_json(payload, status=404)
         except ValueError as exc:
             payload = public_error_payload(exc, status=400, path=parsed.path)
@@ -734,6 +754,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 "warning",
                 {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
             )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
             self.send_json(payload, status=400)
         except Exception as exc:
             payload = public_error_payload(exc, status=500, path=parsed.path)
@@ -743,6 +764,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 "error",
                 {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
             )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
             self.send_json(payload, status=500)
 
     def _do_GET(self) -> None:
@@ -888,6 +910,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/system/logs":
             self.send_json({"logs": read_runtime_logs()})
             return
+        if parsed.path == "/api/support/status":
+            self.send_json(support_status())
+            return
         if parsed.path == "/api/quality/metrics":
             self.send_json(build_quality_metrics_report())
             return
@@ -1025,6 +1050,16 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if not self.require_lan_auth():
             return
         try:
+            if parsed.path == "/api/support/report":
+                body = self.read_json(max_bytes=512 * 1024)
+                result = submit_support_report(body if isinstance(body, dict) else {})
+                append_runtime_log(
+                    "support_report",
+                    f"问题反馈 {result.get('report_id', '')}：{result.get('status', '')}",
+                    payload={"report_id": result.get("report_id"), "status": result.get("status")},
+                )
+                self.send_json(result)
+                return
             if parsed.path == "/api/update/apply":
                 if not self.is_local_client():
                     self.send_json({"ok": False, "error": "只能在运行程序的本机安装更新。"}, status=403)
@@ -1771,6 +1806,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 "warning",
                 {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
             )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
             self.send_json(payload, status=400)
         except Exception as exc:
             payload = public_error_payload(exc, status=500, path=parsed.path)
@@ -1780,6 +1816,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 "error",
                 {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
             )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
             self.send_json(payload, status=500)
 
     def serve_static(self, request_path: str) -> None:
@@ -1869,9 +1906,11 @@ def run(host: str = "127.0.0.1", port: int = 8766) -> None:
                     queue_recovery,
                 )
             start_practice_queue_consumer()
+            start_support_retry_worker()
             print(f"Answer Book Platform v1 running at http://{host}:{port}")
             append_runtime_log("server", f"服务启动 http://{host}:{port}", payload={"host": host, "port": port})
             server.serve_forever()
         finally:
+            stop_support_retry_worker()
             stop_practice_queue_consumer()
             server.server_close()

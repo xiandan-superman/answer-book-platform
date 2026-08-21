@@ -7,6 +7,7 @@ import re
 import shutil
 import threading
 import time
+import traceback
 from collections import Counter, deque
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,6 +23,7 @@ from .version import get_version
 
 RUNTIME_LOG = LOGS_DIR / "runtime_server.jsonl"
 MODEL_CALL_LEDGER = LOGS_DIR / "model_calls.jsonl"
+ERROR_TRACE_LOG = LOGS_DIR / "error_traces.jsonl"
 MAX_TEXT_LENGTH = 1200
 SERVICE_STARTED_AT = datetime.now().astimezone()
 HEARTBEAT_ERROR_SECONDS = max(30, int(os.environ.get("RUNTIME_HEARTBEAT_ERROR_SECONDS", "90")))
@@ -75,6 +77,26 @@ def append_runtime_log(source: str, message: str, level: str = "info", payload: 
             "payload": _safe_payload(payload or {}),
         }
         with RUNTIME_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def append_exception_log(exc: BaseException, *, path: str = "", support_id: str = "", request_id: str = "") -> None:
+    """Persist a redacted traceback locally so one-click reports can explain backend failures."""
+
+    try:
+        ensure_project_dirs()
+        row = {
+            "time": _now(),
+            "path": _safe_text(path, 240),
+            "support_id": _safe_text(support_id, 80),
+            "request_id": _safe_text(request_id, 80),
+            "error_type": exc.__class__.__name__,
+            "error": _safe_text(exc, 1200),
+            "traceback": _safe_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), 20000),
+        }
+        with ERROR_TRACE_LOG.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         pass

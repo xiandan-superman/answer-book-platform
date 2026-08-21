@@ -234,7 +234,7 @@ def list_providers() -> dict[str, ProviderConfig]:
             responses_fallback_to_chat=(
                 False if builtin_responses else bool(item.get("responses_fallback_to_chat", True))
             ),
-            responses_streaming=bool(item.get("responses_streaming", True)),
+            responses_streaming=True if builtin_responses else bool(item.get("responses_streaming", True)),
         )
     return providers
 

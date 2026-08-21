@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from .model_diagnostics import delete_model_diagnostics
 from .paths import DATA_ROOT
 from .runtime_capacity import bounded_env_int, practice_job_max_concurrency
 from .runtime_monitor import model_call_context, model_call_cost_summary
@@ -248,6 +249,7 @@ def delete_practice_job(job_id: str) -> dict[str, Any]:
         path = _path(job_id)
         removed_bytes = path.stat().st_size if path.exists() else 0
         path.unlink(missing_ok=True)
+    delete_model_diagnostics(job_id)
     return {"ok": True, "task_id": job_id, "removed_bytes": removed_bytes}
 
 
@@ -289,6 +291,7 @@ def delete_jobs_for_history(history_id: str) -> dict[str, Any]:
             continue
         removed_bytes += path.stat().st_size
         path.unlink(missing_ok=True)
+        delete_model_diagnostics(str(record.get("job_id") or path.stem))
         removed += 1
     return {"removed_job_records": removed, "removed_bytes": removed_bytes}
 
@@ -343,6 +346,9 @@ def cleanup_practice_jobs(*, dry_run: bool = False, now: datetime | None = None)
             removed_bytes += size
             if not dry_run:
                 path.unlink(missing_ok=True)
+    if not dry_run:
+        for candidate in candidates:
+            delete_model_diagnostics(str(candidate.get("job_id") or ""))
     return {
         "dry_run": dry_run,
         "candidate_count": len(candidates),

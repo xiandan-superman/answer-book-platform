@@ -26,11 +26,13 @@ EXCLUDED_DIRS = {
     "dist",
     "exams",
     "logs",
+    "model_diagnostics",
     "output",
     "outputs",
     "practice_history",
     "practice_jobs",
     "tasks",
+    "support_reports",
     "tests",
     "textbooks",
     "tmp",
@@ -48,6 +50,7 @@ EXCLUDED_FILES = {
     "RELEASE_MANIFEST.json",
     "config/api_keys.json",
     "config/providers.local.json",
+    "config/support_reporting.json",
     "quality_gates_report.json",
 }
 EXCLUDED_PREFIXES = {

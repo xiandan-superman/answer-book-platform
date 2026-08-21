@@ -183,6 +183,7 @@ function startWizard() {
 }
 
 function goToPage(page) {
+  window.SupportTelemetry?.record("navigation", { action: "go_to_page", target: page });
   if (page !== currentPage) {
     if (currentPage === "knowledge") flushScheduledPracticeWorkspaceDraft("knowledge");
     if (currentPage === "practice") flushScheduledPracticeWorkspaceDraft(currentPracticeSourceMode);
@@ -1382,6 +1383,51 @@ function dataFormalAcceptancePassed(report) {
 
 async function api(path, options = {}) {
   return window.PlatformApi.request(path, options);
+}
+
+async function submitSupportFeedback(scope = "page", extra = {}, button = null) {
+  const original = button?.innerHTML || "";
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>正在提交</span>';
+  }
+  const taskScopedPage = ["task", "result", "practice", "knowledge", "tasks"].includes(currentPage);
+  const payload = {
+    scope,
+    page: currentPage,
+    session_id: window.SupportTelemetry?.sessionId || "",
+    events: window.SupportTelemetry?.snapshot() || [],
+    selection: window.SupportTelemetry?.selectedText() || "",
+    task_id: taskScopedPage ? (activeTaskId || "") : "",
+    question_id: taskScopedPage ? (activeResultQuestionId || "") : "",
+    history_id: taskScopedPage ? (currentPracticeHistoryId || "") : "",
+    ...extra
+  };
+  window.SupportTelemetry?.record("support_feedback", {
+    action: "submit_feedback",
+    task_id: payload.task_id,
+    question_id: payload.question_id,
+    history_id: payload.history_id,
+    exercise_index: payload.exercise_index,
+    status: "started"
+  });
+  try {
+    const result = await api("/api/support/report", { method: "POST", body: JSON.stringify(payload) });
+    const queued = result.status === "queued";
+    await platformAlert(
+      `${result.message || (queued ? "反馈已保存，将自动提交。" : "问题反馈已提交。")}\n问题编号：${result.report_id || "-"}`,
+      { title: queued ? "反馈已保存" : "反馈成功", tone: queued ? "warning" : "success" }
+    );
+    return result;
+  } catch (error) {
+    await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "反馈未能保存", tone: "danger" });
+    return null;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = original;
+    }
+  }
 }
 
 function rememberPracticeJob(jobId) {
@@ -3155,6 +3201,7 @@ function renderPracticeResults(data) {
           <em class="${item.difficulty === "挑战" ? "hard" : item.difficulty === "基础" ? "easy" : ""}">${escapeHtml(item.difficulty)}</em>
           <div class="practice-exercise__actions">
             <label title="选择本题" class="practice-exercise__select"><input type="checkbox" data-practice-select="${idx}" ${selectedPracticeExerciseIndexes.has(idx) ? "checked" : ""}><span class="visually-hidden">选择本题</span></label>
+            <button type="button" data-practice-feedback="${idx}" title="反馈此题" aria-label="反馈此题"><i class="fas fa-bug"></i></button>
             <button type="button" data-practice-edit="${idx}" title="编辑本题" aria-label="编辑本题"><i class="fas fa-pen"></i></button>
             <button type="button" data-practice-regenerate="${idx}" title="重新生成本题" aria-label="重新生成本题"><i class="fas fa-rotate"></i></button>
             <div class="practice-action-menu practice-action-menu--question" data-practice-action-menu>
@@ -3191,6 +3238,13 @@ function renderPracticeResults(data) {
   });
   document.querySelectorAll("[data-practice-edit]").forEach((button) => {
     button.addEventListener("click", () => openPracticeEditor(Number(button.dataset.practiceEdit)));
+  });
+  document.querySelectorAll("[data-practice-feedback]").forEach((button) => {
+    button.addEventListener("click", () => submitSupportFeedback("question", {
+      history_id: currentPracticeHistoryId,
+      exercise_index: Number(button.dataset.practiceFeedback),
+      task_id: activePracticeJobId || latestPracticeSet?.generation?.job_id || ""
+    }, button));
   });
   document.querySelectorAll("[data-practice-regenerate]").forEach((button) => {
     button.addEventListener("click", () => regeneratePracticeQuestion(Number(button.dataset.practiceRegenerate), button));
@@ -10199,6 +10253,7 @@ function renderQuestionDetail(question) {
       <div class="question-detail-meta">
         ${checkpoint ? `<span class="checkpoint-status ${checkpoint.className}">${checkpoint.label}</span>` : ""}
         ${question.score ? `<span>分值：${escapeHtml(question.score)} 分</span>` : ""}
+        <button class="text-button" type="button" data-result-question-feedback="${escapeHtml(question.question_id || "")}"><i class="fas fa-bug"></i>反馈此题</button>
       </div>
     </div>
     <section class="original-question-block">
@@ -10227,6 +10282,9 @@ function renderQuestionDetail(question) {
     ${!isTermExplanation && (question.formulas || []).length ? `<section class="formula-section"><h4>相关公式</h4>${(question.formulas || []).slice(0, 8).map((formula) => `<div><span class="practice-math">\\(${escapeHtml(formula.latex || "")}\\)</span><span>${escapeHtml(formula.source_note || "")}</span></div>`).join("")}</section>` : ""}
     ${issueRows.length ? `<section class="quality-inline-section"><h4>质量提示</h4>${issueRows.map((issue) => `<p class="${issue.severity === "warning" ? "warn" : "issue"}">${escapeHtml(issue.message || "")}</p>`).join("")}</section>` : ""}
   `;
+  detail.querySelector("[data-result-question-feedback]")?.addEventListener("click", (event) => {
+    submitSupportFeedback("question", { question_id: question.question_id || "", task_id: activeTaskId || "" }, event.currentTarget);
+  });
   requestAnimationFrame(() => typesetMath(detail));
 }
 
