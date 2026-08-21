@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -40,12 +41,24 @@ build_manifest.write_text(
     encoding="utf-8",
 )
 
+support_config_source = ROOT / "config" / "support_reporting.json"
+support_config_build = GENERATED_ROOT / "support_reporting.json"
+if support_config_source.exists():
+    support_config = json.loads(support_config_source.read_text(encoding="utf-8"))
+else:
+    support_config = {
+        "receiver_url": os.environ.get("ANSWER_BOOK_SUPPORT_URL", ""),
+        "receiver_token": os.environ.get("ANSWER_BOOK_SUPPORT_TOKEN", ""),
+    }
+support_config_build.write_text(json.dumps(support_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
 datas = [
     (str(ROOT / "web"), "web"),
     (str(ROOT / "config" / "providers.example.json"), "config"),
     (str(ROOT / "config" / "model_pricing.example.json"), "config"),
     (str(ROOT / "config" / "task_defaults.json"), "config"),
     (str(ROOT / "config" / "update.json"), "config"),
+    (str(support_config_build), "config"),
     (str(ROOT / "APP_VERSION"), "."),
     (str(ROOT / "VERSION"), "."),
     (str(ROOT / "SOFTWARE_LICENSE.md"), "."),

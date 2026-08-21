@@ -25,3 +25,9 @@ def test_desktop_release_publishes_checksum_manifest_to_public_repo() -> None:
     assert "scripts/build_update_manifest.py" in WORKFLOW
     assert "update-manifest.json" in WORKFLOW
     assert "update-stable.json" in WORKFLOW
+
+
+def test_desktop_release_requires_and_embeds_support_receiver_secrets() -> None:
+    assert WORKFLOW.count("SUPPORT_RECEIVER_URL") >= 4
+    assert WORKFLOW.count("SUPPORT_RECEIVER_TOKEN") >= 4
+    assert WORKFLOW.count("Require support receiver configuration") == 2

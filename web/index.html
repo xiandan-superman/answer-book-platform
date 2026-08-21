@@ -25,6 +25,9 @@
         </span>
       </button>
       <div class="nav-actions">
+        <button id="supportFeedbackBtn" class="ghost-button" type="button" onclick="submitSupportFeedback('page', {}, this)">
+          <i class="fas fa-bug"></i><span>反馈问题</span>
+        </button>
         <button class="ghost-button" type="button" onclick="goToPage('keys')">
           <i class="fas fa-key"></i>API 配置
         </button>
@@ -1878,6 +1881,7 @@
     </section>
   </div>
   <link rel="stylesheet" href="/platform-theme.css?v=20260730-readable-density-11">
+  <script src="/support-telemetry.js"></script>
   <script src="/platform-api.js"></script>
   <script src="/task-contract-ui.js"></script>
   <script src="/app.js?v=20260730-readable-density-11"></script>

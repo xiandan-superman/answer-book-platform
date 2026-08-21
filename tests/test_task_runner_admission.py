@@ -3,8 +3,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import Future
 
-from app import task_runner, task_store
-from app import pipeline
+from app import pipeline, task_runner, task_store
 from app.task_store import TaskRecord
 
 
@@ -91,10 +90,16 @@ def test_detached_pause_resume_is_atomically_requeued_with_saved_options(tmp_pat
     stage.mkdir()
     (stage / "structured_exam.json").write_text('{"items": [{"question_id": "q1"}]}', encoding="utf-8")
     calls: list[dict[str, object]] = []
+    blocker = threading.Event()
+
+    def fake_run(task_id: str, **kwargs: object) -> None:
+        calls.append({"task_id": task_id, **kwargs})
+        blocker.wait(2)
+
     monkeypatch.setattr(
         task_runner,
         "run_exam_task",
-        lambda task_id, **kwargs: calls.append({"task_id": task_id, **kwargs}),
+        fake_run,
     )
     with task_runner._ACTIVE_LOCK:
         task_runner._ACTIVE_RUNS.clear()
@@ -102,6 +107,7 @@ def test_detached_pause_resume_is_atomically_requeued_with_saved_options(tmp_pat
     result = task_runner.resume_exam_task(record.task_id)
     with task_runner._ACTIVE_LOCK:
         future = task_runner._ACTIVE_RUNS[record.task_id]
+    blocker.set()
     future.result(timeout=2)
 
     assert result["ok"] is True

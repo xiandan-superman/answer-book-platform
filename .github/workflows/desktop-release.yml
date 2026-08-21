@@ -50,7 +50,16 @@ jobs:
         run: test "$(uname -m)" = "arm64"
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-build.txt
+      - name: Require support receiver configuration
+        shell: bash
+        env:
+          ANSWER_BOOK_SUPPORT_URL: ${{ secrets.SUPPORT_RECEIVER_URL }}
+          ANSWER_BOOK_SUPPORT_TOKEN: ${{ secrets.SUPPORT_RECEIVER_TOKEN }}
+        run: test -n "$ANSWER_BOOK_SUPPORT_URL" && test -n "$ANSWER_BOOK_SUPPORT_TOKEN"
       - name: Build macOS package
+        env:
+          ANSWER_BOOK_SUPPORT_URL: ${{ secrets.SUPPORT_RECEIVER_URL }}
+          ANSWER_BOOK_SUPPORT_TOKEN: ${{ secrets.SUPPORT_RECEIVER_TOKEN }}
         run: python scripts/build_macos_app.py
       - name: Upload macOS package
         uses: actions/upload-artifact@v4
@@ -71,7 +80,16 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-windows.txt -r requirements-build.txt
+      - name: Require support receiver configuration
+        shell: bash
+        env:
+          ANSWER_BOOK_SUPPORT_URL: ${{ secrets.SUPPORT_RECEIVER_URL }}
+          ANSWER_BOOK_SUPPORT_TOKEN: ${{ secrets.SUPPORT_RECEIVER_TOKEN }}
+        run: test -n "$ANSWER_BOOK_SUPPORT_URL" && test -n "$ANSWER_BOOK_SUPPORT_TOKEN"
       - name: Build Windows package
+        env:
+          ANSWER_BOOK_SUPPORT_URL: ${{ secrets.SUPPORT_RECEIVER_URL }}
+          ANSWER_BOOK_SUPPORT_TOKEN: ${{ secrets.SUPPORT_RECEIVER_TOKEN }}
         run: python scripts/build_windows_app.py
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
