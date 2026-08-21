@@ -77,6 +77,78 @@ def device_identity(address: str) -> str:
     return str(node.get("Name") or user.get("LoginName") or address).rstrip(".")
 
 
+def manifest_context(manifest: dict[str, Any]) -> dict[str, Any]:
+    context = manifest.get("context")
+    return context if isinstance(context, dict) else {}
+
+
+def issue_manifest(row: dict[str, Any] | sqlite3.Row) -> dict[str, Any]:
+    try:
+        value = json.loads(str(row["manifest_json"] or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def task_kind_label(value: Any) -> str:
+    return {
+        "exam": "真题解析",
+        "practice": "按题出题",
+        "knowledge": "知识点出题",
+        "format": "格式审查",
+    }.get(str(value or ""), str(value or "任务"))
+
+
+def task_stage_label(context: dict[str, Any]) -> str:
+    operation = str(context.get("operation") or "")
+    stage = str(context.get("task_stage") or "")
+    label = {
+        "analyze": "范围解析",
+        "plan": "蓝图设计",
+        "generate_from_plan": "题目生成",
+        "generate_from_contract": "题目生成",
+    }.get(operation) or {
+        "analyzing": "范围解析",
+        "planning": "蓝图设计",
+        "generating": "题目生成",
+        "failed": "执行失败",
+    }.get(stage, stage)
+    return f"{label}（失败）" if label and stage == "failed" and label != "执行失败" else label
+
+
+def issue_summary(manifest: dict[str, Any]) -> str:
+    context = manifest_context(manifest)
+    task_title = str(context.get("task_title") or "").strip()
+    if task_title:
+        return " · ".join(filter(None, (
+            task_kind_label(context.get("task_kind")),
+            str(context.get("task_model_label") or context.get("task_model") or "").strip(),
+            task_title,
+        )))
+    failure = manifest.get("failure_signature") if isinstance(manifest.get("failure_signature"), dict) else {}
+    return " · ".join(
+        str(value) for value in (manifest.get("scope"), context.get("page"), context.get("question_id"), failure.get("error_type")) if value
+    ) or "用户问题反馈"
+
+
+def issue_task_metadata(manifest: dict[str, Any]) -> str:
+    context = manifest_context(manifest)
+    task_id = str(context.get("task_id") or "").strip()
+    if not task_id:
+        return ""
+    parts = [f"任务：{task_id}"]
+    stage = task_stage_label(context)
+    if stage:
+        parts.append(f"阶段：{stage}")
+    batch_id = str(context.get("practice_batch_id") or "").strip()
+    if batch_id:
+        parts.append(f"任务批次：{batch_id}")
+    report_group = str(context.get("report_group_id") or "").strip()
+    if report_group:
+        parts.append(f"反馈批次：{report_group[:12]}")
+    return " · ".join(parts)
+
+
 class Inbox:
     def __init__(self, root: Path, *, quota_bytes: int = DEFAULT_QUOTA_BYTES):
         self.root = root
@@ -139,11 +211,7 @@ class Inbox:
         fingerprint = str(manifest["fingerprint"])
         incoming_report_id = str(manifest["report_id"])
         version = str((manifest.get("application") or {}).get("version") or "unknown")
-        context = manifest.get("context") if isinstance(manifest.get("context"), dict) else {}
-        failure = manifest.get("failure_signature") if isinstance(manifest.get("failure_signature"), dict) else {}
-        summary = " · ".join(
-            str(value) for value in (manifest.get("scope"), context.get("page"), context.get("question_id"), failure.get("error_type")) if value
-        ) or "用户问题反馈"
+        summary = issue_summary(manifest)
         target = self.inbox / f"{fingerprint}.zip"
         received_at = now_iso()
         with self.lock, self.connect() as connection:
@@ -476,12 +544,15 @@ class AdminHandler(BaseHTTPRequestHandler):
             rows = self.inbox.list_issues(limit=50, offset=offset)
             cards = []
             for row in rows:
+                manifest = issue_manifest(row)
+                task_metadata = issue_task_metadata(manifest)
                 status_label = "待处理" if row["status"] == "open" else "已处理"
                 raw_state = f"诊断包 {round(int(row['bundle_size'] or 0) / 1024)} KiB" if row["bundle_path"] else "原始包已清理"
                 cards.append(f"""
                 <article class="issue {html.escape(row['status'])}">
                   <header><a href="/issues/{quote(row['fingerprint'])}">{html.escape(row['report_id'])}</a><span>{status_label}</span></header>
                   <p>{html.escape(row['summary'])}</p>
+                  {f'<div class="task-meta">{html.escape(task_metadata)}</div>' if task_metadata else ''}
                   <small>出现 {row['occurrence_count']} 次 · 最近 {html.escape(row['last_seen'])} · {raw_state}</small>
                   <form method="post" action="/issues/{quote(row['fingerprint'])}/{'resolve' if row['status'] == 'open' else 'reopen'}"><button>{'标记已处理' if row['status'] == 'open' else '重新打开'}</button></form>
                 </article>""")
@@ -499,7 +570,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             if not row:
                 self.send_html(page("未找到", "<p>问题不存在。</p>"), 404)
                 return
-            sections = [f"<h2>{html.escape(row['report_id'])}</h2><p>{html.escape(row['summary'])}</p>"]
+            manifest = issue_manifest(row)
+            task_metadata = issue_task_metadata(manifest)
+            sections = [
+                f"<h2>{html.escape(row['report_id'])}</h2><p>{html.escape(row['summary'])}</p>"
+                + (f'<div class="task-meta">{html.escape(task_metadata)}</div>' if task_metadata else "")
+            ]
             bundle = Path(str(row["bundle_path"] or ""))
             if bundle.is_file():
                 try:
@@ -558,6 +634,7 @@ def page(title: str, content: str) -> str:
     body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;background:#f6f7fb;color:#18202b}}
     nav{{margin-bottom:24px}}nav a,a{{color:#1769aa}}.issue{{background:white;border:1px solid #dde2ea;border-radius:12px;padding:18px;margin:12px 0}}
     .issue header{{display:flex;justify-content:space-between;font-weight:700}}.issue.resolved{{opacity:.72}}small{{color:#637083}}
+    .task-meta{{margin:6px 0 10px;padding:8px 10px;border-radius:7px;background:#eef5ff;color:#234a78;font-size:13px;word-break:break-all}}
     form{{display:inline-block;margin:10px 8px 0 0}}button{{padding:7px 12px;border:0;border-radius:7px;background:#1769aa;color:white;cursor:pointer}}button.danger{{background:#b42318}}
     details{{background:white;border:1px solid #dde2ea;border-radius:10px;margin:12px 0;padding:12px}}pre{{white-space:pre-wrap;word-break:break-word;max-height:520px;overflow:auto}}
     </style><body><nav><a href="/">← 问题列表</a></nav><h1>{html.escape(title)}</h1>{content}</body></html>"""

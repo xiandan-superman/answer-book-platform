@@ -202,6 +202,33 @@ def test_receiver_groups_duplicate_issue_and_keeps_one_latest_bundle() -> None:
             assert "second" in zf.read("related_content.json").decode("utf-8")
 
 
+def test_receiver_issue_list_identifies_exact_task_model_stage_and_feedback_batch() -> None:
+    manifest = {
+        "schema_version": 1,
+        "report_id": "AB-TASK-1",
+        "fingerprint": "fp-task-1",
+        "scope": "task",
+        "application": {"version": "0.9.4"},
+        "context": {
+            "page": "tasks",
+            "task_id": "generation_20260822003146_ce4b0ba5",
+            "task_kind": "practice",
+            "task_title": "材料热处理与组织转变",
+            "task_model_label": "GPT-5.6 Terra",
+            "task_stage": "failed",
+            "operation": "generate_from_plan",
+            "practice_batch_id": "practice-preview-1",
+            "report_group_id": "feedback-group-123456",
+        },
+    }
+    assert support_receiver.issue_summary(manifest) == "按题出题 · GPT-5.6 Terra · 材料热处理与组织转变"
+    metadata = support_receiver.issue_task_metadata(manifest)
+    assert "generation_20260822003146_ce4b0ba5" in metadata
+    assert "阶段：题目生成（失败）" in metadata
+    assert "任务批次：practice-preview-1" in metadata
+    assert "反馈批次：feedback-gro" in metadata
+
+
 def test_receiver_cleanup_removes_resolved_raw_bundle_but_keeps_summary() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         root = Path(raw_tmp)
@@ -323,6 +350,11 @@ def test_frontend_support_is_contextual_and_api_requests_have_correlation_ids() 
     assert "submitFailedTaskFeedback" in app_js
     assert 'id="taskFeedbackFailedBtn"' in html_text
     assert "report_group_id" in app_js
+    assert "failedTaskFeedbackReported" in app_js
+    assert "rememberFailedTaskFeedback" in app_js
+    assert "dismissFailedTaskFeedback" in app_js
+    assert 'id="taskDismissFailedFeedbackBtn"' in html_text
+    assert '<i class="fas fa-paper-plane"></i><span>一键反馈' not in app_js
 
 
 def test_upload_implementation_streams_instead_of_reading_whole_bundle() -> None:

@@ -4625,16 +4625,23 @@ button:not(.ghost-button):not(.text-button):not(.secondary-button):not(.outline-
   display: none;
 }
 
-.task-failed-feedback > div {
+.task-failed-feedback-copy {
   display: flex;
   align-items: center;
   gap: 11px;
   min-width: 0;
 }
 
-.task-failed-feedback > div > span:last-child {
+.task-failed-feedback-copy > span:last-child {
   display: grid;
   gap: 2px;
+}
+
+.task-failed-feedback-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .task-failed-feedback strong {
@@ -4679,6 +4686,23 @@ button:not(.ghost-button):not(.text-button):not(.secondary-button):not(.outline-
   opacity: .7;
 }
 
+.task-failed-feedback-dismiss {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #fecaca;
+  border-radius: 9px;
+  background: #fff;
+  color: #991b1b;
+  cursor: pointer;
+}
+
+.task-failed-feedback-dismiss:hover {
+  background: #fee2e2;
+}
+
 @media (max-width: 760px) {
   .task-failed-feedback {
     align-items: stretch;
@@ -4687,6 +4711,10 @@ button:not(.ghost-button):not(.text-button):not(.secondary-button):not(.outline-
 
   .task-failed-feedback-button {
     justify-content: center;
+    flex: 1;
+  }
+
+  .task-failed-feedback-actions {
     width: 100%;
   }
 }

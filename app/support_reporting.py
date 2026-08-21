@@ -495,6 +495,8 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             "task_kind": _redact(context.get("task_kind"), 40), "task_status": _redact(context.get("task_status"), 40),
             "task_stage": _redact(context.get("task_stage"), 120), "operation": _redact(context.get("operation"), 80),
             "task_title": _redact(context.get("task_title"), 200),
+            "task_model": _redact(context.get("task_model"), 120),
+            "task_model_label": _redact(context.get("task_model_label"), 120),
             "practice_batch_id": _redact(context.get("practice_batch_id"), 160),
             "report_group_id": _redact(context.get("report_group_id"), 120),
         },

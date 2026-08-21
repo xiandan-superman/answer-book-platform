@@ -22,6 +22,8 @@ let activeTaskKind = "all";
 let activeTaskSort = "smart";
 let taskManagerPage = 1;
 const TASK_MANAGER_PAGE_SIZE = 20;
+const FAILED_TASK_FEEDBACK_STORAGE_KEY = "answerBook.failedTaskFeedback.v1";
+const FAILED_TASK_FEEDBACK_DISMISS_KEY = "answerBook.failedTaskFeedbackDismiss.v1";
 let resultViewData = null;
 let activeResultQuestionId = "";
 let modelQuestionTypeTab = "text";
@@ -1449,13 +1451,67 @@ function taskSupportContext(task = {}, reportGroupId = "") {
     task_stage: String(task.current_stage || ""),
     operation: String(task.operation || ""),
     task_title: String(task.description || task.exam_path || task.display_title || ""),
+    task_model: String(task.model_label || task.answer_model || task.model || ""),
+    task_model_label: shortTaskModelName(task.model_label || task.answer_model || task.model || "", task.provider),
     practice_batch_id: String(task.practice_batch_id || ""),
     report_group_id: reportGroupId
   };
 }
 
+function failedTaskFeedbackKey(task = {}) {
+  return [
+    String(task.task_id || ""),
+    String(task.run_started_at || task.started_at || task.created_at || ""),
+    String(task.status || ""),
+    String(task.error || task.error_presentation?.message || ""),
+  ].join("::");
+}
+
+function readFailedTaskFeedback() {
+  try {
+    const value = JSON.parse(localStorage.getItem(FAILED_TASK_FEEDBACK_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function failedTaskFeedbackReported(task = {}) {
+  return Boolean(readFailedTaskFeedback()[failedTaskFeedbackKey(task)]);
+}
+
+function rememberFailedTaskFeedback(task = {}, reportId = "") {
+  const records = readFailedTaskFeedback();
+  records[failedTaskFeedbackKey(task)] = { report_id: String(reportId || ""), time: new Date().toISOString() };
+  const bounded = Object.fromEntries(
+    Object.entries(records)
+      .sort((left, right) => String(right[1]?.time || "").localeCompare(String(left[1]?.time || "")))
+      .slice(0, 200)
+  );
+  try {
+    localStorage.setItem(FAILED_TASK_FEEDBACK_STORAGE_KEY, JSON.stringify(bounded));
+  } catch (_error) {}
+}
+
+function failedTaskSetSignature(tasks = []) {
+  return tasks.map(failedTaskFeedbackKey).sort().join("|");
+}
+
+function dismissFailedTaskFeedback() {
+  const failedTasks = latestTasks.filter((task) => taskDisplayStatus(task) === "failed");
+  try {
+    localStorage.setItem(FAILED_TASK_FEEDBACK_DISMISS_KEY, failedTaskSetSignature(failedTasks));
+  } catch (_error) {}
+  $("taskFailedFeedbackBar")?.classList.add("hidden");
+}
+
 async function submitTaskSupportFeedback(task, button = null) {
-  return submitSupportFeedback("task", taskSupportContext(task), button);
+  const result = await submitSupportFeedback("task", taskSupportContext(task), button);
+  if (result) {
+    rememberFailedTaskFeedback(task, result.report_id);
+    renderTaskManager();
+  }
+  return result;
 }
 
 function newSupportReportGroupId() {
@@ -1464,9 +1520,11 @@ function newSupportReportGroupId() {
 }
 
 async function submitFailedTaskFeedback(button = null) {
-  const failedTasks = sortedTasks(latestTasks.filter((task) => taskDisplayStatus(task) === "failed"));
+  const failedTasks = sortedTasks(latestTasks.filter(
+    (task) => taskDisplayStatus(task) === "failed" && !failedTaskFeedbackReported(task)
+  ));
   if (!failedTasks.length) {
-    await platformAlert("当前没有需要反馈的失败任务。", { title: "没有失败任务" });
+    await platformAlert("当前失败任务都已经反馈。", { title: "无需重复反馈" });
     return;
   }
   const original = button?.innerHTML || "";
@@ -1484,6 +1542,7 @@ async function submitFailedTaskFeedback(button = null) {
       const result = await sendSupportFeedback("task", taskSupportContext(task, groupId));
       if (result.status === "queued") queued.push(result.report_id || task.task_id);
       else submitted.push(result.report_id || task.task_id);
+      rememberFailedTaskFeedback(task, result.report_id);
       // 本机离线队列最多保留 5 份；到达上限后停止，避免挤掉刚保存的报告。
       if (queued.length >= 5 && index < failedTasks.length - 1) {
         failed.push(...failedTasks.slice(index + 1).map((item) => `${item.task_id}（离线队列已满）`));
@@ -1500,6 +1559,7 @@ async function submitFailedTaskFeedback(button = null) {
   ].filter(Boolean);
   const ids = [...submitted, ...queued].slice(0, 5);
   if (ids.length) lines.push(`问题编号：${ids.join("、")}`);
+  renderTaskManager();
   await platformAlert(lines.join("\n"), {
     title: failed.length ? "反馈部分完成" : "失败任务已反馈",
     tone: failed.length ? "warning" : "success"
@@ -7912,13 +7972,15 @@ function renderAnswerProgressDetails(progress) {
 }
 
 function updateTaskManagerStats(tasks) {
+  const failedTasks = tasks.filter((task) => taskDisplayStatus(task) === "failed");
+  const unreportedFailedTasks = failedTasks.filter((task) => !failedTaskFeedbackReported(task));
   const counts = {
     total: tasks.length,
     running: tasks.filter((task) => taskDisplayStatus(task) === "running").length,
     queued: tasks.filter((task) => taskDisplayStatus(task) === "queued").length,
     needsInput: tasks.filter((task) => taskDisplayStatus(task) === "needs_input").length,
     issues: tasks.filter((task) => taskDisplayStatus(task) === "completed_with_issues").length,
-    failed: tasks.filter((task) => taskDisplayStatus(task) === "failed").length,
+    failed: failedTasks.length,
     cancelled: tasks.filter((task) => taskDisplayStatus(task) === "cancelled").length,
     completed: tasks.filter((task) => taskDisplayStatus(task) === "completed").length
   };
@@ -7930,11 +7992,16 @@ function updateTaskManagerStats(tasks) {
   setText("taskStatFailed", counts.failed);
   setText("taskStatCancelled", counts.cancelled);
   setText("taskStatCompleted", counts.completed);
-  $("taskFailedFeedbackBar")?.classList.toggle("hidden", counts.failed === 0);
-  setText("taskFailedFeedbackTitle", `发现 ${counts.failed} 个执行失败任务`);
+  let dismissedSignature = "";
+  try {
+    dismissedSignature = localStorage.getItem(FAILED_TASK_FEEDBACK_DISMISS_KEY) || "";
+  } catch (_error) {}
+  const dismissed = Boolean(failedTasks.length && dismissedSignature === failedTaskSetSignature(failedTasks));
+  $("taskFailedFeedbackBar")?.classList.toggle("hidden", unreportedFailedTasks.length === 0 || dismissed);
+  setText("taskFailedFeedbackTitle", `发现 ${unreportedFailedTasks.length} 个尚未反馈的失败任务`);
   const feedbackButton = $("taskFeedbackFailedBtn");
   if (feedbackButton && !feedbackButton.disabled) {
-    feedbackButton.innerHTML = `<i class="fas fa-paper-plane"></i><span>一键反馈这 ${counts.failed} 个失败任务</span>`;
+    feedbackButton.innerHTML = `<i class="fas fa-bug"></i><span>一键反馈这 ${unreportedFailedTasks.length} 个失败任务</span>`;
   }
 }
 
@@ -8465,11 +8532,18 @@ function taskManagerActions(task = {}, reviewPending = false) {
     add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
   }
   if (taskDisplayStatus(task) === "failed") {
-    actions.splice(Math.min(1, actions.length), 0, ["support-task", "blue-action", "fas fa-bug", "反馈此任务"]);
+    const reported = failedTaskFeedbackReported(task);
+    actions.splice(Math.min(1, actions.length), 0, [
+      reported ? "support-task-reported" : "support-task",
+      reported ? "gray-action" : "blue-action",
+      reported ? "fas fa-check" : "fas fa-bug",
+      reported ? "已反馈" : "反馈此任务",
+      reported,
+    ]);
   }
   return actions
     .slice(0, 4)
-    .map(([action, color, icon, label]) => `<button type="button" class="task-card-button ${color}" data-action="${action}"><i class="${icon}"></i>${label}</button>`)
+    .map(([action, color, icon, label, disabled = false]) => `<button type="button" class="task-card-button ${color}" data-action="${action}"${disabled ? " disabled" : ""}><i class="${icon}"></i>${label}</button>`)
     .join("");
 }
 
@@ -10759,6 +10833,7 @@ $("taskSortSelect")?.addEventListener("change", (event) => {
 });
 $("taskBulkModeBtn")?.addEventListener("click", () => setTaskBulkMode(true));
 $("taskFeedbackFailedBtn")?.addEventListener("click", (event) => submitFailedTaskFeedback(event.currentTarget));
+$("taskDismissFailedFeedbackBtn")?.addEventListener("click", dismissFailedTaskFeedback);
 $("taskBulkCancelBtn")?.addEventListener("click", () => setTaskBulkMode(false));
 $("taskBulkDeleteBtn")?.addEventListener("click", deleteSelectedTasks);
 $("taskBulkSelectAllBtn")?.addEventListener("click", () => {
