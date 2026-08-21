@@ -15,7 +15,7 @@ WORK = ROOT / "build" / "pyinstaller-work"
 
 def main() -> int:
     if sys.platform != "win32":
-        print("Windows App 必须在 Windows 上构建。")
+        print("Windows App must be built on Windows.")
         return 2
     app_dir = DIST / "真题解析与生题平台"
     if app_dir.exists():
@@ -38,8 +38,8 @@ def main() -> int:
     version = (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip()
     archive_base = DIST / f"answer-book-platform-{version}-windows-x86_64"
     archive_path = Path(shutil.make_archive(str(archive_base), "zip", root_dir=app_dir))
-    print(f"已生成：{app_dir}")
-    print(f"已生成：{archive_path}")
+    print(f"Built directory: {app_dir.as_posix()}")
+    print(f"Built archive: {archive_path.as_posix()}")
     return 0
 
 
