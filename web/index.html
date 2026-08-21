@@ -4,35 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>智能真题解析系统</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles/foundation.css">
 </head>
-<body>
+<body data-active-page="home">
   <div class="visually-hidden" aria-hidden="true">
-    开工前检查 准备教材库 创建真题项目 生成与复核 验收与交付
+    开工前检查 准备教材库 创建真题项目 生成与机器校验 验收与交付
     第二步只做一件事 页码校准在生成后进行
     选择真题文件 选择教材文件 上传真题 上传教材 教材可多选 重复文件审查 建立教材索引 已建立索引可复用
-    逐题复核
+    逐题质量校验
   </div>
+  <header class="workflow-chrome">
   <nav class="app-nav">
     <div class="nav-inner">
       <button class="brand-button" type="button" onclick="goToPage('home')">
         <span class="brand-mark"><i class="fas fa-book-open"></i></span>
         <span>
           <strong>智能真题解析系统</strong>
-          <small>AI 驱动的教材精准解析</small>
+          <small>AI 驱动的教材精准解析 · <span id="platformVersion">版本加载中...</span></small>
         </span>
       </button>
       <div class="nav-actions">
-        <button class="ghost-button nav-practice-button" type="button" onclick="goToPage('practice')">
-          <i class="fas fa-layer-group"></i>专项练习
+        <button class="ghost-button" type="button" onclick="goToPage('keys')">
+          <i class="fas fa-key"></i>API 配置
         </button>
-        <button class="ghost-button nav-task-button" type="button" onclick="goToPage('tasks'); loadTasks();">
+        <button id="checkUpdateBtn" class="ghost-button" type="button" onclick="checkPlatformUpdate()">
+          <i class="fas fa-cloud-arrow-down"></i><span>检查更新</span>
+        </button>
+        <button class="ghost-button nav-task-button" type="button" onclick="openPendingTasks()" aria-label="打开待处理任务">
           <i class="fas fa-tasks"></i>任务管理
-          <span id="taskReviewBadge" class="nav-review-badge hidden">1条信息</span>
+          <span id="taskReviewBadge" class="nav-review-badge hidden">1项待处理</span>
         </button>
         <button class="ghost-button" type="button" onclick="goToPage('monitor'); loadSystemStatus();"><i class="fas fa-server"></i>运行监控</button>
-        <button class="ghost-button" type="button" onclick="goToPage('textbook')"><i class="fas fa-database"></i>教材管理</button>
       </div>
     </div>
   </nav>
@@ -48,45 +51,218 @@
       <button class="step-pill" type="button" data-page="result"><span>4</span>查看结果</button>
     </div>
   </div>
+  </header>
 
   <main class="app-shell">
     <section id="page-home" class="page active">
-      <div class="home-hero">
-        <div class="hero-icon"><i class="fas fa-magic"></i></div>
-        <h1>智能真题解析系统</h1>
-        <p>基于教材内容，利用 AI 大模型自动生成精准、专业的真题解析。程序负责固定流程、质量审查、Word/PDF 渲染与交付包。</p>
-        <button class="primary-cta" type="button" onclick="startWizard()"><i class="fas fa-rocket"></i>开始解析</button>
-        <button class="secondary-button home-secondary-cta" type="button" onclick="goToPage('textbook')"><i class="fas fa-book"></i>教材管理</button>
-        <small id="versionBox">版本加载中...</small>
-      </div>
+      <div class="platform-home">
+        <header class="platform-home-header">
+          <img class="home-hero-accents" src="/assets/home/hero-accents.png" alt="" aria-hidden="true">
+          <h1>选择任务，开始工作</h1>
+          <p>真题解析、按题出题与知识点出题，分别配置，统一管理。</p>
+          <small id="versionBox" class="visually-hidden">版本加载中...</small>
+        </header>
 
-      <div class="feature-grid">
-        <article>
-          <span class="feature-icon blue"><i class="fas fa-brain"></i></span>
-          <h3>AI 智能分析</h3>
-          <p>先判断题目考查内容，再围绕知识点检索与确认教材依据。</p>
-        </article>
-        <article>
-          <span class="feature-icon purple"><i class="fas fa-search-plus"></i></span>
-          <h3>教材精准检索</h3>
-          <p>教材索引可复用；文件无变动时不会重复处理。</p>
-        </article>
-        <article>
-          <span class="feature-icon green"><i class="fas fa-clipboard-check"></i></span>
-          <h3>质量自动审查</h3>
-          <p>覆盖率、公式对象、内容质量、渲染结果与交付包自动检查。</p>
-        </article>
-      </div>
+        <div class="business-domain-grid">
+          <section class="business-domain-card exam-domain" aria-labelledby="examDomainTitle">
+            <div class="domain-copy">
+              <span class="domain-kicker">01 / 真题解析</span>
+              <h2 id="examDomainTitle">真题解析</h2>
+              <p>基于教材证据完成解析与自动验收</p>
+              <div class="domain-primary-actions">
+                <button class="home-primary-action" type="button" onclick="startWizard()">
+                  <span>开始解析</span><i class="fas fa-arrow-right"></i>
+                </button>
+                <button class="home-model-link" type="button" onclick="goToPage('env')">
+                  模型设置<i class="fas fa-chevron-right"></i>
+                </button>
+              </div>
+            </div>
+            <div class="domain-art exam-domain-art" aria-hidden="true">
+              <img src="/assets/home/exam-evidence.png" alt="">
+            </div>
+          </section>
 
-      <div class="flow-preview">
-        <h2>解析流程</h2>
-        <div class="flow-row">
-          <div><span>0</span><strong>先准备教材库</strong><p>独立上传教材并建立索引</p></div>
-          <i class="fas fa-arrow-right"></i>
-          <div><span>1</span><strong>选择已索引教材与真题</strong><p>任务流程只消费已有索引</p></div>
-          <i class="fas fa-arrow-right"></i>
-          <div><span>2</span><strong>生成交付文件</strong><p>Word、PDF、审查文档与交付包</p></div>
+          <section class="business-domain-card generation-domain" aria-labelledby="generationDomainTitle">
+            <div class="generation-domain-head">
+              <div class="domain-copy">
+                <span class="domain-kicker">02 / 模拟出题</span>
+                <h2 id="generationDomainTitle">模拟出题</h2>
+                <p>按原题或知识点生成针对性练习</p>
+              </div>
+              <div class="domain-art generation-domain-art" aria-hidden="true">
+                <img src="/assets/home/generation-network.png" alt="">
+              </div>
+            </div>
+            <div class="generation-mode-list">
+              <div class="generation-mode-row">
+                <button class="generation-entry-link" type="button" onclick="openPracticeEntry('exam')">
+                  <span>按题出题</span><i class="fas fa-arrow-right"></i>
+                </button>
+                <button class="generation-model-link" type="button" onclick="goToPage('practice-models')">
+                  按题模型设置<i class="fas fa-chevron-right"></i>
+                </button>
+              </div>
+              <div class="generation-mode-row">
+                <button class="generation-entry-link" type="button" onclick="openKnowledgeEntry()">
+                  <span>知识点出题</span><i class="fas fa-arrow-right"></i>
+                </button>
+                <button class="generation-model-link" type="button" onclick="goToPage('knowledge-models')">
+                  知识点模型设置<i class="fas fa-chevron-right"></i>
+                </button>
+              </div>
+            </div>
+          </section>
         </div>
+
+        <section class="home-utility-entry" aria-labelledby="wordFormatUtilityTitle">
+          <div class="utility-entry-icon" aria-hidden="true"><i class="fas fa-file-alt"></i></div>
+          <div class="utility-entry-copy">
+            <span>辅助工具</span>
+            <h2 id="wordFormatUtilityTitle">Word 格式审查与修改</h2>
+            <p>按真题答案或讲义标准检查字体、字号、段落、页眉页脚等格式，并生成修改后的新文件。</p>
+          </div>
+          <div class="utility-entry-actions">
+            <button class="utility-entry-primary" type="button" onclick="openWordFormatReviewer()">打开工具<i class="fas fa-arrow-right"></i></button>
+            <button class="utility-entry-link" type="button" onclick="openTaskManager('format')">查看相关任务</button>
+          </div>
+        </section>
+
+        <section class="platform-strengths" aria-labelledby="platformStrengthsTitle">
+          <h2 id="platformStrengthsTitle">平台特点</h2>
+          <div class="platform-strength-grid">
+            <article>
+              <span class="strength-icon"><i class="fas fa-book-open-reader"></i></span>
+              <div>
+                <h3>教材证据可追溯</h3>
+                <p>解析结论关联原文，逐题保留可追溯依据。</p>
+              </div>
+            </article>
+            <article>
+              <span class="strength-icon"><i class="fas fa-arrows-rotate"></i></span>
+              <div>
+                <h3>解析与出题一体化</h3>
+                <p>从真题分析到针对性练习，一套流程完成。</p>
+              </div>
+            </article>
+            <article>
+              <span class="strength-icon"><i class="fas fa-chart-column"></i></span>
+              <div>
+                <h3>任务统一管理</h3>
+                <p>解析、出题与运行状态集中查看。</p>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+
+    </section>
+
+    <section id="page-keys" class="page">
+      <div class="reference-medium key-config-page">
+        <div class="page-title reference-title key-config-title">
+          <span class="key-config-title-icon"><i class="fas fa-key"></i></span>
+          <div>
+            <h2>API Key 配置</h2>
+            <p>配置一次，全软件共用。选择已接入的平台，填写 Key，测试连接成功后再保存。</p>
+          </div>
+        </div>
+        <div class="key-config-safety-note">
+          <i class="fas fa-shield-halved"></i>
+          <div>
+            <strong>Key 只保存在当前电脑</strong>
+            <p>软件更新不会覆盖；页面不会回显已经保存的完整 Key，也不会把 Key 写入任务日志和导出文件。</p>
+          </div>
+        </div>
+        <div id="keyProviderGrid" class="key-provider-grid">
+          <p class="empty-hint">正在加载已接入的平台...</p>
+        </div>
+        <div id="keyConfigNotice" class="result-card muted-card">请选择平台并填写 API Key。</div>
+        <div class="page-actions reference-actions">
+          <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
+          <button class="secondary-button" type="button" onclick="goToPage('home')"><i class="fas fa-grid-2"></i>选择业务与模型</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-knowledge" class="page">
+      <div class="reference-medium knowledge-generation-page">
+        <div class="page-title reference-title knowledge-title">
+          <span class="knowledge-title-icon"><i class="fas fa-lightbulb"></i></span>
+          <div>
+            <h2>知识点出题</h2>
+            <p>输入一个知识点，或上传教材原文与资料，生成有梯度、可复核的针对性模拟题。</p>
+          </div>
+        </div>
+
+        <div class="knowledge-mode-guide">
+          <article><i class="fas fa-tag"></i><div><strong>只有知识点名称</strong><span>例如“晶胞 / 点阵参数”，平台会先补全合理的知识边界。</span></div></article>
+          <article><i class="fas fa-align-left"></i><div><strong>粘贴简介或教材原文</strong><span>适合包含定义、公式、推导和注意事项的材料。</span></div></article>
+          <article><i class="fas fa-file-arrow-up"></i><div><strong>上传一批资料</strong><span>支持图片、PDF、Word、TXT 和 Markdown，可混合上传。</span></div></article>
+        </div>
+
+        <form id="knowledgeForm" class="knowledge-form">
+          <section class="knowledge-input-card">
+            <div class="knowledge-card-heading">
+              <span><i class="fas fa-book-open"></i></span>
+              <div><h3>知识材料</h3><p>名称、文字和文件至少提供一项。</p></div>
+            </div>
+            <label>知识点名称
+              <input id="knowledgeTitleInput" type="text" maxlength="300" placeholder="例如：晶胞 / 点阵参数">
+            </label>
+            <label>知识点简介或教材原文
+              <textarea id="knowledgeTextInput" rows="10" placeholder="可粘贴知识点简介、教材原文、公式说明；也可按 Command/Ctrl + V 直接粘贴图片。"></textarea>
+            </label>
+            <div id="knowledgeWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的知识点出题工作区。</span><button id="knowledgeWorkspaceDraftClear" type="button" class="text-button">清除并新建</button></div>
+            <div class="knowledge-paste-hint"><i class="fas fa-paste"></i><span><strong>支持直接粘贴图片</strong>先点击上方输入框，再按 Command/Ctrl + V；可连续粘贴多张。</span></div>
+            <label class="knowledge-file-drop" for="knowledgeFileInput">
+              <i class="fas fa-cloud-arrow-up"></i>
+              <strong>选择知识材料文件</strong>
+              <span>图片、PDF、Word、TXT、Markdown；最多 12 个文件</span>
+              <input id="knowledgeFileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,.pdf,.docx,.txt,.md" hidden>
+            </label>
+            <div id="knowledgeFilePreview" class="knowledge-file-preview"><span>尚未选择文件</span></div>
+            <label class="practice-blueprint-toggle">
+              <span><strong>审查出题蓝图</strong><small>开启后可逐题调整题型、难度和设计意图；关闭后从范围确认直接生题。</small></span>
+              <input id="knowledgeBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
+            </label>
+            <label class="practice-blueprint-toggle practice-source-content-toggle">
+              <span><strong>正式生题时参考来源材料</strong><small>开启后会参考教材原文、公式、图表和上传文件中的相关内容。</small></span>
+              <input id="knowledgeIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
+            </label>
+            <p id="knowledgeSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+          </section>
+
+          <section class="knowledge-config-card">
+            <div class="knowledge-card-heading">
+              <span><i class="fas fa-sliders"></i></span>
+              <div><h3>解析与下一步</h3><p>先识别知识单元；题量、题型和难度在范围确认时设置。</p></div>
+            </div>
+            <fieldset class="knowledge-type-picker">
+              <legend><span id="knowledgeTypeLabel">题型组合</span><small id="knowledgeTypeHint">不选则根据知识材料自动搭配</small></legend>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="单选题"><span>单选题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="多选题"><span>多选题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="判断题"><span>判断题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="填空题"><span>填空题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="简答题"><span>简答题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="计算题"><span>计算题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="作图题"><span>作图题</span></label>
+              <label><input type="checkbox" name="knowledgeQuestionType" value="综合题"><span>综合题</span></label>
+            </fieldset>
+            <label>补充出题要求
+              <textarea id="knowledgeFocusInput" rows="4" placeholder="例如：重点考查晶胞参数计算和空间关系，不超出提供材料。"></textarea>
+            </label>
+            <div class="knowledge-model-note">
+              <i class="fas fa-microchip"></i>
+              <div><strong>知识点出题专用模型</strong><span id="knowledgeModelSummary">正在读取模型...</span></div>
+              <button class="text-button knowledge-model-button" type="button" onclick="goToPage('knowledge-models')">调整模型<i class="fas fa-arrow-right"></i></button>
+            </div>
+            <p id="knowledgeError" class="practice-error hidden" role="alert"></p>
+            <button id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit">
+              <i class="fas fa-magnifying-glass-chart"></i>解析知识点与范围
+            </button>
+          </section>
+        </form>
       </div>
     </section>
 
@@ -131,31 +307,9 @@
   --nav-height: 60px;
 }
       </style>
-      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
-      <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
-      <style type="text/tailwindcss">
-@theme inline {
-  --color-background: var(--brand-background);
-  --color-foreground: var(--brand-foreground);
-  --color-card: var(--brand-card);
-  --color-card-foreground: var(--brand-card-foreground);
-  --color-popover: var(--brand-popover);
-  --color-popover-foreground: var(--brand-popover-foreground);
-  --color-primary: var(--brand-primary);
-  --color-primary-foreground: var(--brand-primary-foreground);
-  --color-muted: var(--brand-muted);
-  --color-muted-foreground: var(--brand-muted-foreground);
-  --color-border: var(--brand-border);
-  --color-input: var(--brand-input);
-  --color-ring: var(--brand-ring);
-  --radius-sm: var(--brand-radius-sm);
-  --radius-md: var(--brand-radius-md);
-  --radius-lg: var(--brand-radius-lg);
-}
-@layer base {
-  body { background: var(--brand-background); color: var(--brand-foreground); }
-}
-      </style>
+      <link rel="stylesheet" href="/practice.generated.css">
+      <script src="/vendor/lucide.min.js"></script>
+      <script src="/icon-compat.js"></script>
       <style id="semantic-token-fallback">
 .bg-background { background-color: var(--brand-background); }
 .text-background { color: var(--brand-background); }
@@ -198,8 +352,72 @@
 .border-ring { border-color: var(--brand-ring); }
       </style>
       <style>
-        /* Reset styles.css global button override inside this page */
-        #page-practice button { all: revert; }
+        /* ===== Scoped resets: override global button:not(...) gradient rule ===== */
+        /* styles.css applies background:var(--gradient); color:#fff to ALL buttons */
+        /* not in its exclusion list, with specificity (0,~20,1). */
+        /* Tailwind utilities (0,1,0) lose. #page-practice ID prefix (1,0,0) wins. */
+
+        /* Preset cards: white card, dark text, border — NOT gradient */
+        #page-practice .preset-card {
+          background: var(--brand-card) !important;
+          color: var(--brand-foreground) !important;
+          box-shadow: none !important;
+          border: 1px solid var(--brand-border) !important;
+        }
+        #page-practice .preset-card.active {
+          background: var(--state-info-bg) !important;
+          border-color: var(--brand-primary) !important;
+        }
+        #page-practice .preset-card:hover {
+          background: #f8fbff !important;
+          border-color: #93c5fd !important;
+        }
+
+        /* Collapse/expand toggle: bordered card button, muted text */
+        #page-practice #practiceSidebarCollapse,
+        #page-practice #practiceSidebarExpand,
+        #page-practice .rail-toggle {
+          background: var(--brand-card) !important;
+          color: var(--brand-muted-foreground) !important;
+          box-shadow: none !important;
+          border: 1px solid var(--brand-border) !important;
+        }
+        #page-practice #practiceSidebarCollapse:hover,
+        #page-practice #practiceSidebarExpand:hover,
+        #page-practice .rail-toggle:hover {
+          background: var(--brand-muted) !important;
+          color: var(--brand-foreground) !important;
+        }
+
+        /* Collapsed-rail icon buttons (non-primary): muted icon buttons */
+        #page-practice .rail-icon-btn:not(.rail-icon-btn--primary) {
+          background: transparent !important;
+          color: var(--brand-muted-foreground) !important;
+          box-shadow: none !important;
+          border: none !important;
+        }
+        #page-practice .rail-icon-btn:not(.rail-icon-btn--primary):hover {
+          background: var(--brand-muted) !important;
+          color: var(--brand-foreground) !important;
+        }
+
+        /* History link button: plain text link */
+        #page-practice #practiceShowAllHistory {
+          background: transparent !important;
+          color: var(--brand-primary) !important;
+          box-shadow: none !important;
+          border: none !important;
+        }
+
+        /* Config summary toggle inside details */
+        #page-practice #practiceConfigToggle {
+          background: transparent !important;
+          color: var(--brand-foreground) !important;
+          box-shadow: none !important;
+          border: none !important;
+        }
+
+        /* ===== Utility helpers ===== */
         #page-practice .no-scrollbar::-webkit-scrollbar { display: none; }
         #page-practice .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         #page-practice [data-icon] {
@@ -211,7 +429,7 @@
         }
       </style>
 
-      <main class="mx-auto max-w-[1400px] px-6 py-8">
+      <div class="mx-auto max-w-[1400px] px-6 py-8">
         <style>
           .workbench-grid { display: flex; gap: 24px; align-items: flex-start; }
           .workbench-rail { position: sticky; top: 76px; align-self: flex-start; flex: 0 0 auto; width: 380px; max-height: calc(100vh - 92px); overflow-y: auto; overflow-x: hidden; transition: width 160ms cubic-bezier(.2,.8,.2,1); }
@@ -261,19 +479,24 @@
             <div class="sidebar-full space-y-5">
 
               <!-- Page Header -->
-              <header class="flex items-start justify-between gap-3">
+              <header class="practice-workspace-heading flex items-start justify-between gap-3">
                 <div class="min-w-0">
-                  <p class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">研究生专项训练 · 两阶段生成</p>
-                  <h1 class="mt-1 text-[24px] font-bold leading-tight text-[var(--brand-foreground)]">专项练习</h1>
-                  <p class="mt-1 text-[13px] text-[var(--brand-muted-foreground)]">从一道题或一套题，生成真正练到点上的专项题</p>
+                  <p id="practiceWorkspaceEyebrow" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">模拟出题 · 两阶段生成</p>
+                  <h1 id="practiceWorkspaceTitle" class="mt-1 text-[24px] font-bold leading-tight text-[var(--brand-foreground)]">按题生题</h1>
+                  <p id="practiceWorkspaceSubtitle" class="mt-1 text-[13px] text-[var(--brand-muted-foreground)]">提交一道题或一套题，确认考点范围后生成针对性专项练习。</p>
                 </div>
                 <span class="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-[var(--state-success-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--state-success)]">
-                  <i data-lucide="check-circle-2" class="h-3.5 w-3.5"></i>当前可用：上传题目
+                  <i data-lucide="check-circle-2" class="h-3.5 w-3.5"></i><span id="practiceAvailability">当前可用：上传题目</span>
                 </span>
               </header>
+              <section class="practice-entry-guide" aria-label="按题生题说明">
+                <article><i data-lucide="clipboard-paste"></i><div><strong id="practiceGuideOneTitle">提交原题材料</strong><span id="practiceGuideOneCopy">粘贴题目文字、截图，或上传图片、PDF、Word 等文件。</span></div></article>
+                <article><i data-lucide="scan-search"></i><div><strong id="practiceGuideTwoTitle">识别考点与范围</strong><span id="practiceGuideTwoCopy">平台先拆解原题结构和考查范围，再由你确认参与出题的内容。</span></div></article>
+                <article><i data-lucide="graduation-cap"></i><div><strong id="practiceGuideThreeTitle">生成专项练习</strong><span id="practiceGuideThreeCopy">按确认的范围、难度与题型设计可编辑的训练蓝图和练习题。</span></div></article>
+              </section>
 
               <!-- Toggle button -->
-              <button id="practiceSidebarCollapse" class="flex items-center justify-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3 py-2 text-[12px] font-semibold text-[var(--brand-muted-foreground)] transition hover:bg-[var(--brand-muted)] hover:text-[var(--brand-foreground)]" title="折叠侧栏">
+              <button id="practiceSidebarCollapse" type="button" aria-controls="workbench-sidebar" aria-expanded="true" class="flex items-center justify-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3 py-2 text-[12px] font-semibold text-[var(--brand-muted-foreground)] transition hover:bg-[var(--brand-muted)] hover:text-[var(--brand-foreground)]" title="折叠侧栏">
                 <i data-lucide="chevron-left" class="h-4 w-4"></i>
                 <span>折叠侧栏</span>
               </button>
@@ -282,70 +505,67 @@
               <form id="practiceForm" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)] space-y-4">
                 <div class="flex items-center justify-between gap-3">
                   <div>
-                    <p class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-muted-foreground)]">原题</p>
-                    <h3 class="text-[15px] font-bold text-[var(--brand-foreground)]">上传或粘贴题目</h3>
+                    <p id="practiceInputKicker" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-muted-foreground)]">原题</p>
+                    <h3 id="practiceInputTitle" class="text-[15px] font-bold text-[var(--brand-foreground)]">上传或粘贴题目</h3>
                   </div>
                   <span id="practiceSourceStatus" class="inline-flex items-center gap-1 rounded-full bg-[var(--state-warning-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--state-warning)]">
                     <i data-lucide="clock" class="h-3.5 w-3.5"></i>等待输入
                   </span>
                 </div>
 
-                <!-- Tab switcher -->
-                <div class="flex gap-1 rounded-[var(--brand-radius-md)] bg-[var(--brand-muted)] p-1">
-                  <button type="button" class="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-[var(--brand-primary)] px-3 py-1.5 text-[13px] font-semibold text-white">
-                    <i data-lucide="clipboard-paste" class="h-3.5 w-3.5"></i>粘贴文字
-                  </button>
-                  <label for="practiceFile" class="flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[6px] px-3 py-1.5 text-[13px] font-medium text-[var(--brand-muted-foreground)] hover:text-[var(--brand-foreground)]">
-                    <i data-lucide="upload-cloud" class="h-3.5 w-3.5"></i>上传文件
-                  </label>
-                </div>
-
                 <textarea id="practiceQuestionText" name="practiceQuestionText" rows="7"
                   class="min-h-[160px] w-full resize-y rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] p-3.5 text-[14px] leading-[1.7] text-[var(--brand-foreground)] outline-none transition focus:border-[var(--brand-primary)] focus:bg-[var(--brand-card)] focus:ring-2 focus:ring-[rgba(30,58,138,0.12)]"
                   placeholder="粘贴题目文字，或在这里按 Command/Ctrl + V 直接粘贴截图。公式可以使用 LaTeX。"></textarea>
+                <div id="practiceWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的出题工作区。</span><button id="practiceWorkspaceDraftClear" type="button" class="text-button">清除并新建</button></div>
 
                 <div class="flex flex-col gap-2">
                   <label class="flex cursor-pointer items-center gap-2 rounded-[var(--brand-radius-md)] border border-dashed border-[var(--brand-border)] bg-[var(--brand-muted)] px-3 py-2 text-[12px] text-[var(--brand-muted-foreground)] hover:border-[var(--brand-primary)] hover:text-[var(--brand-foreground)] transition">
                     <i data-lucide="paperclip" class="h-4 w-4"></i>
-                    <span><strong>上传题目文件</strong><small class="ml-2">图片、PDF、Word，可多选</small></span>
+                    <span><strong id="practiceUploadLabel">上传题目文件</strong><small class="ml-2">图片、PDF、Word，可多选</small></span>
                     <input id="practiceFile" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,.pdf,.docx,.txt,.md" hidden>
                   </label>
-                  <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择文件，也可以直接粘贴截图</span></div>
+                <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择文件，也可以直接粘贴截图</span></div>
                 </div>
 
+                <label class="practice-blueprint-toggle">
+                  <span><strong>审查出题蓝图</strong><small>开启后可逐题调整蓝图；关闭后从范围确认直接生题。</small></span>
+                  <input id="practiceBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
+                </label>
+                <label class="practice-blueprint-toggle practice-source-content-toggle">
+                  <span><strong>正式生题时参考来源材料</strong><small>开启后会参考原题题面或知识材料中的图文、公式和表格。</small></span>
+                  <input id="practiceIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
+                </label>
+                <p id="practiceSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+
                 <p class="flex items-center gap-1.5 text-[12px] text-[var(--brand-muted-foreground)]">
-                  <i data-lucide="paperclip" class="h-3.5 w-3.5"></i>也可以直接粘贴截图 (Cmd+V)
+                  <i data-lucide="paperclip" class="h-3.5 w-3.5"></i><span id="practicePasteHint">也可以直接粘贴截图 (Cmd+V)</span>
                 </p>
               </form>
 
-              <!-- Presets -->
-              <section id="section-presets">
-                <p class="mb-2 text-[12px] font-bold text-[var(--brand-muted-foreground)]">快速预设</p>
-                <div id="practicePresets" class="grid grid-cols-3 gap-2" role="group" aria-label="训练配置预设">
-                  <button type="button" class="preset-card practice-preset active" data-practice-preset="basic">
-                    <i data-lucide="sprout" class="h-4 w-4 text-[var(--brand-primary)]"></i>
-                    <p class="mt-1.5 text-[12px] font-bold text-[var(--brand-foreground)]">基础巩固</p>
-                    <p class="text-[10px] text-[var(--brand-muted-foreground)]">5 题 · 基础到进阶</p>
-                  </button>
-                  <button type="button" class="preset-card practice-preset" data-practice-preset="error">
-                    <i data-lucide="target" class="h-4 w-4 text-[var(--brand-primary)]"></i>
-                    <p class="mt-1.5 text-[12px] font-bold text-[var(--brand-foreground)]">易错强化</p>
-                    <p class="text-[10px] text-[var(--brand-muted-foreground)]">8 题 · 同等难度</p>
-                  </button>
-                  <button type="button" class="preset-card practice-preset" data-practice-preset="advanced">
-                    <i data-lucide="rocket" class="h-4 w-4 text-[var(--brand-primary)]"></i>
-                    <p class="mt-1.5 text-[12px] font-bold text-[var(--brand-foreground)]">综合提升</p>
-                    <p class="text-[10px] text-[var(--brand-muted-foreground)]">10 题 · 进阶到挑战</p>
-                  </button>
+              <aside class="practice-next-step-card" aria-label="按题生题模型与解析设置">
+                <div class="practice-next-step-card__heading">
+                  <span><i data-lucide="sliders-horizontal"></i></span>
+                  <div>
+                    <h3>模型与解析设置</h3>
+                    <p>先识别原题考点；题量、题型和难度将在范围确认时设置。</p>
+                  </div>
                 </div>
-              </section>
+                <button id="practiceModelSettingsLink" type="button" class="practice-current-model-strip" onclick="openCurrentPracticeModelSettings()" title="打开按题出题模型配置">
+                  <i data-lucide="cpu" class="h-3.5 w-3.5"></i>
+                  <span>按题生题专用模型</span>
+                  <strong id="practiceCurrentModelBadge">正在读取...</strong>
+                  <i data-lucide="chevron-right" class="h-3.5 w-3.5"></i>
+                </button>
+                <p class="practice-next-step-card__hint"><i data-lucide="info"></i>模型配置独立保存，API Key 仍由统一配置中心管理。</p>
+                <p id="practiceError" class="practice-error hidden" role="alert"></p>
+              </aside>
 
               <!-- Advanced Config -->
               <details id="practiceConfigCard" class="practice-config-card practice-config-card--collapsed rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-muted)]">
                 <summary id="practiceConfigToggle" class="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-3" aria-expanded="false">
                   <div class="flex items-center gap-2">
                     <i data-lucide="sliders-horizontal" class="h-4 w-4 text-[var(--brand-primary)]"></i>
-                    <span class="text-[13px] font-bold text-[var(--brand-foreground)]">训练配置</span>
+                    <span id="practiceConfigTitle" class="text-[13px] font-bold text-[var(--brand-foreground)]">训练配置</span>
                   </div>
                   <div class="flex items-center gap-2">
                     <strong id="practiceConfigSummary" class="text-[11px] text-[var(--brand-muted-foreground)] font-normal">5 题 · 基础到进阶 · 题型随机</strong>
@@ -353,22 +573,6 @@
                   </div>
                 </summary>
                 <div id="practiceConfigBody" class="px-3.5 pb-3.5 pt-0 space-y-3">
-                  <div class="grid grid-cols-2 gap-2">
-                    <label class="text-[11px] font-semibold text-[var(--brand-foreground)]">题量
-                      <select id="practiceCount" class="mt-1 w-full rounded-[var(--brand-radius-sm)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1.5 text-[12px]">
-                        <option value="3">3 题</option>
-                        <option value="5" selected>5 题</option>
-                        <option value="8">8 题</option>
-                      </select>
-                    </label>
-                    <label class="text-[11px] font-semibold text-[var(--brand-foreground)]">难度梯度
-                      <select id="practiceDifficulty" class="mt-1 w-full rounded-[var(--brand-radius-sm)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1.5 text-[12px]">
-                        <option value="基础到进阶" selected>基础 → 进阶</option>
-                        <option value="同等难度">同等难度</option>
-                        <option value="进阶到挑战">进阶 → 挑战</option>
-                      </select>
-                    </label>
-                  </div>
                   <fieldset class="border-0 p-0">
                     <legend class="text-[11px] font-semibold text-[var(--brand-foreground)]">输出题型 <small class="text-[var(--brand-muted-foreground)]">可多选；不选则随机</small></legend>
                     <div class="mt-1 flex flex-wrap gap-1.5">
@@ -382,23 +586,18 @@
                       <label class="cursor-pointer"><input type="checkbox" name="practiceQuestionType" value="综合题" class="peer sr-only"><span class="inline-block rounded-full border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1 text-[10px] font-semibold text-[var(--brand-muted-foreground)] peer-checked:border-[var(--brand-primary)] peer-checked:bg-[var(--state-info-bg)] peer-checked:text-[var(--brand-primary)]">综合题</span></label>
                     </div>
                   </fieldset>
-                  <label class="text-[11px] font-semibold text-[var(--brand-foreground)]">专项要求
+                  <label class="text-[11px] font-semibold text-[var(--brand-foreground)]"><span id="practiceFocusLabel">专项要求</span>
                     <input id="practiceFocus" type="text" placeholder="例如：重点练习受力分析，不增加超纲知识" class="mt-1 w-full rounded-[var(--brand-radius-sm)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-2 py-1.5 text-[12px]">
                   </label>
                   <p class="flex items-start gap-1.5 rounded-[var(--brand-radius-sm)] bg-[var(--state-info-bg)] p-2 text-[11px] text-[var(--state-info)]">
-                    <i data-lucide="link" class="h-3.5 w-3.5 mt-0.5"></i>
-                    自动使用原平台"结构化解析"模型与已保存的 API Key；上传图片时自动使用原平台"有图题读图"模型。
+                    <i data-lucide="cpu" class="h-3.5 w-3.5 mt-0.5"></i>
+                    <span id="practiceModelNote">按题出题使用独立模型配置，API Key 始终从统一配置中心读取。</span>
                   </p>
+                  <button id="practiceModelPageLink" class="outline-button practice-model-page-link" type="button" onclick="openCurrentPracticeModelSettings()">
+                    <i data-lucide="settings-2" class="h-4 w-4"></i><span id="practiceModelPageLabel">打开按题出题模型配置</span>
+                  </button>
                 </div>
               </details>
-
-              <!-- Generate Button -->
-              <button id="practiceGenerateBtn" type="submit" form="practiceForm"
-                class="flex h-12 w-full items-center justify-center gap-2 rounded-[var(--brand-radius-md)] text-[14px] font-bold text-white shadow-[var(--shadow-primary)] transition hover:brightness-110 active:scale-[0.99]"
-                style="background: linear-gradient(135deg, #1e3a8a, #2d4ba8);">
-                <i data-lucide="workflow" class="h-4 w-4"></i>先解析并生成训练蓝图
-              </button>
-              <p id="practiceError" class="practice-error hidden" role="alert"></p>
 
               <!-- History -->
               <details class="rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)]">
@@ -407,13 +606,11 @@
                     <i data-lucide="history" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
                     <span class="text-[13px] font-bold text-[var(--brand-foreground)]">历史练习</span>
                   </div>
-                  <div class="flex items-center gap-2">
-                    <button type="button" id="practiceShowAllHistory" class="text-[11px] font-semibold text-[var(--brand-primary)] hover:underline">查看全部</button>
-                    <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
-                  </div>
+                  <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
                 </summary>
                 <div class="px-3.5 pb-3.5 pt-0 space-y-2">
                   <div id="practiceRecentList" class="space-y-1"><p class="text-[12px] text-[var(--brand-muted-foreground)]">暂无历史记录</p></div>
+                  <button type="button" id="practiceShowAllHistory" class="text-[11px] font-semibold text-[var(--brand-primary)] hover:underline">查看全部历史</button>
                   <div id="practiceHistoryList" class="hidden"></div>
                 </div>
               </details>
@@ -422,17 +619,17 @@
 
             <!-- ===== Collapsed icon rail ===== -->
             <div class="sidebar-icons flex-col items-center gap-2 pt-1">
-              <button id="practiceSidebarExpand" class="rail-toggle" title="展开侧栏">
+              <button id="practiceSidebarExpand" type="button" aria-controls="workbench-sidebar" aria-expanded="false" class="rail-toggle" title="展开侧栏">
                 <i data-lucide="chevron-right" class="h-5 w-5"></i>
               </button>
               <div class="my-1 h-px w-8 bg-[var(--brand-border)]"></div>
-              <button class="rail-icon-btn" title="原题输入"><i data-lucide="clipboard-paste" class="h-5 w-5"></i></button>
-              <button class="rail-icon-btn" title="快速预设"><i data-lucide="sprout" class="h-5 w-5"></i></button>
-              <button class="rail-icon-btn" title="训练配置"><i data-lucide="sliders-horizontal" class="h-5 w-5"></i></button>
-              <button type="button" class="rail-icon-btn rail-icon-btn--primary" title="先解析并生成训练蓝图" onclick="document.getElementById('practiceForm').requestSubmit()">
+              <button id="practiceRailInput" type="button" class="rail-icon-btn" title="原题输入"><i data-lucide="clipboard-paste" class="h-5 w-5"></i></button>
+              <button id="practiceRailPresets" type="button" class="rail-icon-btn" title="快速预设"><i data-lucide="sprout" class="h-5 w-5"></i></button>
+              <button id="practiceRailConfig" type="button" class="rail-icon-btn" title="训练配置"><i data-lucide="sliders-horizontal" class="h-5 w-5"></i></button>
+              <button id="practiceRailGenerateBtn" type="button" class="rail-icon-btn rail-icon-btn--primary" title="请先粘贴材料或上传文件" aria-label="解析材料并生成训练蓝图" onclick="document.getElementById('practiceForm').requestSubmit()" disabled>
                 <i data-lucide="workflow" class="h-5 w-5"></i>
               </button>
-              <button class="rail-icon-btn" title="历史练习"><i data-lucide="history" class="h-5 w-5"></i></button>
+              <button id="practiceRailHistory" type="button" class="rail-icon-btn" title="历史练习"><i data-lucide="history" class="h-5 w-5"></i></button>
             </div>
 
           </aside>
@@ -444,20 +641,20 @@
             <section id="section-stage" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-3.5 shadow-[var(--shadow-card)]">
               <div class="flex items-center gap-2 mb-2">
                 <i data-lucide="workflow" class="h-4 w-4 text-[var(--brand-primary)]"></i>
-                <span class="text-[13px] font-semibold text-[var(--brand-foreground)]">生成进度</span>
+                <span class="text-[13px] font-semibold text-[var(--brand-foreground)]">任务进度</span>
               </div>
               <ol id="practiceStageBar" class="stage-bar">
-                <li class="stage-step stage-step--active practice-step" data-stage="submit"><b>1</b><span>提交原题</span></li>
+                <li class="stage-step stage-step--active practice-step" data-stage="submit"><b>1</b><span id="practiceSubmitStageLabel">提交原题</span></li>
                 <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
                 <li class="stage-step stage-step--idle practice-step" data-stage="analyze"><b>2</b><span>解析考点</span></li>
                 <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
                 <li class="stage-step stage-step--idle practice-step" data-stage="scope"><b>3</b><span>范围确认</span></li>
-                <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
-                <li class="stage-step stage-step--idle practice-step" data-stage="plan"><b>4</b><span>设计蓝图</span></li>
+                <i id="practicePlanStageArrow" data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
+                <li id="practicePlanStageStep" class="stage-step stage-step--idle practice-step" data-stage="plan"><b>4</b><span>设计蓝图</span></li>
                 <i data-lucide="chevron-right" class="stage-arrow h-4 w-4"></i>
                 <li class="stage-step stage-step--idle practice-step" data-stage="generate"><b>5</b><span>生成练习</span></li>
               </ol>
-              <p id="practiceStageDescription" class="mt-3 text-[12px] leading-relaxed text-[var(--brand-muted-foreground)]">提交题目后，平台会先判断是单题还是题目集；单题将直接进入蓝图，题目集需要先选择训练范围。</p>
+              <p id="practiceStageDescription" class="mt-3 text-[12px] leading-relaxed text-[var(--brand-muted-foreground)]">提交材料后先解析考点与范围；确认生成方式、题量、题型和难度后，才会设计蓝图。</p>
             </section>
 
             <!-- Status Meta Row -->
@@ -468,6 +665,7 @@
               <span id="practiceStatusBanner" class="inline-flex items-center gap-1.5 rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">
                 <i data-lucide="circle-dot" class="h-3.5 w-3.5"></i>就绪
               </span>
+              <button id="practiceWorkspaceDraftClearActive" type="button" class="text-button hidden">清除恢复内容并新建</button>
             </div>
 
             <!-- Empty State -->
@@ -476,7 +674,7 @@
                 <i data-lucide="route" class="h-8 w-8 text-[var(--brand-primary)]"></i>
               </div>
               <h2 class="mt-5 text-[20px] font-bold text-[var(--brand-foreground)]">练习方案将在这里生成</h2>
-              <p class="mt-2 max-w-[440px] text-[14px] leading-relaxed text-[var(--brand-muted-foreground)]">系统会先判断单题或题目集；题目集需选择原题后，再生成训练蓝图。</p>
+              <p class="mt-2 max-w-[440px] text-[14px] leading-relaxed text-[var(--brand-muted-foreground)]">系统先识别原题或知识单元，再由你确认整体综合或逐项出题方式。</p>
               <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
                 <span class="rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">考点识别</span>
                 <span class="rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">训练蓝图</span>
@@ -506,18 +704,67 @@
                 <span class="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[var(--brand-border)] border-t-[var(--brand-primary)]"></span>
               </div>
               <h3 id="practiceLoadingTitle" class="mt-5 text-[20px] font-bold text-[var(--brand-foreground)]">正在解析原题并设计训练梯度</h3>
-              <p class="mt-2 max-w-[440px] text-[14px] leading-relaxed text-[var(--brand-muted-foreground)]">复杂题目可能需要一点时间，请保持页面打开。</p>
+              <div id="practiceLiveProgress" class="practice-live-progress" aria-live="polite">
+                <strong id="practiceLoadingDetail">任务已在后台开始</strong>
+                <div>
+                  <span><i class="fas fa-clock"></i><b id="practiceLoadingElapsed">刚刚开始</b></span>
+                  <span><i class="fas fa-circle-check"></i>当前内容已保留</span>
+                </div>
+                <p>可以离开当前页面，任务会继续；稍后从任务列表返回即可。</p>
+              </div>
+            </div>
+
+            <div id="practiceScopeResume" class="practice-scope-resume hidden">
+              <div class="practice-scope-resume__icon"><i data-lucide="list-checks"></i></div>
+              <p class="practice-scope-resume__eyebrow">第 3 步 · 范围确认</p>
+              <h3>考点与出题范围待确认</h3>
+              <p>材料解析已完成。请继续确认整体综合或逐项出题，并设置题量、题型与难度。</p>
+              <div class="practice-scope-resume__facts" aria-label="当前状态">
+                <span><i class="fas fa-circle-check"></i>解析结果已保留</span>
+                <span><i class="fas fa-shield-halved"></i>收起面板不会取消任务</span>
+              </div>
+              <div class="practice-scope-resume__actions">
+                <button id="practiceScopeResumeBackBtn" class="secondary-button" type="button"><i class="fas fa-arrow-left"></i><span>返回修改材料</span></button>
+                <button id="practiceScopeResumeBtn" class="practice-generate-button" type="button"><i class="fas fa-list-check"></i><span>继续确认范围</span></button>
+              </div>
             </div>
 
             <!-- Plan Review -->
             <div id="practicePlanReview" class="practice-plan-review hidden rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)]">
-              <header class="mb-4">
-                <p class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">第一阶段完成</p>
+              <header class="practice-plan-review-head mb-4">
+                <div class="practice-plan-review-kicker"><p id="practicePlanReviewMode" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">第一阶段完成 · 蓝图审查</p><span id="practicePlanCountBadge">0 项待审查</span></div>
                 <h3 id="practicePlanGoal" class="mt-1 text-[18px] font-bold text-[var(--brand-foreground)]">训练蓝图</h3>
+                <label class="practice-plan-goal-editor">训练目标<input id="practicePlanGoalInput" type="text" maxlength="300"></label>
+                <p class="practice-plan-edit-hint"><i class="fas fa-pen-to-square"></i>下方内容可直接修改；若整体方向不合理，可重新生成整份蓝图。</p>
               </header>
+              <section id="practicePlanCandidateActions" class="hidden mb-4 rounded-[var(--brand-radius-md)] border border-[#bfdbfe] bg-[#eff6ff] p-3 text-[13px] text-[#1e3a5f]"><strong>新版蓝图候选已生成</strong><p class="mt-1">原蓝图仍保留，请选择采用新版或恢复原版。</p><div class="mt-2 flex gap-2"><button id="practicePlanAdoptCandidateBtn" type="button" class="primary-button">采用新版</button><button id="practicePlanKeepOriginalBtn" type="button" class="secondary-button">保留原版</button></div></section>
               <section id="practicePlanAnalysis" class="mb-4 rounded-[var(--brand-radius-md)] bg-[var(--brand-muted)] p-3 text-[13px]"></section>
+              <section id="practicePlanCoverage" class="practice-plan-coverage mb-4 hidden rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] p-3 text-[13px]">
+                <div class="mb-1 flex items-center justify-between">
+                  <strong><i class="fas fa-table-cells"></i> 来源覆盖</strong>
+                  <span id="practicePlanCoverageBadge"></span>
+                </div>
+                <p id="practicePlanCoverageText"></p>
+              </section>
+              <section class="practice-plan-multi-question mb-4" aria-labelledby="practiceBlueprintMultiQuestionTitle">
+                <label class="practice-blueprint-toggle">
+                  <span><strong id="practiceBlueprintMultiQuestionTitle">每个蓝图生成多道题</strong><small>关闭时保持当前一项蓝图生成一题；开启后每项生成 2～3 道具有实质差异的变式题。</small></span>
+                  <input id="practiceBlueprintMultiQuestionEnabled" type="checkbox" role="switch"><i></i>
+                </label>
+                <div id="practiceBlueprintMultiQuestionOptions" class="practice-plan-multi-question__options hidden">
+                  <label>每项题数<select id="practiceBlueprintVariantsPerItem"><option value="2">2 道</option><option value="3" selected>3 道</option></select></label>
+                  <label>训练方式<select id="practiceBlueprintVariantMode"><option value="progressive" selected>递进训练（自动安排难度梯度）</option><option value="same_difficulty">同难度变式</option></select></label>
+                  <p id="practiceBlueprintMultiQuestionSummary" role="status"></p>
+                </div>
+              </section>
+              <p id="practicePlanDraftSummary" class="practice-plan-draft-summary hidden"></p>
+              <p id="practicePlanError" class="practice-error hidden" role="alert"></p>
+              <div class="practice-plan-review-toolbar">
+                <div><strong>逐题审查</strong><span>核对题型、难度、目标能力和设计意图</span></div>
+                <div><button id="practicePlanAddBtn" type="button"><i class="fas fa-plus"></i>新增计划项</button><button id="practicePlanExpandAllBtn" type="button">全部展开</button><button id="practicePlanCollapseAllBtn" type="button">全部收起</button><button id="practicePlanRegenerateBtn" type="button"><i class="fas fa-rotate"></i>重新生成蓝图</button></div>
+              </div>
               <div id="practicePlanList" class="mb-4 space-y-2"></div>
-              <footer class="flex items-center justify-end gap-3 pt-3 border-t border-[var(--brand-border)]">
+              <footer class="practice-plan-review-actions flex items-center justify-end gap-3 pt-3 border-t border-[var(--brand-border)]">
                 <button id="practicePlanBackBtn" type="button" class="flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] hover:bg-[var(--brand-muted)] transition">
                   <i data-lucide="arrow-left" class="h-4 w-4"></i>返回调整
                 </button>
@@ -528,37 +775,34 @@
             </div>
 
             <!-- Results -->
-            <div id="practiceResults" class="practice-results hidden space-y-5">
+            <div id="practiceResults" class="practice-results hidden">
               <section class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)]">
-                <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div class="practice-result-toolbar flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div class="min-w-0">
                     <p id="practiceResultMode" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">专项练习已生成</p>
                     <h3 id="practiceTrainingGoal" class="mt-1 text-lg font-bold leading-snug text-[var(--brand-foreground)]">训练目标</h3>
                   </div>
                   <div id="practicePrimaryActions" class="flex flex-shrink-0 flex-wrap items-center gap-2">
-                    <button id="practiceWordBtn" type="button" disabled class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] bg-[var(--brand-primary)] px-3.5 py-2 text-[12px] font-semibold text-white opacity-60 cursor-not-allowed">
-                      <i data-lucide="download" class="h-4 w-4"></i>下载 Word
-                    </button>
-                    <button id="practiceCopyBtn" type="button" disabled class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] opacity-60 cursor-not-allowed">
-                      <i data-lucide="copy" class="h-4 w-4"></i>复制全部
-                    </button>
-                    <button id="practiceSaveBtn" type="button" disabled class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] opacity-60 cursor-not-allowed">
-                      <i data-lucide="save" class="h-4 w-4"></i>保存修改
-                    </button>
-                    <button id="practiceBackToPlanBtn" type="button" class="inline-flex items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-card)] px-3.5 py-2 text-[12px] font-semibold text-[var(--brand-foreground)] hover:bg-[var(--brand-muted)] transition">
-                      <i data-lucide="layout-grid" class="h-4 w-4"></i>回到蓝图
-                    </button>
+                    <section id="practiceSelectionActions" class="hidden flex flex-wrap items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-muted)] p-1.5" aria-label="已选题目操作">
+                      <span id="practiceSelectionCount" class="practice-selection-count" aria-live="polite">已选 0 题</span>
+                      <span class="practice-selection-divider" aria-hidden="true"></span>
+                      <button id="practiceSelectAllBtn" type="button" class="practice-selection-text" title="全选全部题目" aria-label="全选全部题目">全选</button>
+                      <button id="practiceClearSelectedBtn" type="button" class="practice-selection-text" title="清除选择" aria-label="清除选择">清除选择</button>
+                      <button id="practiceDownloadSelectedBtn" type="button" class="practice-selection-action" disabled><i class="fas fa-file-word"></i><span>下载 Word</span></button>
+                      <button id="practiceRegenerateSetBtn" type="button" class="practice-selection-action" disabled title="重新生成已选题目"><i class="fas fa-rotate"></i><span>重新生成</span></button>
+                    </section>
                   </div>
                 </div>
               </section>
 
               <div id="practiceQuality" class="rounded-xl p-4"></div>
 
+              <div id="practiceResultContext" class="practice-result-context">
               <details id="practiceAnalysisSummary" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] shadow-[var(--shadow-card)]">
                 <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4">
                   <div class="flex items-center gap-2">
                     <i data-lucide="microscope" class="h-4 w-4 text-[var(--brand-primary)]"></i>
-                    <span class="text-[14px] font-bold text-[var(--brand-foreground)]">原题诊断</span>
+                    <span id="practiceAnalysisSummaryLabel" class="text-[14px] font-bold text-[var(--brand-foreground)]">原题诊断</span>
                     <span id="practiceAnalysisMeta" class="text-[11px] text-[var(--brand-muted-foreground)]"></span>
                   </div>
                   <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
@@ -570,13 +814,16 @@
                 </div>
               </details>
 
-              <section id="practiceBlueprintSummary" class="rounded-[var(--brand-radius-lg)] border border-[#ddd6fe] p-5 shadow-[var(--shadow-card)]" style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);">
-                <div class="mb-4 flex items-center gap-2">
-                  <i data-lucide="layout-grid" class="h-4 w-4" style="color: #7c3aed;"></i>
-                  <span class="text-[11px] font-semibold uppercase tracking-wider" style="color: #7c3aed;">训练蓝图</span>
-                </div>
-                <h4 class="mb-4 text-[15px] font-bold text-[var(--brand-foreground)]">知识点与难度分布</h4>
-                <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <details id="practiceBlueprintSummary" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] shadow-[var(--shadow-card)]">
+                <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <i data-lucide="layout-grid" class="h-4 w-4 text-[var(--brand-primary)]"></i>
+                    <span class="text-[14px] font-bold text-[var(--brand-foreground)]">训练蓝图</span>
+                    <span class="text-[11px] text-[var(--brand-muted-foreground)]">知识点与难度分布</span>
+                  </div>
+                  <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--brand-muted-foreground)]"></i>
+                </summary>
+                <div class="practice-context-detail grid grid-cols-1 gap-5 border-t border-[var(--brand-border)] px-5 py-4 sm:grid-cols-2">
                   <div>
                     <div class="mb-2.5 text-[11px] font-semibold text-[var(--brand-muted-foreground)]">知识点分布</div>
                     <div id="practiceKnowledgeBars" class="space-y-3"></div>
@@ -586,7 +833,8 @@
                     <div id="practiceDifficultyBars" class="space-y-3"></div>
                   </div>
                 </div>
-              </section>
+              </details>
+              </div>
 
               <div id="practiceExerciseFilters" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-4 shadow-[var(--shadow-card)]">
                 <div class="flex flex-col gap-3">
@@ -614,43 +862,251 @@
 
           </section>
         </div>
-      </main>
+      </div>
 
-      <script>
-        lucide.createIcons();
+      <aside id="practiceWorkflowActions" class="practice-workflow-actions hidden" aria-label="模拟出题任务导航">
+        <div class="practice-workflow-actions__inner">
+          <div class="practice-workflow-actions__context">
+            <span id="practiceWorkflowActionStep">第 1 步 · 提交材料</span>
+            <strong id="practiceWorkflowActionHint">确认材料后开始解析考点与范围</strong>
+          </div>
+          <div class="practice-workflow-actions__buttons">
+            <button id="practiceWorkflowBackBtn" type="button" class="practice-workflow-actions__back">
+              <i data-lucide="arrow-left" class="h-4 w-4"></i><span>返回首页</span>
+            </button>
+            <button id="practiceGenerateBtn" type="submit" form="practiceForm" class="practice-workflow-actions__primary" disabled>
+              <i data-lucide="workflow" class="h-4 w-4"></i><span id="practiceGenerateLabel">解析考点与范围</span>
+            </button>
+            <button id="practiceWorkflowPrimaryBtn" type="button" class="practice-workflow-actions__primary hidden">
+              <i data-lucide="arrow-right" class="h-4 w-4"></i><span>下一步</span>
+            </button>
+          </div>
+        </div>
+      </aside>
 
-        function togglePracticeSidebar() {
-          const sidebar = document.getElementById('workbench-sidebar');
-          const grid = document.querySelector('.workbench-grid');
-          sidebar.classList.toggle('sidebar-collapsed');
-          grid.classList.toggle('sidebar-collapsed');
-          const isCollapsed = sidebar.classList.contains('sidebar-collapsed');
-          try { localStorage.setItem('practiceSidebarCollapsed', isCollapsed ? '1' : '0'); } catch (e) {}
-          document.querySelectorAll('[id^="practiceSidebar"] [data-lucide], [id^="practiceSidebar"] svg').forEach(function(el) {
-            var iconName = isCollapsed ? 'chevron-right' : 'chevron-left';
-            if (el.tagName === 'I') { el.setAttribute('data-lucide', iconName); }
-            else if (el.tagName === 'svg') {
-              var newIcon = document.createElement('i');
-              newIcon.setAttribute('data-lucide', iconName);
-              newIcon.className = el.getAttribute('class') || 'h-5 w-5';
-              el.replaceWith(newIcon);
-            }
-          });
-          lucide.createIcons();
-        }
+      <div id="practiceScopeDrawer" class="practice-scope-drawer hidden" aria-hidden="true">
+        <div class="practice-scope-drawer__scrim" data-practice-scope-scrim></div>
+        <aside class="practice-scope-drawer__panel" role="dialog" aria-modal="true" aria-labelledby="practiceSourceSetTitle" tabindex="-1">
+          <header class="practice-scope-drawer__head">
+            <div>
+              <span id="practiceScopeEyebrow">考点 / 范围确认</span>
+              <h3 id="practiceSourceSetTitle">确认参与出题的内容与生成方式</h3>
+            </div>
+            <div class="practice-scope-drawer__head-actions">
+              <small id="practiceSourceCount">0 道原题</small>
+              <button id="practiceScopeCloseBtn" type="button" aria-label="关闭范围确认"><i class="fas fa-xmark"></i></button>
+            </div>
+          </header>
+          <div class="practice-scope-drawer__body">
+          <p id="practiceScopeIntro" class="practice-scope-drawer__intro">先确认内容范围和出题方式，再设置题量、题型与难度；确认后才会生成可编辑蓝图。</p>
+          <fieldset class="practice-strategy-picker">
+            <legend>生成方式 <small>必须选择一项</small></legend>
+            <div>
+              <label>
+                <input type="radio" name="practiceSetStrategy" value="targeted_set">
+                <span><i class="fas fa-bullseye"></i><strong>整体综合出题</strong><small>综合全部选中内容，生成指定总题量</small></span>
+              </label>
+              <label>
+                <input type="radio" name="practiceSetStrategy" value="parallel_exam">
+                <span><i class="fas fa-clone"></i><strong>一一对应出题</strong><small>每个选中项目对应一道题</small></span>
+              </label>
+              <label>
+                <input type="radio" name="practiceSetStrategy" value="per_question">
+                <span><i class="fas fa-code-branch"></i><strong>逐项出题</strong><small>每个选中项目生成若干道题</small></span>
+              </label>
+              <label class="practice-knowledge-strategy hidden">
+                <input type="radio" name="practiceSetStrategy" value="knowledge_overall">
+                <span><i class="fas fa-layer-group"></i><strong>知识点综合覆盖</strong><small>综合全部知识单元生成指定总题量</small></span>
+              </label>
+              <label class="practice-knowledge-strategy hidden">
+                <input type="radio" name="practiceSetStrategy" value="knowledge_item_wise">
+                <span><i class="fas fa-list-check"></i><strong>知识单元逐项扩展</strong><small>每个知识单元至少对应一道题</small></span>
+              </label>
+            </div>
+          </fieldset>
+          <div id="practiceStrategySettings" class="practice-strategy-settings hidden">
+            <label id="practiceTargetedCountRow">练习题量
+              <input id="practiceTargetedCount" type="number" min="1" max="20" value="5">
+            </label>
+            <label id="practiceKnowledgePerCountRow" class="hidden">每知识点生题数
+              <input id="practiceKnowledgePerCount" type="number" min="1" max="3" value="1">
+            </label>
+            <label id="practiceVariantsRow" class="hidden">每道原题变式数
+              <select id="practiceVariantsPerQuestion"><option value="1">1 道</option><option value="2">2 道</option><option value="3">3 道</option></select>
+            </label>
+            <p id="practiceStrategyHint"></p>
+            <p id="practiceTargetedCountRisk" class="practice-strategy-risk hidden" role="status"></p>
+          </div>
+          <section class="practice-scope-config" aria-labelledby="practiceScopeConfigTitle">
+            <header><strong id="practiceScopeConfigTitle">出题配置</strong><small id="practiceScopeConfigHint">这些设置用于设计蓝图，后续仍可逐题修改</small></header>
+            <label class="practice-blueprint-toggle practice-source-content-toggle">
+              <span><strong>正式生题时参考来源材料</strong><small>仅影响后续正式生题；材料分析与蓝图设计始终使用已确认的分析结果。</small></span>
+              <input id="practiceScopeIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
+            </label>
+            <p id="practiceScopeSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+            <div class="practice-scope-config__grid">
+              <div class="practice-difficulty-counts" aria-labelledby="practiceDifficultyCountsLabel">
+                <span id="practiceDifficultyCountsLabel">各难度题数</span>
+                <label>基础<input id="practiceDifficultyBasicCount" type="number" min="0" max="30" value="3"></label>
+                <label>进阶<input id="practiceDifficultyIntermediateCount" type="number" min="0" max="30" value="2"></label>
+                <label>挑战<input id="practiceDifficultyChallengeCount" type="number" min="0" max="30" value="0"></label>
+                <strong id="practiceDifficultyAllocation">已分配 5 / 5 题</strong>
+              </div>
+              <label class="practice-scope-config__focus">补充要求
+                <input id="practiceScopeFocus" type="text" placeholder="例如：侧重跨知识点综合，不超出材料范围">
+              </label>
+            </div>
+            <fieldset>
+              <legend>题型 <small id="practiceScopeTypeHint">可多选；不选则由蓝图自动搭配</small></legend>
+              <div>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="单选题"><span>单选题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="多选题"><span>多选题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="判断题"><span>判断题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="填空题"><span>填空题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="简答题"><span>简答题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="计算题"><span>计算题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="作图题"><span>作图题</span></label>
+                <label><input type="checkbox" name="practiceScopeQuestionType" value="综合题"><span>综合题</span></label>
+              </div>
+            </fieldset>
+          </section>
+          <div class="practice-scope-drawer__section">
+            <header>
+              <strong id="practiceScopeItemsLabel">参与生成的内容</strong>
+              <label id="practiceScopeGranularityRow" class="practice-scope-granularity hidden">粒度
+                <select id="practiceScopeGranularity">
+                  <option value="top_level">顶层题</option>
+                  <option value="atomic">原子单元</option>
+                </select>
+              </label>
+              <div>
+                <button id="practiceAddSourceUnit" type="button"><i class="fas fa-plus"></i>新增</button>
+                <button id="practiceSelectAllSources" type="button">全选</button>
+                <button id="practiceClearSources" type="button">清空</button>
+              </div>
+            </header>
+            <div id="practiceSourceQuestionList" class="practice-source-question-list"></div>
+          </div>
+          <section id="practiceSourceDiagnostics" class="helper-box warning-box hidden" aria-live="polite">
+            <strong><i class="fas fa-triangle-exclamation"></i> 输入材料解析提示</strong>
+            <div id="practiceSourceDiagnosticsList"></div>
+          </section>
+          <p id="practiceSourceSelectionError" class="practice-error hidden" role="alert"></p>
+          </div>
+          <footer class="practice-scope-drawer__foot">
+            <div>
+              <span>预计生成</span>
+              <strong id="practiceScopePreviewCount">0 题</strong>
+            </div>
+            <div class="practice-scope-drawer__buttons">
+              <button id="practiceSourceBackBtn" class="secondary-button" type="button"><i class="fas fa-arrow-left"></i>返回修改</button>
+              <button id="practiceSourceConfirmBtn" class="practice-generate-button" type="button" disabled><i class="fas fa-diagram-project"></i><span>按确认范围设计蓝图</span></button>
+            </div>
+          </footer>
+        </aside>
+      </div>
 
-        document.getElementById('practiceSidebarCollapse')?.addEventListener('click', togglePracticeSidebar);
-        document.getElementById('practiceSidebarExpand')?.addEventListener('click', togglePracticeSidebar);
-
-        // Restore sidebar state
-        try {
-          if (localStorage.getItem('practiceSidebarCollapsed') === '1') {
-            document.getElementById('workbench-sidebar')?.classList.add('sidebar-collapsed');
-            document.querySelector('.workbench-grid')?.classList.add('sidebar-collapsed');
-          }
-        } catch (e) {}
-      </script>
+      <dialog id="practiceEditor" class="practice-editor" aria-labelledby="practiceEditorTitle">
+        <form method="dialog">
+          <header>
+            <div><span>题目编辑器</span><h3 id="practiceEditorTitle">编辑题目</h3></div>
+            <button type="submit" value="cancel" aria-label="关闭"><i class="fas fa-xmark"></i></button>
+          </header>
+          <div class="practice-editor-grid">
+            <label>题型<select id="practiceEditType"></select></label>
+            <label>难度<select id="practiceEditDifficulty"><option>基础</option><option>进阶</option><option>挑战</option></select></label>
+          </div>
+          <label>训练能力<input id="practiceEditSkill" type="text"></label>
+          <label>题干（Markdown / LaTeX）<textarea id="practiceEditStem" rows="7"></textarea></label>
+          <label>选项（每行一个）<textarea id="practiceEditOptions" rows="4"></textarea></label>
+          <details>
+            <summary>公式、表格与图表数据</summary>
+            <label>公式（每行：位置 | LaTeX | 说明）<textarea id="practiceEditFormulas" rows="4"></textarea></label>
+            <label>表格结构（JSON）<textarea id="practiceEditTables" rows="5" spellcheck="false"></textarea></label>
+            <label>图表结构（JSON）<textarea id="practiceEditFigures" rows="5" spellcheck="false"></textarea></label>
+          </details>
+          <p id="practiceEditorError" class="practice-error hidden" role="alert"></p>
+          <footer>
+            <button id="practiceEditorDiscardDraft" type="button" class="secondary-button hidden">放弃草稿</button>
+            <button type="submit" value="cancel" class="secondary-button">取消</button>
+            <button id="practiceEditorSave" type="submit" value="default" class="practice-generate-button">应用修改</button>
+          </footer>
+        </form>
+      </dialog>
     </section>
+
+    <section id="page-practice-models" class="page">
+      <div class="reference-medium task-model-page">
+        <div class="page-title reference-title task-model-title">
+          <span><i class="fas fa-layer-group"></i></span>
+          <div>
+            <p class="model-page-eyebrow">模拟出题 · 按题出题</p>
+            <h2>按题出题模型配置</h2>
+            <p>这套选择只供“按题出题”使用，不会修改真题解析或知识点出题。API Key 仍由全局配置中心统一管理。</p>
+          </div>
+        </div>
+        <div class="task-model-grid">
+          <article class="practice-model-setting">
+            <span class="task-model-icon"><i class="fas fa-pen-ruler"></i></span>
+            <div><h3>文字生成</h3><p>分析原题、提取考点、设计蓝图、生成与重做题目。</p></div>
+            <label>服务商<select id="practiceTextProviderSelect"></select></label>
+            <label>具体模型<select id="practiceTextModelSelect"></select></label>
+            <input id="practiceTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            <p id="practiceTextModelSummary">正在读取模型...</p>
+          </article>
+          <article class="practice-model-setting">
+            <span class="task-model-icon"><i class="fas fa-image"></i></span>
+            <div><h3>图片回退</h3><p>仅当主文字模型不支持多模态时，用于处理图片、截图和图表。</p></div>
+            <label>服务商<select id="practiceVisionProviderSelect"></select></label>
+            <label>具体模型<select id="practiceVisionModelSelect"></select></label>
+            <input id="practiceVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
+            <p id="practiceVisionModelSummary">正在读取模型...</p>
+          </article>
+        </div>
+        <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
+        <div class="page-actions reference-actions">
+          <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回业务首页</button>
+          <button class="primary-button" type="button" onclick="openPracticeEntry('exam')">进入按题出题<i class="fas fa-arrow-right"></i></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-knowledge-models" class="page">
+      <div class="reference-medium task-model-page">
+        <div class="page-title reference-title task-model-title">
+          <span><i class="fas fa-lightbulb"></i></span>
+          <div>
+            <p class="model-page-eyebrow">模拟出题 · 知识点出题</p>
+            <h2>知识点出题模型配置</h2>
+            <p>这套选择只供“知识点出题”使用，不会修改真题解析或按题出题。API Key 仍由全局配置中心统一管理。</p>
+          </div>
+        </div>
+        <div class="task-model-grid">
+          <article class="practice-model-setting">
+            <span class="task-model-icon"><i class="fas fa-brain"></i></span>
+            <div><h3>文字生成</h3><p>理解知识材料、规划难度与题型、生成完整题目和解析。</p></div>
+            <label>服务商<select id="knowledgeTextProviderSelect"></select></label>
+            <label>具体模型<select id="knowledgeTextModelSelect"></select></label>
+            <input id="knowledgeTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            <p id="knowledgeTextModelDetail">正在读取模型...</p>
+          </article>
+          <article class="practice-model-setting">
+            <span class="task-model-icon"><i class="fas fa-file-image"></i></span>
+            <div><h3>图片回退</h3><p>仅当主文字模型不支持多模态时，用于理解教材截图、插图和公式图片。</p></div>
+            <label>服务商<select id="knowledgeVisionProviderSelect"></select></label>
+            <label>具体模型<select id="knowledgeVisionModelSelect"></select></label>
+            <input id="knowledgeVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
+            <p id="knowledgeVisionModelDetail">正在读取模型...</p>
+          </article>
+        </div>
+        <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
+        <div class="page-actions reference-actions">
+          <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回业务首页</button>
+          <button class="primary-button" type="button" onclick="openKnowledgeEntry()">进入知识点出题<i class="fas fa-arrow-right"></i></button>
+        </div>
+      </div>
+    </section>
+
     <section id="page-env" class="page">
       <div class="reference-narrow">
         <div class="page-title reference-title">
@@ -678,9 +1134,9 @@
           <div class="model-config-header">
             <div>
               <h3><i class="fas fa-key text-purple"></i>模型 API 配置</h3>
-              <p>按解析职责分配模型。每个环节可以选择不同服务商和模型，全局设置用于 API Key、默认模型和连接测试。</p>
+              <p>按解析职责分配模型。每个环节可以选择不同服务商和具体模型；API Key 在独立配置页面统一管理。</p>
             </div>
-            <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置 API Key、默认模型、Thinking 模式和连接测试"><i class="fas fa-sliders"></i>全局设置</button>
+            <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置默认模型和 Thinking 模式"><i class="fas fa-sliders"></i>全局设置</button>
           </div>
           <div class="reference-form-stack">
             <p id="modelCapabilityRisk" class="model-capability-risk hidden"></p>
@@ -719,6 +1175,24 @@
                   <input id="answerModelInput" type="text" hidden placeholder="填写模型 ID">
                   <p id="answerModelHint" class="safe-note"><i class="fas fa-pen-to-square"></i>用于生成最终结构化答案、解析和答案修复。</p>
                   <span id="answerRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
+                </div>
+              </section>
+              <section class="model-role-config-card">
+                <div class="model-role-card-head">
+                  <span class="model-role-icon green"><i class="fas fa-shield-check"></i></span>
+                  <div>
+                    <strong>高风险正确性复核</strong>
+                    <p>只复核计算、作图综合题，并负责失败题纠错。</p>
+                  </div>
+                </div>
+                <div class="model-role-card-body">
+                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <select id="correctnessProviderSelect"></select>
+                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <select id="correctnessModelSelect"></select>
+                  <input id="correctnessModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <p id="correctnessModelHint" class="safe-note"><i class="fas fa-shield-check"></i>仅在高风险题复核及其单题修复时调用；默认与结构化解析模型相同。</p>
+                  <span id="correctnessRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
               <section class="model-role-config-card">
@@ -762,17 +1236,11 @@
               <summary>全局模型设置</summary>
               <div class="model-advanced-copy">
                 <strong>全局设置用于管理所有题型共用的基础能力</strong>
-                <span>包括 API Key、默认模型、Thinking 模式、连接测试和本机 Key 保存。</span>
+                <span>这里只管理服务商、具体模型和 Thinking 模式；API Key 请到独立的“API 配置”页面统一管理。</span>
               </div>
               <div class="model-base-settings">
                 <label>API 服务商</label>
                 <select id="providerSelect"></select>
-                <label>API Key</label>
-                <div class="api-key-field">
-                  <input id="providerKeyInput" type="password" autocomplete="off" placeholder="请输入您的 API Key">
-                  <button id="toggleProviderKeyBtn" class="icon-plain-button" type="button" title="显示或隐藏 API Key"><i class="fas fa-eye"></i></button>
-                </div>
-                <p id="providerKeyHint" class="safe-note"><i class="fas fa-info-circle"></i>API Key 仅保存在本机，不会进入交付包。</p>
                 <label>默认模型</label>
                 <select id="modelSelect"></select>
                 <input id="modelInput" type="text" hidden placeholder="留空使用默认模型">
@@ -782,22 +1250,25 @@
                 <select id="thinkingModeSelect">
                   <option value="auto">自动使用模型默认设置</option>
                   <option value="disabled">关闭 thinking 模式</option>
-                  <option value="enabled">开启 thinking 模式</option>
+                  <option value="low">低推理强度（low）</option>
+                  <option value="medium">中推理强度（medium）</option>
+                  <option value="high">高推理强度（high）</option>
+                  <option value="xhigh">超高推理强度（xhigh）</option>
                 </select>
-                <p class="safe-note"><i class="fas fa-info-circle"></i>不同模型对 thinking 支持不同；如测试失败，可切换为自动或关闭后重试。</p>
+                <p class="safe-note"><i class="fas fa-info-circle"></i>Responses 模型会按选中档位发送 reasoning.effort；“自动”不传档位，由上游模型决定。</p>
               </div>
-              <button id="testProviderBtn" class="outline-button reference-test-button" type="button"><i class="fas fa-plug"></i>测试连接</button>
-              <button id="saveProviderKeysBtn" class="secondary-button reference-save-button" type="button">保存本机 API Key</button>
-              <div id="providerVisualResult" class="result-card muted-card">模型测试结果会显示在这里。</div>
-              <details class="technical-details reference-extra"><summary>查看技术详情</summary><pre id="providerResult"></pre></details>
+              <button class="outline-button" type="button" onclick="goToPage('keys')"><i class="fas fa-key"></i>打开 API Key 配置</button>
             </details>
           </div>
         </article>
         </div>
 
-        <div class="page-actions reference-actions">
+        <div class="page-actions reference-actions sticky-page-actions">
           <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
-          <button id="envNextBtn" class="primary-button" type="button" onclick="goToPage('exam')" disabled>下一步<i class="fas fa-arrow-right"></i></button>
+          <div class="sticky-next-group">
+            <small id="envNextHint">环境检查通过后即可继续</small>
+            <button id="envNextBtn" class="primary-button" type="button" onclick="goToPage('exam')" disabled>下一步：选择真题<i class="fas fa-arrow-right"></i></button>
+          </div>
         </div>
       </div>
     </section>
@@ -1012,7 +1483,7 @@
       <details class="technical-details reference-extra"><summary>查看任务技术详情</summary><pre id="runResult"></pre></details>
       <div class="page-actions">
         <button class="text-button" type="button" onclick="goToPage('exam')"><i class="fas fa-arrow-left"></i>上一步</button>
-        <button class="primary-button" type="button" onclick="goToPage('result'); taskFiles(); loadReview();">查看结果<i class="fas fa-arrow-right"></i></button>
+        <button id="taskResultPageBtn" class="primary-button" type="button" onclick="goToPage('result'); taskFiles(); loadReview();">查看结果<i class="fas fa-arrow-right"></i></button>
       </div>
     </section>
 
@@ -1044,6 +1515,7 @@
               <button id="finalAcceptanceBtn" type="button">最终验收</button>
               <button id="deliveryPackageBtn" type="button">导出交付包</button>
             </div>
+            <div id="finalAcceptanceSummary" class="result-card muted-card">最终验收状态会显示在这里。</div>
             <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查和审查报告。</div>
             <div id="resultFileList" class="file-list compact-file-list"></div>
           </div>
@@ -1094,9 +1566,14 @@
         <div class="task-manager-header">
           <div>
             <h2>任务管理</h2>
-            <p>查看和管理所有解析任务</p>
+            <p>统一查看真题解析、模拟出题和格式审查任务</p>
           </div>
-          <button class="primary-button" type="button" onclick="startWizard()"><i class="fas fa-plus"></i>新建任务</button>
+          <div class="task-create-actions">
+            <button class="outline-button" type="button" onclick="startWizard()"><i class="fas fa-book-open"></i>真题解析</button>
+            <button class="outline-button" type="button" onclick="openPracticeEntry('exam')"><i class="fas fa-layer-group"></i>按题出题</button>
+            <button class="outline-button" type="button" onclick="openWordFormatReviewer()"><i class="fas fa-file-alt"></i>格式审查</button>
+            <button class="primary-button" type="button" onclick="openKnowledgeEntry()"><i class="fas fa-lightbulb"></i>知识点出题</button>
+          </div>
         </div>
 
         <div class="task-stat-grid">
@@ -1113,9 +1590,33 @@
             <i class="fas fa-clock"></i>
           </article>
           <article>
+            <div><strong id="taskStatNeedsInput">0</strong><span>待人工处理</span></div>
+            <i class="fas fa-user-check"></i>
+          </article>
+          <article>
+            <div><strong id="taskStatIssues">0</strong><span>完成待复核</span></div>
+            <i class="fas fa-triangle-exclamation"></i>
+          </article>
+          <article>
+            <div><strong id="taskStatFailed">0</strong><span>执行失败</span></div>
+            <i class="fas fa-circle-exclamation"></i>
+          </article>
+          <article>
             <div><strong id="taskStatCompleted">0</strong><span>已完成</span></div>
             <i class="fas fa-check"></i>
           </article>
+          <article>
+            <div><strong id="taskStatCancelled">0</strong><span>已取消</span></div>
+            <i class="fas fa-ban"></i>
+          </article>
+        </div>
+
+        <div class="task-kind-filter" aria-label="按任务类型筛选">
+          <button class="task-kind-btn active" type="button" data-kind="all" onclick="filterTaskKind('all')">全部业务</button>
+          <button class="task-kind-btn" type="button" data-kind="exam" onclick="filterTaskKind('exam')"><i class="fas fa-book-open"></i>真题解析</button>
+          <button class="task-kind-btn" type="button" data-kind="practice" onclick="filterTaskKind('practice')"><i class="fas fa-layer-group"></i>按题出题</button>
+          <button class="task-kind-btn" type="button" data-kind="knowledge" onclick="filterTaskKind('knowledge')"><i class="fas fa-lightbulb"></i>知识点出题</button>
+          <button class="task-kind-btn" type="button" data-kind="format" onclick="filterTaskKind('format')"><i class="fas fa-file-alt"></i>格式审查</button>
         </div>
 
         <div class="task-filter-row">
@@ -1123,13 +1624,16 @@
             <button class="task-filter-btn active" type="button" data-filter="all" onclick="filterTasks('all')">全部</button>
             <button class="task-filter-btn" type="button" data-filter="running" onclick="filterTasks('running')">进行中</button>
             <button class="task-filter-btn" type="button" data-filter="queued" onclick="filterTasks('queued')">排队中</button>
+            <button class="task-filter-btn" type="button" data-filter="needs_input" onclick="filterTasks('needs_input')">待人工处理</button>
+            <button class="task-filter-btn" type="button" data-filter="completed_with_issues" onclick="filterTasks('completed_with_issues')">完成待复核</button>
             <button class="task-filter-btn" type="button" data-filter="completed" onclick="filterTasks('completed')">已完成</button>
             <button class="task-filter-btn" type="button" data-filter="failed" onclick="filterTasks('failed')">失败</button>
+            <button class="task-filter-btn" type="button" data-filter="cancelled" onclick="filterTasks('cancelled')">已取消</button>
           </div>
           <label class="task-sort-control" title="切换任务列表排序方式">
             <i class="fas fa-sort-amount-down"></i>
             <span>排序</span>
-            <select id="taskSortSelect">
+            <select id="taskSortSelect" data-native-select aria-label="任务排序方式">
               <option value="smart">智能排序</option>
               <option value="updated">最近更新</option>
               <option value="created">最新创建</option>
@@ -1138,12 +1642,23 @@
           </label>
         </div>
 
+        <div class="task-bulk-toolbar" aria-label="批量管理任务">
+          <button id="taskBulkModeBtn" class="text-button task-bulk-mode" type="button"><i class="fas fa-check-square"></i>多选管理</button>
+          <div id="taskBulkActions" class="task-bulk-actions hidden">
+            <button id="taskBulkSelectAllBtn" class="text-button" type="button">选择当前列表</button>
+            <span id="taskBulkCount">已选择 0 项</span>
+            <button id="taskBulkDeleteBtn" class="text-button task-bulk-delete" type="button" disabled><i class="fas fa-trash"></i>删除所选</button>
+            <button id="taskBulkCancelBtn" class="text-button" type="button">退出多选</button>
+          </div>
+        </div>
+
         <div id="taskManagerList" class="task-manager-list"></div>
+        <nav id="taskManagerPagination" class="task-manager-pagination hidden" aria-label="任务列表分页"></nav>
         <div id="taskManagerEmpty" class="task-empty-state hidden">
           <div><i class="fas fa-inbox"></i></div>
           <h3>暂无任务</h3>
           <p>当前筛选条件下没有找到任务</p>
-          <button class="primary-button" type="button" onclick="startWizard()"><i class="fas fa-plus"></i>创建第一个任务</button>
+          <button class="primary-button" type="button" onclick="goToPage('home')"><i class="fas fa-plus"></i>选择任务类型</button>
         </div>
       </div>
     </section>
@@ -1188,22 +1703,66 @@
             </div>
             <button id="refreshSystemBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新</button>
           </div>
+          <div id="systemHealthOverview" class="system-health-overview health-unknown">
+            <span id="systemHealthIcon"><i class="fas fa-circle-question"></i></span>
+            <div>
+              <strong id="systemHealthHeadline">正在读取运行状态</strong>
+              <p id="systemHealthDescription">将根据服务、任务和模型的实际运行记录生成结论。</p>
+            </div>
+          </div>
           <div class="system-monitor-grid">
             <div><span>运行电脑</span><strong id="systemHostName">读取中</strong></div>
             <div><span>服务进程</span><strong id="systemPid">-</strong></div>
-            <div><span>服务时间</span><strong id="systemTime">-</strong></div>
-            <div><span>异常任务</span><strong id="systemIssueCount">0</strong></div>
+            <div><span>服务运行时长</span><strong id="systemUptime">-</strong></div>
+            <div><span>当前任务</span><strong id="systemActiveCount">0</strong></div>
+            <div><span>等待 / 较慢</span><strong id="systemWaitingCount">0 / 0</strong></div>
+            <div><span>需要处理</span><strong id="systemIssueCount">0</strong></div>
           </div>
-          <div class="system-monitor-columns">
-            <section>
-              <h4>最近服务日志</h4>
-              <div id="systemRecentLogs" class="system-log-list"></div>
+          <div id="systemServiceNotice" class="system-service-notice hidden"></div>
+          <div class="system-health-sections">
+            <section class="system-model-health">
+              <div class="system-health-section-heading">
+                <div>
+                  <h4><i class="fas fa-microchip"></i>模型调用状态</h4>
+                  <p id="systemModelHealthLabel">暂无调用记录</p>
+                </div>
+              </div>
+              <details class="system-technical-details">
+                <summary>技术详情</summary>
+                <div class="system-model-metrics">
+                  <span>处理中 <strong id="systemModelActive">0</strong></span>
+                  <span>等待中 <strong id="systemModelWaiting">0</strong></span>
+                  <span>近期成功 <strong id="systemModelSuccess">0</strong></span>
+                  <span>超时 / 失败 <strong id="systemModelIssues">0 / 0</strong></span>
+                  <span>近期重试 <strong id="systemModelRetries">0</strong></span>
+                  <span>当前并发 / 上限 <strong id="systemModelConcurrency">0 / 0</strong></span>
+                </div>
+              </details>
             </section>
-            <section>
-              <h4>最近任务事件</h4>
-              <div id="systemRecentEvents" class="system-log-list"></div>
+            <section class="system-running-health">
+              <div class="system-health-section-heading">
+                <div>
+                  <h4><i class="fas fa-list-check"></i>正在运行的任务</h4>
+                  <p>显示当前操作、进展和最近一次实际进展。</p>
+                </div>
+              </div>
+              <div id="systemRunningTasks" class="system-running-task-list"></div>
             </section>
           </div>
+          <details class="system-technical-details system-log-details">
+            <summary>技术日志与内部事件</summary>
+            <p class="system-log-explanation">以下内容用于排查故障。普通使用只需查看上方运行摘要和“需要处理”数量。</p>
+            <div class="system-monitor-columns">
+              <section>
+                <h4>最近服务日志</h4>
+                <div id="systemRecentLogs" class="system-log-list"></div>
+              </section>
+              <section>
+                <h4>最近任务事件</h4>
+                <div id="systemRecentEvents" class="system-log-list"></div>
+              </section>
+            </div>
+          </details>
         </article>
       </div>
     </section>
@@ -1271,6 +1830,34 @@
       </footer>
     </section>
   </div>
-  <script src="/app.js"></script>
+  <div id="platformDialog" class="platform-dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="platformDialogTitle" aria-describedby="platformDialogMessage">
+    <section class="platform-dialog-card" tabindex="-1">
+      <header class="platform-dialog-header">
+        <span id="platformDialogIcon" class="platform-dialog-icon"><i class="fas fa-circle-info"></i></span>
+        <div>
+          <p id="platformDialogEyebrow">系统提示</p>
+          <h2 id="platformDialogTitle">请确认</h2>
+        </div>
+        <button id="platformDialogClose" class="platform-dialog-close" type="button" aria-label="关闭提示">
+          <i class="fas fa-xmark"></i>
+        </button>
+      </header>
+      <div class="platform-dialog-body">
+        <p id="platformDialogMessage"></p>
+        <label id="platformDialogInputWrap" class="platform-dialog-input-wrap hidden">
+          <span id="platformDialogInputLabel">补充说明</span>
+          <textarea id="platformDialogInput" rows="4"></textarea>
+        </label>
+      </div>
+      <footer class="platform-dialog-actions">
+        <button id="platformDialogCancel" class="secondary-button" type="button">取消</button>
+        <button id="platformDialogConfirm" class="primary-button" type="button">确定</button>
+      </footer>
+    </section>
+  </div>
+  <link rel="stylesheet" href="/platform-theme.css?v=20260730-readable-density-11">
+  <script src="/platform-api.js"></script>
+  <script src="/task-contract-ui.js"></script>
+  <script src="/app.js?v=20260730-readable-density-11"></script>
 </body>
 </html>

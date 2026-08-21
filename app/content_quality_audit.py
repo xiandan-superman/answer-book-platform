@@ -6,8 +6,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .calculation_consistency import calculation_draft_consistency_issues
+from .capabilities.catalog import capability_policy_contributions
 from .formula_audit import looks_like_formula
+from .question_requirements import answer_figure_required
 from .question_types import infer_question_type, is_calculation_question, iter_leaf_question_parts, question_has_type, question_kind
+from .user_facing_text import contains_internal_repair_provenance
 
 PENDING_ANSWERS = {"", "待复核", "待补充", "未完成", "未知"}
 FORBIDDEN_PROCESS_PHRASES = [
@@ -28,7 +32,12 @@ GENERIC_ANALYSIS_PHRASES = [
     "易得",
     "A 正确，其他错误",
 ]
-UNIT_RE = re.compile(r"(mol|g|kg|J|kJ|Pa|kPa|MPa|K|℃|V|A|s|m|cm|mm|L|mL|%|N|Hz)\b")
+# Symbol units such as % and ℃ have no trailing word boundary. Keep them
+# outside the alphabetic-unit boundary so percentage answers are recognized.
+UNIT_RE = re.compile(r"(?:%|‰|℃|(?:mol|g|kg|J|kJ|Pa|kPa|MPa|K|V|A|s|m|cm|mm|L|mL|N|Hz)\b)")
+SPECIFIC_PHYSICAL_UNIT_RE = re.compile(
+    r"^(?:%|‰|℃|mol|g|kg|J|kJ|Pa|kPa|MPa|K|V|A|s|m|cm|mm|L|mL|N|Hz)$"
+)
 FORMULA_PLACEHOLDER_RE = re.compile(r"\{f\d+\}")
 CITATION_LEAK_RE = re.compile(r"(?:教材依据|参考教材|引用依据)\s*[:：]|课本-p\d+", re.IGNORECASE)
 SECTION_KIND_KEYS = ("section", "question_type")
@@ -37,6 +46,184 @@ PAREN_SUBQUESTION_HEADING_RE = re.compile(r"^[（(]\s*([一二三四五六七八
 INLINE_SUBQUESTION_HEADING_RE = re.compile(
     r"(?:^|\n|\s)(?:第\s*[（(]?\s*([一二三四五六七八九十0-9]{1,3})\s*[）)]?\s*(?:小问|问)|[（(]\s*([一二三四五六七八九十0-9]{1,3})\s*[）)])"
 )
+COMPARATIVE_PROPERTY_RE = re.compile(
+    r"([A-Za-z\u4e00-\u9fff]{1,12}(?:性|率|度|量|能|系数|时间|速度|浓度|成本|误差))"
+    r"[^，。；;\n]{0,8}?"
+    r"(更高|较高|略高|稍高|提高|上升|增加|增强|较好|更好|优于|"
+    r"更低|较低|略低|稍低|降低|下降|减少|减弱|较差|更差|劣于)"
+)
+POSITIVE_COMPARATIVES = {"更高", "较高", "略高", "稍高", "提高", "上升", "增加", "增强", "较好", "更好", "优于"}
+CANONICAL_PROPERTY_TERMS = (
+    "拉伸强度", "屈服强度", "抗压强度", "强度", "硬度", "塑性", "韧性", "延伸率", "收缩率",
+    "导电率", "电阻率", "导热率", "浓度", "密度", "精度", "误差", "成本", "时间", "速度",
+)
+COMPARISON_SUBJECT_RE = re.compile(
+    r"工艺[A-Za-z0-9甲乙丙丁一二三四五六七八九十]+|"
+    r"方案[A-Za-z0-9甲乙丙丁一二三四五六七八九十]+|"
+    r"材料[A-Za-z0-9甲乙丙丁一二三四五六七八九十]+|"
+    r"(?:[A-Za-z0-9一-鿿]{1,8})型"
+)
+SPATIAL_MEMBERSHIP_INFERENCE_RE = re.compile(
+    r"(?:包含|含有|含|归入|属于|纳入)[^。；;\n]{0,12}"
+    r"(?:依附|附着|包覆|嵌入|邻接)[^。；;\n]{0,40}"
+)
+
+
+def _calculation_has_high_confidence_missing_unit(fragment: dict[str, Any], draft: dict[str, Any]) -> bool:
+    """Flag only a numeric physical result with an explicitly declared unit.
+
+    Question numbers, chemical indices, symbolic lattice results such as ``a/2``,
+    and dimensionless values must not trigger a generic missing-unit warning.
+    """
+
+    contract = fragment.get("calculation_contract")
+    if not isinstance(contract, dict):
+        contract = draft.get("calculation_contract")
+    if not isinstance(contract, dict):
+        return False
+    visible_text = " ".join(
+        [
+            str(fragment.get("answer") or ""),
+            *[
+                str(unit.get("answer") or "")
+                for unit in fragment.get("answer_units", []) or []
+                if isinstance(unit, dict)
+            ],
+            *[
+                str(step.get("result_text") or "")
+                for step in fragment.get("steps", []) or []
+                if isinstance(step, dict)
+            ],
+        ]
+    )
+    for result in contract.get("result_quantities", []) or []:
+        if not isinstance(result, dict):
+            continue
+        value = result.get("value")
+        numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if isinstance(value, str):
+            numeric = bool(re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", value.strip()))
+        unit = str(result.get("unit") or "").strip()
+        if numeric and SPECIFIC_PHYSICAL_UNIT_RE.fullmatch(unit) and unit not in visible_text:
+            return True
+    return False
+
+
+def _comparative_property_directions(text: Any) -> dict[str, set[int]]:
+    directions: dict[str, set[int]] = {}
+    for property_name, direction in COMPARATIVE_PROPERTY_RE.findall(str(text or "")):
+        normalized = re.sub(r"^(?:表现为|因此|同时|其|且|和|与|也)", "", property_name).strip()
+        canonical = next((term for term in CANONICAL_PROPERTY_TERMS if term in normalized), "")
+        normalized = canonical or normalized
+        if normalized:
+            directions.setdefault(normalized, set()).add(1 if direction in POSITIVE_COMPARATIVES else -1)
+    return directions
+
+
+def _answer_unit_comparative_contradictions(unit: dict[str, Any]) -> list[str]:
+    answer_text = str(unit.get("answer") or "")
+    analysis_text = _text_from_segments(unit.get("analysis_segments", []))
+    answer_subject = COMPARISON_SUBJECT_RE.search(answer_text)
+    analysis_subject = COMPARISON_SUBJECT_RE.search(analysis_text)
+    # Direction words alone are not enough: ``A更高`` and ``B更低`` may state
+    # the same comparison.  Only enforce a contradiction when both passages
+    # explicitly lead with the same named comparison subject.  Ambiguous prose
+    # remains advisory territory for selective review rather than a hard gate.
+    if not answer_subject or not analysis_subject or answer_subject.group() != analysis_subject.group():
+        return []
+    answer_directions = _comparative_property_directions(answer_text)
+    analysis_directions = _comparative_property_directions(analysis_text)
+    return sorted(
+        property_name
+        for property_name in answer_directions.keys() & analysis_directions.keys()
+        if len(answer_directions[property_name]) == 1
+        and len(analysis_directions[property_name]) == 1
+        and answer_directions[property_name] != analysis_directions[property_name]
+    )
+
+
+def _split_top_level_composition(text: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in str(text or ""):
+        if char in "（([【":
+            depth += 1
+        elif char in "）)]】":
+            depth = max(0, depth - 1)
+        if depth == 0 and char in "+＋":
+            part = "".join(current).strip(" ，、:：")
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(char)
+    part = "".join(current).strip(" ，、:：")
+    if part:
+        parts.append(part)
+    return parts
+
+
+def _composition_partition_omissions(fragment: dict[str, Any], draft: dict[str, Any]) -> list[str]:
+    """Find a declared same-level constituent omitted by its numeric partition.
+
+    This deliberately covers only a narrow, machine-verifiable case: prose
+    explicitly declares three or more ``A+B+C`` constituents; the calculation
+    ledger partitions the same requested composition, matches at least two of
+    those names, yet omits another declared constituent.  It does not judge
+    alternative terminology, rounding, or nested forms such as eutectic (α+β).
+    """
+
+    contract = fragment.get("calculation_contract")
+    if not isinstance(contract, dict):
+        contract = draft.get("calculation_contract")
+    if not isinstance(contract, dict):
+        return []
+    requested_text = " ".join(
+        str(item.get("request_text") or "")
+        for item in contract.get("requested_outputs", []) or []
+        if isinstance(item, dict)
+    )
+    if "组成" not in requested_text:
+        return []
+    quantities = {
+        str(item.get("quantity_id") or "").strip(): re.sub(
+            r"(?:质量分数|摩尔分数|体积分数|百分比|分数)$", "", str(item.get("name") or "").strip()
+        ).strip()
+        for item in contract.get("result_quantities", []) or []
+        if isinstance(item, dict) and str(item.get("quantity_id") or "").strip()
+    }
+    answer_text = "\n".join(
+        str(unit.get("answer") or "")
+        for unit in fragment.get("answer_units", []) or []
+        if isinstance(unit, dict)
+    ) or str(fragment.get("answer") or "")
+    declared_groups = []
+    for match in re.finditer(r"(?:组织(?:组成)?|成分组成|组成)\s*(?:为|是|包括)\s*([^。；;\n]{3,120})", answer_text):
+        parts = _split_top_level_composition(match.group(1))
+        if len(parts) >= 3:
+            declared_groups.append(parts)
+    omissions: set[str] = set()
+    for partition in contract.get("partitions", []) or []:
+        if not isinstance(partition, dict):
+            continue
+        partition_names = [
+            quantities.get(str(quantity_id or "").strip(), "")
+            for quantity_id in partition.get("component_quantity_ids", []) or []
+        ]
+        partition_names = [name for name in partition_names if name]
+        if len(partition_names) < 2:
+            continue
+        for declared in declared_groups:
+            matched = {
+                index
+                for index, part in enumerate(declared)
+                if any(name in part or part in name for name in partition_names)
+            }
+            if len(matched) < 2 or not all(any(name in part or part in name for part in declared) for name in partition_names):
+                continue
+            omissions.update(declared[index] for index in range(len(declared)) if index not in matched)
+    return sorted(omissions)
 
 
 def _qid(value: dict[str, Any]) -> str:
@@ -205,10 +392,14 @@ def _text_from_segments(node: Any) -> str:
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
-            if value.get("type") == "text":
+            # Answer units may carry the same segment contract before the
+            # renderer has added an explicit ``type=text`` discriminator.
+            # Treat a direct text field as prose, while still walking the
+            # remaining children for nested segment containers.
+            if "text" in value and str(value.get("text") or "").strip():
                 parts.append(str(value.get("text", "")))
-            else:
-                for child in value.values():
+            for key, child in value.items():
+                if key != "text":
                     walk(child)
         elif isinstance(value, list):
             for child in value:
@@ -245,7 +436,7 @@ def _has_segment_type(fragment: dict[str, Any], segment_type: str) -> bool:
 
 
 def _needs_figure(question: dict[str, Any]) -> bool:
-    return question_has_type(question, "作图题")
+    return answer_figure_required(question)
 
 
 def _selected_and_rejected(selection: dict[str, Any] | None) -> tuple[set[str], set[str]]:
@@ -282,14 +473,30 @@ def audit_content_quality(
     answer_drafts_data: dict[str, Any] | None = None,
     evidence_selection_data: dict[str, Any] | None = None,
     output_json: Path | None = None,
+    *,
+    draft_optional_question_ids: set[str] | None = None,
+    active_figure_specs_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     items = [_ for _ in structured_exam.get("items", []) if _qid(_)]
     fragments_by_id = {_qid(fragment): fragment for fragment in fragments_data.get("fragments", []) if _qid(fragment)}
     drafts_by_id = {_qid(draft): draft for draft in (answer_drafts_data or {}).get("drafts", []) if _qid(draft)}
     selections_by_id = {_qid(selection): selection for selection in (evidence_selection_data or {}).get("selections", []) if _qid(selection)}
+    active_figure_specs_by_id: dict[str, list[dict[str, Any]]] = {}
+    for spec in (active_figure_specs_data or {}).get("figures", []) or []:
+        if not isinstance(spec, dict):
+            continue
+        spec_qid = str(spec.get("question_id") or "").strip()
+        if spec_qid:
+            active_figure_specs_by_id.setdefault(spec_qid, []).append(spec)
+    draft_optional_question_ids = {
+        str(question_id).strip()
+        for question_id in (draft_optional_question_ids or set())
+        if str(question_id).strip()
+    }
 
     issues: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
+    diagnostics: list[dict[str, str]] = []
     by_question: list[dict[str, Any]] = []
     mistake_note_texts: list[tuple[str, str]] = []
 
@@ -301,24 +508,99 @@ def audit_content_quality(
         draft = drafts_by_id.get(qid)
         q_issues: list[dict[str, str]] = []
         q_warnings: list[dict[str, str]] = []
+        q_diagnostics: list[dict[str, str]] = []
 
-        def issue(code: str, message: str) -> None:
-            item = _entry(qid, code, message, "issue")
+        def issue(
+            code: str,
+            message: str,
+            *,
+            question_id: str = qid,
+            question_issues: list[dict[str, str]] = q_issues,
+        ) -> None:
+            item = _entry(question_id, code, message, "issue")
             issues.append(item)
-            q_issues.append(item)
+            question_issues.append(item)
 
-        def warning(code: str, message: str) -> None:
-            item = _entry(qid, code, message, "warning")
+        def warning(
+            code: str,
+            message: str,
+            *,
+            question_id: str = qid,
+            question_warnings: list[dict[str, str]] = q_warnings,
+        ) -> None:
+            item = _entry(question_id, code, message, "warning")
             warnings.append(item)
-            q_warnings.append(item)
+            question_warnings.append(item)
+
+        def diagnostic(
+            code: str,
+            message: str,
+            *,
+            question_id: str = qid,
+            question_diagnostics: list[dict[str, str]] = q_diagnostics,
+        ) -> None:
+            item = _entry(question_id, code, message, "diagnostic")
+            diagnostics.append(item)
+            question_diagnostics.append(item)
 
         if fragment is None:
             issue("missing_fragment", "缺少本题最终结构化解析。")
-            by_question.append({"question_id": qid, "issues": q_issues, "warnings": q_warnings})
+            by_question.append(
+                {
+                    "question_id": qid,
+                    "issues": q_issues,
+                    "warnings": q_warnings,
+                    "diagnostics": q_diagnostics,
+                }
+            )
             continue
         if draft is None:
-            issue("missing_draft", "缺少模型原始解析草稿，无法审计解析生成质量。")
+            if qid in draft_optional_question_ids:
+                diagnostic(
+                    "checkpoint_draft_unavailable",
+                    "历史检查点未保存模型原始草稿；最终结构与交付审计仍已执行，草稿对照审计已跳过。",
+                )
+            else:
+                issue("missing_draft", "缺少模型原始解析草稿，无法审计解析生成质量。")
             draft = {}
+        repaired_draft = fragment.get("_draft") if isinstance(fragment.get("_draft"), dict) else None
+        if repaired_draft is not None:
+            draft = repaired_draft
+
+        if _has_review_flag(fragment, "high_risk_correctness_unresolved"):
+            issue(
+                "high_risk_correctness_unresolved",
+                "高风险学科正确性复核提出了具体修复，但候选修复未通过确定性校验；本题不得作为正式验收答案。",
+            )
+
+        capability_text = "\n".join(
+            [
+                str(question.get("stem") or ""),
+                *[
+                    str(subquestion.get("stem") or subquestion.get("text") or "")
+                    for subquestion in question.get("subquestions", []) or []
+                    if isinstance(subquestion, dict)
+                ],
+            ]
+        )
+        for contribution in capability_policy_contributions(
+            "content_quality",
+            {
+                "question": question,
+                "fragment": fragment,
+                "draft": draft,
+                "active_figure_specs": active_figure_specs_by_id.get(qid, []),
+            },
+            text=capability_text,
+        ):
+            if not isinstance(contribution, dict):
+                continue
+            for finding in contribution.get("issues", []) or []:
+                if isinstance(finding, dict):
+                    issue(str(finding.get("code") or "capability_content_issue"), str(finding.get("message") or "学科能力包检出内容问题。"))
+            for finding in contribution.get("warnings", []) or []:
+                if isinstance(finding, dict):
+                    warning(str(finding.get("code") or "capability_content_warning"), str(finding.get("message") or "学科能力包给出内容提示。"))
 
         answer = str(fragment.get("answer", "") or draft.get("answer", "")).strip()
         answer_summary = str(fragment.get("answer_summary", "") or draft.get("answer", "")).strip()
@@ -326,8 +608,22 @@ def audit_content_quality(
             issue("missing_answer", "答案为空或仍为待复核状态。")
 
         analysis_text = _block_text(fragment, "解析")
+        calculation_steps_text = _block_text(fragment, "解题步骤") if has_calculation_part else ""
+        calculation_steps_are_reasoning = bool(
+            has_calculation_part
+            and len(calculation_steps_text.strip()) >= 20
+            and (
+                _block_segments(fragment, "解题步骤")
+                or _draft_steps_for_audit(draft)
+            )
+        )
         if kind == "term_explanation":
             pass
+        elif calculation_steps_are_reasoning and not analysis_text.strip():
+            diagnostic(
+                "analysis_satisfied_by_calculation_steps",
+                "计算题已由结构化【解题步骤】完整承载推导过程，不再要求重复的【解析】标签。",
+            )
         elif not analysis_text.strip():
             issue("missing_analysis", "缺少【解析】内容。")
         elif len(analysis_text.strip()) < 20:
@@ -375,6 +671,16 @@ def audit_content_quality(
             if phrase in all_text:
                 issue("forbidden_process_text", f"最终解析或草稿中包含流程性话术：{phrase}")
                 break
+        if contains_internal_repair_provenance(all_text):
+            issue(
+                "internal_repair_provenance_leak",
+                "正式答案的答案、解析、步骤或易错点中包含原答案、回修或已修正等内部流程痕迹。",
+            )
+        if SPATIAL_MEMBERSHIP_INFERENCE_RE.search(all_text):
+            issue(
+                "spatial_relation_improper_membership_inference",
+                "正文把“依附/附着/包覆/嵌入/邻接”等空间或观察关系直接写成“包含/归入/属于”的分类关系。必须依据教材明确区分空间关系、来源与题目要求的同级组成分区。",
+            )
         for phrase in GENERIC_ANALYSIS_PHRASES:
             if phrase in all_text:
                 warning("generic_analysis_phrase", f"解析中包含空泛表达：{phrase}")
@@ -383,6 +689,27 @@ def audit_content_quality(
             issue("unresolved_formula_placeholder", "正文中残留 {f数字} 公式占位符，说明公式未正确转换为公式对象。")
         if CITATION_LEAK_RE.search(all_text):
             issue("citation_leaked_into_answer", "教材依据或课本页码混入了解析/答案正文，应只出现在【教材依据】块。")
+        contradictory_properties = sorted(
+            {
+                property_name
+                for unit in fragment.get("answer_units", []) or []
+                if isinstance(unit, dict)
+                for property_name in _answer_unit_comparative_contradictions(unit)
+            }
+        )
+        if contradictory_properties:
+            issue(
+                "answer_analysis_comparative_contradiction",
+                "答案与解析对同一性质的比较方向相反：" + "、".join(contradictory_properties),
+            )
+        omitted_composition_items = _composition_partition_omissions(fragment, draft)
+        if omitted_composition_items:
+            issue(
+                "composition_partition_missing_declared_component",
+                "答案明确列出的组成项未进入同一组成质量分区："
+                + "、".join(omitted_composition_items)
+                + "。须按题目与依据重新推导同层、互斥且穷尽的组成及比例；若该项并非同层独立组成，应同步修正组成表述，不能只补名称或删除账本项。",
+            )
 
         bound_evidence = {str(x).strip() for x in fragment.get("evidence_ids", []) if str(x).strip()}
         missing_selected, used_rejected = _evidence_selection_conflicts(selections_by_id.get(qid), bound_evidence)
@@ -397,6 +724,12 @@ def audit_content_quality(
                 issue("choice_missing_option_analysis", "选择题缺少选项辨析。")
 
         if has_calculation_part:
+            consistency_issues = calculation_draft_consistency_issues(draft)
+            if consistency_issues:
+                issue(
+                    "calculation_internal_inconsistency",
+                    "计算题的公式等式、代入结果或步骤结论存在数值矛盾。",
+                )
             if answer == "见解析" and not answer_summary:
                 issue("missing_answer_summary", "计算题顶层答案为“见解析”，但缺少可直接展示的答案摘要。")
             if not fragment.get("formulas") and not draft.get("formulas") and not _has_review_flag(fragment, "formula_absence_after_retry"):
@@ -472,7 +805,7 @@ def audit_content_quality(
             draft_mistakes = draft.get("mistake_notes") if isinstance(draft.get("mistake_notes"), list) else []
             if not mistake_text.strip() and not draft_mistakes:
                 issue("calculation_missing_mistake_notes", "计算题缺少针对本题的易错点及注意事项。")
-            if answer and answer not in PENDING_ANSWERS and re.search(r"\d", answer) and not UNIT_RE.search(answer):
+            if _calculation_has_high_confidence_missing_unit(fragment, draft):
                 warning("calculation_answer_missing_unit", "计算题数值答案可能缺少单位。")
 
         if kind in {"short_answer", "graphic", "mixed"} and answer == "见解析" and not answer_summary:
@@ -488,7 +821,14 @@ def audit_content_quality(
         if mistake_text:
             mistake_note_texts.append((qid, mistake_text))
 
-        by_question.append({"question_id": qid, "issues": q_issues, "warnings": q_warnings})
+        by_question.append(
+            {
+                "question_id": qid,
+                "issues": q_issues,
+                "warnings": q_warnings,
+                "diagnostics": q_diagnostics,
+            }
+        )
 
     note_counter = Counter(text for _, text in mistake_note_texts)
     for qid, text in mistake_note_texts:
@@ -501,8 +841,10 @@ def audit_content_quality(
         "checked_count": sum(1 for item in by_question if not any(issue["code"] == "missing_fragment" for issue in item.get("issues", []))),
         "issue_count": len(issues),
         "warning_count": len(warnings),
+        "diagnostic_count": len(diagnostics),
         "issues": issues,
         "warnings": warnings,
+        "diagnostics": diagnostics,
         "by_question": by_question,
     }
     if output_json is not None:

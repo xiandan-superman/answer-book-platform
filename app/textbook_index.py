@@ -10,9 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .mineru_content import rows_from_mineru_content_list
-from .textbook_package import is_textbook_package, prepare_textbook_package
 from .text_utils import clean_text
-
+from .textbook_package import is_textbook_package, prepare_textbook_package
 
 BLOCK_FIELDS = [
     "block_id",
@@ -494,7 +493,13 @@ def textbook_name_from_file(path: Path) -> str:
 
 def discover_textbooks(textbooks_dir: Path) -> list[Path]:
     allowed = {".json", ".md", ".markdown", ".txt", ".zip"}
-    return sorted(p for p in textbooks_dir.iterdir() if p.is_file() and p.suffix.lower() in allowed)
+    return sorted(
+        p
+        for p in textbooks_dir.iterdir()
+        if p.is_file()
+        and not p.name.startswith(".")
+        and p.suffix.lower() in allowed
+    )
 
 
 def extract_printed_page(rows: list[dict[str, Any]]) -> tuple[str, str, str, str]:

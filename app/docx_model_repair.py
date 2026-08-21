@@ -2,17 +2,27 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from .answer_generation import attach_program_evidence_block, evidence_for_answer_generation, fragment_from_analysis_draft
+from .concurrency import model_request_slot, run_limited_concurrent
 from .formula_audit import audit_text_segments_no_formula, formula_like_matches
 from .llm_client import OpenAICompatibleClient
 from .retrieval import EvidenceCandidate
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 from .v4_schema import validate_v4_answer_fragment
+
+
+def docx_model_repair_worker_count() -> int:
+    raw = os.environ.get("DOCX_MODEL_REPAIR_MAX_WORKERS", "4")
+    try:
+        return max(1, min(6, int(raw)))
+    except ValueError:
+        return 4
 
 
 def _qid(value: dict[str, Any]) -> str:
@@ -172,35 +182,38 @@ def repair_fragments_with_model_for_docx(
         if qid:
             grouped_findings[qid].append(finding)
 
-    repair_client = client or OpenAICompatibleClient(provider)
     repaired_qids: list[str] = []
     repair_issues: list[dict[str, Any]] = []
     fragments_by_qid = {_qid(fragment): fragment for fragment in fragments if _qid(fragment)}
     fallback_model = next((item for item in provider.model_options if item != model), None)
 
-    for qid, q_findings in list(grouped_findings.items())[: max(1, max_repairs)]:
+    target_rows = list(grouped_findings.items())[: max(1, max_repairs)]
+    max_workers = 1 if client is not None else docx_model_repair_worker_count()
+
+    def repair_one(target: tuple[str, list[dict[str, Any]]]) -> tuple[str, dict[str, Any] | None, list[str]]:
+        qid, q_findings = target
         question = questions.get(qid)
         fragment = fragments_by_qid.get(qid)
         if not question or not fragment:
-            repair_issues.append({"question_id": qid, "issues": ["缺少题目结构或原 fragment，无法模型修复。"]})
-            continue
+            return qid, None, ["缺少题目结构或原 fragment，无法模型修复。"]
         evidence_selection = selections.get(qid)
         evidence = evidence_for_answer_generation(candidates, qid, evidence_selection)
         messages = _repair_prompt(question, evidence, fragment, q_findings, docx_issues)
         try:
-            draft = repair_client.chat_json_object(
-                messages,
-                model=model,
-                max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                fallback_model=fallback_model,
-            )
+            repair_client = client or OpenAICompatibleClient(provider)
+            with model_request_slot(provider):
+                draft = repair_client.chat_json_object(
+                    messages,
+                    model=model,
+                    max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
+                    fallback_model=fallback_model,
+                )
             repaired = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
             attach_program_evidence_block(repaired, evidence, evidence_selection)
             syntax_issues = validate_v4_answer_fragment(repaired)
             formula_leaks = audit_text_segments_no_formula(repaired.get("blocks", []), ignored_block_labels={"教材依据"}, include_chinese_paraphrase=True)
             if syntax_issues or formula_leaks:
-                repair_issues.append({"question_id": qid, "issues": syntax_issues + formula_leaks[:10]})
-                continue
+                return qid, None, syntax_issues + formula_leaks[:10]
             meta = dict(repaired.get("_meta") or {})
             retry_report = getattr(repair_client, "last_json_retry_report", {})
             meta.update(
@@ -214,9 +227,16 @@ def repair_fragments_with_model_for_docx(
             )
             repaired["_meta"] = meta
         except Exception as exc:
-            repair_issues.append({"question_id": qid, "issues": [str(exc)]})
-            continue
+            return qid, None, [str(exc)]
+        return qid, repaired, []
 
+    repair_results = run_limited_concurrent(target_rows, repair_one, max_workers=max_workers)
+    for qid, repaired, issues in repair_results:
+        if issues:
+            repair_issues.append({"question_id": qid, "issues": issues})
+            continue
+        if repaired is None:
+            continue
         for index, current in enumerate(fragments):
             if _qid(current) == qid:
                 fragments[index] = repaired
@@ -232,6 +252,10 @@ def repair_fragments_with_model_for_docx(
         "issue_count": len(repair_issues),
         "issues": repair_issues[:30],
         "findings": findings[:30],
+        "concurrency": {
+            "max_workers": min(max_workers, len(target_rows)) if target_rows else 1,
+            "parallel_enabled": max_workers > 1 and len(target_rows) > 1,
+        },
     }
     if not changed:
         return report

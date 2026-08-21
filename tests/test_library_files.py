@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import sys
 import tempfile
@@ -7,12 +8,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
 class TextbookGroupingTests(unittest.TestCase):
+    def test_textbook_discovery_ignores_hidden_shared_library_manifest(self) -> None:
+        from app.textbook_index import discover_textbooks
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            (root / ".shared_library_manifest.json").write_text("{}", encoding="utf-8")
+            (root / "材料现代分析测试方法1.zip").write_bytes(b"textbook")
+
+            files = discover_textbooks(root)
+
+        self.assertEqual(["材料现代分析测试方法1.zip"], [item.name for item in files])
+
     def test_scan_ignores_hidden_shared_library_manifest(self) -> None:
         from app.library_files import _scan_dir
 
@@ -26,6 +38,7 @@ class TextbookGroupingTests(unittest.TestCase):
 
     def test_marks_file_as_indexed_when_a_valid_cache_manifest_contains_it(self) -> None:
         from app.library_files import attach_textbook_index_statuses
+        from app.textbook_index import BLOCK_FIELDS, PAGE_MAP_FIELDS
 
         with tempfile.TemporaryDirectory() as raw_tmp:
             root = Path(raw_tmp)
@@ -34,9 +47,18 @@ class TextbookGroupingTests(unittest.TestCase):
             stat = book.stat()
             cache = root / "textbook_indexes" / "cache_01"
             cache.mkdir(parents=True)
-            (cache / "textbook_blocks.csv").write_text("block_id\nblock_01\n", encoding="utf-8")
-            (cache / "textbook_page_map.csv").write_text("textbook\n材料科学基础.zip\n", encoding="utf-8")
-            (cache / "textbook_index_status.json").write_text(json.dumps({"page_map_ok": True}), encoding="utf-8")
+            with (cache / "textbook_blocks.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=BLOCK_FIELDS)
+                writer.writeheader()
+                writer.writerow({"block_id": "block_01"})
+            with (cache / "textbook_page_map.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=PAGE_MAP_FIELDS)
+                writer.writeheader()
+                writer.writerow({"textbook": book.name})
+            (cache / "textbook_index_status.json").write_text(
+                json.dumps({"textbook_count": 1, "block_count": 1, "page_map_ok": True}),
+                encoding="utf-8",
+            )
             (cache / "manifest.json").write_text(
                 json.dumps({"files": [{"name": book.name, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}]}, ensure_ascii=False),
                 encoding="utf-8",

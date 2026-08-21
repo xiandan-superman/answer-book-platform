@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .question_requirements import answer_figure_required, source_image_required
 
 AUDIT_FILES = {
     "environment": "environment_check.json",
@@ -11,6 +12,7 @@ AUDIT_FILES = {
     "retrieval": "retrieval_audit.json",
     "answer_coverage": "answer_coverage_audit.json",
     "content_quality": "content_quality_audit.json",
+    "academic_expression": "academic_expression_audit.json",
     "docx": "docx_audit.json",
     "figure_size": "figure_size_audit.json",
     "render": "render_audit.json",
@@ -22,24 +24,16 @@ NON_DIRECT_SUPPORT_LABELS = {
     "transferable_support": "可迁移证据",
     "inverse_process_support": "反向过程证据",
 }
-
 def pipeline_failed_stage_findings(pipeline: dict[str, Any] | None) -> tuple[list[str], list[str]]:
     if not isinstance(pipeline, dict):
         return [], []
     stages = [stage for stage in pipeline.get("stages", []) if isinstance(stage, dict)]
-    placeholder_applied = any(stage.get("stage") == "docx_placeholder" and stage.get("status") == "applied" for stage in stages)
     issues: list[str] = []
     warnings: list[str] = []
     for stage in stages:
         if stage.get("status") != "failed":
             continue
         name = str(stage.get("stage") or "unknown")
-        if name.startswith("content_quality") or name == "docx":
-            warnings.append(f"pipeline_status: {name} failed but this audit stage is non-blocking")
-            continue
-        if name == "docx_user_allowed_candidate" and placeholder_applied:
-            warnings.append("pipeline_status: docx_user_allowed_candidate failed but docx_placeholder succeeded")
-            continue
         issues.append(f"pipeline_status.json contains failed stage: {name}")
     return issues, warnings
 
@@ -54,8 +48,8 @@ def audit_ok(name: str, data: dict[str, Any] | None, require_render: bool) -> tu
     if data is None:
         if name == "render" and not require_render:
             return True, [], []
-        if name == "figure_size":
-            return True, [], ["figure_size: audit file missing (legacy task)"]
+        if name in {"figure_size", "academic_expression"}:
+            return True, [], [f"{name}: audit file missing (legacy task)"]
         return False, [f"{name}: audit file missing"], []
     if name == "environment":
         formula = data.get("formula_conversion", {})
@@ -65,22 +59,17 @@ def audit_ok(name: str, data: dict[str, Any] | None, require_render: bool) -> tu
     ok = bool(data.get("ok", False))
     issues = [f"{name}: {x}" for x in data.get("issues", [])]
     warnings = [f"{name}: {x}" for x in data.get("warnings", [])]
-    if name in {"content_quality", "docx"} and not ok:
-        review_warnings = [f"{name}: auto allowed after repair attempts: {x}" for x in data.get("issues", [])]
-        review_warnings.extend(warnings)
-        if not review_warnings:
-            review_warnings = [f"{name}: auto allowed after repair attempts"]
-        return True, [], review_warnings
     if not ok and not issues:
         issues = [f"{name}: audit did not pass"]
     return ok, issues, warnings
 
 
-def review_acknowledgement(stage_dir: Path) -> dict[str, Any]:
+def diagnostic_advisories(stage_dir: Path) -> dict[str, Any]:
     fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
     review_docx = read_json(stage_dir / "question_review_docx.json") or {}
     content_quality = read_json(stage_dir / "content_quality_audit.json") or {}
     answer_coverage = read_json(stage_dir / "answer_coverage_audit.json") or {}
+    semantic_quality = read_json(stage_dir / "semantic_quality_advisories.json") or {}
     pending_questions: list[dict[str, Any]] = []
     for fragment in fragments_data.get("fragments", []) if isinstance(fragments_data, dict) else []:
         if not isinstance(fragment, dict):
@@ -102,15 +91,26 @@ def review_acknowledgement(stage_dir: Path) -> dict[str, Any]:
     review_question_count = int(review_docx.get("review_question_count", 0) or 0) if isinstance(review_docx, dict) else 0
     content_issue_count = int(content_quality.get("issue_count", 0) or 0) if isinstance(content_quality, dict) else 0
     coverage_warnings = answer_coverage.get("warnings", []) if isinstance(answer_coverage, dict) else []
-    required = bool(pending_questions or review_question_count or content_issue_count or coverage_warnings)
+    semantic_advisory_count = int(semantic_quality.get("advisory_count", 0) or 0)
+    review_service_advisory_count = int(semantic_quality.get("review_service_advisory_count", 0) or 0)
+    advisory = bool(
+        pending_questions
+        or review_question_count
+        or content_issue_count
+        or coverage_warnings
+        or semantic_advisory_count
+        or review_service_advisory_count
+    )
     return {
-        "required": required,
+        "advisory": advisory,
         "pending_question_count": len(pending_questions),
         "review_question_count": review_question_count,
         "content_quality_issue_count": content_issue_count,
         "answer_coverage_warning_count": len(coverage_warnings),
+        "semantic_model_advisory_count": semantic_advisory_count,
+        "review_service_advisory_count": review_service_advisory_count,
         "pending_questions": pending_questions[:50],
-        "message": "存在待复核或质量审查项，需用户评估后选择导出候选解析版或待复核占位版。" if required else "",
+        "message": "诊断提示已随交付报告保留；正式答案未使用候选版或人工放行。" if advisory else "",
     }
 
 
@@ -131,10 +131,46 @@ def answer_fragment_blocking_findings(stage_dir: Path) -> list[str]:
         for flag in flags:
             code = str(flag.get("code") or "").strip()
             message = str(flag.get("message") or "").strip()
+            # A preserved review candidate is a usable, explicitly labelled
+            # delivery tier. It must not be confused with generation failure.
             if code == "answer_generation_failed" or "configure provider API key" in message:
                 issues.append(f"answer_fragments: {qid} 答案生成失败，{message or code}。")
                 break
     return issues
+
+
+def answer_fragment_delivery_summary(stage_dir: Path) -> dict[str, Any]:
+    """Separate an unusable answer set from a useful but incomplete one."""
+    data = read_json(stage_dir / "answer_fragments.json") or {}
+    provider = str(data.get("provider") or "").strip().lower()
+    fragments = [item for item in data.get("fragments", []) if isinstance(item, dict)]
+    failed_question_ids: list[str] = []
+    usable_question_ids: list[str] = []
+    for fragment in fragments:
+        qid = str(fragment.get("question_id") or "").strip() or "unknown"
+        answer = str(fragment.get("answer") or "").strip()
+        flags = [item for item in fragment.get("_review_flags", []) if isinstance(item, dict)]
+        generation_failed = any(
+            str(flag.get("code") or "").strip() == "answer_generation_failed"
+            for flag in flags
+        )
+        if generation_failed or answer in PENDING_REVIEW_ANSWERS:
+            failed_question_ids.append(qid)
+        elif answer:
+            usable_question_ids.append(qid)
+    partial_candidate = bool(
+        provider != "demo"
+        and usable_question_ids
+        and failed_question_ids
+    )
+    return {
+        "fragment_count": len(fragments),
+        "usable_count": len(usable_question_ids),
+        "failed_count": len(failed_question_ids),
+        "usable_question_ids": usable_question_ids,
+        "failed_question_ids": failed_question_ids,
+        "partial_candidate": partial_candidate,
+    }
 
 
 def _retry_stage_from_recovery(value: Any) -> str:
@@ -328,12 +364,21 @@ def figure_visual_qa_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str
             warnings.append(f"figure_visual_qa: ignored unreferenced failed figure {qid or 'unknown'} / {figure_id}")
             continue
         message = f"figure_visual_qa: {qid or 'unknown'} / {figure_id or 'unknown'} failed: {summary}"
-        issues.append(message)
+        # A visual model's judgment is useful repair evidence but is not a
+        # deterministic fact. In unattended mode it may warn, never hard-block.
+        warnings.append(message)
         failed_items.append({"question_id": qid, "figure_id": figure_id, "summary": summary})
     if data.get("failed"):
         for item in data.get("failed", []):
             if isinstance(item, dict):
                 warnings.append(f"figure_visual_qa: QA request failed for {item.get('question_id') or 'unknown'} / {item.get('figure_id') or 'unknown'}")
+    for item in data.get("skipped", []) if isinstance(data.get("skipped"), list) else []:
+        if not isinstance(item, dict) or str(item.get("reason") or "") != "figure image missing":
+            continue
+        issues.append(
+            f"figure_visual_qa: {item.get('question_id') or 'unknown'} / "
+            f"{item.get('figure_id') or 'unknown'} failed: figure image missing"
+        )
     return {
         "available": True,
         "enabled": True,
@@ -356,11 +401,66 @@ def visual_qa_has_missing_image(stage_dir: Path) -> bool:
     )
 
 
+def figure_delivery_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Audit source-question images and answer-created figures separately."""
+
+    exam = read_json(stage_dir / "structured_exam.json") or {}
+    fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
+    fragments = {
+        str(fragment.get("question_id") or "").strip(): fragment
+        for fragment in fragments_data.get("fragments", []) or []
+        if isinstance(fragment, dict) and str(fragment.get("question_id") or "").strip()
+    }
+    issues: list[str] = []
+    warnings: list[str] = []
+    items: list[dict[str, Any]] = []
+    for question in exam.get("items", []) or []:
+        if not isinstance(question, dict):
+            continue
+        qid = str(question.get("question_id") or "").strip()
+        source_required = source_image_required(question)
+        answer_required = answer_figure_required(question)
+        if not source_required and not answer_required:
+            continue
+        source_paths = {str(Path(str(raw))) for raw in question.get("image_refs", []) or [] if str(raw).strip()}
+        image_segments = [
+            segment
+            for block in fragments.get(qid, {}).get("blocks", []) or []
+            if isinstance(block, dict)
+            for segment in block.get("segments", []) or []
+            if isinstance(segment, dict) and segment.get("type") == "image_ref"
+        ]
+        delivered_source = [
+            segment for segment in image_segments
+            if str(segment.get("role") or "") == "source_question_image"
+            or str(Path(str(segment.get("path") or ""))) in source_paths
+        ]
+        delivered_answer = [segment for segment in image_segments if segment not in delivered_source]
+        item_issues: list[str] = []
+        if source_required and not source_paths:
+            item_issues.append("题干引用图片，但抽取结果没有 image_refs")
+        elif source_required and not delivered_source:
+            item_issues.append("原题图片未进入答案片段/Word 输入")
+        if answer_required and not delivered_answer:
+            item_issues.append("题干要求作图，但答案中没有独立生成图")
+        issues.extend(f"figure_delivery: {qid or 'unknown'} {message}" for message in item_issues)
+        items.append({
+            "question_id": qid,
+            "source_required": source_required,
+            "answer_required": answer_required,
+            "source_delivered_count": len(delivered_source),
+            "answer_delivered_count": len(delivered_answer),
+            "issues": item_issues,
+        })
+    return {"ok": not issues, "question_count": len(items), "issue_count": len(issues), "items": items}, issues, warnings
+
+
 def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_render: bool = True) -> dict[str, Any]:
     acceptance = read_json(stage_dir / "acceptance_report.json")
     pipeline = read_json(stage_dir / "pipeline_status.json")
     gates: dict[str, dict[str, Any]] = {}
     issues: list[str] = []
+    formal_issues: list[str] = []
     warnings: list[str] = []
     for name, filename in AUDIT_FILES.items():
         data = read_json(stage_dir / filename)
@@ -371,7 +471,13 @@ def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_ren
             "warning_count": len(gate_warnings),
             "path": str(stage_dir / filename),
         }
-        issues.extend(gate_issues)
+        # An intact document with unresolved answer-content findings remains a
+        # useful review candidate. Content findings prevent formal acceptance
+        # but are not artifact-delivery failures.
+        if name == "content_quality":
+            formal_issues.extend(gate_issues)
+        else:
+            issues.extend(gate_issues)
         warnings.extend(gate_warnings)
 
     docx = output_dir / "answer_book.docx"
@@ -381,35 +487,101 @@ def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_ren
     if require_render and not pdf.exists():
         issues.append(f"rendered PDF missing: {pdf}")
 
-    if not acceptance or acceptance.get("status") != "passed":
+    if not acceptance or acceptance.get("status") not in {
+        "passed",
+        "passed_with_warnings",
+        "completed_with_issues",
+    }:
         issues.append("acceptance_report.json missing or not passed")
     pipeline_issues, pipeline_warnings = pipeline_failed_stage_findings(pipeline)
-    issues.extend(answer_fragment_blocking_findings(stage_dir))
+    answer_delivery_summary = answer_fragment_delivery_summary(stage_dir)
+    answer_fragment_issues = answer_fragment_blocking_findings(stage_dir)
+    if answer_fragment_issues and answer_delivery_summary.get("partial_candidate"):
+        # Preserve useful completed answers for the user, but keep the whole
+        # document outside the formal tier until every failed question is fixed.
+        formal_issues.extend(answer_fragment_issues)
+    else:
+        issues.extend(answer_fragment_issues)
     figure_qa_summary, figure_qa_issues, figure_qa_warnings = figure_visual_qa_findings(stage_dir)
-    figure_qa_accounted_for = figure_qa_issues or bool(figure_qa_summary.get("ignored_unreferenced_failed_count"))
+    figure_qa_accounted_for = bool(
+        figure_qa_issues
+        or figure_qa_summary.get("failed_count")
+        or figure_qa_summary.get("ignored_unreferenced_failed_count")
+    )
     if figure_qa_accounted_for and not visual_qa_has_missing_image(stage_dir):
         pipeline_issues = [issue for issue in pipeline_issues if issue != "pipeline_status.json contains failed stage: figures"]
     issues.extend(pipeline_issues)
     warnings.extend(pipeline_warnings)
     issues.extend(figure_qa_issues)
     warnings.extend(figure_qa_warnings)
+    figure_delivery_summary, figure_delivery_issues, figure_delivery_warnings = figure_delivery_findings(stage_dir)
+    issues.extend(figure_delivery_issues)
+    warnings.extend(figure_delivery_warnings)
 
-    status = "failed" if issues else ("passed_with_warnings" if warnings else "passed")
-    review_ack = review_acknowledgement(stage_dir)
+    advisories = diagnostic_advisories(stage_dir)
+    delivery_ready = not issues
+    has_referenced_visual_semantic_risk = bool(figure_qa_summary.get("failed_count"))
+    requires_review = bool(
+        formal_issues
+        or has_referenced_visual_semantic_risk
+        or advisories.get("advisory")
+        or warnings
+    )
+    delivery_tier = (
+        "blocked"
+        if issues
+        else ("review_candidate" if requires_review else "formal")
+    )
+    # The run status and delivery tier must describe the same user-facing
+    # outcome. A readable candidate is useful, but it is not a completed
+    # formal delivery and must remain visible in the review queue.
+    if delivery_tier == "blocked":
+        status = "failed"
+    elif delivery_tier == "review_candidate":
+        status = "completed_with_issues"
+    else:
+        status = "passed"
+    formal_acceptance_passed = delivery_tier == "formal"
     retry_summary = model_retry_summary(stage_dir)
     non_direct_summary = non_direct_evidence_summary(stage_dir)
+    shadow_quality = read_json(stage_dir / "quality_shadow_report.json") or {}
     report = {
-        "ok": not issues,
+        # ``ok`` remains the backwards-compatible machine-delivery gate.
+        # Formal acceptance is deliberately stricter for referenced figures
+        # that visual QA identifies as scientifically or semantically wrong.
+        "ok": delivery_ready,
+        "delivery_ready": delivery_ready,
+        "formal_acceptance_passed": formal_acceptance_passed,
         "status": status,
-        "review_acknowledgement": review_ack,
+        "delivery_tier": delivery_tier,
+        "delivery_tier_label": {
+            "formal": "正式解析版",
+            "review_candidate": "可交付待复核候选版",
+            "blocked": "阻断，不应作为正式结果交付",
+        }[delivery_tier],
+        "diagnostic_advisories": advisories,
         "model_retry_summary": retry_summary,
         "non_direct_evidence_summary": non_direct_summary,
+        "quality_shadow_summary": {
+            "available": bool(shadow_quality),
+            "enforced": bool(shadow_quality.get("enforced", False)),
+            "finding_count": int(shadow_quality.get("finding_count", 0) or 0),
+            "would_block_count": int(shadow_quality.get("would_block_count", 0) or 0),
+            "would_warn_count": int(shadow_quality.get("would_warn_count", 0) or 0),
+            "path": str(stage_dir / "quality_shadow_report.json"),
+        },
         "figure_visual_qa_summary": figure_qa_summary,
+        "figure_delivery_summary": figure_delivery_summary,
+        "answer_fragment_delivery_summary": answer_delivery_summary,
         "require_render": require_render,
         "gates": gates,
-        "issue_count": len(issues),
+        "issue_count": len(issues) + len(formal_issues),
+        "delivery_issue_count": len(issues),
+        "formal_issue_count": len(formal_issues),
         "warning_count": len(warnings),
-        "issues": issues,
+        "issues": [*issues, *formal_issues],
+        "delivery_issues": issues,
+        "formal_issues": formal_issues,
         "warnings": warnings,
         "outputs": {
             "docx": str(docx),

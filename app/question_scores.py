@@ -5,7 +5,6 @@ from typing import Any
 
 from .text_utils import cn_to_int
 
-
 SCORE_KEYS = ("confirmed_score", "score", "points", "point", "分值")
 
 
@@ -110,6 +109,17 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
     per_question = _per_question_score_from_text(section_text, question)
     if per_question is not None:
         return per_question
+    # A grouped/unnumbered parent represents the whole major section. Its stem
+    # commonly contains several child scores such as 2, 8 and 4 points. The
+    # explicit section total must win; otherwise the first child score is
+    # incorrectly confirmed as the parent score.
+    section_total = re.search(r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分", section_text)
+    represents_whole_section = (
+        bool(question.get("subquestions"))
+        and str(question.get("number") or "").strip() == str(question.get("major_number") or "").strip()
+    )
+    if section_total and represents_whole_section:
+        return float(section_total.group(1))
     section_match = re.search(r"每小题\s*(\d+(?:\.\d+)?)\s*分", section_text)
     if section_match:
         return float(section_match.group(1))
@@ -123,7 +133,6 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
         match = re.search(pattern, text)
         if match:
             return float(match.group(1))
-    generic_section = re.search(r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分", section_text)
-    if generic_section:
-        return float(generic_section.group(1))
+    if section_total:
+        return float(section_total.group(1))
     return None

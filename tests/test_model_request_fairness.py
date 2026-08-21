@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from unittest.mock import patch
+
+from app.concurrency import ModelRequestAborted, model_request_context, model_request_slot, model_request_snapshot
+from app.llm_client import OpenAICompatibleClient
+from app.runtime_monitor import model_call_context
+from app.settings import ProviderConfig
+
+
+@dataclass(frozen=True)
+class _ProviderIdentity:
+    name: str
+    base_url: str
+
+
+class _Response:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}).encode("utf-8")
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    raise AssertionError("condition was not reached before timeout")
+
+
+class ModelRequestFairnessTests(unittest.TestCase):
+    def test_waiting_user_tasks_are_admitted_round_robin(self) -> None:
+        provider = _ProviderIdentity("fairness-provider", "https://fairness.invalid/v1")
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        order: list[str] = []
+        order_lock = threading.Lock()
+
+        def request(owner: str, first: bool = False) -> None:
+            with model_request_context(owner):
+                with model_request_slot(provider):
+                    with order_lock:
+                        order.append(owner)
+                    if first:
+                        first_entered.set()
+                        self.assertTrue(release_first.wait(2.0))
+                    else:
+                        time.sleep(0.015)
+
+        with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "1"}):
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                first = executor.submit(request, "exam-task", True)
+                self.assertTrue(first_entered.wait(1.0))
+                exam_waiters = [executor.submit(request, "exam-task") for _ in range(3)]
+                _wait_until(lambda: model_request_snapshot()["waiting"] >= 3)
+                practice = executor.submit(request, "practice-task")
+                _wait_until(lambda: model_request_snapshot()["waiting"] >= 4)
+                release_first.set()
+                first.result(timeout=2.0)
+                practice.result(timeout=2.0)
+                for waiter in exam_waiters:
+                    waiter.result(timeout=2.0)
+
+        self.assertEqual("exam-task", order[0])
+        self.assertEqual("practice-task", order[2])
+
+    def test_limit_change_does_not_create_a_second_independent_semaphore(self) -> None:
+        provider = _ProviderIdentity("dynamic-provider", "https://dynamic.invalid/v1")
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+
+        def first_request() -> None:
+            with model_request_slot(provider):
+                first_entered.set()
+                self.assertTrue(release_first.wait(2.0))
+
+        def second_request() -> None:
+            with model_request_slot(provider):
+                second_entered.set()
+
+        with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "2"}):
+            first = threading.Thread(target=first_request)
+            first.start()
+            self.assertTrue(first_entered.wait(1.0))
+            with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "1"}):
+                second = threading.Thread(target=second_request)
+                second.start()
+                time.sleep(0.05)
+                self.assertFalse(second_entered.is_set())
+                release_first.set()
+                first.join(1.0)
+                second.join(1.0)
+                self.assertTrue(second_entered.is_set())
+
+    def test_client_boundary_limits_calls_without_business_layer_guard(self) -> None:
+        provider = ProviderConfig(
+            name="central-boundary-provider",
+            type="openai_compatible",
+            base_url="https://central-boundary.invalid/v1",
+            api_key="test-key",
+            default_model="test-model",
+            model_options=("test-model",),
+            allow_custom_model=False,
+            model_hint="",
+            temperature=0.1,
+            max_tokens=100,
+        )
+        active = 0
+        maximum_active = 0
+        lock = threading.Lock()
+
+        def make_call(index: int) -> str:
+            nonlocal active, maximum_active
+            client = OpenAICompatibleClient(provider)
+
+            def fake_urlopen(_request, timeout):
+                nonlocal active, maximum_active
+                with lock:
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                time.sleep(0.025)
+                with lock:
+                    active -= 1
+                return _Response()
+
+            client._urlopen = fake_urlopen
+            with model_call_context(task_id=f"task-{index}"):
+                return client.chat_text([{"role": "user", "content": "ping"}], timeout=1).content
+
+        with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "2"}):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(make_call, range(8)))
+
+        self.assertEqual(["ok"] * 8, results)
+        self.assertEqual(2, maximum_active)
+
+    def test_cancelled_task_is_rechecked_after_wait_and_spends_no_model_request(self) -> None:
+        provider = _ProviderIdentity("cancel-provider", "https://cancel.invalid/v1")
+        holder_entered = threading.Event()
+        release_holder = threading.Event()
+        cancelled = threading.Event()
+        request_body_entered = threading.Event()
+        observed: list[type[BaseException]] = []
+
+        def hold_slot() -> None:
+            with model_request_context("exam-task"):
+                with model_request_slot(provider):
+                    holder_entered.set()
+                    self.assertTrue(release_holder.wait(2.0))
+
+        def ensure_not_cancelled() -> None:
+            if cancelled.is_set():
+                raise ModelRequestAborted("用户取消任务")
+
+        def cancelled_waiter() -> None:
+            try:
+                with model_request_context("practice-task", admission_check=ensure_not_cancelled):
+                    with model_request_slot(provider):
+                        request_body_entered.set()
+            except BaseException as exc:
+                observed.append(type(exc))
+
+        with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "1"}):
+            holder = threading.Thread(target=hold_slot)
+            holder.start()
+            self.assertTrue(holder_entered.wait(1.0))
+            waiter = threading.Thread(target=cancelled_waiter)
+            waiter.start()
+            _wait_until(lambda: model_request_snapshot()["waiting"] >= 1)
+            cancelled.set()
+            release_holder.set()
+            holder.join(1.0)
+            waiter.join(1.0)
+
+        self.assertEqual([ModelRequestAborted], observed)
+        self.assertFalse(request_body_entered.is_set())
+
+    def test_client_guard_is_reentrant_with_existing_business_guard(self) -> None:
+        provider = ProviderConfig(
+            name="reentrant-provider",
+            type="openai_compatible",
+            base_url="https://reentrant.invalid/v1",
+            api_key="test-key",
+            default_model="test-model",
+            model_options=("test-model",),
+            allow_custom_model=False,
+            model_hint="",
+            temperature=0.1,
+            max_tokens=100,
+        )
+        client = OpenAICompatibleClient(provider)
+        client._urlopen = lambda _request, timeout: _Response()
+        with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "1"}):
+            with model_request_slot(provider):
+                result = client.chat_text([{"role": "user", "content": "ping"}], timeout=1)
+        self.assertEqual("ok", result.content)
+
+
+if __name__ == "__main__":
+    unittest.main()

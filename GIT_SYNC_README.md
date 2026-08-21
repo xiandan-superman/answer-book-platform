@@ -1,103 +1,57 @@
-# Git 同步说明
+# Gitee 同步说明
 
-## 适合同步的内容
+平台代码默认同步到 Gitee；桌面 App 发布当前冻结，不属于普通平台推送范围。
 
-Git 仓库用于同步程序代码、前端页面、脚本、配置模板、文档、示例真题和教材库文件。
+## 会进入 Git 的内容
 
-以下内容不会进入 Git：
+- `app/`、`web/`、`tests/`、`scripts/` 中的平台源码与测试
+- 配置示例、依赖清单、版本文件和正式文档
+- 受控的示例输入
 
-- `.env`
-- `config/providers.local.json`
-- `tasks/`
-- `outputs/`
-- `logs/`
-- `cache/`
-- `tmp/`
-- `output/`
-- `.playwright-cli/`
-- `quality_gates_report.json`
-- `textbooks/textbook_page_map.manual.csv`
+以下本地状态已由 `.gitignore` 隔离：`.env`、`config/api_keys.json`、`config/providers.local.json`、`tasks/`、`outputs/`、`logs/`、`cache/`、`runtime/`、`practice_jobs/`、`practice_history/`、`build/`、`dist/` 和 `archive/local/`。
 
-这些都是本机运行状态、输出结果、日志、缓存或密钥，应该在每台电脑本地保留。
-
-## 第一次推送到远程仓库
-
-先创建一个私有远程仓库，例如 GitHub、Gitee、GitLab 或内网 Git 服务。
-
-然后在当前电脑执行：
+## 首次关联 Gitee
 
 ```bash
-cd /Users/ljj/Documents/真题解析/answer_book_platform_v1
-git remote add origin <你的远程仓库地址>
-git push -u origin main
+cd <项目目录>
+git remote add gitee-material <你的 Gitee 仓库地址>
+git fetch gitee-material
+git switch codex/v6.8-material-figure-schema-flow
 ```
 
-远程仓库地址示例：
-
-```text
-git@github.com:your-name/answer_book_platform_v1.git
-https://gitee.com/your-name/answer_book_platform_v1.git
-```
-
-## 另一台电脑第一次同步
+如果本地还没有该分支，基于远程分支创建：
 
 ```bash
-git clone <你的远程仓库地址>
-cd answer_book_platform_v1
-python3 -m pip install -r requirements.txt
+git switch -c codex/v6.8-material-figure-schema-flow --track gitee-material/codex/v6.8-material-figure-schema-flow
+```
+
+## 每次推送前
+
+```bash
+python3 scripts/check_version_consistency.py
+python3 scripts/run_quality_gates.py
+git fetch gitee-material
+git status --short
+git diff --cached --name-only
+```
+
+只显式暂存本次平台文件，不使用 `git add .`。确认远程、分支、`VERSION` 和暂存清单后再提交、推送；不得强推或覆盖远程历史。
+
+```bash
+git add <本次平台文件...>
+git commit -m "描述本次平台更新"
+git push gitee-material codex/v6.8-material-figure-schema-flow
+```
+
+## 另一台电脑同步
+
+```bash
+git clone <你的 Gitee 仓库地址>
+cd <仓库目录>
+git switch codex/v6.8-material-figure-schema-flow
+python3 -m pip install -r requirements.txt -c constraints.txt
 python3 scripts/check_environment.py
+python3 scripts/start_platform.py
 ```
 
-配置本机 API Key：
-
-```bash
-cp .env.example .env
-```
-
-也可以直接在前端“模型 API 配置”里填写并保存。
-
-## 另一台电脑启动服务
-
-只在另一台电脑本机使用：
-
-```bash
-python3 scripts/start_platform.py --host 127.0.0.1 --port 8765
-```
-
-允许当前电脑通过局域网访问：
-
-```bash
-python3 scripts/start_platform.py --host 0.0.0.0 --port 8765
-```
-
-当前电脑打开：
-
-```text
-http://另一台电脑IP:8765
-```
-
-## 日常更新流程
-
-当前电脑改完程序后：
-
-```bash
-git status
-git add .
-git commit -m "描述本次更新"
-git push
-```
-
-另一台电脑更新：
-
-```bash
-cd answer_book_platform_v1
-git pull
-```
-
-如果另一台电脑正在运行服务，更新代码后需要重启服务，前端和后端改动才会全部生效。
-
-## 注意
-
-不要把 `.env`、API Key、任务结果、日志和缓存强行加入 Git。
-
-不要把 `8765` 端口直接暴露到公网。跨网络访问建议使用 VPN、Tailscale 或 SSH 隧道。
+不要提交真实 API Key、任务结果、日志和缓存。局域网监听只用于可信网络；跨网络访问使用 Tailscale、VPN 或 HTTPS 反向代理。

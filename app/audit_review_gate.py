@@ -5,7 +5,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .task_store import append_event, load_task, task_dir, update_task
+from .capabilities.audit_adapters import findings_from_report, legacy_issue_code
+from .capabilities.quality import PolicyAction
+from .capabilities.quality_governance import build_unattended_policy, governance_for
+from .task_store import append_event, task_dir, update_task
 
 
 class AuditRejectedByUser(RuntimeError):
@@ -193,6 +196,67 @@ def auto_allow_audit_report(
     updated["warning_count"] = len(warnings)
     updated["auto_allowed_issues"] = issues
     updated["auto_allowed"] = True
+    if output_json:
+        output_json.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated
+
+
+def enforce_unattended_audit_report(
+    report: dict[str, Any],
+    *,
+    source: str,
+    output_json: Path | None = None,
+) -> dict[str, Any]:
+    """Apply evidence-aware policy without waiting for or simulating a person."""
+
+    policy = build_unattended_policy()
+    blocking: list[Any] = []
+    advisory: list[Any] = list(report.get("warnings", [])) if isinstance(report.get("warnings"), list) else []
+    decisions: list[dict[str, Any]] = []
+    raw_issues = report.get("issues", []) if isinstance(report.get("issues"), list) else []
+    for raw in raw_issues:
+        findings = findings_from_report(
+            {"issues": [raw]},
+            source=source,
+            code_resolver=legacy_issue_code,
+        )
+        if not findings:
+            continue
+        finding = findings[0]
+        governance = governance_for(finding.code)
+        action = policy.action_for(finding)
+        decision = {
+            **finding.to_dict(),
+            "action": action.value,
+            "governance": governance.to_dict(),
+        }
+        decisions.append(decision)
+        if action is PolicyAction.BLOCK:
+            blocking.append(raw)
+        else:
+            raw_value = dict(raw) if isinstance(raw, dict) else {"message": str(raw)}
+            advisory.append(
+                {
+                    **raw_value,
+                    "original_severity": "issue",
+                    "severity": "warning",
+                    "unattended_action": action.value,
+                    "governance_code": finding.code,
+                }
+            )
+    updated = {
+        **report,
+        "ok": not blocking,
+        "issues": blocking,
+        "issue_count": len(blocking),
+        "warnings": advisory,
+        "warning_count": len(advisory),
+        "governance_mode": "unattended",
+        "human_review_required": False,
+        "governance_decisions": decisions,
+        "blocked_count": len(blocking),
+        "advisory_issue_count": len(raw_issues) - len(blocking),
+    }
     if output_json:
         output_json.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
     return updated

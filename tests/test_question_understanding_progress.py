@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +38,26 @@ class QuestionUnderstandingProgressTests(unittest.TestCase):
         self.assertEqual(2, saved["completed"])
         self.assertEqual({}, saved["active"])
         self.assertEqual("question_completed", saved["recent_events"][-1]["event"])
+
+    def test_parallel_workers_keep_report_and_exam_order_stable(self) -> None:
+        from app.question_understanding import build_question_understandings
+
+        thread_ids: set[int] = set()
+
+        def fake_understanding(question, _output_dir, **_kwargs):
+            thread_ids.add(threading.get_ident())
+            time.sleep(0.04 if question["question_id"] != "q02" else 0.01)
+            return {"question_id": question["question_id"], "needs_vision_model": False, "vision_used": False}
+
+        with tempfile.TemporaryDirectory() as raw_tmp, patch("app.question_understanding.build_question_understanding", side_effect=fake_understanding):
+            root = Path(raw_tmp)
+            exam = {"items": [{"question_id": "q01"}, {"question_id": "q02"}, {"question_id": "q03"}]}
+            report = build_question_understandings(exam, root / "understanding.json")
+
+        self.assertEqual(["q01", "q02", "q03"], [item["question_id"] for item in report["items"]])
+        self.assertEqual(["q01", "q02", "q03"], [item["question_understanding"]["question_id"] for item in exam["items"]])
+        self.assertTrue(report["concurrency"]["parallel_enabled"])
+        self.assertGreaterEqual(len(thread_ids), 2)
 
 
 if __name__ == "__main__":

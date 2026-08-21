@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.pipeline import PipelineOptions, run_pipeline
+from app.process_lock import ProcessLockUnavailable, platform_process_lock
+from app.task_control import clear_task_control
 
 
 def main() -> int:
@@ -20,16 +22,24 @@ def main() -> int:
     parser.add_argument("--reuse-fragments", action="store_true", help="Reuse existing stage_outputs/answer_fragments.json")
     parser.add_argument("--allow-formula-fallback", action="store_true", help="Allow built-in minimal formula converter if preferred chain is missing")
     args = parser.parse_args()
-    result = run_pipeline(
-        args.task_id,
-        PipelineOptions(
-            use_model=not args.no_model,
-            allow_demo_without_key=args.no_model,
-            render_with_word=args.render,
-            reuse_fragments=args.reuse_fragments,
-            require_preferred_formula_chain=not args.allow_formula_fallback,
-        ),
-    )
+    try:
+        with platform_process_lock(purpose=f"run-task {args.task_id}"):
+            # Invoking this CLI is an explicit new run, so discard a control
+            # left by a previous run before entering the cancellation-aware pipeline.
+            clear_task_control(args.task_id)
+            result = run_pipeline(
+                args.task_id,
+                PipelineOptions(
+                    use_model=not args.no_model,
+                    allow_demo_without_key=args.no_model,
+                    render_with_word=args.render,
+                    reuse_fragments=args.reuse_fragments,
+                    require_preferred_formula_chain=not args.allow_formula_fallback,
+                ),
+            )
+    except ProcessLockUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

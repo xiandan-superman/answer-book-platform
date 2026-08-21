@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import socket
@@ -12,9 +13,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .drawing_code import run_drawing_code
-from .paths import IS_FROZEN, PROJECT_ROOT, ensure_project_dirs
+from .omml import clear_omml_caches, find_mathml2omml_xsl
+from .omml_input import clear_omml_input_caches, find_omml2mathml_xsl
+from .paths import PROJECT_ROOT, ensure_project_dirs
+from .render_fonts import project_font_diagnostics
 from .settings import list_providers
-from .omml import find_mathml2omml_xsl
 
 
 def _run_command(cmd: list[str], timeout: int = 300) -> dict[str, Any]:
@@ -37,10 +40,10 @@ def _check_word_mac() -> dict[str, Any]:
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     return {
         "applicable": True,
-        "word_app_exists": shutil.os.path.exists(word_app),
+        "word_app_exists": os.path.exists(word_app),
         "osascript_exists": bool(shutil.which("osascript")),
         "soffice": soffice,
-        "render_pdf_available": bool(shutil.os.path.exists(word_app) or soffice),
+        "render_pdf_available": bool(os.path.exists(word_app) or soffice),
         "note": "Word render checks require Microsoft Word installed locally.",
         "probe_script": script,
     }
@@ -61,7 +64,21 @@ def _check_word_windows() -> dict[str, Any]:
             "soffice": soffice,
             "render_pdf_available": bool(soffice),
         }
-    code = "import win32com.client; win32com.client.Dispatch('Word.Application'); print('ok')"
+    code = """
+import win32com.client
+
+word = None
+try:
+    # DispatchEx creates an isolated probe instance.  Dispatch may attach to
+    # the user's open Word session and a probe must never leave it running or
+    # close the user's own documents.
+    word = win32com.client.DispatchEx("Word.Application")
+    word.Visible = False
+    print("ok")
+finally:
+    if word is not None:
+        word.Quit()
+""".strip()
     stderr = ""
     stdout = ""
     try:
@@ -69,7 +86,7 @@ def _check_word_windows() -> dict[str, Any]:
         ok = proc.returncode == 0
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         ok = False
         stderr = str(exc)
     return {
@@ -104,12 +121,15 @@ def _check_network(providers: dict[str, dict[str, Any]]) -> dict[str, Any]:
         try:
             with socket.create_connection((target["host"], int(target["port"])), timeout=3):
                 item.update({"ok": True, "error": ""})
-        except Exception as exc:
+        except OSError as exc:
             item.update({"ok": False, "error": str(exc)})
         checked.append(item)
     return {
         "ok": any(item["ok"] for item in checked),
         "checked": checked,
+        "by_provider": {str(item["provider"]): bool(item["ok"]) for item in checked},
+        "reachable_providers": [str(item["provider"]) for item in checked if item["ok"]],
+        "unreachable_providers": [str(item["provider"]) for item in checked if not item["ok"]],
         "message": "at least one provider host reachable" if any(item["ok"] for item in checked) else "no provider host reachable",
     }
 
@@ -124,12 +144,7 @@ def _check_drawing_runtime() -> dict[str, Any]:
             "issues": ["matplotlib is not installed"],
         }
 
-    try:
-        import resource  # type: ignore[import-not-found]
-
-        resource_limits = "available"
-    except ImportError:
-        resource_limits = "not_available_on_this_platform"
+    resource_limits = "available" if find_spec("resource") else "not_available_on_this_platform"
 
     code = """
 import matplotlib.pyplot as plt
@@ -169,8 +184,12 @@ def draw(output_path: str) -> None:
 def environment_repair_actions(env: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     packages = env.get("python_packages", {})
-    missing_core = [name for name in ("python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib") if not packages.get(name)]
-    if missing_core and not IS_FROZEN:
+    missing_core = [
+        name
+        for name in ("python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "pydantic", "pypdfium2", "bm25s", "huey")
+        if not packages.get(name)
+    ]
+    if missing_core:
         actions.append(
             {
                 "id": "install_python_dependencies",
@@ -182,7 +201,7 @@ def environment_repair_actions(env: dict[str, Any]) -> list[dict[str, Any]]:
         )
 
     word_windows = env.get("microsoft_word", {}).get("windows", {})
-    if word_windows.get("applicable") and not word_windows.get("word_com_available") and not IS_FROZEN:
+    if word_windows.get("applicable") and not word_windows.get("word_com_available"):
         actions.append(
             {
                 "id": "install_windows_word_com",
@@ -207,8 +226,6 @@ def environment_repair_actions(env: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def repair_environment(action: str) -> dict[str, Any]:
-    if IS_FROZEN and action in {"install_python_dependencies", "install_windows_word_com"}:
-        raise ValueError("桌面 App 的 Python 依赖已随程序打包，不能在运行时安装；请更新 App。")
     if action == "install_python_dependencies":
         result = _run_command([sys.executable, "-m", "pip", "install", "-r", str(PROJECT_ROOT / "requirements.txt")], timeout=600)
     elif action == "install_windows_word_com":
@@ -235,6 +252,8 @@ def repair_environment(action: str) -> dict[str, Any]:
         )
     else:
         raise ValueError(f"未知修复动作：{action}")
+    clear_omml_caches()
+    clear_omml_input_caches()
     return {"ok": bool(result.get("ok")), "action": action, "result": result, "environment": check_environment()}
 
 
@@ -242,6 +261,7 @@ def check_environment() -> dict[str, Any]:
     ensure_project_dirs()
     providers = {name: cfg.redacted() for name, cfg in list_providers().items()}
     xsl = find_mathml2omml_xsl()
+    input_xsl = find_omml2mathml_xsl()
     word_mac = _check_word_mac()
     word_windows = _check_word_windows()
     drawing_runtime = _check_drawing_runtime()
@@ -252,9 +272,13 @@ def check_environment() -> dict[str, Any]:
         "latex2mathml": bool(find_spec("latex2mathml")),
         "Pillow": bool(find_spec("PIL")),
         "matplotlib": bool(find_spec("matplotlib")),
+        "pydantic": bool(find_spec("pydantic")),
+        "pypdfium2": bool(find_spec("pypdfium2")),
+        "bm25s": bool(find_spec("bm25s")),
+        "huey": bool(find_spec("huey")),
         "pywin32": bool(find_spec("win32com")),
     }
-    env = {
+    env: dict[str, Any] = {
         "platform": platform.platform(),
         "python": platform.python_version(),
         "executables": {
@@ -267,8 +291,14 @@ def check_environment() -> dict[str, Any]:
             "preferred_chain": "latex2mathml -> mathml2omml.xsl -> Word OMML",
             "latex2mathml_available": python_packages["latex2mathml"],
             "mathml2omml_xsl": str(xsl) if xsl else None,
-            "fallback_chain": "built-in minimal LaTeX parser",
+            "degraded_fallback": "disabled unless ANSWER_BOOK_ALLOW_DEGRADED_OMML_FALLBACK=1",
             "preferred_chain_ready": bool(python_packages["latex2mathml"] and python_packages["lxml"] and xsl),
+        },
+        "formula_input_conversion": {
+            "preferred_chain": "Word OMML -> omml2mathml.xsl -> MathML",
+            "omml2mathml_xsl": str(input_xsl) if input_xsl else None,
+            "preferred_chain_ready": bool(python_packages["lxml"] and input_xsl),
+            "fallback_chain": "visible OMML tokens with explicit structure-unavailable marker",
         },
         "microsoft_word": {
             "mac": word_mac,
@@ -282,7 +312,17 @@ def check_environment() -> dict[str, Any]:
                 if platform.system() == "Windows"
                 else soffice
             ),
+            "pdf_page_render_available": bool(python_packages["pypdfium2"] or shutil.which("pdftoppm")),
+            "pdf_page_renderer": "pypdfium2" if python_packages["pypdfium2"] else ("pdftoppm" if shutil.which("pdftoppm") else "unavailable"),
+            "pypdfium2_available": python_packages["pypdfium2"],
             "pdftoppm_available": bool(shutil.which("pdftoppm")),
+            "project_fonts": project_font_diagnostics(),
+        },
+        "task_queue": {
+            "backend": "huey_sqlite" if python_packages["huey"] else "unavailable",
+            "huey_available": python_packages["huey"],
+            "persistence": "sqlite",
+            "payload_policy": "job_id_only",
         },
         "drawing_runtime": drawing_runtime,
         "providers": providers,

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .api_key_config import load_api_keys
 from .paths import CONFIG_DIR, DATA_ROOT, LOCAL_CONFIG_DIR
 
-
 DEFAULT_MODEL_MAX_TOKENS = 24576
-STRUCTURED_ANSWER_MAX_TOKENS = 49152
+STRUCTURED_ANSWER_MAX_TOKENS = 24576
 DRAWING_CODE_MAX_TOKENS = 32768
 FIGURE_AUXILIARY_MAX_TOKENS = 16384
 BAILIAN_QWEN37_MAX = "qwen3.7-max"
@@ -43,8 +45,12 @@ class ProviderConfig:
     vision_model: str = ""
     vision_model_options: tuple[str, ...] = ()
     supports_vision: bool = False
+    model_capabilities: dict[str, tuple[str, ...]] = field(default_factory=dict)
     thinking_mode: str = "auto"
     json_mode_unsupported_models: tuple[str, ...] = ()
+    api_protocol: str = "chat_completions"
+    responses_fallback_to_chat: bool = True
+    responses_streaming: bool = True
 
     def redacted(self) -> dict[str, Any]:
         return {
@@ -69,8 +75,12 @@ class ProviderConfig:
             "vision_model": self.vision_model,
             "vision_model_options": list(self.vision_model_options),
             "supports_vision": self.supports_vision,
+            "model_capabilities": {key: list(value) for key, value in self.model_capabilities.items()},
             "thinking_mode": self.thinking_mode,
             "json_mode_unsupported_models": list(self.json_mode_unsupported_models),
+            "api_protocol": self.api_protocol,
+            "responses_fallback_to_chat": self.responses_fallback_to_chat,
+            "responses_streaming": self.responses_streaming,
         }
 
 
@@ -114,6 +124,7 @@ def load_dotenv() -> None:
 
 
 def list_providers() -> dict[str, ProviderConfig]:
+    load_api_keys()
     load_dotenv()
     raw = load_provider_config_file()
     providers: dict[str, ProviderConfig] = {}
@@ -123,11 +134,9 @@ def list_providers() -> dict[str, ProviderConfig]:
         # legacy providers.local.json entries so replacing a bad key takes effect.
         api_key = str(os.environ.get(env_name, "") or item.get("api_key", "")).strip()
         image_model_env = str(item.get("image_model_env", "")).strip()
-        default_image_model = "gpt-image-1" if name == "openai" else ""
+        default_image_model = ""
         if name == "ark":
             default_image_model = "doubao-seedream-5-0-260128"
-        if name == "zhipu":
-            default_image_model = "glm-image"
         if name == "bailian":
             default_image_model = "qwen-image-2.0-pro"
         supports_image_generation = bool(item.get("supports_image_generation", True))
@@ -188,8 +197,16 @@ def list_providers() -> dict[str, ProviderConfig]:
             vision_model=vision_model,
             vision_model_options=tuple(str(x) for x in item.get("vision_model_options", []) if str(x).strip()),
             supports_vision=supports_vision,
+            model_capabilities={
+                str(model): tuple(str(capability).strip().lower() for capability in capabilities if str(capability).strip())
+                for model, capabilities in dict(item.get("model_capabilities", {})).items()
+                if str(model).strip() and isinstance(capabilities, (list, tuple))
+            },
             thinking_mode=str(item.get("thinking_mode", "") or os.environ.get("ANSWER_BOOK_THINKING_MODE", "") or "auto"),
             json_mode_unsupported_models=tuple(json_mode_unsupported_models),
+            api_protocol=str(item.get("api_protocol", "chat_completions") or "chat_completions").strip().lower(),
+            responses_fallback_to_chat=bool(item.get("responses_fallback_to_chat", True)),
+            responses_streaming=bool(item.get("responses_streaming", True)),
         )
     return providers
 
@@ -198,10 +215,79 @@ def provider_supports_image_generation(provider: ProviderConfig) -> bool:
     return bool(getattr(provider, "supports_image_generation", True) and getattr(provider, "image_model", ""))
 
 
+def provider_model_supports_vision(provider: ProviderConfig, model: str) -> bool:
+    """Return the capability of the selected model, not merely its provider."""
+
+    selected = str(model or "").strip()
+    if not selected:
+        return False
+    explicit = tuple(
+        sorted(
+            str(capability).strip().lower()
+            for capability in (getattr(provider, "model_capabilities", {}) or {}).get(selected, ())
+            if str(capability).strip()
+        )
+    )
+    if not explicit:
+        label = str((getattr(provider, "model_option_labels", {}) or {}).get(selected, "") or "")
+        identity = f"{selected} {label}".lower()
+        if (
+            "multimodal" in identity
+            or "vision" in identity
+            or "ocr" in identity
+            or "多模态" in label
+            or "视觉" in label
+            or "识图" in label
+            or "图像" in label
+            or re.search(r"(?:^|[-_.])vl(?:$|[-_.])", selected, flags=re.IGNORECASE)
+        ):
+            explicit = ("vision",)
+    configured = tuple(
+        sorted(
+            {
+                str(getattr(provider, "vision_model", "") or "").strip(),
+                *[str(item).strip() for item in (getattr(provider, "vision_model_options", ()) or ())],
+            }
+            - {""}
+        )
+    )
+    return _model_supports_vision_cached(
+        str(getattr(provider, "name", "") or ""),
+        selected,
+        bool(getattr(provider, "supports_vision", False)),
+        explicit,
+        configured,
+    )
+
+
+@lru_cache(maxsize=512)
+def _model_supports_vision_cached(
+    provider_name: str,
+    model: str,
+    provider_supports_vision: bool,
+    explicit_capabilities: tuple[str, ...],
+    configured_vision_models: tuple[str, ...],
+) -> bool:
+    """Resolve a provider/model capability once per configuration identity.
+
+    This is deliberately a local declaration lookup, not a paid model probe.
+    Changing provider/model configuration changes the cache key automatically.
+    """
+
+    del provider_name
+    if "vision" in explicit_capabilities or "multimodal" in explicit_capabilities or "image_input" in explicit_capabilities:
+        return True
+    if explicit_capabilities:
+        return False
+    return provider_supports_vision and model in configured_vision_models
+
+
 def get_provider(name: str | None = None) -> ProviderConfig:
     raw = load_provider_config_file()
     providers = list_providers()
-    selected = name or raw.get("active_provider") or "openai"
+    selected = name or raw.get("active_provider")
+    if not selected and providers:
+        selected = next(iter(providers))
     if selected not in providers:
         raise ValueError(f"Provider not configured: {selected}")
     return providers[selected]

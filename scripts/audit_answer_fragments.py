@@ -9,12 +9,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.pipeline import stage_dir
-from app.v4_schema import validate_v4_answer_fragment
+from app.pipeline import stage_dir  # noqa: E402
+from app.pipeline_checkpoints import reconcile_answer_generation_checkpoint  # noqa: E402
+from app.v4_schema import validate_v4_answer_fragment  # noqa: E402
 
 
 def audit(path: Path) -> list[str]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        return [f"answer_fragments could not be read: {exc}"]
     issues: list[str] = []
     if not isinstance(data, dict):
         return ["answer_fragments payload must be a JSON object"]
@@ -47,7 +51,15 @@ def main() -> int:
         print(json.dumps({"ok": False, "issues": [f"not found: {path}"]}, ensure_ascii=False, indent=2))
         return 1
     issues = audit(path)
-    print(json.dumps({"ok": not issues, "path": str(path), "issue_count": len(issues), "issues": issues}, ensure_ascii=False, indent=2))
+    result = {
+        "ok": not issues,
+        "path": str(path),
+        "issue_count": len(issues),
+        "issues": issues,
+    }
+    if (path.parent / "structured_exam.json").exists():
+        result["checkpoint_reconciliation"] = reconcile_answer_generation_checkpoint(path.parent)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if not issues else 1
 
 

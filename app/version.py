@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
+from typing import Any
 
 from .paths import PROJECT_ROOT
 
@@ -22,6 +22,16 @@ def get_base_version() -> str:
     return "0.0.0"
 
 
+def get_app_version() -> str:
+    """Return the independently versioned desktop distribution version."""
+    path = PROJECT_ROOT / "APP_VERSION"
+    if path.exists():
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    return get_base_version()
+
+
 def get_source_revision() -> str:
     git_dir = PROJECT_ROOT / ".git"
     if git_dir.exists():
@@ -37,13 +47,40 @@ def get_source_revision() -> str:
             revision = result.stdout.strip()
             if revision:
                 return revision
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
     manifest = PROJECT_ROOT / "RELEASE_MANIFEST.json"
     if manifest.exists():
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
             return str(data.get("commit") or data.get("source_revision") or "").strip()
-        except Exception:
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return ""
     return ""
+
+
+def release_manifest_status() -> dict[str, Any]:
+    """Return whether checked-in release metadata matches the VERSION source."""
+    manifest_path = PROJECT_ROOT / "RELEASE_MANIFEST.json"
+    version = get_base_version()
+    result: dict[str, Any] = {
+        "exists": manifest_path.exists(),
+        "version": version,
+        "manifest_version": "",
+        "version_matches": False,
+        "issues": [],
+    }
+    if not manifest_path.exists():
+        result["issues"].append("RELEASE_MANIFEST.json 不存在")
+        return result
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        result["issues"].append(f"RELEASE_MANIFEST.json 无法读取：{exc.__class__.__name__}")
+        return result
+    manifest_version = str(data.get("version") or "").strip()
+    result["manifest_version"] = manifest_version
+    result["version_matches"] = manifest_version == version
+    if not result["version_matches"]:
+        result["issues"].append(f"版本不一致：VERSION={version}，manifest={manifest_version or '未填写'}")
+    return result

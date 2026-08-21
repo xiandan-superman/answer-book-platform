@@ -1,17 +1,27 @@
 from __future__ import annotations
 
-import re
 import hashlib
+import io
 import json
+import os
+import re
+import tempfile
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from .paths import EXAMS_DIR, TEXTBOOKS_DIR, ensure_project_dirs
-from .textbook_index_cache import TEXTBOOK_INDEX_CACHE_DIR, shared_install_cache_key
-
+from .textbook_index_cache import (
+    TEXTBOOK_INDEX_CACHE_DIR,
+    shared_install_cache_key,
+    validated_textbook_index_cache,
+)
 
 EXAM_EXTENSIONS = {".docx"}
 TEXTBOOK_EXTENSIONS = {".pdf", ".docx", ".json", ".md", ".txt", ".zip"}
+EXAM_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+TEXTBOOK_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+_UPLOAD_LOCK = threading.RLock()
 VOLUME_MARKER_RE = re.compile(
     r"^(?P<title>.+?)(?P<volume>[上下中])(?:册|卷|部)?(?:第?(?P<part>[一二三四五六七八九十\d]+)分?册?)?$"
 )
@@ -26,6 +36,40 @@ def _safe_filename(filename: str) -> str:
     if not name or name in {".", ".."}:
         raise ValueError("Invalid filename")
     return name
+
+
+def library_upload_limit(kind: str) -> int:
+    if kind == "exam":
+        return EXAM_UPLOAD_MAX_BYTES
+    if kind == "textbook":
+        return TEXTBOOK_UPLOAD_MAX_BYTES
+    raise ValueError("Upload kind must be exam or textbook")
+
+
+def _upload_target(kind: str, filename: str) -> tuple[Path, str]:
+    safe_name = _safe_filename(filename)
+    if kind == "exam":
+        target_dir, allowed = EXAMS_DIR, EXAM_EXTENSIONS
+    elif kind == "textbook":
+        target_dir, allowed = TEXTBOOKS_DIR, TEXTBOOK_EXTENSIONS
+    else:
+        raise ValueError("Upload kind must be exam or textbook")
+    if Path(safe_name).suffix.lower() not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValueError(f"Unsupported file type for {kind}: {Path(safe_name).suffix}. Allowed: {allowed_text}")
+    return target_dir, safe_name
+
+
+def _non_overwriting_target(target: Path, uploaded: Path) -> tuple[Path, bool]:
+    if not target.exists():
+        return target, False
+    if not target.is_symlink() and target.is_file() and _fingerprint(target) == _fingerprint(uploaded):
+        return target, True
+    for index in range(2, 10_000):
+        candidate = target.with_name(f"{target.stem} ({index}){target.suffix}")
+        if not candidate.exists():
+            return candidate, False
+    raise ValueError("同名文件过多，请修改文件名后再上传。")
 
 
 def _file_info(path: Path) -> dict[str, Any]:
@@ -233,18 +277,10 @@ def attach_textbook_index_statuses(files: list[dict[str, Any]]) -> None:
         if not cache_key:
             continue
         cache_root = TEXTBOOK_INDEX_CACHE_DIR / cache_key
-        status_path = cache_root / "textbook_index_status.json"
-        if not (
-            status_path.is_file()
-            and (cache_root / "textbook_blocks.csv").is_file()
-            and (cache_root / "textbook_page_map.csv").is_file()
-            and (cache_root / "manifest.json").is_file()
-        ):
+        validated = validated_textbook_index_cache(cache_root, expected_key=cache_key)
+        if validated is None:
             continue
-        try:
-            status = json.loads(status_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+        status, _ = validated
         item["index_status"] = {
             "indexed": True,
             "cache_count": 1,
@@ -255,15 +291,10 @@ def attach_textbook_index_statuses(files: list[dict[str, Any]]) -> None:
     for cache_root in TEXTBOOK_INDEX_CACHE_DIR.iterdir():
         if not cache_root.is_dir():
             continue
-        manifest_path = cache_root / "manifest.json"
-        status_path = cache_root / "textbook_index_status.json"
-        if not (manifest_path.is_file() and status_path.is_file() and (cache_root / "textbook_blocks.csv").is_file() and (cache_root / "textbook_page_map.csv").is_file()):
+        validated = validated_textbook_index_cache(cache_root)
+        if validated is None:
             continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            status = json.loads(status_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+        status, manifest = validated
         for entry in manifest.get("files", []):
             if not isinstance(entry, dict):
                 continue
@@ -333,26 +364,55 @@ def scan_library_files() -> dict[str, Any]:
 
 
 def save_library_upload(kind: str, filename: str, data: bytes) -> dict[str, Any]:
+    return save_library_upload_stream(kind, filename, io.BytesIO(data), len(data))
+
+
+def save_library_upload_stream(
+    kind: str,
+    filename: str,
+    stream: BinaryIO,
+    length: int,
+) -> dict[str, Any]:
     ensure_project_dirs()
-    safe_name = _safe_filename(filename)
-    target_dir: Path
-    allowed: set[str]
-    if kind == "exam":
-        target_dir = EXAMS_DIR
-        allowed = EXAM_EXTENSIONS
-    elif kind == "textbook":
-        target_dir = TEXTBOOKS_DIR
-        allowed = TEXTBOOK_EXTENSIONS
-    else:
-        raise ValueError("Upload kind must be exam or textbook")
-    target = target_dir / safe_name
-    if target.suffix.lower() not in allowed:
-        allowed_text = ", ".join(sorted(allowed))
-        raise ValueError(f"Unsupported file type for {kind}: {target.suffix}. Allowed: {allowed_text}")
-    if not data:
+    target_dir, safe_name = _upload_target(kind, filename)
+    limit = library_upload_limit(kind)
+    if length <= 0:
         raise ValueError("Uploaded file is empty")
-    target.write_bytes(data)
-    return _file_info(target)
+    if length > limit:
+        raise ValueError(f"上传文件过大；当前类型单个文件上限为 {limit // (1024 * 1024)} MB。")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".upload-", suffix=".tmp", dir=target_dir)
+    temporary = Path(temporary_name)
+    remaining = length
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            while remaining:
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError("上传内容不完整，请重新选择文件上传。")
+                output.write(chunk)
+                remaining -= len(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        with _UPLOAD_LOCK:
+            requested = target_dir / safe_name
+            target, reused = _non_overwriting_target(requested, temporary)
+            if reused:
+                info = _file_info(target)
+                info.update({"reused": True, "renamed": False, "requested_name": safe_name})
+                return info
+            os.replace(temporary, target)
+            info = _file_info(target)
+            info.update(
+                {
+                    "reused": False,
+                    "renamed": target.name != safe_name,
+                    "requested_name": safe_name,
+                }
+            )
+            return info
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def delete_library_file(kind: str, raw_path: str) -> dict[str, Any]:

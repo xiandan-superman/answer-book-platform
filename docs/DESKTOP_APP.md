@@ -1,4 +1,4 @@
-# 桌面 App 与局域网监控
+# 桌面 App、应用内更新与局域网监控
 
 桌面版将 Python、本地 Web 服务、前端页面、公式与绘图依赖一起打包。用户双击 App 后会打开独立窗口，不需要手动运行 Python 或输入本机网址。
 
@@ -11,7 +11,7 @@
 
 目录中保存：
 
-- `.env`：本机 API Key。
+- `config/api_keys.json`：软件内部保存的本机 API Key；通过“API 配置”页面管理，更新或替换 App 不会覆盖。
 - `tasks/`：任务记录。
 - `outputs/`：交付结果。
 - `textbooks/`、`exams/`：本机教材和真题。
@@ -19,6 +19,18 @@
 - `runtime/lan_access.json`：局域网监控账号与随机密码。
 
 也可以用 `ANSWER_BOOK_DATA_DIR` 指定其他数据目录。
+
+## 应用内更新
+
+顶部导航的“检查更新”会读取 GitHub Releases 中的 `update-manifest.json`：
+
+- 桌面安装版只下载与当前系统匹配、且 SHA256 校验通过的安装包，随后打开安装程序；用户完成安装并重启即可。
+- 源码安装版只允许在目标分支无已修改源码、且远程历史可快进时拉取更新；不会强制覆盖本地修改。
+- 更新只替换程序文件，不覆盖 API Key、教材、真题、任务历史和输出文件。
+- 模型 API 仍由用户自行填写和付费，更新仓库不保存任何 API Key。
+
+正式发布使用私有源码仓库 `xiandan-superman/answer-book-platform` 和公共二进制更新仓库
+`xiandan-superman/answer-book-platform-releases`。公共仓库只放安装包、校验清单和更新说明，用户无需 GitHub Token。
 
 ## 局域网监控
 
@@ -38,6 +50,12 @@ ANSWER_BOOK_LAN_PASSWORD=自定义密码
 
 API Key 和密码不会进入运行日志。修改教材库发布权限等敏感管理操作仍受本机限制。
 
+首次启动会自动创建 `config/api_keys.json`。旧版 `.env` 或
+`config/providers.local.json` 中已有的 Key 会在首次迁移时写入该文件。
+用户在首页或顶部导航进入“API 配置”，按平台填写 Key、测试连接并保存；
+模型配置页只保留服务商和具体模型选择，不再重复配置 Key。
+分享版安装包只包含空白模板，不包含开发者或其他用户的真实 Key。
+
 ## macOS 构建
 
 构建必须在 macOS 上执行：
@@ -52,10 +70,10 @@ python scripts/build_macos_app.py
 输出：
 
 ```text
-dist/真题解析平台.app
+dist/真题解析与生题平台.app
 ```
 
-未签名 App 第一次运行可能被 Gatekeeper 阻止。正式分发时需要 Apple Developer ID 签名和公证。
+内部体验版暂不签名。第一次运行可能被 Gatekeeper 阻止，可在“系统设置 → 隐私与安全性”中确认打开；公开分发前再增加 Apple Developer ID 签名和公证。
 
 ## Windows 构建
 
@@ -71,10 +89,16 @@ python scripts\build_windows_app.py
 输出：
 
 ```text
-dist\真题解析平台\真题解析平台.exe
+dist\真题解析与生题平台\真题解析与生题平台.exe
 ```
 
-整个 `dist\真题解析平台\` 目录需要一起复制，不能只复制其中的 exe。正式分发可以在此基础上制作 Inno Setup 或 MSI 安装包。
+整个 `dist\真题解析与生题平台\` 目录需要一起复制，不能只复制其中的 exe。正式分发可以在此基础上制作 Inno Setup 或 MSI 安装包。
+
+内部体验版未签名时 Windows SmartScreen 会显示“未知发布者”，用户仍可选择继续运行；受单位安全策略管理的电脑可能禁止安装。公开分发前再增加代码签名证书。
+
+## 发布授权
+
+当前采用 `INTERNAL_EVALUATION_LICENSE.md`：仅允许获授权用户安装和内部体验，禁止转售、公开传播或作为其他商业产品发布。该方式适合当前内部测试阶段；正式商业发布时再根据收费、账号和服务责任调整协议。
 
 ## 外部软件
 

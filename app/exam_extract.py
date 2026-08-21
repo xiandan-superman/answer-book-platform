@@ -5,14 +5,16 @@ import posixpath
 import re
 from datetime import datetime
 from pathlib import Path
+from zipfile import ZipFile
 
 from docx import Document
 from lxml import etree
-from zipfile import ZipFile
 
+from .capabilities.catalog import capability_policy_contributions
 from .formula_audit import looks_like_formula
+from .omml_input import mixed_text_with_structured_math
+from .question_requirements import answer_figure_required, source_image_required
 from .text_utils import clean_text, cn_to_int
-
 
 SECTION_TITLE_PREFIX = r"(?:选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)"
 SECTION_RE = re.compile(
@@ -27,7 +29,6 @@ ORDINAL_SUBQUESTION_RE = re.compile(r"^第\s*([一二三四五六七八九十\d]
 UNNUMBERED_SECTION_RE = re.compile(
     r"^(选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)\s*[（(].*(?:本题|每小题|共|分).*[）)]?\s*$"
 )
-KNOWN_SUBJECT_TITLES = {"物理化学", "材料现代研究", "材料现代分析测试方法", "材料综合"}
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
@@ -36,6 +37,17 @@ NS = {
 }
 IMAGE_MARKER_PREFIX = "__ANSWER_BOOK_IMAGE__:"
 TABLE_MARKER_PREFIX = "__ANSWER_BOOK_TABLE__:"
+EXAM_GROUPING_POLICY_VERSION = "answer_book.exam_grouping.v8"
+RESPONSE_CONSTRAINT_RE = re.compile(
+    r"(?:"
+    r"(?:计算|作答|答案|结果|数值)[^。；;？?]{0,30}(?:取|保留|精确到|写成|表示为)[^。；;？?]{0,24}(?:有效数字|小数|位|形式)?|"
+    r"(?:取|保留)[一二三四五六七八九十\d]+位有效数字|"
+    r"(?:单位|量纲)[^。；;？?]{0,16}(?:统一|采用|使用|写为)"
+    r")"
+)
+ANSWER_ACTION_RE = re.compile(
+    r"(?:求(?:出|得|解)?|计算|判断|说明|简述|论述|分析|比较|解释|写出|列出|证明|推导|画出|绘制|作图|标出)"
+)
 
 
 def int_to_cn(value: int) -> str:
@@ -55,11 +67,22 @@ def int_to_cn(value: int) -> str:
 def _subject_title(text: str) -> str:
     clean = clean_text(text).strip("“”\"'")
     clean = re.sub(r"\s*部分\s*$", "", clean).strip()
-    if clean in KNOWN_SUBJECT_TITLES:
-        return clean
     if "部分" in text and 2 <= len(clean) <= 20:
         return clean
     return ""
+
+
+def _implicit_subject_title(text: str) -> str:
+    """Recognize a subject heading only from its position before a section."""
+
+    clean = clean_text(text).strip("“”\"'")
+    if not 2 <= len(clean) <= 30:
+        return ""
+    if re.search(r"[。；;，,！？!?：:\d]", clean):
+        return ""
+    if ITEM_RE.match(clean) or PAREN_SUBQUESTION_RE.match(clean) or _unnumbered_section_title(clean):
+        return ""
+    return clean
 
 
 def _unnumbered_section_title(text: str) -> bool:
@@ -93,8 +116,7 @@ def _table_rows_from_xml(tbl) -> list[list[str]]:
     for tr in tbl.xpath("./w:tr", namespaces=NS):
         row: list[str] = []
         for tc in tr.xpath("./w:tc", namespaces=NS):
-            parts = tc.xpath(".//w:t/text()|.//m:t/text()", namespaces=NS)
-            row.append(clean_text("".join(parts)))
+            row.append(clean_text(mixed_text_with_structured_math(tc).text))
         if any(cell for cell in row):
             rows.append(row)
     return rows
@@ -156,8 +178,7 @@ def _docx_paragraph_lines(path: Path, image_dir: Path | None = None) -> list[str
         for child in root.xpath("./w:body/*", namespaces=NS):
             local_name = etree.QName(child).localname
             if local_name == "p":
-                parts = child.xpath(".//w:t/text()|.//m:t/text()", namespaces=NS)
-                text = clean_text("".join(parts))
+                text = clean_text(mixed_text_with_structured_math(child).text)
                 if text:
                     lines.append(text)
                 if image_dir is None:
@@ -310,7 +331,7 @@ def _write_question_snapshot(item: dict, snapshot_dir: Path, index: int) -> str:
     height += 44 + gap
     if item.get("question_id"):
         height += 30 + gap
-    for line, font in wrapped_text:
+    for line, _font in wrapped_text:
         height += (34 if line else 18) + 6
     if rendered_images:
         height += gap
@@ -401,8 +422,11 @@ def split_sections(paragraphs: list[str]) -> list[dict]:
     subject_title = ""
     subject_seen = False
     last_major_no = 0
-    for para in paragraphs:
+    for paragraph_index, para in enumerate(paragraphs):
         subject = _subject_title(para)
+        next_paragraph = paragraphs[paragraph_index + 1] if paragraph_index + 1 < len(paragraphs) else ""
+        if not subject and SECTION_RE.match(next_paragraph):
+            subject = _implicit_subject_title(para)
         if subject and not SECTION_RE.match(para):
             if current:
                 sections.append(current)
@@ -450,7 +474,17 @@ def split_sections(paragraphs: list[str]) -> list[dict]:
 
 
 def has_image_hint(text: str) -> bool:
-    return bool(re.search(r"下图|如图|图中|画出|绘制|示意图|衍射花样|标出.*斑点", text))
+    generic_hint = bool(re.search(r"下图|如图|图中|画出|绘制|示意图", text))
+    capability_hint = any(
+        contribution.get("has_image_hint") is True
+        for contribution in capability_policy_contributions(
+            "exam_image_hint",
+            {"text": text},
+            text=text,
+        )
+        if isinstance(contribution, dict)
+    )
+    return generic_hint or capability_hint
 
 
 def _has_multipart_cue(lines: list[str]) -> bool:
@@ -464,18 +498,28 @@ def _subquestion_entry(number: str, marker: str, text: str, raw: str) -> dict[st
         "marker": marker,
         "stem": clean_text(text),
         "raw": clean_text(raw),
+        "question_type": _requirement_type(text),
     }
     requirements = _infer_nested_requirements(entry["stem"], str(number))
     if requirements:
         entry["requirements"] = requirements
+    constraints = _response_constraints(entry["stem"])
+    if constraints:
+        entry["response_constraints"] = constraints
     return entry
 
 
 def _requirement_type(text: str) -> str:
     value = clean_text(text)
-    if re.search(r"(画出|绘制|作图|示意图|图示|标出)", value):
+    if re.search(
+        r"(画出|绘制|作图|画图|补全图|续画|绘出|"
+        r"(?:画|作|绘制)(?:一幅|一个|出)?[^\n。；;]{0,20}示意图|"
+        r"(?:请|需|要求|(?:在|于)[^\n。；;]{0,16}(?:图|坐标系)中)[^\n。；;]{0,6}标出|"
+        r"标出.{0,20}(?:斑点|峰|相区|晶面|晶向|坐标|曲线))",
+        value,
+    ):
         return "作图题"
-    if re.search(r"(计算|求出|求得|质量比|质量分数|百分数|含量|比例|数值|多少)", value):
+    if re.search(r"(计算|求出|求得|(?:^|[；;。])\s*(?:试)?求|质量比|质量分数|百分数|含量|比例|数值|多少)", value):
         return "计算题"
     if re.search(r"(判断|是否|可逆|正误)", value):
         return "判断题"
@@ -492,7 +536,10 @@ def _split_requirement_text(text: str) -> list[str]:
         piece = piece.strip(" ；;。")
         if not piece:
             continue
-        subpieces = re.split(r"[，,；;]\s*(?=(?:并)?(?:计算|求出|求得|判断|说明|写出|列出|画出|绘制|作图|标出))", piece)
+        subpieces = re.split(
+            r"[，,；;]\s*(?=(?:并|同时)?(?:示意)?(?:计算|求出|求得|判断|说明|写出|列出|画出|绘制|作图|标出))",
+            piece,
+        )
         chunks.extend(part.strip(" ；;。") for part in subpieces if part.strip(" ；;。"))
     out: list[str] = []
     for chunk in chunks:
@@ -510,7 +557,11 @@ def _split_requirement_text(text: str) -> list[str]:
     index = 0
     while index < len(out):
         current = out[index].strip()
-        if re.match(r"^(根据|依据|由).{0,16}(结果|数据|条件|计算)$", current) and index + 1 < len(out):
+        context_prefix = bool(
+            re.match(r"^(根据|依据|由)", current)
+            and not re.search(r"(计算|求出|求得|判断|说明|写出|列出|画出|绘制|作图|标出|分析|比较|解释)", current)
+        )
+        if context_prefix and index + 1 < len(out):
             merged.append(clean_text(f"{current}，{out[index + 1]}"))
             index += 2
             continue
@@ -520,9 +571,23 @@ def _split_requirement_text(text: str) -> list[str]:
     return merged
 
 
+def _is_response_constraint(text: str) -> bool:
+    value = clean_text(text).strip(" ；;。()（）")
+    if not value or "?" in value or "？" in value:
+        return False
+    return bool(RESPONSE_CONSTRAINT_RE.search(value))
+
+
+def _response_constraints(text: str) -> list[str]:
+    return [part for part in _split_requirement_text(text) if _is_response_constraint(part)]
+
+
 def _infer_nested_requirements(text: str, parent_number: str) -> list[dict[str, str]]:
     parts = _split_requirement_text(text)
-    meaningful = [part for part in parts if part]
+    # Precision, unit and answer-format instructions govern how an answer is
+    # written; they are not additional questions.  Preserve them separately on
+    # the parent but never mint a synthetic circled child such as ``③``.
+    meaningful = [part for part in parts if part and not _is_response_constraint(part)]
     if len(meaningful) < 2:
         return []
     types = [_requirement_type(part) for part in meaningful]
@@ -562,10 +627,34 @@ def _extract_subquestion_from_line(line: str) -> dict[str, str] | None:
 
 def _collect_subquestions(lines: list[str]) -> list[dict[str, str]]:
     subquestions: list[dict[str, str]] = []
-    for line in lines:
+    first_explicit_index = -1
+    for line_index, line in enumerate(lines):
         entry = _extract_subquestion_from_line(line)
         if entry:
+            if first_explicit_index < 0:
+                first_explicit_index = line_index
             subquestions.append(entry)
+    # Some source papers omit the visible ``(1)`` marker while retaining a
+    # later explicit ``(2)``.  Recover exactly one missing predecessor only
+    # when the immediately preceding tail contains a clear answer action.  The
+    # setup/data paragraphs remain on the parent and are never turned into an
+    # invented question.
+    if subquestions and subquestions[0].get("number") == "2" and first_explicit_index > 0:
+        action_lines: list[str] = []
+        for raw in reversed(lines[:first_explicit_index]):
+            value = clean_text(raw).strip()
+            if not value:
+                continue
+            if ANSWER_ACTION_RE.search(value) and not _is_response_constraint(value):
+                action_lines.insert(0, value)
+                break
+            if action_lines:
+                break
+        if action_lines:
+            stem = clean_text("；".join(action_lines)).strip("；;。")
+            inferred = _subquestion_entry("1", "(1)", stem, stem)
+            inferred["inferred_missing_marker"] = True
+            subquestions.insert(0, inferred)
     return subquestions
 
 
@@ -663,7 +752,10 @@ def question_items(section: dict) -> list[dict]:
                     "major_number": str(major_no),
                     "section": final_section_title,
                     "section_raw": section["raw_title"],
-                    "number": "1",
+                    # The section itself is the question when it contains no
+                    # numbered top-level item.  Preserve the source major
+                    # number (for example “题九”) instead of inventing “1”.
+                    "number": str(major_no),
                     "stem_lines": body,
                 }
             )
@@ -689,13 +781,90 @@ def question_items(section: dict) -> list[dict]:
         subquestions = _collect_subquestions(lines)
         if subquestions:
             item["subquestions"] = subquestions
+        else:
+            # Composite instructions are not always explicitly numbered. When
+            # a single sentence contains heterogeneous answer actions, retain
+            # one visible parent and create typed leaf requirements so the
+            # answer/coverage/figure stages cannot silently omit one modality.
+            requirements = _infer_nested_requirements(stem, str(item.get("number") or "1"))
+            if requirements:
+                number = str(item.get("number") or "1")
+                item["subquestions"] = [
+                    {
+                        "number": number,
+                        "marker": f"({number})",
+                        "stem": stem,
+                        "raw": stem,
+                        "question_type": "简答题",
+                        # This parent exists only to retain independently typed
+                        # answer actions.  It is not a visible nested level in
+                        # the source question and must be flattened again when
+                        # the formal answer is presented.
+                        "synthetic_parent": True,
+                        "requirements": requirements,
+                    }
+                ]
         item["image_refs"] = image_refs
-        item["needs_figure"] = has_image_hint(stem)
+        item["source_image_required"] = source_image_required(item)
+        item["answer_figure_required"] = answer_figure_required(item)
+        # Kept for schema compatibility; downstream stages now use the two
+        # explicit requirements above instead of conflating source and answer.
+        item["needs_figure"] = item["answer_figure_required"]
         item["formula_refs"] = [f"{item['question_id']}_source_formula"] if looks_like_formula(stem) else []
         item["status"] = "registered"
         for key in ("_subquestion_started", "_last_subquestion_number", "_subquestion_lines"):
             item.pop(key, None)
-    return items
+    return _combine_shared_composite_section(section, items)
+
+
+def _combine_shared_composite_section(section: dict, items: list[dict]) -> list[dict]:
+    """Represent one composite problem with a trailing shared figure as one group.
+
+    Some exam DOCX files put a common diagram after the final numbered clause.
+    Treating those clauses as independent questions assigns the diagram only to
+    the last clause and deprives earlier clauses of required data.  A section
+    explicitly labelled as one composite problem (``本题共``) is therefore kept
+    as a parent question with numbered subquestions when it has a shared figure.
+    This is subject-neutral and lets vision inspect the artifact exactly once.
+    """
+
+    title = clean_text(str(section.get("raw_title") or ""))
+    if len(items) < 2 or "综合题" not in title or "本题共" not in title:
+        return items
+    image_refs = [
+        str(raw).strip()
+        for item in items
+        for raw in item.get("image_refs", []) or []
+        if str(raw).strip()
+    ]
+    if not image_refs:
+        return items
+
+    parent = dict(items[0])
+    # Once a composite section is grouped into one parent, the visible parent
+    # is the major question itself; its former item 1 remains subquestion (1).
+    parent["number"] = str(section.get("major_no") or parent.get("major_number") or parent.get("number") or "1")
+    parent["stem"] = "\n".join(
+        f"({item.get('number') or index}) {clean_text(str(item.get('stem') or ''))}".strip()
+        for index, item in enumerate(items, start=1)
+    )
+    parent["subquestions"] = []
+    for index, item in enumerate(items, start=1):
+        number = str(item.get("number") or index)
+        stem = clean_text(str(item.get("stem") or ""))
+        subquestion = _subquestion_entry(number, f"({number})", stem, stem)
+        parent["subquestions"].append(subquestion)
+    parent["image_refs"] = list(dict.fromkeys(image_refs))
+    parent["source_image_required"] = source_image_required(parent)
+    parent["answer_figure_required"] = answer_figure_required(parent)
+    parent["needs_figure"] = parent["answer_figure_required"]
+    parent["formula_refs"] = [f"{parent['question_id']}_source_formula"] if looks_like_formula(parent["stem"]) else []
+    parent["attachment_scope"] = {
+        "kind": "shared_composite_question",
+        "source_item_numbers": [str(item.get("number") or index) for index, item in enumerate(items, start=1)],
+        "reason": "composite_section_with_trailing_shared_figure",
+    }
+    return [parent]
 
 
 def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
@@ -709,6 +878,7 @@ def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
     source_paragraphs = [text for line in source_paragraphs if (text := _source_line_text(str(line)))]
     data = {
         "schema_version": "structured_exam.v4.program_extracted",
+        "grouping_policy_version": EXAM_GROUPING_POLICY_VERSION,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "exam_file": str(exam_file),
         "paragraph_count": len(source_paragraphs),

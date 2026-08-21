@@ -1,0 +1,47 @@
+/* Shared platform primitives kept separate from page-specific legacy styles. */
+.lucide,
+.font-icon-compat {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -0.125em;
+  stroke-width: 2;
+}
+
+.fa-spin,
+.lucide.fa-spin {
+  animation: platform-icon-spin 1s linear infinite;
+}
+
+@keyframes platform-icon-spin {
+  to { transform: rotate(360deg); }
+}
+
+.system-log-details {
+  margin-top: 18px;
+}
+
+.system-log-explanation {
+  margin: 8px 0 14px;
+  color: var(--brand-muted-foreground, #64748b);
+  font-size: 13px;
+}
+
+.lan-access-panel.lan-access-disabled {
+  opacity: 0.78;
+}
+
+.lan-access-panel.lan-access-disabled .lan-access-values {
+  filter: saturate(0.5);
+}
+
+button[aria-disabled="true"],
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 2px;
+}

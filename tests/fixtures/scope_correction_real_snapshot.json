@@ -1,0 +1,58 @@
+{
+  "provenance": {
+    "A_source_file": "generation_20260801144513_e1943016.json",
+    "A_sha256": "7e4b35928c1200721f93273ff90ef3d83796b078befe8bc827538c5070853697",
+    "B_source_file": "generation_20260801144554_20263843.json",
+    "B_sha256": "03fbdcec5ffb0fccdc34f196d8532d9cc2d1128303d2b93662dbfabbf86fa4b7",
+    "note": "仅冻结范围校正回归所需字段，不作为可恢复的历史任务。"
+  },
+  "A": {
+    "source_scope": {
+      "mode": "question_set",
+      "title": "北京科技大学2003年硕士学位研究生入学考试试题 814 金属学",
+      "questions": [
+        {"source_question_id":"source_01","number":"一.1","title":"位错模型名词解释","stem_excerpt":"名词解释：刃型位错和螺型位错模型","question_type":"名词解释","knowledge_points":["晶体缺陷","位错理论","刃型位错","螺型位错"]},
+        {"source_question_id":"source_02","number":"一.2","title":"晶界与界面能名词解释","stem_excerpt":"名词解释：晶界与界面能","question_type":"名词解释","knowledge_points":["界面物理","晶界结构","表面能与界面能"]},
+        {"source_question_id":"source_03","number":"一.3","title":"凝固类型名词解释","stem_excerpt":"名词解释：同分凝固与异分凝固","question_type":"名词解释","knowledge_points":["相变原理","凝固过程","同分凝固","异分凝固"]},
+        {"source_question_id":"source_04","number":"一.4","title":"形变织构名词解释","stem_excerpt":"名词解释：形变织构","question_type":"名词解释","knowledge_points":["塑性变形","织构理论","择优取向"]},
+        {"source_question_id":"source_05","number":"一.5","title":"二次再结晶名词解释","stem_excerpt":"名词解释：二次再结晶","question_type":"名词解释","knowledge_points":["回复与再结晶","正常再结晶","异常再结晶"]},
+        {"source_question_id":"source_06","number":"一.6","title":"淬透性与淬硬性名词解释","stem_excerpt":"名词解释：淬透性与淬硬性","question_type":"名词解释","knowledge_points":["热处理工艺","钢的淬火","淬透性","淬硬性"]},
+        {"source_question_id":"source_07","number":"二","stem_excerpt":"三相反应特点及自由度计算","knowledge_points":["相图","相律"]},
+        {"source_question_id":"source_08","number":"三","stem_excerpt":"点阵参数与晶面绘制","knowledge_points":["晶体结构"]},
+        {"source_question_id":"source_09","number":"四","stem_excerpt":"形核长大机制对比","knowledge_points":["凝固","再结晶"]},
+        {"source_question_id":"source_10","number":"五","stem_excerpt":"菲克定律含义及表达式","knowledge_points":["扩散"]},
+        {"source_question_id":"source_11","number":"六","stem_excerpt":"晶界与晶粒大小对变形的影响","knowledge_points":["晶界强化"]},
+        {"source_question_id":"source_12","number":"七","stem_excerpt":"带状组织成因分析","knowledge_points":["偏析"]},
+        {"source_question_id":"source_13","number":"八","stem_excerpt":"Fe-C相图绘制","knowledge_points":["铁碳相图"]},
+        {"source_question_id":"source_14","number":"九","stem_excerpt":"固态相变一般特点","knowledge_points":["固态相变"]},
+        {"source_question_id":"source_15","number":"十","stem_excerpt":"凝固宏观特征与晶体成长机理","knowledge_points":["凝固"]},
+        {"source_question_id":"source_16","number":"十一","stem_excerpt":"固溶体定义及性能变化","knowledge_points":["固溶体"]},
+        {"source_question_id":"source_17","number":"十二","stem_excerpt":"增加形核数的方法","knowledge_points":["形核"]},
+        {"source_question_id":"source_18","number":"十三","stem_excerpt":"0.25%碳钢结晶与转变过程","knowledge_points":["亚共析钢"]},
+        {"source_question_id":"source_19","number":"十四","stem_excerpt":"脱溶类型含义","knowledge_points":["脱溶"]},
+        {"source_question_id":"source_20","number":"十五","stem_excerpt":"晶体缺陷分类及特征","knowledge_points":["晶体缺陷"]}
+      ]
+    },
+    "source_analysis": {"subject":"材料科学与工程","knowledge_points":["晶体结构与缺陷","相图与相变"]},
+    "source_files": ["2003-正确格式版.docx"]
+  },
+  "B": {
+    "source_scope": {
+      "mode": "question_set",
+      "title": "第二章 热力学第一定律",
+      "questions": [
+        {"source_question_id":"source_01","number":"1","title":"热力学系统分类与状态函数特征","stem_excerpt":"区分隔离、封闭、敞开系统。","knowledge_points":["系统与环境","状态函数"]},
+        {"source_question_id":"source_02","number":"2","title":"功与热的定义、符号规定及计算","stem_excerpt":"掌握体积功定义式及热的途径函数性质。","knowledge_points":["功","热","体积功","真空膨胀"]},
+        {"source_question_id":"source_03","number":"3","title":"热力学第一定律","stem_excerpt":"理解热力学第一定律。","knowledge_points":["热力学第一定律"]},
+        {"source_question_id":"source_04","number":"4","title":"焓的定义","stem_excerpt":"掌握焓的定义式。","knowledge_points":["焓"]},
+        {"source_question_id":"source_05","number":"5","title":"摩尔热容","stem_excerpt":"掌握定容与定压摩尔热容。","knowledge_points":["摩尔热容"]},
+        {"source_question_id":"source_06","number":"6","title":"相变焓","stem_excerpt":"掌握相变焓及温度变化。","knowledge_points":["相变焓"]},
+        {"source_question_id":"source_07","number":"7","title":"反应焓","stem_excerpt":"生成焓与燃烧焓计算。","knowledge_points":["反应焓"]},
+        {"source_question_id":"source_08","number":"8","title":"基希霍夫公式","stem_excerpt":"反应焓随温度变化。","knowledge_points":["基希霍夫公式"]},
+        {"source_question_id":"source_09","number":"9","title":"可逆过程","stem_excerpt":"可逆过程与理想气体可逆功。","knowledge_points":["可逆过程"]}
+      ]
+    },
+    "source_analysis": {"subject":"物理化学","knowledge_points":["热力学第一定律"]},
+    "source_files": ["第二章.docx"]
+  }
+}

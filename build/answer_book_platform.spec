@@ -1,6 +1,6 @@
-import sys
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -8,7 +8,8 @@ ROOT = Path(SPECPATH).parent
 FONT_ROOT = ROOT / "assets" / "fonts"
 GENERATED_ROOT = ROOT / "build" / "generated"
 GENERATED_ROOT.mkdir(parents=True, exist_ok=True)
-APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+APP_VERSION = (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip()
+PLATFORM_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 try:
     revision = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
@@ -17,25 +18,20 @@ try:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=normal"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if dirty:
-        revision = f"{revision}-dirty"
 except Exception:
     revision = ""
+
 build_manifest = GENERATED_ROOT / "RELEASE_MANIFEST.json"
 build_manifest.write_text(
     json.dumps(
         {
             "package_name": "answer_book_platform_desktop",
-            "version": APP_VERSION,
+            "product_name": "真题解析与生题平台",
+            "version": PLATFORM_VERSION,
+            "app_version": APP_VERSION,
             "commit": revision,
             "build_platform": sys.platform,
+            "update": json.loads((ROOT / "config" / "update.json").read_text(encoding="utf-8")),
         },
         ensure_ascii=False,
         indent=2,
@@ -47,7 +43,12 @@ build_manifest.write_text(
 datas = [
     (str(ROOT / "web"), "web"),
     (str(ROOT / "config" / "providers.example.json"), "config"),
+    (str(ROOT / "config" / "model_pricing.example.json"), "config"),
+    (str(ROOT / "config" / "task_defaults.json"), "config"),
+    (str(ROOT / "config" / "update.json"), "config"),
+    (str(ROOT / "APP_VERSION"), "."),
     (str(ROOT / "VERSION"), "."),
+    (str(ROOT / "INTERNAL_EVALUATION_LICENSE.md"), "."),
     (str(build_manifest), "."),
     (str(FONT_ROOT / "FONT_LICENSES.md"), "assets/fonts"),
     (
@@ -88,7 +89,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="真题解析平台",
+    name="真题解析与生题平台",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -98,6 +99,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(ROOT / "assets" / "app-icon" / "app-icon.icns") if sys.platform == "darwin" else None,
 )
 
 coll = COLLECT(
@@ -107,18 +109,18 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="真题解析平台",
+    name="真题解析与生题平台",
 )
 
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="真题解析平台.app",
-        icon=None,
-        bundle_identifier="cn.nepuliang.answer-book-platform",
+        name="真题解析与生题平台.app",
+        icon=str(ROOT / "assets" / "app-icon" / "app-icon.icns"),
+        bundle_identifier="cn.answerbook.platform",
         info_plist={
-            "CFBundleDisplayName": "真题解析平台",
-            "CFBundleName": "真题解析平台",
+            "CFBundleDisplayName": "真题解析与生题平台",
+            "CFBundleName": "真题解析与生题平台",
             "CFBundleShortVersionString": APP_VERSION,
             "CFBundleVersion": APP_VERSION,
             "NSHighResolutionCapable": True,

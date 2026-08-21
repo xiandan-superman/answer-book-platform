@@ -127,13 +127,17 @@ class SharedTextbookLibraryTests(unittest.TestCase):
         self.assertEqual("材料分析", names[str(textbook.resolve())])
 
     def test_shared_cache_composition_tolerates_windows_timestamp_rounding(self) -> None:
+        from app.textbook_index import BLOCK_FIELDS, PAGE_MAP_FIELDS
         from app.textbook_index_cache import _find_composable_cache_roots
 
         def write_cache(root: Path, rows: list[dict[str, object]]) -> None:
             root.mkdir(parents=True)
-            for name in ("textbook_blocks.csv", "textbook_page_map.csv"):
-                (root / name).write_text("header\n", encoding="utf-8")
-            (root / "textbook_index_status.json").write_text("{}", encoding="utf-8")
+            (root / "textbook_blocks.csv").write_text(",".join(BLOCK_FIELDS) + "\n", encoding="utf-8")
+            (root / "textbook_page_map.csv").write_text(",".join(PAGE_MAP_FIELDS) + "\n", encoding="utf-8")
+            (root / "textbook_index_status.json").write_text(
+                json.dumps({"textbook_count": len(rows), "block_count": 0, "page_map_ok": True}),
+                encoding="utf-8",
+            )
             (root / "manifest.json").write_text(json.dumps({"files": rows}, ensure_ascii=False), encoding="utf-8")
 
         with tempfile.TemporaryDirectory() as raw_tmp:

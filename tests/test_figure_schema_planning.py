@@ -4,10 +4,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -69,11 +70,185 @@ ALL_MATERIAL_SCHEMA_KINDS = {
 
 
 class FigureSchemaPlanningTests(unittest.TestCase):
+    def test_xrd_output_intent_outranks_body_centered_lattice_keyword(self) -> None:
+        from app.figure_schema_planning import infer_schema_kind_locally
+
+        question = {"stem": "体心立方固溶体发生有序化后，画出 X 射线粉末衍射峰的相对位置。"}
+        kind, _ = infer_schema_kind_locally(question)
+        self.assertEqual("xrd_pattern", kind)
+
+    def test_bcc_ordering_xrd_fallback_is_machine_derived(self) -> None:
+        from app.figures import _figure_spec_for_question, program_check_figure_spec
+
+        question = {
+            "question_id": "q-xrd",
+            "stem": "体心立方固溶体有序化后衍射峰如何变化",
+            "figure_schema_plan": {"schema_resolution": {"kind": "xrd_pattern"}},
+        }
+        spec = _figure_spec_for_question(question)
+        self.assertIsNotNone(spec)
+        self.assertEqual("xrd_pattern", spec["kind"])
+        self.assertEqual("materials.bcc_cscl_extinction_contract", spec["generation_basis"])
+        self.assertEqual("materials.figures", spec["capability_id"])
+        self.assertTrue(any(peak["style"] == "--" for peak in spec["peaks"]))
+        labels = {peak["label"] for peak in spec["peaks"]}
+        self.assertTrue({"321", "400", "311", "320"}.issubset(labels))
+        self.assertEqual(16, max(float(peak["two_theta"]) for peak in spec["peaks"]))
+        self.assertEqual([], program_check_figure_spec(spec))
+
+    def test_negative_diffraction_index_uses_crystallographic_overbar(self) -> None:
+        from app.figures import _format_hkl_plot_label
+
+        self.assertEqual(r"$(1\ \overline{1}\ 0)$", _format_hkl_plot_label(1, -1, 0))
+
+    def test_explicit_figure_specs_collapse_legacy_question_mirror(self) -> None:
+        from app.figures import _explicit_figure_specs
+
+        specs = _explicit_figure_specs(
+            {
+                "figure_specs": [
+                    {"kind": "zone_axis_diffraction", "zone_axis": "[110]", "lattice": "bcc"},
+                    {"kind": "zone_axis_diffraction", "zone_axis": "[110]", "lattice": "bcc", "answer_unit_number": "1"},
+                ]
+            },
+            "q1",
+        )
+
+        self.assertEqual(1, len(specs))
+        self.assertEqual("1", specs[0]["answer_unit_number"])
+
+    def test_explicit_figure_specs_deduplicate_same_semantic_contract(self) -> None:
+        from app.figures import _explicit_figure_specs
+
+        specs = _explicit_figure_specs(
+            {
+                "figure_specs": [
+                    {
+                        "kind": "microstructure_schematic",
+                        "answer_unit_number": "2.2",
+                        "semantic_contract_id": "contract_1",
+                        "features": [{"label": "A"}],
+                        "source": "answer_unit",
+                    },
+                    {
+                        "kind": "microstructure_schematic",
+                        "answer_unit_number": "2.2",
+                        "semantic_contract_id": "contract_1",
+                        "features": [{"label": "A"}, {"label": "B"}],
+                        "source": "visual_qa_vision_reviewer_candidate",
+                    },
+                ]
+            },
+            "q1",
+        )
+
+        self.assertEqual(1, len(specs))
+        self.assertEqual("visual_qa_vision_reviewer_candidate", specs[0]["source"])
+
+    def test_attached_question_figure_is_reference_only_when_answer_draws_new_figures(self) -> None:
+        from app.figure_schema_planning import _semantic_contract
+
+        question = {
+            "question_id": "q-reference",
+            "question_type": "作图题",
+            "stem": "图为合金相图。画出该合金的冷却曲线和室温组织示意图。",
+            "image_refs": ["source.png"],
+        }
+        contract = _semantic_contract(
+            question,
+            {"source_image_policy": "preserve_and_overlay"},
+        )
+
+        self.assertEqual("reference_only", contract["source_image_policy"])
+
+    def test_explicit_instruction_to_mark_source_image_requires_overlay(self) -> None:
+        from app.figure_schema_planning import _semantic_contract
+
+        question = {
+            "question_id": "q-overlay",
+            "question_type": "作图题",
+            "stem": "在原图中标出三个恒温转变位置。",
+            "image_refs": ["source.png"],
+        }
+
+        self.assertEqual(
+            "preserve_and_overlay",
+            _semantic_contract(question)["source_image_policy"],
+        )
+
+    def test_planning_scope_excludes_non_drawing_sibling_units(self) -> None:
+        from app.figure_schema_planning import _drawing_scope
+
+        question = {
+            "question_id": "q-mixed",
+            "question_type": "计算题",
+            "stem": "综合题",
+            "subquestions": [
+                {"number": "1", "question_type": "简答题", "stem": "说明三个反应。"},
+                {
+                    "number": "2",
+                    "question_type": "计算题",
+                    "stem": "画图并计算。",
+                    "requirements": [
+                        {"number": "2.1", "question_type": "作图题", "stem": "画出冷却曲线。"},
+                        {"number": "2.2", "question_type": "作图题", "stem": "画出组织示意图。"},
+                        {"number": "2.3", "question_type": "计算题", "stem": "计算组成。"},
+                    ],
+                },
+                {"number": "3", "question_type": "简答题", "stem": "比较拉伸强度。"},
+            ],
+        }
+
+        scoped = _drawing_scope(question)
+
+        self.assertIn("画出冷却曲线", scoped["stem"])
+        self.assertIn("画出组织示意图", scoped["stem"])
+        self.assertNotIn("计算组成", scoped["stem"])
+        self.assertNotIn("拉伸强度", scoped["stem"])
+
+    def test_semantic_contract_cannot_invent_panels_from_reference_image(self) -> None:
+        from app.figure_schema_planning import _drawing_scope, _semantic_contract
+
+        question = {
+            "question_id": "q-mixed",
+            "question_type": "计算题",
+            "stem": "根据所给相图完成综合题。",
+            "image_refs": ["phase_diagram.png"],
+            "subquestions": [
+                {
+                    "number": "2",
+                    "question_type": "计算题",
+                    "stem": "画图并计算。",
+                    "requirements": [
+                        {"number": "2.1", "question_type": "作图题", "stem": "画出冷却曲线。"},
+                        {"number": "2.2", "question_type": "作图题", "stem": "画出组织示意图。"},
+                        {"number": "2.3", "question_type": "计算题", "stem": "计算组成。"},
+                    ],
+                }
+            ],
+        }
+
+        contract = _semantic_contract(
+            _drawing_scope(question),
+            {
+                "required_elements": [
+                    "重画相图并叠加冷却路径",
+                    "画出水淬与室冷组织",
+                    "画出应力应变曲线",
+                ]
+            },
+        )
+
+        self.assertEqual(["画出冷却曲线。", "画出组织示意图。"], contract["required_elements"])
+
     def test_first_batch_registry_contains_all_material_schema_kinds(self) -> None:
         from app.figure_schema_registry import registry_snapshot
 
         registry = registry_snapshot()
-        self.assertEqual(ALL_MATERIAL_SCHEMA_KINDS, {entry["kind"] for entry in registry})
+        registered_kinds = {entry["kind"] for entry in registry}
+        self.assertTrue(ALL_MATERIAL_SCHEMA_KINDS.issubset(registered_kinds))
+        overlay = next(entry for entry in registry if entry["kind"] == "source_image_overlay")
+        self.assertEqual("core.figures", overlay["capability_id"])
         for entry in registry:
             self.assertTrue(entry["schema_id"].endswith(".v1"), entry)
             self.assertTrue(entry["renderer"], entry)
@@ -101,13 +276,45 @@ class FigureSchemaPlanningTests(unittest.TestCase):
             report = plan_figure_schemas(exam, output)
 
         self.assertEqual("answer_book.figure_schema_plan.v1", report["schema_version"])
-        self.assertEqual(1, report["planned_count"])
+        # R2 treats an explicit drawing command as authoritative even when the
+        # parent question is confirmed as a calculation question.
+        self.assertEqual(2, report["planned_count"])
         plan = report["items"][0]
         self.assertEqual("q1", plan["question_id"])
         self.assertEqual("zone_axis_diffraction", plan["schema_resolution"]["kind"])
         self.assertEqual("schema_found", plan["schema_resolution"]["status"])
         self.assertTrue(plan["diagram_intent"]["needs_figure"])
-        self.assertEqual([], [item for item in report["items"] if item["question_id"] == "q2"])
+        self.assertEqual("answer_required", plan["figure_semantic_contract"]["figure_role"])
+        self.assertEqual("none", plan["figure_semantic_contract"]["source_image_policy"])
+        self.assertTrue(plan["figure_semantic_contract"]["contract_id"].startswith("figure_contract_"))
+        self.assertEqual("programmatic_renderer", plan["render_decision"]["strategy"])
+        self.assertEqual(
+            plan["figure_semantic_contract"]["contract_id"],
+            plan["render_decision"]["semantic_contract_id"],
+        )
+        self.assertEqual(1, len([item for item in report["items"] if item["question_id"] == "q2"]))
+
+    def test_parallel_schema_planning_returns_question_order(self) -> None:
+        from app.figure_schema_planning import plan_figure_schemas
+
+        thread_ids: set[int] = set()
+
+        def fake_plan(question, **_kwargs):
+            thread_ids.add(threading.get_ident())
+            time.sleep(0.04 if question["question_id"] != "q02" else 0.01)
+            return {"question_id": question["question_id"], "schema_resolution": {"status": "schema_found"}}
+
+        exam = {"items": [
+            {"question_id": "q01", "question_type": "作图题"},
+            {"question_id": "q02", "question_type": "作图题"},
+            {"question_id": "q03", "question_type": "作图题"},
+        ]}
+        with tempfile.TemporaryDirectory() as raw_tmp, patch("app.figure_schema_planning._plan_one", side_effect=fake_plan):
+            report = plan_figure_schemas(exam, Path(raw_tmp) / "figure_schema_plan.json")
+
+        self.assertEqual(["q01", "q02", "q03"], [item["question_id"] for item in report["items"]])
+        self.assertTrue(report["concurrency"]["parallel_enabled"])
+        self.assertGreaterEqual(len(thread_ids), 2)
 
     def test_figure_generation_writes_schema_audit_for_programmatic_and_fallback_paths(self) -> None:
         from app.figures import prepare_figures_for_fragments
@@ -159,8 +366,8 @@ class FigureSchemaPlanningTests(unittest.TestCase):
         self.assertEqual("programmatic_renderer", by_qid["q1"]["generation_method"])
         self.assertEqual("schema_found", by_qid["q1"]["schema_status"])
         self.assertFalse(by_qid["q1"]["needs_manual_review"])
-        self.assertEqual("image_model_fallback", by_qid["q2"]["schema_status"])
-        self.assertEqual("image_model", by_qid["q2"]["generation_method"])
+        self.assertEqual("render_failed", by_qid["q2"]["schema_status"])
+        self.assertEqual("none", by_qid["q2"]["generation_method"])
         self.assertTrue(by_qid["q2"]["needs_manual_review"])
 
     def test_default_drawing_generation_uses_model_code_specs(self) -> None:
@@ -425,36 +632,42 @@ def draw(output_path: str) -> None:
 
         self.assertTrue(any("not installed" in issue for issue in issues), issues)
 
-    def test_all_material_schema_kinds_have_programmatic_renderer(self) -> None:
+    def test_all_material_schema_kinds_have_programmatic_renderer_binding(self) -> None:
+        from app.figures import _figure_renderer_registry
+
+        registered = set(_figure_renderer_registry().kinds())
+
+        self.assertEqual([], sorted(set(ALL_MATERIAL_SCHEMA_KINDS) - registered))
+
+    def test_numeric_professional_renderer_rejects_missing_semantic_data(self) -> None:
         from app.figures import generate_figures
 
-        specs = []
-        for index, kind in enumerate(sorted(ALL_MATERIAL_SCHEMA_KINDS), start=1):
-            spec = {
-                "figure_id": f"all_{index:02d}",
-                "question_id": f"q{index}",
-                "kind": kind,
-                "caption": kind,
-            }
-            if kind == "zone_axis_diffraction":
-                spec.update({"zone_axis": [1, 1, 0], "lattice": "generic_cubic", "max_index": 2, "label_indices": [[0, 0, 0], [1, -1, 0], [0, 0, 1]]})
-            elif kind in {"crystal_unit_cell", "ceramic_crystal_structure"}:
-                spec.update({"structure": "fcc"})
-            elif kind == "polymer_chain_structure":
-                spec.update({"chain_type": "crosslinked"})
-            elif kind == "xrd_pattern":
-                spec.update({"peaks": [{"two_theta": 30, "intensity": 1, "label": "(111)"}]})
-            specs.append(spec)
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp = Path(raw_tmp)
             specs_json = tmp / "specs.json"
             output_dir = tmp / "figures"
-            specs_json.write_text(json.dumps({"figures": specs}, ensure_ascii=False), encoding="utf-8")
-            generated = generate_figures(specs_json, output_dir)
-            missing = [spec["kind"] for spec in specs if not (output_dir / f"{spec['figure_id']}.png").exists()]
+            specs_json.write_text(
+                json.dumps(
+                    {
+                        "figures": [
+                            {
+                                "figure_id": "missing_curve",
+                                "question_id": "q1",
+                                "kind": "creep_curve",
+                                "caption": "蠕变曲线",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
-        self.assertEqual(len(ALL_MATERIAL_SCHEMA_KINDS), len(generated))
-        self.assertEqual([], missing)
+            generated = generate_figures(specs_json, output_dir)
+            stored = json.loads(specs_json.read_text(encoding="utf-8"))["figures"][0]
+
+        self.assertEqual([], generated)
+        self.assertIn("creep_curve: required field points is missing", stored["validation_issues"])
 
     def test_material_figure_specs_are_normalized_before_rendering(self) -> None:
         from app.figures import normalize_figure_spec, program_check_figure_spec
@@ -673,7 +886,7 @@ def draw(output_path: str) -> None:
         self.assertEqual(["fig_02", "fig_01"], image_ids)
         self.assertEqual(["图二", "图一修正"], captions)
 
-    def test_final_acceptance_blocks_failed_figure_visual_qa(self) -> None:
+    def test_final_acceptance_warns_for_model_judgment_after_bounded_repair(self) -> None:
         from app.final_acceptance import build_final_acceptance_report
 
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -716,8 +929,11 @@ def draw(output_path: str) -> None:
 
             report = build_final_acceptance_report(stage, out, require_render=True)
 
-        self.assertFalse(report["ok"])
-        self.assertTrue(any("figure_visual_qa" in issue for issue in report["issues"]), report["issues"])
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["delivery_ready"])
+        self.assertFalse(report["formal_acceptance_passed"])
+        self.assertEqual("completed_with_issues", report["status"])
+        self.assertTrue(any("figure_visual_qa" in warning for warning in report["warnings"]), report["warnings"])
         self.assertFalse(any("failed stage: figures" in issue for issue in report["issues"]), report["issues"])
 
     def test_final_acceptance_ignores_unreferenced_failed_figure_when_fallback_is_used(self) -> None:

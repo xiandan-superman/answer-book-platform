@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import csv
 import base64
+import csv
 import json
 import mimetypes
 import os
@@ -13,13 +13,17 @@ from typing import Any
 from .concurrency import run_limited_concurrent
 from .evidence_trace_export import write_evidence_trace_csv
 from .llm_client import LLMError, OpenAICompatibleClient
+from .question_understanding import attach_question_visuals, needs_vision_model
 from .retrieval import EvidenceCandidate, build_candidates, candidates_for_question, formula_match_score, planned_formulas_for_query
-from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
+from .settings import ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text
 
-
-SCHEMA_VERSION = "answer_book.evidence_selection.v2"
-EVIDENCE_SELECTION_MAX_TOKENS = DEFAULT_MODEL_MAX_TOKENS
+SCHEMA_VERSION = "answer_book.evidence_selection.v3"
+# Evidence selection is classification over a bounded candidate set, not answer
+# writing.  Large reasoning budgets previously consumed 11k-13k hidden tokens
+# per question and dominated runtime without adding user-visible detail.
+EVIDENCE_SELECTION_MAX_TOKENS = 8192
+EVIDENCE_SELECTION_TIMEOUT_SECONDS = 90
 
 SUPPORT_TYPE_LABELS = {
     "direct_support": "直接证据",
@@ -57,11 +61,11 @@ class EvidenceSelectionResult:
 
 
 def evidence_selection_worker_count() -> int:
-    raw = os.environ.get("EVIDENCE_SELECTION_MAX_WORKERS") or os.environ.get("ANSWER_GENERATION_MAX_WORKERS", "5")
+    raw = os.environ.get("EVIDENCE_SELECTION_MAX_WORKERS") or os.environ.get("ANSWER_GENERATION_MAX_WORKERS", "10")
     try:
-        return max(1, min(6, int(raw)))
+        return max(1, min(10, int(raw)))
     except ValueError:
-        return 5
+        return 10
 
 
 def _strings(value: Any) -> list[str]:
@@ -227,6 +231,32 @@ def filter_candidates_by_selection(candidates: list[EvidenceCandidate], selectio
                 out.append(by_id[evidence_id])
                 seen.add(evidence_id)
     return out
+
+
+def load_confirmed_candidates(path: Path) -> list[EvidenceCandidate]:
+    """Load the durable post-selection evidence snapshot for checkpoint reuse.
+
+    Expanded-retrieval evidence IDs do not exist in the initial candidate CSV.
+    Rebuilding only the initial candidates during a retry therefore changed the
+    answer-generation evidence surface even though the confirmed selection was
+    being reused.  The confirmed CSV is the transaction output of selection and
+    is the authoritative downstream checkpoint.
+    """
+
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8-sig") as stream:
+        rows = list(csv.DictReader(stream))
+    candidates: list[EvidenceCandidate] = []
+    for row in rows:
+        values = dict(row)
+        try:
+            values["score"] = float(values.get("score") or 0)
+        except (TypeError, ValueError):
+            values["score"] = 0.0
+        values["verified_page"] = str(values.get("verified_page") or "").strip().lower() == "true"
+        candidates.append(EvidenceCandidate(**{field: values.get(field, "") for field in EvidenceCandidate.__dataclass_fields__}))
+    return candidates
 
 
 def _format_pages(pages: list[str]) -> str:
@@ -520,6 +550,12 @@ def _normalize_selection(question: dict[str, Any], plan: dict[str, Any], data: d
                 "reason": clean_text(raw.get("reason") or ""),
                 "no_suitable_evidence_reason": clean_text(raw.get("no_suitable_evidence_reason") or ""),
                 "needs_expansion": not selected and bool(candidates),
+                # Lack of a suitable textbook passage is a delivery annotation,
+                # not a user-review gate. The answer and final trace keep this
+                # explicit so it cannot be mistaken for direct evidence.
+                "evidence_status": (
+                    "unavailable" if not selected else "non_direct" if non_direct_ids else "confirmed"
+                ),
             }
         )
     return {
@@ -552,6 +588,7 @@ def _program_selection(question: dict[str, Any], plan: dict[str, Any], candidate
                 "reason": reason or "程序按考查点顺序选择当前最相关候选证据。",
                 "no_suitable_evidence_reason": "" if evidence_id else "未检索到候选教材依据。",
                 "needs_expansion": False,
+                "evidence_status": "confirmed" if evidence_id else "unavailable",
             }
         )
     return {
@@ -593,7 +630,10 @@ def _formula_candidates_for_point(plan: dict[str, Any], point: str, candidates: 
     for candidate in candidates:
         if str(candidate.source_type).lower() != "equation_block":
             continue
-        if any(formula_match_score(formula, candidate.evidence_text) > 0 for formula in planned_formulas):
+        if any(
+            formula_match_score(formula, candidate.evidence_text, context=query) > 0
+            for formula in planned_formulas
+        ):
             matches.append(candidate)
     matches.sort(key=lambda candidate: (-candidate.score, candidate.evidence_id))
     return matches[:3]
@@ -699,14 +739,25 @@ def _select_one(
         return _program_selection(question, plan, candidates, "未调用模型，程序按检索排序临时确认候选依据。")
     try:
         fallback_model = next((item for item in provider.model_options if item != model), None)
-        include_visual_assets = bool(getattr(provider, "supports_vision", False))
+        include_visual_assets = provider_model_supports_vision(provider, model)
         candidate_payload = _candidate_payload(candidates, include_visual_assets=include_visual_assets)
+        messages = _selection_prompt(
+            question,
+            plan,
+            candidate_payload,
+            expanded=expanded,
+            include_visual_assets=include_visual_assets,
+        )
+        if include_visual_assets and needs_vision_model(question):
+            messages = attach_question_visuals(messages, question)
         data = client.chat_json_object(
-            _selection_prompt(question, plan, candidate_payload, expanded=expanded, include_visual_assets=include_visual_assets),
+            messages,
             model=model,
             max_tokens=EVIDENCE_SELECTION_MAX_TOKENS,
             fallback_model=fallback_model,
             compact_messages=_compact_selection_prompt_messages,
+            thinking="disabled",
+            timeout=EVIDENCE_SELECTION_TIMEOUT_SECONDS,
         )
         selection = _normalize_selection(question, plan, data, candidates)
         selection["_meta"] = {
@@ -724,7 +775,7 @@ def _select_one(
             "model": model,
             "fallback": True,
             "expanded_candidate_pool": expanded,
-            "multimodal_evidence_confirmation": bool(getattr(provider, "supports_vision", False)),
+            "multimodal_evidence_confirmation": provider_model_supports_vision(provider, model),
             "llm_retry": getattr(client, "last_json_retry_report", {}),
         }
         return selection
@@ -769,6 +820,8 @@ def confirm_evidence_selection(
     page_map_csv: Path,
     progress_json: Path | None = None,
     use_model: bool = True,
+    visual_provider: ProviderConfig | None = None,
+    visual_model: str = "",
 ) -> tuple[EvidenceSelectionResult, list[EvidenceCandidate]]:
     questions = list(structured_exam.get("items", []))
     selections_by_qid: dict[str, dict[str, Any]] = {}
@@ -806,13 +859,24 @@ def confirm_evidence_selection(
     )
     completed_selections = 0
 
+    def runtime_for_question(question: dict[str, Any]) -> tuple[ProviderConfig, str]:
+        if (
+            needs_vision_model(question)
+            and not provider_model_supports_vision(provider, model)
+            and visual_provider is not None
+            and provider_model_supports_vision(visual_provider, visual_model)
+        ):
+            return visual_provider, visual_model
+        return provider, model
+
     def select_question(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
         _, question = item
         qid = str(question.get("question_id", "")).strip()
         plan = knowledge_plans.get(qid, {"question_id": qid, "knowledge_points": ["考查点"]})
         q_candidates = candidates_for_question(initial_candidates, qid, limit=8)
-        client = OpenAICompatibleClient(provider) if use_model and provider.api_key else None
-        selection = _select_one(client, provider, model, question, plan, [EvidenceCandidate(**row) for row in q_candidates], expanded=False)
+        active_provider, active_model = runtime_for_question(question)
+        client = OpenAICompatibleClient(active_provider) if use_model and active_provider.api_key else None
+        selection = _select_one(client, active_provider, active_model, question, plan, [EvidenceCandidate(**row) for row in q_candidates], expanded=False)
         selection["_trace"] = {
             "first_selection": _selection_trace_copy(selection),
             "initial_candidate_count": sum(1 for candidate in initial_candidates if candidate.question_id == qid),
@@ -873,8 +937,9 @@ def confirm_evidence_selection(
             question = next((item for item in questions if str(item.get("question_id", "")).strip() == qid), {})
             plan = _plan_for_points(knowledge_plans.get(qid, {"question_id": qid, "knowledge_points": ["考查点"]}), expanded_points_by_qid.get(qid, []))
             q_candidates = candidates_for_question(expanded_candidates, qid, limit=15)
-            client = OpenAICompatibleClient(provider) if use_model and provider.api_key else None
-            selection = _select_one(client, provider, model, question, plan, [EvidenceCandidate(**row) for row in q_candidates], expanded=True)
+            active_provider, active_model = runtime_for_question(question)
+            client = OpenAICompatibleClient(active_provider) if use_model and active_provider.api_key else None
+            selection = _select_one(client, active_provider, active_model, question, plan, [EvidenceCandidate(**row) for row in q_candidates], expanded=True)
             return {"qid": qid, "selection": selection}
 
         def on_expansion_complete(_index: int, _item: tuple[int, str], item_result: dict[str, Any]) -> None:
@@ -942,8 +1007,9 @@ def confirm_evidence_selection(
                 for key in ("question_id", "section", "stem", "question_type", "requirements")
                 if question.get(key) not in (None, "", [])
             }
-            client = OpenAICompatibleClient(provider) if use_model and provider.api_key else None
-            recheck = _select_one(client, provider, model, concise_question, scoped_plan, recheck_candidates, expanded=True)
+            active_provider, active_model = runtime_for_question(question)
+            client = OpenAICompatibleClient(active_provider) if use_model and active_provider.api_key else None
+            recheck = _select_one(client, active_provider, active_model, concise_question, scoped_plan, recheck_candidates, expanded=True)
             current = _merge_selection(current, recheck)
             current.setdefault("_trace", {})["formula_only_recheck"] = _selection_trace_copy(recheck)
 
@@ -979,6 +1045,18 @@ def confirm_evidence_selection(
         "selections": list(selections_by_qid.values()),
         "expanded_question_ids": expanded_question_ids,
         "expanded_points_by_qid": expanded_points_by_qid,
+        "unresolved_evidence": [
+            {
+                "question_id": str(selection.get("question_id") or ""),
+                "knowledge_points": [
+                    str(point.get("knowledge_point") or "")
+                    for point in selection.get("knowledge_points", [])
+                    if isinstance(point, dict) and point.get("evidence_status") == "unavailable"
+                ],
+            }
+            for selection in selections_by_qid.values()
+            if any(isinstance(point, dict) and point.get("evidence_status") == "unavailable" for point in selection.get("knowledge_points", []))
+        ],
         "confirmed_evidence_count": len(confirmed_candidates),
         "model_token_feedback": model_token_feedback,
         "concurrency": {

@@ -1,4 +1,8 @@
-from app.answer_generation import fragment_from_analysis_draft, normalize_formula_reference_base
+from app.answer_generation import (
+    _replace_formula_placeholders_in_text,
+    fragment_from_analysis_draft,
+    normalize_formula_reference_base,
+)
 
 
 def _segment_formula_ids(block):
@@ -65,3 +69,9 @@ def test_uppercase_formula_placeholders_are_recognized():
     analysis = next(block for block in fragment["blocks"] if block["label"] == "解析")
     assert _segment_formula_ids(analysis) == ["f_q_upper_formula_01"]
     assert "{F1}" not in "".join(segment.get("text", "") for block in fragment["blocks"] for segment in block.get("segments", []))
+
+
+def test_formula_placeholder_plain_text_keeps_greek_quantity_symbol_together():
+    formulas = [{"formula_id": "f1", "latex": r"\Delta G<0"}]
+
+    assert _replace_formula_placeholders_in_text("最终判断为{f1}", formulas) == "最终判断为ΔG<0"

@@ -6,43 +6,89 @@ import mimetypes
 import os
 import secrets
 import shutil
-import threading
-from dataclasses import replace
+import time
+from dataclasses import asdict, replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .environment import check_environment, repair_environment
 from .answer_coverage_audit import audit_answer_coverage
+from .api_key_config import api_key_file_info
 from .audit_review_gate import get_pending_review_decision, submit_review_decision
+from .capabilities.quality_metrics import build_quality_metrics_report
 from .delivery_package import build_task_delivery_package
+from .environment import check_environment, repair_environment
 from .exam_structure_review import get_pending_exam_structure_review, submit_exam_structure_review
 from .exercise_generation import (
+    audit_practice_blueprint,
+    ensure_practice_blueprint_defaults,
+    generate_plan_draft,
+    generate_practice_from_contract,
     generate_practice_from_plan,
     generate_practice_set,
     plan_practice_set,
+    reconcile_practice_generation,
+    regenerate_plan_item,
     regenerate_practice_exercise,
+    scope_cover_summary,
+    validate_practice_mode_contract,
 )
 from .final_acceptance import build_final_acceptance_report
-from .local_config import update_dotenv_values
-from .library_files import delete_library_file, save_library_upload, scan_library_files
+from .http_errors import public_error_payload
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
+from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
 from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
+from .local_config import update_dotenv_values
 from .page_map_admin import page_map_summary, write_page_map_rows
-from .pipeline import PipelineOptions, output_dir, run_pipeline, stage_dir
 from .paths import PROJECT_ROOT, TEXTBOOKS_DIR, WEB_DIR, ensure_project_dirs
-from .practice_export import build_practice_docx
-from .practice_store import list_practice_records, load_practice_record, save_practice_record
+from .pipeline import output_dir, stage_dir
+from .practice_export import (
+    build_practice_question_docx,
+    resolve_practice_export_payload,
+    validate_docx_output,
+    validate_practice_export,
+)
+from .practice_export_jobs import (
+    create_or_reuse_practice_export_job,
+    load_practice_export_job,
+    practice_export_download,
+    recover_practice_export_jobs,
+)
+from .practice_jobs import (
+    cancel_practice_job,
+    cleanup_practice_jobs,
+    create_or_reuse_practice_job,
+    delete_jobs_for_history,
+    delete_practice_job,
+    list_practice_jobs,
+    load_practice_job,
+    recover_practice_jobs,
+    rename_practice_job,
+)
+from .practice_queue import (
+    enqueue_practice_job,
+    recover_practice_queue,
+    start_practice_queue_consumer,
+    stop_practice_queue_consumer,
+)
+from .practice_store import (
+    PracticeEditConflict,
+    delete_practice_record,
+    find_completed_by_plan,
+    list_practice_records,
+    load_practice_record,
+    rename_practice_record,
+    save_practice_record,
+    undo_last_practice_revision,
+    update_practice_exercise,
+)
+from .process_lock import platform_process_lock
 from .prompts import build_answer_fragment_prompt
+from .read_snapshot import READ_SNAPSHOTS
 from .review_export import build_question_review, write_question_review_csv
-from .runtime_monitor import append_runtime_log, build_system_status, read_runtime_logs
-from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, list_providers, provider_supports_image_generation, resolve_provider_model
-from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
-from .task_diagnostics import build_task_diagnostics
-from .task_control import control_task, delete_task
-from .task_result_view import build_task_result_view
-from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
+from .runtime_monitor import append_runtime_log, build_system_status, read_runtime_logs, task_health_summary
+from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, list_providers, provider_model_supports_vision, provider_supports_image_generation, resolve_provider_model
 from .shared_textbook_library import (
     fetch_remote_shared_library_catalog,
     get_shared_library_settings,
@@ -52,9 +98,27 @@ from .shared_textbook_library import (
     shared_library_package_path,
     sync_shared_textbook_library,
 )
+from .task_contracts import present_error
+from .task_control import delete_task
+from .task_diagnostics import build_task_diagnostics
+from .task_read_model import build_exam_run, build_practice_runs
+from .task_result_view import build_task_result_view
+from .task_runner import control_exam_task, start_exam_task
+from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
+from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
+from .update_manager import UpdateError, apply_update, check_for_updates
 from .v4_schema import validate_v4_answer_fragment
-from .version import get_source_revision, get_version
-
+from .version import get_base_version, get_source_revision, get_version, release_manifest_status
+from .word_format_tasks import (
+    apply_word_format_task,
+    create_word_format_task,
+    delete_word_format_task,
+    list_word_format_tasks,
+    save_word_format_profile_settings,
+    word_format_download_path,
+    word_format_settings_payload,
+    word_format_task_payload,
+)
 
 PROGRESS_STAGE_ORDER = [
     "environment",
@@ -76,8 +140,6 @@ PROGRESS_STAGE_ORDER = [
     "docx",
     "docx_model_repair",
     "docx_repair",
-    "docx_user_allowed_candidate",
-    "docx_placeholder",
     "question_review",
     "render",
     "acceptance",
@@ -92,7 +154,7 @@ def _json_bytes(value) -> bytes:
 
 def _provider_key_issue(label: str, provider) -> str:
     env_name = str(getattr(provider, "api_key_env", "") or "").strip()
-    hint = f"（环境变量 {env_name}）" if env_name else "（providers.local.json 或 .env）"
+    hint = f"（请到“API 配置”页面配置 {env_name}）" if env_name else "（请到“API 配置”页面检查）"
     return f"{label} {getattr(provider, 'name', 'unknown')} 未配置 API Key {hint}"
 
 
@@ -125,16 +187,34 @@ def _task_quality_summary(task_id: str) -> dict:
         "docx": "docx_audit.json",
         "render": "render_audit.json",
         "acceptance": "acceptance_report.json",
+        "final_acceptance": "final_acceptance_report.json",
     }
     summary = {}
     for key, filename in names.items():
         data = _read_json_if_exists(sdir / filename)
         if isinstance(data, dict):
-            summary[key] = {
+            item = {
                 "ok": data.get("ok", data.get("status") == "passed"),
                 "issue_count": data.get("issue_count", len(data.get("issues", [])) if isinstance(data.get("issues"), list) else 0),
                 "warning_count": data.get("warning_count", len(data.get("warnings", [])) if isinstance(data.get("warnings"), list) else 0),
             }
+            if key == "final_acceptance":
+                item.update(
+                    {
+                        "status": str(data.get("status") or ""),
+                        "delivery_tier": str(data.get("delivery_tier") or ""),
+                        "delivery_ready": bool(data.get("delivery_ready", data.get("ok", False))),
+                        "formal_acceptance_passed": bool(
+                            data.get(
+                                "formal_acceptance_passed",
+                                str(data.get("status") or "") in {"passed", "passed_with_warnings"},
+                            )
+                        ),
+                        "issues": list(data.get("issues", []))[:50],
+                        "warnings": list(data.get("warnings", []))[:50],
+                    }
+                )
+            summary[key] = item
         else:
             summary[key] = None
     return summary
@@ -230,6 +310,8 @@ def _format_duration(seconds: int) -> str:
 
 def _normalize_thinking_mode(value: object) -> str:
     text = str(value or "auto").strip().lower()
+    if text in {"low", "medium", "high", "xhigh"}:
+        return text
     if text in {"enabled", "enable", "on", "true"}:
         return "enabled"
     if text in {"disabled", "disable", "off", "false"}:
@@ -237,13 +319,73 @@ def _normalize_thinking_mode(value: object) -> str:
     return "auto"
 
 
+def _optional_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _provider_test_protocol_override(provider, body: dict) -> tuple[object, bool]:
+    raw_protocol = str(body.get("api_protocol") or "").strip().lower()
+    if not raw_protocol:
+        return provider, False
+    aliases = {
+        "responses_api": "responses",
+        "openai_compatible": "chat_completions",
+    }
+    protocol = aliases.get(raw_protocol, raw_protocol)
+    if protocol not in {"responses", "chat_completions"}:
+        raise ValueError(f"Unsupported API protocol: {raw_protocol}")
+    fallback = _optional_bool(
+        body.get("responses_fallback_to_chat"),
+        bool(getattr(provider, "responses_fallback_to_chat", True)),
+    )
+    return replace(
+        provider,
+        api_protocol=protocol,
+        responses_fallback_to_chat=fallback,
+    ), True
+
+
+def _provider_test_protocol_summary(retry_report: object, requested_protocol: str) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "api_protocol_requested": requested_protocol,
+        "api_protocol_used": requested_protocol,
+        "protocol_fallback": False,
+    }
+    if not isinstance(retry_report, dict):
+        return summary
+    attempts = retry_report.get("attempts")
+    if not isinstance(attempts, list):
+        return summary
+    for attempt in reversed(attempts):
+        if not isinstance(attempt, dict) or attempt.get("error"):
+            continue
+        used = str(attempt.get("protocol_used") or requested_protocol)
+        summary["api_protocol_used"] = used
+        reason = str(attempt.get("protocol_fallback_reason") or "")
+        if reason:
+            summary["protocol_fallback"] = True
+            summary["protocol_fallback_reason"] = reason
+        break
+    return summary
+
+
 def _task_duration_summary(task_row: dict) -> dict:
-    start = _parse_task_time(task_row.get("created_at"))
+    start = _parse_task_time(task_row.get("run_started_at") or task_row.get("created_at"))
     if not start:
         return {"duration_seconds": 0, "duration_text": "暂无"}
     status = str(task_row.get("status") or "")
-    end = datetime.now() if status in {"running", "queued", "paused"} else (_parse_task_time(task_row.get("updated_at")) or datetime.now())
-    seconds = max(0, int((end - start).total_seconds()))
+    if status not in {"running", "queued", "paused"} and task_row.get("last_run_duration_seconds") is not None:
+        seconds = max(0, int(task_row.get("last_run_duration_seconds") or 0))
+    else:
+        end = datetime.now() if status in {"running", "queued", "paused"} else (_parse_task_time(task_row.get("updated_at")) or datetime.now())
+        seconds = max(0, int((end - start).total_seconds()))
     return {"duration_seconds": seconds, "duration_text": _format_duration(seconds)}
 
 
@@ -261,7 +403,86 @@ def _enrich_task_row(task_row: dict) -> dict:
         except Exception:
             row["exam_structure_review_pending"] = False
     row.update(_task_duration_summary(row))
+    try:
+        row["health"] = task_health_summary(row, kind="exam")
+    except Exception:
+        row["health"] = {"health_status": "unknown", "current_operation": "暂无运行记录"}
     return row
+
+
+def _practice_task_row(record: dict) -> dict:
+    task_kind = str(record.get("task_kind") or "practice")
+    request = record.get("request") if isinstance(record.get("request"), dict) else {}
+    phases = record.get("generation_phases") if isinstance(record.get("generation_phases"), list) else []
+    if not phases:
+        phases = [{"operation": "generate_from_plan", "label": "题目生成", "status": "completed"}]
+    return {
+        "task_id": record.get("history_id"),
+        "task_kind": task_kind,
+        "practice_batch_id": request.get("practice_batch_id") or "",
+        "operation": "generate_from_plan",
+        "generation_phases": phases,
+        "is_generation_task": True,
+        "exam_path": record.get("title") or ("知识点出题" if task_kind == "knowledge" else "按题出题"),
+        "textbooks_dir": "知识点出题" if task_kind == "knowledge" else "按题出题",
+        "status": "completed",
+        "current_stage": "completed",
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+        "question_count": record.get("question_count") or 0,
+        "generation": record.get("generation") or {},
+        "duration_seconds": 0,
+        "duration_text": "已完成",
+        "progress_percent": 100,
+    }
+
+
+def _practice_job_task_row(record: dict) -> dict:
+    status = str(record.get("status") or "queued")
+    stage = str(record.get("current_stage") or "planning")
+    elapsed = max(0, int(record.get("elapsed_seconds") or 0))
+    running_progress = min(88, 30 + elapsed // 15) if record.get("operation") == "generate_from_plan" else min(88, 35 + elapsed // 10)
+    return {
+        "task_id": record.get("job_id"),
+        "task_kind": record.get("task_kind") or "practice",
+        "practice_batch_id": record.get("practice_batch_id") or "",
+        "is_generation_task": True,
+        "is_generation_job": True,
+        "operation": record.get("operation") or "",
+        "exam_path": record.get("title") or (
+            "范围解析" if record.get("operation") == "analyze"
+            else "蓝图设计" if record.get("operation") == "plan"
+            else "题目生成"
+        ),
+        "textbooks_dir": "知识点出题" if record.get("task_kind") == "knowledge" else "按题出题",
+        "status": status,
+        "current_stage": stage,
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+        "error": record.get("error") or "",
+        "progress_message": record.get("progress_message") or "",
+        "elapsed_seconds": elapsed,
+        "duration_text": "后台生成中" if status in {"queued", "running"} else ("生成失败" if status == "failed" else "已完成"),
+        "progress_percent": 15 if status == "queued" else (running_progress if status == "running" else 100),
+    }
+
+
+def _practice_job_api_payload(record: dict) -> dict:
+    presentation = present_error(
+        str(record.get("error") or ""),
+        stage=str(record.get("current_stage") or ""),
+    )
+    return {
+        **record,
+        "error_presentation": asdict(presentation) if presentation else None,
+    }
+
+
+def _start_practice_job(operation: str, payload: dict) -> dict:
+    record = create_or_reuse_practice_job(operation, payload)
+    if record.get("deduplicated"):
+        return record
+    return enqueue_practice_job(str(record["job_id"]))
 
 
 def _validate_answer_fragments_payload(data) -> list[str]:
@@ -349,8 +570,46 @@ def _safe_task_file(task_id: str, raw_path: str) -> Path:
     raise FileNotFoundError("file is not inside this task outputs")
 
 
+def _index_version_label() -> str:
+    """服务端注入到首页的版本标签：V{base}+{short_hash}（如 V8.4+483144d）。"""
+    base = get_base_version()
+    rev = get_source_revision()
+    return f"V{base}+{rev}" if rev else f"V{base}"
+
+
+def _inject_index_version(html: str) -> str:
+    """把首页版本占位替换为服务端版本标签，不依赖前端异步刷新。"""
+    placeholder = ">版本加载中...</span>"
+    if placeholder in html:
+        return html.replace(placeholder, f">{_index_version_label()}</span>")
+    return html
+
+
+def _render_word_format_page() -> bytes:
+    template = PROJECT_ROOT / "standalone_word_format_reviewer" / "web" / "index.html"
+    settings_json = json.dumps(word_format_settings_payload(), ensure_ascii=False, separators=(",", ":"))
+    settings_json = settings_json.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+    routes_json = json.dumps(
+        {
+            "settings": "/api/word-format/settings",
+            "audit": "/api/word-format/audit",
+            "taskBase": "/api/word-format/tasks",
+        },
+        separators=(",", ":"),
+    )
+    html = template.read_text(encoding="utf-8")
+    html = html.replace("__INITIAL_SETTINGS_JSON__", settings_json)
+    html = html.replace("__API_ROUTES_JSON__", routes_json)
+    html = html.replace("__PLATFORM_HOSTED_JSON__", "true")
+    return html.encode("utf-8")
+
+
 class PlatformHandler(BaseHTTPRequestHandler):
     server_version = "AnswerBookPlatform/1.0"
+    MAX_JSON_BODY_BYTES = 8 * 1024 * 1024
+    # 无需局域网鉴权即可访问的公开路径：仅版本元数据，保证前端版本标签在
+    # 监控鉴权部署下也能加载（“版本号没加上”根因）。
+    PUBLIC_LAN_PATHS = {"/api/version"}
 
     def log_message(self, fmt: str, *args) -> None:
         message = fmt % args
@@ -362,6 +621,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -372,6 +633,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(target.name)}")
         self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -403,6 +665,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.send_header("WWW-Authenticate", 'Basic realm="Answer Book Platform LAN", charset="UTF-8"')
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
         return False
@@ -419,31 +682,108 @@ class PlatformHandler(BaseHTTPRequestHandler):
             return identity in allowed
         return self.client_address[0] in {"127.0.0.1", "::1"}
 
-    def read_json(self):
+    def read_json(self, max_bytes: int | None = None):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length <= 0:
             return {}
+        limit = self.MAX_JSON_BODY_BYTES if max_bytes is None else max_bytes
+        if length > limit:
+            if limit > self.MAX_JSON_BODY_BYTES:
+                raise ValueError("请求内容超过 70 MB，请选择不超过 50 MB 的 Word 文件。")
+            raise ValueError("请求内容超过 8 MB，请减少单次提交的内容或文件数量。")
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw)
 
+    def send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; "
+            "base-uri 'self'; frame-ancestors 'none'",
+        )
+
+    def request_origin_allowed(self) -> bool:
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True
+        parsed = urlparse(origin)
+        return parsed.netloc.lower() == str(self.headers.get("Host") or "").strip().lower()
+
     def do_GET(self) -> None:
-        if not self.require_lan_auth():
-            return
         parsed = urlparse(self.path)
+        try:
+            self._do_GET()
+        except FileNotFoundError as exc:
+            payload = public_error_payload(exc, status=404, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"请求资源不存在 [{payload['support_id']}]：{exc}",
+                "warning",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            self.send_json(payload, status=404)
+        except ValueError as exc:
+            payload = public_error_payload(exc, status=400, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"请求参数错误 [{payload['support_id']}]：{exc}",
+                "warning",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            self.send_json(payload, status=400)
+        except Exception as exc:
+            payload = public_error_payload(exc, status=500, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"请求处理失败 [{payload['support_id']}]：{exc}",
+                "error",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            self.send_json(payload, status=500)
+
+    def _do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        # 版本元数据（VERSION + 远端短哈希）非敏感，前后端均需无鉴权读取，
+        # 否则局域网监控鉴权部署下前端无法加载版本标签。
+        version_is_public = parsed.path in self.PUBLIC_LAN_PATHS
+        if not version_is_public and not self.require_lan_auth():
+            return
         parts = [unquote(x) for x in parsed.path.strip("/").split("/") if x]
         if parsed.path == "/api/lan/access":
-            self.send_json(lan_access_info(self.server.server_port, include_secret=self.is_local_client()))
+            self.send_json(
+                lan_access_info(
+                    self.server.server_port,
+                    include_secret=self.is_local_client(),
+                    bind_host=str(self.server.server_address[0]),
+                )
+            )
             return
         if parsed.path == "/api/version":
+            manifest_status = release_manifest_status()
             self.send_json(
                 {
                     "platform": "Answer Book Platform",
                     "version": get_version(),
                     "source_revision": get_source_revision(),
                     "release_manifest": "RELEASE_MANIFEST.json",
-                    "release_manifest_exists": (PROJECT_ROOT / "RELEASE_MANIFEST.json").exists(),
+                    "release_manifest_exists": manifest_status["exists"],
+                    "release_manifest_status": manifest_status,
                 }
             )
+            return
+        if parsed.path == "/api/update/status":
+            if not self.is_local_client():
+                self.send_json({"ok": False, "error": "只能在运行程序的本机检查和安装更新。"}, status=403)
+                return
+            refresh = parse_qs(parsed.query).get("refresh", ["0"])[0] in {"1", "true", "yes"}
+            try:
+                self.send_json(check_for_updates(refresh=refresh))
+            except UpdateError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
         if parsed.path == "/api/environment":
             self.send_json(check_environment())
@@ -451,8 +791,75 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/providers":
             self.send_json({name: cfg.redacted() for name, cfg in list_providers().items()})
             return
+        if parsed.path == "/api/providers/key-file":
+            info = api_key_file_info()
+            info.pop("path", None)
+            self.send_json(info)
+            return
+        if parsed.path == "/word-format":
+            data = _render_word_format_page()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if parsed.path == "/api/word-format/settings":
+            self.send_json(word_format_settings_payload())
+            return
+        if len(parts) == 4 and parts[:3] == ["api", "word-format", "tasks"]:
+            try:
+                self.send_json(word_format_task_payload(parts[3]))
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=404)
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "download":
+            try:
+                target, filename = word_format_download_path(parts[3])
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=404)
+                return
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/api/practice/history":
-            self.send_json({"records": list_practice_records()})
+            self.send_json(
+                READ_SNAPSHOTS.get(
+                    "practice_history",
+                    lambda: {"records": list_practice_records()},
+                )
+            )
+            return
+        if len(parts) == 4 and parts[:3] == ["api", "practice", "export-jobs"]:
+            self.send_json({"ok": True, "job": load_practice_export_job(parts[3])})
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "practice", "export-jobs"] and parts[4] == "download":
+            target, filename = practice_export_download(parts[3])
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if len(parts) == 4 and parts[:3] == ["api", "practice", "jobs"]:
+            include_payload = (parse_qs(parsed.query).get("detail") or [""])[0].lower() in {"1", "true", "yes"}
+            self.send_json(_practice_job_api_payload(load_practice_job(parts[3], include_payload=include_payload)))
             return
         if len(parts) == 4 and parts[:3] == ["api", "practice", "history"]:
             self.send_json(load_practice_record(parts[3]))
@@ -470,26 +877,55 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_download(shared_library_package_path(parts[3], parts[4]))
             return
         if parsed.path == "/api/system/status":
-            self.send_json(build_system_status(self.headers.get("Host", "")))
+            access_host = self.headers.get("Host", "")
+            self.send_json(
+                READ_SNAPSHOTS.get(
+                    f"system_status:{access_host}",
+                    lambda: build_system_status(access_host),
+                )
+            )
             return
         if parsed.path == "/api/system/logs":
             self.send_json({"logs": read_runtime_logs()})
             return
+        if parsed.path == "/api/quality/metrics":
+            self.send_json(build_quality_metrics_report())
+            return
         if parsed.path == "/api/tasks":
-            self.send_json({"tasks": [_enrich_task_row(task) for task in list_tasks()]})
+            def build_task_list() -> dict:
+                exam_tasks = []
+                for task in list_tasks():
+                    enriched = _enrich_task_row(task)
+                    exam_tasks.append(
+                        build_exam_run(
+                            enriched,
+                            _task_quality_summary(str(task.get("task_id") or "")),
+                        )
+                    )
+                practice_tasks = build_practice_runs(
+                    list_practice_jobs(limit=100),
+                    list_practice_records(limit=100),
+                )
+                return {
+                    "tasks": exam_tasks + practice_tasks + list_word_format_tasks(),
+                    "schema_version": 1,
+                }
+
+            self.send_json(READ_SNAPSHOTS.get("task_list", build_task_list))
             return
         if len(parts) == 3 and parts[:2] == ["api", "tasks"]:
             task_id = parts[2]
             record = load_task(task_id)
             status_path = stage_dir(task_id) / "pipeline_status.json"
             report_path = stage_dir(task_id) / "acceptance_report.json"
+            quality_summary = _task_quality_summary(task_id)
             self.send_json(
                 {
-                    "task": _enrich_task_row(record.__dict__),
+                    "task": build_exam_run(_enrich_task_row(record.__dict__), quality_summary),
                     "pipeline_status": _read_json_if_exists(status_path),
                     "current_progress": _task_current_progress(task_id, record.current_stage),
                     "acceptance_report": _read_json_if_exists(report_path),
-                    "quality_summary": _task_quality_summary(task_id),
+                    "quality_summary": quality_summary,
                     "model_token_feedback": _task_model_token_feedback(task_id),
                 }
             )
@@ -582,10 +1018,71 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.serve_static(parsed.path)
 
     def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if not self.request_origin_allowed():
+            self.send_json({"ok": False, "error": "请求来源与当前服务地址不一致。", "error_code": "origin_rejected"}, status=403)
+            return
         if not self.require_lan_auth():
             return
-        parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/update/apply":
+                if not self.is_local_client():
+                    self.send_json({"ok": False, "error": "只能在运行程序的本机安装更新。"}, status=403)
+                    return
+                try:
+                    result = apply_update()
+                except UpdateError as exc:
+                    append_runtime_log("update", f"程序更新未完成：{exc}", "warning")
+                    self.send_json({"ok": False, "error": str(exc)}, status=400)
+                    return
+                append_runtime_log(
+                    "update",
+                    str(result.get("message") or "已处理程序更新"),
+                    payload={
+                        "action": result.get("action"),
+                        "latest_version": result.get("latest_version"),
+                        "restart_required": result.get("restart_required"),
+                    },
+                )
+                self.send_json(result)
+                return
+            if parsed.path == "/api/word-format/audit":
+                body = self.read_json(max_bytes=70 * 1024 * 1024)
+                result = create_word_format_task(body)
+                append_runtime_log(
+                    "word_format",
+                    f"完成 Word 格式审查 {result.get('task_id', '')}",
+                    payload={"mode": result.get("mode"), "status": result.get("status")},
+                )
+                self.send_json(result)
+                return
+            if parsed.path == "/api/word-format/settings":
+                body = self.read_json()
+                normalized = save_word_format_profile_settings(
+                    str(body.get("profile") or ""),
+                    body.get("settings"),
+                )
+                self.send_json({"profile": body.get("profile"), "settings": normalized, "message": "已设为该标准的永久默认"})
+                return
+            parts = [unquote(x) for x in parsed.path.strip("/").split("/") if x]
+            if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "apply":
+                try:
+                    result = apply_word_format_task(parts[3])
+                except FileNotFoundError as exc:
+                    self.send_json({"error": str(exc)}, status=404)
+                    return
+                append_runtime_log("word_format", f"应用 Word 格式修改 {parts[3]}", payload={"status": result.get("status")})
+                self.send_json(result)
+                return
+            if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "delete":
+                try:
+                    result = delete_word_format_task(parts[3])
+                except FileNotFoundError as exc:
+                    self.send_json({"error": str(exc)}, status=404)
+                    return
+                append_runtime_log("word_format", f"删除 Word 格式审查任务 {parts[3]}")
+                self.send_json(result)
+                return
             if parsed.path == "/api/practice/generate":
                 body = self.read_json()
                 result = generate_practice_set(body)
@@ -602,13 +1099,62 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 )
                 self.send_json(result)
                 return
+            if parsed.path == "/api/practice/jobs":
+                body = self.read_json()
+                operation = str(body.get("operation") or "")
+                payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                record = _start_practice_job(operation, payload)
+                append_runtime_log(
+                    "practice",
+                    f"创建后台出题任务 {record['job_id']}",
+                    payload={"task_id": record["job_id"], "operation": operation, "status": "queued"},
+                )
+                self.send_json(
+                    {
+                        "job_id": record["job_id"],
+                        "status": record["status"],
+                        "deduplicated": bool(record.get("deduplicated")),
+                    },
+                    status=202,
+                )
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "jobs"] and parts[4] == "cancel":
+                body = self.read_json()
+                self.send_json(cancel_practice_job(parts[3], str(body.get("reason") or "用户取消出题任务")))
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "tasks"] and parts[4] == "title":
+                body = self.read_json()
+                task_id = parts[3]
+                title = str(body.get("title") or "")
+                result = rename_practice_record(task_id, title) if task_id.startswith("practice_") else rename_practice_job(task_id, title)
+                append_runtime_log("practice", f"修改出题任务名称 {task_id}", payload={"task_id": task_id, "title": result.get("title", "")})
+                self.send_json(result)
+                return
             if parsed.path == "/api/practice/plan":
                 body = self.read_json()
                 self.send_json(plan_practice_set(body))
                 return
             if parsed.path == "/api/practice/generate-from-plan":
                 body = self.read_json()
+                existing = None if body.get("fresh_generation") else find_completed_by_plan(body)
+                if existing:
+                    reused = {**existing.get("data", {})}
+                    reused["generation"] = {**(reused.get("generation") or {}), "reused_history_id": existing.get("history_id"), "reused": True}
+                    self.send_json(reused)
+                    return
                 result = generate_practice_from_plan(body)
+                record = save_practice_record(result, request=body)
+                self.send_json(record["data"])
+                return
+            if parsed.path == "/api/practice/generate-from-contract":
+                body = self.read_json()
+                existing = None if body.get("fresh_generation") else find_completed_by_plan(body)
+                if existing:
+                    reused = {**existing.get("data", {})}
+                    reused["generation"] = {**(reused.get("generation") or {}), "reused_history_id": existing.get("history_id"), "reused": True}
+                    self.send_json(reused)
+                    return
+                result = generate_practice_from_contract(body)
                 record = save_practice_record(result, request=body)
                 self.send_json(record["data"])
                 return
@@ -617,17 +1163,193 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 result = regenerate_practice_exercise(body)
                 self.send_json(result)
                 return
+            if parsed.path == "/api/practice/plan-draft":
+                body = self.read_json()
+                result = generate_plan_draft(body)
+                self.send_json(result)
+                return
+            if parsed.path == "/api/practice/plan-item-regenerate":
+                body = self.read_json()
+                self.send_json(regenerate_plan_item(body))
+                return
+            if parsed.path == "/api/practice/plan-audit":
+                body = self.read_json()
+                plan = body.get("plan") if isinstance(body.get("plan"), dict) else {}
+                plan = ensure_practice_blueprint_defaults(plan)
+                selected = plan.get("selected_source_questions") if isinstance(plan.get("selected_source_questions"), list) else []
+                scope = plan.get("source_scope") if isinstance(plan.get("source_scope"), dict) else {}
+                blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
+                items = blueprint.get("exercise_plan") if isinstance(blueprint.get("exercise_plan"), list) else []
+                plan["scope_cover"] = scope_cover_summary(scope, selected, items)
+                plan["mode_contract"] = validate_practice_mode_contract(plan)
+                plan["blueprint_audit"] = audit_practice_blueprint(plan)
+                self.send_json({
+                    "blueprint": plan["blueprint"],
+                    "include_source_content_in_generation": plan.get("include_source_content_in_generation", True),
+                    "scope_cover": plan["scope_cover"],
+                    "mode_contract": plan["mode_contract"],
+                    "blueprint_audit": plan["blueprint_audit"],
+                })
+                return
             if parsed.path == "/api/practice/history":
                 body = self.read_json()
                 data = body.get("data") if isinstance(body.get("data"), dict) else body
                 request = body.get("request") if isinstance(body.get("request"), dict) else None
-                record = save_practice_record(data, request=request)
-                self.send_json(record)
+                history_id = str(data.get("history_id") or "") if isinstance(data, dict) else ""
+                if history_id:
+                    try:
+                        latest = load_practice_record(history_id)
+                    except FileNotFoundError:
+                        latest = None
+                    if latest is not None:
+                        expected_version = str(data.get("_record_edit_version") or "")
+                        current_version = str((latest.get("data") or {}).get("_record_edit_version") or "")
+                        if not expected_version or expected_version != current_version:
+                            self.send_json(
+                                {
+                                    "ok": False,
+                                    "error": "这份练习已在另一个页面或窗口中修改，本次未覆盖较新内容。",
+                                    "error_code": "practice_edit_conflict",
+                                    "suggested_action": "请保留当前内容，重新打开该练习查看最新版本后再合并修改。",
+                                },
+                                status=409,
+                            )
+                            return
+                if isinstance(data, dict):
+                    data = reconcile_practice_generation(data)
+                record = save_practice_record(data, request=request, change_reason=str(body.get("change_reason") or "save"))
+                self.send_json(load_practice_record(str(record["history_id"])))
                 return
-            if parsed.path == "/api/practice/export":
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "history"] and parts[4] == "exercise":
                 body = self.read_json()
-                data = build_practice_docx(body)
-                filename = quote("研究生专项练习.docx")
+                try:
+                    result = update_practice_exercise(
+                        parts[3],
+                        int(body.get("exercise_index")),
+                        body.get("exercise") if isinstance(body.get("exercise"), dict) else {},
+                        change_reason=str(body.get("change_reason") or "regenerate_question"),
+                        semantic_review=(
+                            body.get("semantic_review")
+                            if isinstance(body.get("semantic_review"), dict)
+                            else None
+                        ),
+                        expected_edit_version=str(body.get("expected_edit_version") or ""),
+                    )
+                except PracticeEditConflict as exc:
+                    self.send_json(
+                        {
+                            "ok": False,
+                            "error": str(exc),
+                            "error_code": "practice_edit_conflict",
+                            "suggested_action": "请保留当前编辑内容，重新打开该题查看最新版本后再合并修改。",
+                        },
+                        status=409,
+                    )
+                    return
+                self.send_json(result)
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "history"] and parts[4] == "undo":
+                self.send_json(undo_last_practice_revision(parts[3]))
+                return
+            if parsed.path == "/api/tasks/bulk-delete":
+                body = self.read_json()
+                task_ids = body.get("task_ids") if isinstance(body.get("task_ids"), list) else []
+                unique_ids = list(dict.fromkeys(str(item or "").strip() for item in task_ids if str(item or "").strip()))[:100]
+                results = []
+                for task_id in unique_ids:
+                    try:
+                        if task_id.startswith("word_format_"):
+                            result = delete_word_format_task(task_id)
+                        elif task_id.startswith("generation_"):
+                            result = delete_practice_job(task_id)
+                        elif task_id.startswith("practice_"):
+                            result = delete_practice_record(task_id)
+                            result = {**result, **delete_jobs_for_history(task_id), "task_id": task_id}
+                        else:
+                            result = delete_task(task_id)
+                        results.append({"task_id": task_id, **result})
+                    except Exception as exc:
+                        results.append({"task_id": task_id, "ok": False, "message": str(exc) or exc.__class__.__name__})
+                deleted = sum(1 for item in results if item.get("ok"))
+                failed = len(results) - deleted
+                append_runtime_log("task_control", f"批量删除任务：成功 {deleted}，未删除 {failed}", payload={"task_ids": unique_ids})
+                self.send_json({"ok": failed == 0, "deleted": deleted, "failed": failed, "results": results})
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "history"] and parts[4] == "delete":
+                result = delete_practice_record(parts[3])
+                append_runtime_log("practice", f"删除模拟出题记录 {parts[3]}", payload=result)
+                self.send_json(result)
+                return
+            if parsed.path in {"/api/practice/export", "/api/practice/export/prepare"}:
+                request_started = time.perf_counter()
+                body = self.read_json()
+                latest_export_data = None
+                history_id = str(body.get("history_id") or "").strip()
+                if history_id:
+                    try:
+                        latest_record = load_practice_record(history_id)
+                        latest_export_data = latest_record.get("data") if isinstance(latest_record.get("data"), dict) else None
+                    except FileNotFoundError:
+                        latest_export_data = None
+                export_data = resolve_practice_export_payload(body, latest_export_data)
+                export_validation = validate_practice_export(export_data)
+                if not export_validation.get("ok"):
+                    issues = export_validation.get("blocking_issues") or []
+                    self.send_json(
+                        {
+                            "ok": False,
+                            "error": "题目 Word 未生成：导出前质量门禁未通过。",
+                            "issues": issues,
+                            "issue_count": len(issues),
+                            "suggested_action": "请根据题号定位失败项，重新生成对应题目后再导出。",
+                            "human_review_required": False,
+                        },
+                        status=422,
+                    )
+                    return
+                export_kind = str((parse_qs(parsed.query).get("kind") or ["questions"])[0]).strip().lower()
+                if export_kind != "questions":
+                    self.send_json({"ok": False, "error": "专项练习仅支持题目 Word 导出。"}, status=400)
+                    return
+                filename_text = ("知识点模拟题" if str(export_data.get("source_mode") or "exam") == "knowledge" else "按题出题") + "-题目"
+                if export_validation.get("release_level") == "review_candidate":
+                    filename_text += "-待复核"
+                filename_text += ".docx"
+                if parsed.path == "/api/practice/export/prepare":
+                    export_job = create_or_reuse_practice_export_job(
+                        export_data,
+                        filename_text,
+                    )
+                    self.send_json(
+                        {"ok": True, "job": export_job},
+                        status=200 if export_job.get("status") == "completed" else 202,
+                    )
+                    return
+                build_started = time.perf_counter()
+                data = build_practice_question_docx(export_data)
+                build_seconds = time.perf_counter() - build_started
+                filename = quote(filename_text)
+                docx_report = validate_docx_output(data, export_data)
+                if not docx_report.get("ok"):
+                    self.send_json(
+                        {
+                            "ok": False,
+                            "error": "生成的 Word 未通过完整性校验。",
+                            "issues": docx_report.get("issues") or [],
+                        },
+                        status=422,
+                    )
+                    return
+                elapsed_seconds = time.perf_counter() - request_started
+                append_runtime_log(
+                    "practice_export",
+                    f"题目 Word 同步生成完成：{len(export_data.get('exercises') or [])} 题，耗时 {elapsed_seconds:.2f} 秒",
+                    payload={
+                        "build_seconds": round(build_seconds, 3),
+                        "elapsed_seconds": round(elapsed_seconds, 3),
+                        "size_bytes": len(data),
+                    },
+                )
                 self.send_response(200)
                 self.send_header(
                     "Content-Type",
@@ -641,8 +1363,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/tasks":
                 body = self.read_json()
-                provider_name = str(body.get("provider") or "openai")
-                provider = get_provider(provider_name)
+                provider = get_provider(str(body.get("provider") or "").strip() or None)
                 model = resolve_provider_model(provider, body.get("model"))
                 model_thinking = _normalize_thinking_mode(body.get("model_thinking") or body.get("thinking_mode"))
                 def resolve_text_role(provider_key: str, model_key: str) -> tuple[str, str]:
@@ -654,11 +1375,19 @@ class PlatformHandler(BaseHTTPRequestHandler):
 
                 reasoning_provider_name, reasoning_model = resolve_text_role("reasoning_provider", "reasoning_model")
                 answer_provider_name, answer_model = resolve_text_role("answer_provider", "answer_model")
+                answer_provider_config = get_provider(answer_provider_name)
+                direct_answer_multimodal = provider_model_supports_vision(answer_provider_config, answer_model)
+                if body.get("correctness_provider") or body.get("correctness_model"):
+                    correctness_provider_name, correctness_model = resolve_text_role(
+                        "correctness_provider", "correctness_model"
+                    )
+                else:
+                    correctness_provider_name, correctness_model = answer_provider_name, answer_model
                 vision_provider_name = str(body.get("vision_provider") or "").strip()
                 vision_model = str(body.get("vision_model") or "").strip()
                 image_provider_name = str(body.get("image_provider") or "").strip()
                 image_model = str(body.get("image_model") or "").strip()
-                if vision_provider_name:
+                if vision_provider_name and not direct_answer_multimodal:
                     vision_provider = get_provider(vision_provider_name)
                     if not vision_model:
                         vision_model = str(getattr(vision_provider, "vision_model", "") or vision_provider.default_model or "").strip()
@@ -676,8 +1405,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     ("基础/作图规则模型", provider),
                     ("知识点与教材依据模型", get_provider(reasoning_provider_name)),
                     ("答案生成模型", get_provider(answer_provider_name)),
+                    ("高风险正确性复核模型", get_provider(correctness_provider_name)),
                 ]
-                if vision_provider_name:
+                if vision_provider_name and not direct_answer_multimodal:
                     key_checks.append(("读图模型", get_provider(vision_provider_name)))
                 if image_provider_name and image_model:
                     key_checks.append(("作图生图模型", get_provider(image_provider_name)))
@@ -707,6 +1437,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     reasoning_model=reasoning_model,
                     answer_provider=answer_provider_name,
                     answer_model=answer_model,
+                    correctness_provider=correctness_provider_name,
+                    correctness_model=correctness_model,
                     vision_provider=vision_provider_name,
                     vision_model=vision_model,
                     image_provider=image_provider_name,
@@ -724,6 +1456,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         "reasoning_model": reasoning_model,
                         "answer_provider": answer_provider_name,
                         "answer_model": answer_model,
+                        "correctness_provider": correctness_provider_name,
+                        "correctness_model": correctness_model,
                         "vision_provider": vision_provider_name,
                         "vision_model": vision_model,
                         "image_provider": image_provider_name,
@@ -744,8 +1478,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 kind = query.get("kind", [""])[0]
                 filename = query.get("filename", [""])[0]
                 length = int(self.headers.get("Content-Length", "0") or "0")
-                data = self.rfile.read(length) if length > 0 else b""
-                saved = save_library_upload(kind, filename, data)
+                saved = save_library_upload_stream(kind, filename, self.rfile, length)
                 self.send_json({"ok": True, "file": saved, "library": scan_library_files()})
                 return
             if parsed.path == "/api/environment/repair":
@@ -840,16 +1573,23 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 ok = bool(result.get("updated"))
                 self.send_json(
                     {
-                        "ok": ok,
+                        "ok": True,
+                        "updated": ok,
                         "env_exists": result.get("env_exists"),
                         "providers": {name: cfg.redacted() for name, cfg in list_providers().items()},
                     },
-                    status=200 if ok else 400,
                 )
                 return
             parts = [unquote(x) for x in parsed.path.strip("/").split("/") if x]
             if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "run":
                 task_id = parts[2]
+                current = load_task(task_id)
+                if current.status in {"running", "paused"}:
+                    self.send_json(
+                        {"ok": False, "error": "任务仍在运行或等待人工处理，不能重复启动。", "task_id": task_id},
+                        status=409,
+                    )
+                    return
                 body = self.read_json()
                 render = bool(body.get("render"))
                 use_model = not bool(body.get("no_model"))
@@ -872,30 +1612,19 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         return
                 append_runtime_log("pipeline", f"启动任务 {task_id}", payload={"task_id": task_id, "render": render, "use_model": use_model, "reuse_fragments": reuse_fragments})
 
-                def worker():
-                    try:
-                        run_pipeline(
-                            task_id,
-                            PipelineOptions(
-                                use_model=use_model,
-                                allow_demo_without_key=not use_model,
-                                render_with_word=render,
-                                reuse_fragments=reuse_fragments,
-                            ),
-                        )
-                    except Exception as exc:
-                        print(f"[pipeline] task {task_id} failed: {exc}")
-                        append_runtime_log("pipeline", f"任务 {task_id} 执行失败：{exc}", "error", {"task_id": task_id})
-
-                thread = threading.Thread(target=worker, daemon=True)
-                thread.start()
+                start_exam_task(
+                    task_id,
+                    use_model=use_model,
+                    render=render,
+                    reuse_fragments=reuse_fragments,
+                )
                 self.send_json({"ok": True, "task_id": task_id, "status": "started"})
                 return
             if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "control":
                 task_id = parts[2]
                 body = self.read_json()
                 action = str(body.get("action") or "")
-                result = control_task(task_id, action)
+                result = control_exam_task(task_id, action)
                 append_runtime_log("task_control", f"任务 {task_id} 控制操作：{action}", "info" if result.get("ok") else "warning", {"task_id": task_id, "action": action, "result": result})
                 self.send_json(result)
                 return
@@ -974,11 +1703,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     task_id,
                     stage_dir(task_id),
                     output_dir(task_id),
-                    allow_warnings=True,
-                    allow_review_acknowledgement=bool(body.get("allow_review_acknowledgement")),
-                    review_policy=str(body.get("review_policy") or "ask"),
                 )
-                status = 200 if result.get("ok") or result.get("status") in {"review_ack_required", "review_decision_required"} else 400
+                status = 200 if result.get("ok") else 400
                 self.send_json(result, status=status)
                 return
             if parsed.path == "/api/validate-answer-fragment":
@@ -988,10 +1714,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/provider-test":
                 body = self.read_json()
-                provider = get_provider(str(body.get("provider") or "openai"))
+                provider = get_provider(str(body.get("provider") or "").strip() or None)
                 temp_key = str(body.get("api_key") or "").strip()
                 if temp_key:
                     provider = replace(provider, api_key=temp_key)
+                provider, protocol_overridden = _provider_test_protocol_override(provider, body)
                 provider = replace(provider, thinking_mode=_normalize_thinking_mode(body.get("model_thinking") or body.get("thinking_mode")))
                 client = OpenAICompatibleClient(provider)
                 model = resolve_provider_model(provider, body.get("model"))
@@ -1002,7 +1729,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 try:
                     parsed_content = client.chat_json_object(messages, model=model, max_tokens=DEFAULT_MODEL_MAX_TOKENS, attempts=1)
                 except LLMError as exc:
-                    self.send_json({"ok": False, "provider": provider.name, "model": model, "error": str(exc)}, status=400)
+                    error_payload = {"ok": False, "provider": provider.name, "model": model, "error": str(exc)}
+                    if protocol_overridden:
+                        error_payload["api_protocol_requested"] = provider.api_protocol
+                    self.send_json(error_payload, status=400)
                     return
                 retry_report = getattr(client, "last_json_retry_report", {})
                 used_model = model
@@ -1010,11 +1740,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     if not attempt.get("error") and attempt.get("model"):
                         used_model = str(attempt.get("model"))
                         break
-                self.send_json({"ok": True, "provider": provider.name, "model": used_model, "thinking_mode": provider.thinking_mode, "content": parsed_content, "retry_report": retry_report})
+                response_payload = {"ok": True, "provider": provider.name, "model": used_model, "thinking_mode": provider.thinking_mode, "content": parsed_content, "retry_report": retry_report}
+                if protocol_overridden:
+                    response_payload.update(_provider_test_protocol_summary(retry_report, provider.api_protocol))
+                self.send_json(response_payload)
                 return
             if parsed.path == "/api/generate-answer-fragment-demo":
                 body = self.read_json()
-                provider = get_provider(str(body.get("provider") or "openai"))
+                provider = get_provider(str(body.get("provider") or "").strip() or None)
                 client = OpenAICompatibleClient(provider)
                 messages = build_answer_fragment_prompt(body.get("question") or {}, body.get("evidence") or [])
                 model = resolve_provider_model(provider, body.get("model"))
@@ -1031,18 +1764,39 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"error": "not found"}, status=404)
         except ValueError as exc:
-            append_runtime_log("server", f"请求参数错误：{exc}", "warning", {"path": parsed.path})
-            self.send_json({"error": str(exc)}, status=400)
+            payload = public_error_payload(exc, status=400, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"请求参数错误 [{payload['support_id']}]：{exc}",
+                "warning",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            self.send_json(payload, status=400)
         except Exception as exc:
-            append_runtime_log("server", f"请求处理失败：{exc}", "error", {"path": parsed.path})
-            self.send_json({"error": str(exc)}, status=500)
+            payload = public_error_payload(exc, status=500, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"请求处理失败 [{payload['support_id']}]：{exc}",
+                "error",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            self.send_json(payload, status=500)
 
     def serve_static(self, request_path: str) -> None:
         path = request_path.lstrip("/") or "index.html"
         full = (WEB_DIR / path).resolve()
-        if not str(full).startswith(str(WEB_DIR.resolve())) or not full.exists() or not full.is_file():
+        try:
+            full.relative_to(WEB_DIR.resolve())
+            inside_web_root = True
+        except ValueError:
+            inside_web_root = False
+        if not inside_web_root or not full.exists() or not full.is_file():
             full = WEB_DIR / "index.html"
         data = full.read_bytes()
+        # 服务端把版本号直接注入首页，保证首次进入就能看到版本标签，
+        # 不依赖前端异步 refresh()（解决“首次进入无版本号”）。
+        if full.name == "index.html":
+            data = _inject_index_version(data.decode("utf-8", errors="replace")).encode("utf-8")
         content_type = mimetypes.guess_type(str(full))[0] or "application/octet-stream"
         if full.suffix == ".html":
             content_type = "text/html; charset=utf-8"
@@ -1053,6 +1807,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        # 本地平台持续迭代，HTML/JS/CSS 不允许浏览器沿用旧版本。
+        # 否则界面已更新但 Chrome 仍可能执行旧脚本，造成控件和布局不一致。
+        if full.suffix in {".html", ".js", ".css"}:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        else:
+            self.send_header("Cache-Control", "no-cache")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -1061,10 +1824,54 @@ def run(host: str = "127.0.0.1", port: int = 8766) -> None:
     ensure_project_dirs()
     if host not in {"127.0.0.1", "::1", "localhost"}:
         ensure_lan_access_config()
-    recovered = recover_interrupted_tasks("server_startup")
-    if recovered:
-        append_runtime_log("task_recovery", f"服务启动时标记 {len(recovered)} 个中断任务", "warning", {"tasks": recovered})
-    server = ThreadingHTTPServer((host, port), PlatformHandler)
-    print(f"Answer Book Platform v1 running at http://{host}:{port}")
-    append_runtime_log("server", f"服务启动 http://{host}:{port}", payload={"host": host, "port": port})
-    server.serve_forever()
+    with platform_process_lock(purpose=f"web-server {host}:{port}"):
+        # Reserve the listening address before changing any durable task state
+        # or starting workers. A failed duplicate/port-conflicting launch must
+        # have no opportunity to consume queued work.
+        server = ThreadingHTTPServer((host, port), PlatformHandler)
+        try:
+            recovered = recover_interrupted_tasks("server_startup")
+            if recovered:
+                for record in recovered:
+                    start_exam_task(
+                        str(record["task_id"]),
+                        use_model=bool(record.get("use_model", True)),
+                        render=bool(record.get("render", True)),
+                        reuse_fragments=True,
+                        remember_options=False,
+                        thread_name_prefix="exam-resume",
+                    )
+                append_runtime_log("task_recovery", f"服务启动时恢复 {len(recovered)} 个真题解析任务", "warning", {"tasks": recovered})
+            cleanup = cleanup_practice_jobs()
+            if cleanup["removed_count"]:
+                append_runtime_log(
+                    "practice_cleanup",
+                    f"服务启动时清理 {cleanup['removed_count']} 个过期出题临时任务",
+                    payload={"removed_bytes": cleanup["removed_bytes"]},
+                )
+            export_recovery = recover_practice_export_jobs()
+            if export_recovery["resumed"] or export_recovery["completed_from_cache"] or export_recovery["failed"]:
+                append_runtime_log(
+                    "task_recovery",
+                    "服务启动时恢复 Word 导出任务",
+                    "warning",
+                    export_recovery,
+                )
+            # Practice jobs are durable. A browser refresh/page switch never
+            # owns the worker, and a local server restart requeues unfinished jobs.
+            recovered_generation = recover_practice_jobs(fail_interrupted=False)
+            if recovered_generation:
+                queue_recovery = recover_practice_queue(recovered_generation)
+                append_runtime_log(
+                    "task_recovery",
+                    f"服务启动时检查 {len(recovered_generation)} 个出题任务",
+                    "warning",
+                    queue_recovery,
+                )
+            start_practice_queue_consumer()
+            print(f"Answer Book Platform v1 running at http://{host}:{port}")
+            append_runtime_log("server", f"服务启动 http://{host}:{port}", payload={"host": host, "port": port})
+            server.serve_forever()
+        finally:
+            stop_practice_queue_consumer()
+            server.server_close()

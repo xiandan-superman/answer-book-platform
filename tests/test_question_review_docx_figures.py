@@ -202,11 +202,15 @@ class QuestionReviewDocxFigureTests(unittest.TestCase):
         question_text = "\n".join(paragraph.text for paragraph in question_review.paragraphs)
         figure_text = "\n".join(paragraph.text for paragraph in figure_review.paragraphs)
         self.assertEqual(1, len(items))
-        self.assertGreaterEqual(len(items[0]["figures"]), 2)
+        self.assertEqual(1, len(items[0]["figures"]))
+        self.assertIn("正式采用", items[0]["figures"][0]["statuses"])
+        self.assertIn("未采用（视觉QA未通过）", items[0]["figures"][0]["statuses"])
         self.assertIn("未发现需要单独审查的题目", question_text)
         self.assertNotIn("作图题全流程图片", question_text)
         self.assertIn("作图题全流程图片", figure_text)
-        self.assertGreaterEqual(len(figure_review.inline_shapes), 2)
+        self.assertEqual(1, len(figure_review.inline_shapes))
+        self.assertIn("正式采用", figure_text)
+        self.assertIn("未采用（视觉QA未通过）", figure_text)
 
 
 if __name__ == "__main__":

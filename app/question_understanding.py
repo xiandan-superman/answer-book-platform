@@ -3,23 +3,45 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .capabilities.catalog import apply_capability_policy_transforms, capability_policy_contributions
 from .llm_client import LLMError, OpenAICompatibleClient
+from .concurrency import model_request_slot, run_limited_concurrent
+from .question_requirements import answer_figure_required
 from .question_types import question_has_type
-from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
+from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text
 
 
 COMPLEX_TABLE_MAX_SIMPLE_CELLS = 12
 COMPLEX_TABLE_MAX_SIMPLE_COLS = 5
+QUESTION_UNDERSTANDING_POLICY_VERSION = "answer_book.question_understanding_policy.v5"
+
+
+def question_understanding_worker_count() -> int:
+    raw = os.environ.get("QUESTION_UNDERSTANDING_MAX_WORKERS", "10")
+    try:
+        return max(1, min(10, int(raw)))
+    except ValueError:
+        return 10
+
+
+@lru_cache(maxsize=64)
+def _cached_image_data_url(path_text: str, size: int, modified_ns: int) -> str:
+    del size, modified_ns
+    path = Path(path_text)
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
 def _image_data_url(path: Path) -> str:
-    mime = mimetypes.guess_type(path.name)[0] or "image/png"
-    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    stat = path.stat()
+    return _cached_image_data_url(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
 
 
 def _table_rows(table: dict[str, Any]) -> list[list[str]]:
@@ -125,7 +147,7 @@ def question_tables(question: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def is_drawing_question(question: dict[str, Any]) -> bool:
-    return question_has_type(question, "作图题")
+    return answer_figure_required(question)
 
 
 def needs_vision_model(question: dict[str, Any]) -> bool:
@@ -216,7 +238,81 @@ def _vision_parts(understanding: dict[str, Any]) -> list[dict[str, Any]]:
     return parts
 
 
+def question_visual_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return each source visual once for direct multimodal delivery."""
+
+    understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
+    paths: list[Path] = []
+    paths.extend(Path(str(raw)) for raw in question.get("image_refs") or [] if str(raw).strip())
+    paths.extend(
+        Path(str(item.get("path") or ""))
+        for item in understanding.get("images") or []
+        if isinstance(item, dict) and str(item.get("path") or "").strip()
+    )
+    paths.extend(
+        Path(str(item.get("table_render") or ""))
+        for item in understanding.get("tables") or []
+        if isinstance(item, dict) and str(item.get("table_render") or "").strip()
+    )
+    parts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path.exists() or not path.is_file():
+            continue
+        identity = str(path.resolve())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        parts.append({"type": "image_url", "image_url": {"url": _image_data_url(path)}})
+    return parts
+
+
+def attach_question_visuals(messages: list[dict[str, Any]], question: dict[str, Any]) -> list[dict[str, Any]]:
+    """Attach original question visuals to the last user message."""
+
+    visual_parts = question_visual_parts(question)
+    if not visual_parts:
+        return messages
+    attached = [dict(message) for message in messages]
+    for index in range(len(attached) - 1, -1, -1):
+        if attached[index].get("role") != "user":
+            continue
+        content = attached[index].get("content")
+        if isinstance(content, list):
+            attached[index]["content"] = [*content, *visual_parts]
+        else:
+            attached[index]["content"] = [{"type": "text", "text": str(content or "")}, *visual_parts]
+        break
+    return attached
+
+
 def _vision_prompt(question: dict[str, Any], understanding: dict[str, Any]) -> list[dict[str, Any]]:
+    policy_context = {"question": question, "text": str(understanding.get("text") or "")}
+    image_schema: dict[str, Any] = {
+        "image_id": "图片 ID",
+        "ocr_text": "图片内文字",
+        "visual_description": "图像内容说明",
+        "detected_labels": ["图中标签"],
+        "axes": {"x": "横轴含义", "y": "纵轴含义"},
+        "curves": [],
+        "data_points": [],
+        "answer_relevant_observations": ["作答必须使用的图像信息"],
+        "uncertainties": [],
+    }
+    domain_hard_rules: list[str] = []
+    for contribution in capability_policy_contributions(
+        "visual_understanding",
+        policy_context,
+        text=policy_context["text"],
+    ):
+        if not isinstance(contribution, dict):
+            continue
+        extension = contribution.get("image_schema")
+        if isinstance(extension, dict):
+            image_schema.update(extension)
+        domain_hard_rules.extend(
+            str(rule) for rule in contribution.get("hard_rules", []) if str(rule).strip()
+        )
     payload = {
         "task": "understand_exam_question_visual_and_table_content",
         "question_id": understanding.get("question_id"),
@@ -234,19 +330,7 @@ def _vision_prompt(question: dict[str, Any], understanding: dict[str, Any]) -> l
                     "uncertainties": [],
                 }
             ],
-            "images": [
-                {
-                    "image_id": "图片 ID",
-                    "ocr_text": "图片内文字",
-                    "visual_description": "图像内容说明",
-                    "detected_labels": ["图中标签"],
-                    "axes": {"x": "横轴含义", "y": "纵轴含义"},
-                    "curves": [],
-                    "data_points": [],
-                    "answer_relevant_observations": ["作答必须使用的图像信息"],
-                    "uncertainties": [],
-                }
-            ],
+            "images": [image_schema],
             "question_requirements": understanding.get("question_requirements"),
             "uncertainties": [],
         },
@@ -256,6 +340,7 @@ def _vision_prompt(question: dict[str, Any], understanding: dict[str, Any]) -> l
             "Preserve all visible labels, units, axes, legends, and special symbols.",
             "For rendered table images, compare the image with table_rows and note any merged header or symbol nuance.",
             "If information is unreadable, put it in uncertainties instead of guessing.",
+            *domain_hard_rules,
         ],
     }
     return [
@@ -272,7 +357,13 @@ def _merge_visual_result(base: dict[str, Any], visual: dict[str, Any], provider:
     merged["vision_used"] = True
     merged["vision_model"] = model
     merged["vision_provider"] = provider.name
-    return merged
+    merged["policy_version"] = QUESTION_UNDERSTANDING_POLICY_VERSION
+    return apply_capability_policy_transforms(
+        "normalize_visual_understanding",
+        merged,
+        {"text": str(base.get("text") or "")},
+        text=str(base.get("text") or ""),
+    )
 
 
 def build_question_understanding(
@@ -282,21 +373,38 @@ def build_question_understanding(
     provider: ProviderConfig | None = None,
     model: str = "",
     client: Any | None = None,
+    direct_multimodal: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     base = _local_understanding(question, output_dir)
     if not base["needs_vision_model"]:
         return base
+    if direct_multimodal:
+        direct_provider, direct_model = direct_multimodal
+        base["direct_multimodal"] = True
+        base["direct_multimodal_provider"] = str(direct_provider or "")
+        base["direct_multimodal_model"] = str(direct_model or "")
+        base["visual_delivery"] = "direct_with_answer_request"
+        for image in base.get("images") or []:
+            if isinstance(image, dict):
+                image["uncertainties"] = [
+                    item for item in image.get("uncertainties", [])
+                    if "未调用视觉模型" not in str(item)
+                ]
+        return base
     if provider is None or not getattr(provider, "api_key", ""):
         base["uncertainties"].append("题目需要视觉模型，但当前未配置 provider 或 API key，使用本地题面结构化兜底。")
         return base
-    if not getattr(provider, "supports_vision", False) or not getattr(provider, "vision_model", ""):
-        base["uncertainties"].append(f"题目需要视觉模型，但 provider {provider.name} 未声明 supports_vision/vision_model。")
-        return base
     active_model = str(model or provider.vision_model)
+    if not provider_model_supports_vision(provider, active_model):
+        base["uncertainties"].append(
+            f"题目需要视觉模型，但 {provider.name}/{active_model or '未选择模型'} 未声明图像输入能力。"
+        )
+        return base
     active_client = client or OpenAICompatibleClient(provider)
     try:
-        visual = active_client.chat_json_object(_vision_prompt(question, base), model=active_model, max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS))
+        with model_request_slot(provider):
+            visual = active_client.chat_json_object(_vision_prompt(question, base), model=active_model, max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS))
     except (LLMError, Exception) as exc:
         base["uncertainties"].append(f"视觉题面解析失败：{str(exc)[:300]}")
         return base
@@ -313,6 +421,7 @@ def build_question_understandings(
     provider: ProviderConfig | None = None,
     model: str = "",
     progress_json: Path | None = None,
+    direct_multimodal: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     output_dir = output_json.parent / "question_understanding_assets"
     questions = [question for question in structured_exam.get("items", []) or [] if isinstance(question, dict)]
@@ -339,25 +448,48 @@ def build_question_understandings(
         progress_json.parent.mkdir(parents=True, exist_ok=True)
         progress_json.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    items = []
-    for question in questions:
-        save_progress("question_started", question, phase="正在整理题干、图片和表格信息")
-        understanding = build_question_understanding(question, output_dir, provider=provider, model=model)
+    max_workers = question_understanding_worker_count() if len(questions) > 1 else 1
+
+    def understand_one(question: dict[str, Any]) -> dict[str, Any]:
+        return build_question_understanding(
+            question,
+            output_dir,
+            provider=provider,
+            model=model,
+            direct_multimodal=direct_multimodal,
+        )
+
+    def record_completion(index: int, question: dict[str, Any], understanding: dict[str, Any]) -> None:
         question["question_understanding"] = understanding
-        items.append(understanding)
-        progress["completed"] = len(items)
+        progress["completed"] = int(progress["completed"]) + 1
         save_progress(
             "question_completed",
             question,
-            phase="已完成视觉题面判断" if understanding.get("vision_used") else "已完成题面结构化",
+            phase=(
+                "已配置主模型直接读图"
+                if understanding.get("direct_multimodal")
+                else "已完成视觉题面判断"
+                if understanding.get("vision_used")
+                else "已完成题面结构化"
+            ),
             needs_vision=bool(understanding.get("needs_vision_model")),
             vision_used=bool(understanding.get("vision_used")),
         )
+
+    for question in questions:
+        save_progress("question_started", question, phase="正在整理题干、图片和表格信息")
+    items = run_limited_concurrent(questions, understand_one, max_workers=max_workers, on_complete=record_completion)
     report = {
         "schema_version": "answer_book.question_understandings.v1",
+        "policy_version": QUESTION_UNDERSTANDING_POLICY_VERSION,
         "question_count": len(items),
         "vision_required_count": sum(1 for item in items if item.get("needs_vision_model")),
         "vision_used_count": sum(1 for item in items if item.get("vision_used")),
+        "direct_multimodal_count": sum(1 for item in items if item.get("direct_multimodal")),
+        "concurrency": {
+            "max_workers": max_workers,
+            "parallel_enabled": max_workers > 1 and len(questions) > 1,
+        },
         "items": items,
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
