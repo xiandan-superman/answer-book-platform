@@ -30,7 +30,13 @@ def parse_asset(value: str) -> tuple[str, Path]:
     return key.strip(), path
 
 
-def build_manifest(*, version: str, assets: list[tuple[str, Path]], notes: str = "") -> dict:
+def build_manifest(
+    *,
+    version: str,
+    assets: list[tuple[str, Path]],
+    notes: str = "",
+    release_tag: str = "",
+) -> dict:
     if not version.strip():
         raise ValueError("版本号不能为空")
     platforms: dict[str, dict] = {}
@@ -49,6 +55,7 @@ def build_manifest(*, version: str, assets: list[tuple[str, Path]], notes: str =
     return {
         "schema_version": SCHEMA_VERSION,
         "version": version.strip(),
+        "release_tag": release_tag.strip() or f"v{version.strip()}",
         "notes": notes.strip(),
         "platforms": platforms,
     }
@@ -60,6 +67,7 @@ def main() -> int:
     parser.add_argument("--asset", action="append", default=[], help="macos-arm64=/path/app.zip")
     parser.add_argument("--notes", default="")
     parser.add_argument("--notes-file", default="")
+    parser.add_argument("--release-tag", default="")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     args = parser.parse_args()
     notes = args.notes
@@ -69,6 +77,7 @@ def main() -> int:
         version=args.version,
         assets=[parse_asset(value) for value in args.asset],
         notes=notes,
+        release_tag=args.release_tag,
     )
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
