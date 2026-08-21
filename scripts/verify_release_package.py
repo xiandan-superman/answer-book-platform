@@ -67,7 +67,7 @@ def verify(zip_path: Path) -> dict:
             "README.md",
             "APP_VERSION",
             "VERSION",
-            "INTERNAL_EVALUATION_LICENSE.md",
+            "SOFTWARE_LICENSE.md",
             "RELEASE_MANIFEST.json",
             "requirements.txt",
             "app/server.py",

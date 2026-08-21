@@ -48,7 +48,7 @@ datas = [
     (str(ROOT / "config" / "update.json"), "config"),
     (str(ROOT / "APP_VERSION"), "."),
     (str(ROOT / "VERSION"), "."),
-    (str(ROOT / "INTERNAL_EVALUATION_LICENSE.md"), "."),
+    (str(ROOT / "SOFTWARE_LICENSE.md"), "."),
     (str(build_manifest), "."),
     (str(FONT_ROOT / "FONT_LICENSES.md"), "assets/fonts"),
     (
