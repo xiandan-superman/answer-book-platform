@@ -38,8 +38,8 @@ def main() -> int:
     version = (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip()
     archive_base = DIST / f"answer-book-platform-{version}-windows-x86_64"
     archive_path = Path(shutil.make_archive(str(archive_base), "zip", root_dir=app_dir))
-    print(f"Built directory: {app_dir.as_posix()}")
-    print(f"Built archive: {archive_path.as_posix()}")
+    print("Built Windows application directory.")
+    print(f"Built archive: {archive_path.name}")
     return 0
 
 
