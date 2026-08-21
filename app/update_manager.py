@@ -98,9 +98,9 @@ def load_update_source() -> dict[str, Any]:
     repository = str(os.environ.get("ANSWER_BOOK_UPDATE_REPOSITORY") or raw.get("repository") or _repository_from_git_remote()).strip()
     if repository and not _REPOSITORY_PATTERN.fullmatch(repository):
         repository = ""
-    channel = str(os.environ.get("ANSWER_BOOK_UPDATE_CHANNEL") or raw.get("channel") or "beta").strip().lower()
+    channel = str(os.environ.get("ANSWER_BOOK_UPDATE_CHANNEL") or raw.get("channel") or "stable").strip().lower()
     if channel not in {"stable", "beta"}:
-        channel = "beta"
+        channel = "stable"
     manifest_url = str(os.environ.get("ANSWER_BOOK_UPDATE_MANIFEST_URL") or raw.get("manifest_url") or "").strip()
     if not manifest_url and repository:
         manifest_url = f"https://raw.githubusercontent.com/{repository}/main/update-{channel}.json"
@@ -278,7 +278,7 @@ def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
         "installation_kind": kind,
         "platform": platform_asset_key(),
         "repository": source.get("repository", ""),
-        "channel": source.get("channel", "beta"),
+        "channel": source.get("channel", "stable"),
         "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "update_available": False,
     }

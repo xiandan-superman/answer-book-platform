@@ -103,7 +103,7 @@ def build_release(output: Path) -> dict:
         for p in files:
             zf.write(p, p.relative_to(ROOT).as_posix())
         release_manifest = {
-            "package_name": "answer_book_platform_internal_beta",
+            "package_name": "answer_book_platform",
             "product_name": "真题解析与生题平台",
             "version": (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip(),
             "platform_version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
