@@ -98,3 +98,34 @@ def test_text_only_model_does_not_inherit_provider_level_vision_support() -> Non
 
     assert provider.supports_vision is True
     assert provider_model_supports_vision(provider, "qwen3.7-max") is False
+
+
+def test_visual_understanding_switches_to_bounded_backup_model(tmp_path: Path) -> None:
+    image = tmp_path / "question.png"
+    image.write_bytes(b"image-bytes")
+    provider = _provider(
+        vision_model="qwen3.7-plus",
+        vision_model_options=("vision-backup",),
+        model_capabilities={
+            "qwen3.7-plus": ("text", "vision"),
+            "vision-backup": ("text", "vision"),
+        },
+    )
+
+    class Client:
+        def chat_json_object(self, _messages, *, model, **_kwargs):
+            if model == "qwen3.7-plus":
+                raise RuntimeError("primary unavailable")
+            return {"summary": "识别成功", "images": []}
+
+    understanding = build_question_understanding(
+        {"question_id": "q1", "stem": "根据图回答", "image_refs": [str(image)]},
+        tmp_path / "assets",
+        provider=provider,
+        model="qwen3.7-plus",
+        client=Client(),
+    )
+
+    assert understanding["vision_used"] is True
+    assert understanding["vision_model"] == "vision-backup"
+    assert [item["status"] for item in understanding["vision_attempts"]] == ["failed", "succeeded"]

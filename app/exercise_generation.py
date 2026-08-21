@@ -1010,6 +1010,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     image_dependent_source_ids: set[str] = set()
     boundary_review_items: list[str] = []
     cross_source_leak_items: list[str] = []
+    findings: list[dict[str, Any]] = []
     planned_points_by_source: dict[str, list[str]] = {}
     for index, item in enumerate(items, start=1):
         required = _unique_strings(item.get("required_knowledge_points"), limit=60, item_limit=500)
@@ -1038,21 +1039,22 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 planned_scope_points.append(point)
         constraints = item.get("required_constraints") if isinstance(item.get("required_constraints"), dict) else {}
         boundaries = _unique_strings(constraints.get("applicable_boundaries"), limit=20, item_limit=500)
-        design_text = " ".join(
-            [
-                _clean(item.get("target_skill"), 500),
-                _clean(item.get("variation_type"), 500),
-                _clean(item.get("design_intent"), 800),
-                _clean(item.get("difficulty_rationale"), 800),
-                " ".join(_unique_strings(item.get("difficulty_levers"), limit=12, item_limit=200)),
-            ]
-        )
+        design_fields = {
+            "target_skill": _clean(item.get("target_skill"), 500),
+            "variation_type": _clean(item.get("variation_type"), 500),
+            "design_intent": _clean(item.get("design_intent"), 800),
+            "difficulty_rationale": _clean(item.get("difficulty_rationale"), 800),
+            "difficulty_levers": " ".join(
+                _unique_strings(item.get("difficulty_levers"), limit=12, item_limit=200)
+            ),
+        }
+        design_text = " ".join(design_fields.values())
         own_source_text = " ".join(
             _clean(source_by_id.get(ref, {}).get(field), 18000)
             for ref in refs
             for field in ("title", "stem_excerpt", "source_content", "knowledge_points")
         )
-        foreign_anchors: set[str] = set()
+        foreign_anchors: dict[str, list[dict[str, str]]] = {}
         for source_id, other_source in source_by_id.items():
             if source_id in refs:
                 continue
@@ -1061,9 +1063,31 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 anchor = re.sub(r"(?:的)?(?:定义|确定步骤|标定步骤|表示方法|计算方法|基本原理|原理|结果)$", "", anchor)
                 anchor = _clean(anchor, 100)
                 if len(anchor) >= 4 and anchor not in own_source_text:
-                    foreign_anchors.add(anchor)
-        if any(anchor in design_text for anchor in foreign_anchors):
-            cross_source_leak_items.append(str(item.get("number") or index))
+                    foreign_anchors.setdefault(anchor, []).append({
+                        "source_id": source_id,
+                        "source_title": _clean(other_source.get("title"), 200),
+                        "knowledge_point": _clean(point, 500),
+                    })
+        anchor_matches = []
+        for anchor, foreign_sources in foreign_anchors.items():
+            matched_fields = [name for name, value in design_fields.items() if anchor in value]
+            if matched_fields:
+                anchor_matches.append({
+                    "anchor": anchor,
+                    "matched_fields": matched_fields,
+                    "foreign_sources": foreign_sources,
+                })
+        if anchor_matches:
+            item_number = str(item.get("number") or index)
+            cross_source_leak_items.append(item_number)
+            findings.append({
+                "code": "cross_source_design_leak",
+                "item_number": item_number,
+                "plan_item_id": _clean(item.get("plan_item_id"), 120),
+                "bound_source_refs": refs,
+                "design_fields": design_fields,
+                "matches": anchor_matches,
+            })
         compact_boundaries = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", "".join(boundaries))
         boundary_phrases = {
             compact_boundaries[start : start + size]
@@ -1158,12 +1182,31 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         "status": "blocked" if errors else ("warning" if warnings else "passed"),
         "errors": list(dict.fromkeys(errors)),
         "warnings": list(dict.fromkeys(warnings)),
+        "findings": findings,
         "metrics": {
             "plan_count": len(items),
             "unique_plan_item_count": len(set(ids)),
             "duplicate_signature_count": duplicate_signatures,
         },
     }
+
+
+def _raise_plan_gate_error(message: str, plan: dict[str, Any], failure_type: str) -> None:
+    """Raise a user-facing gate error while preserving the rejected plan for support diagnosis."""
+    error = ValueError(message)
+    error.failure_context = {
+        "schema_version": 1,
+        "failure_type": failure_type,
+        "source_mode": plan.get("source_mode"),
+        "selected_source_questions": plan.get("selected_source_questions") or [],
+        "source_analysis": plan.get("source_analysis") or {},
+        "blueprint": plan.get("blueprint") or {},
+        "blueprint_audit": plan.get("blueprint_audit") or {},
+        "mode_contract": plan.get("mode_contract") or {},
+        "scope_cover": plan.get("scope_cover") or {},
+        "blueprint_refinement": plan.get("blueprint_refinement") or {},
+    }
+    raise error
 
 
 def ensure_practice_blueprint_defaults(plan: dict[str, Any]) -> dict[str, Any]:
@@ -3119,7 +3162,11 @@ def normalize_practice_set(
                 "variation_type": _clean(item.get("variation_type"), 100),
                 "stem": stem,
                 "options": options,
-                "knowledge_points": _string_list(item.get("knowledge_points"), limit=10),
+                # A blueprint may legitimately bind more than ten atomic
+                # points to one comprehensive item. Truncating this metadata
+                # after the batch gate made a previously accepted question
+                # fail the final exact-coverage check.
+                "knowledge_points": _string_list(item.get("knowledge_points"), limit=60),
                 "verification_note": _clean(item.get("verification_note"), 1000),
                 "diversity_signature": _normalized_diversity_signature(item.get("diversity_signature")),
                 **({"difficulty_evidence": difficulty_evidence} if difficulty_evidence is not None else {}),
@@ -5812,10 +5859,18 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
     plan["include_source_content_in_generation"] = include_source_content
     plan["blueprint"]["include_source_content_in_generation"] = include_source_content
     if plan["mode_contract"].get("errors"):
-        raise ValueError("生成蓝图未满足模式约束：" + "；".join(plan["mode_contract"]["errors"]))
+        _raise_plan_gate_error(
+            "生成蓝图未满足模式约束：" + "；".join(plan["mode_contract"]["errors"]),
+            plan,
+            "mode_contract",
+        )
     plan["blueprint_audit"] = audit_practice_blueprint(plan)
     if plan["blueprint_audit"]["status"] == "blocked":
-        raise ValueError("生成蓝图未通过确认门禁：" + "；".join(plan["blueprint_audit"]["errors"]))
+        _raise_plan_gate_error(
+            "生成蓝图未通过确认门禁：" + "；".join(plan["blueprint_audit"]["errors"]),
+            plan,
+            "blueprint_audit",
+        )
     plan["planning_evidence"] = {
         "default_call_count": 1 + int((blueprint_refinement or {}).get("call_count") or 0),
         "global_allocation_call_count": 1,

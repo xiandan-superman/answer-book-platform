@@ -1,19 +1,19 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析平台",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.4",
+  "source_revision": "release-v0.9.5",
   "build_kind": "stable-desktop-release",
-  "created_at": "2026-08-22T01:00:00+08:00",
+  "created_at": "2026-08-22T02:12:40+08:00",
   "validation": {
-    "pytest": "1117 passed, 4 deselected; 1 historical replay test omitted because its external local fixture is unavailable",
+    "pytest": "1140 passed, 3 deselected",
     "platform_quality_gate": "passed for source compilation, version consistency, formula OMML, project completeness and release-focused regression",
     "version_consistency": "passed",
-    "saved_real_task_replay": "not rerun because the external historical fixture is unavailable on the release workstation",
+    "saved_real_task_replay": "passed with the repository-contained historical replay fixture",
     "cross_subject_regressions": "passed: mathematics, physics, chemistry, biology and generic chart intent cases",
-    "paid_model_regression": "not rerun for 0.9.4; diagnostics do not change model selection or paid-call routing",
-    "cost_model_routing": "unchanged from R3.1; support diagnostics observe calls without changing provider routing",
+    "paid_model_regression": "not rerun for 0.9.5; timeout, retry-budget and circuit-breaker paths are covered by deterministic tests",
+    "cost_model_routing": "bounded per-question model fallback, wall-clock deadlines and per-run call/token/time budgets enabled",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

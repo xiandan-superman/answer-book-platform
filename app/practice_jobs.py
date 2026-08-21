@@ -5,12 +5,13 @@ import json
 import re
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from .model_diagnostics import delete_model_diagnostics
+from .model_diagnostics import delete_model_diagnostics, pin_model_diagnostics_for_failure
 from .paths import DATA_ROOT
 from .runtime_capacity import bounded_env_int, practice_job_max_concurrency
 from .runtime_monitor import model_call_context, model_call_cost_summary
@@ -216,6 +217,7 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         "progress_message": "任务已提交，等待后台处理。",
         "payload": payload,
         "result": None,
+        "failure_context": {},
         "history_id": "",
         "error": "",
         "request_fingerprint": practice_job_fingerprint(operation, payload),
@@ -451,6 +453,26 @@ def list_practice_jobs(limit: int = 100) -> list[dict[str, Any]]:
     return rows
 
 
+def list_practice_jobs_for_batch(batch_id: str) -> list[dict[str, Any]]:
+    """Return every durable step in one workflow, independent of UI pagination."""
+    if not batch_id:
+        return []
+    PRACTICE_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for path in sorted(PRACTICE_JOB_DIR.glob("generation_*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(record.get("practice_batch_id") or "") != batch_id:
+            continue
+        record.pop("payload", None)
+        record.pop("result", None)
+        record.pop("failure_context", None)
+        rows.append(record)
+    return rows
+
+
 def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[str, Any]]) -> None:
     # The durable Huey queue owns task-level concurrency. Claiming is atomic so
     # a duplicate persisted queue message cannot execute or bill the same job
@@ -486,6 +508,10 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             if current.get("status") != "running":
                 return
             if elapsed >= timeout_seconds:
+                try:
+                    pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
+                except Exception:
+                    pinned_model_traces = 0
                 update_practice_job(
                     job_id,
                     expected_status="running",
@@ -493,6 +519,8 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     status="failed",
                     current_stage="failed",
                     error=f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待，可直接重试。",
+                    model_usage=model_call_cost_summary(job_id),
+                    diagnostic_context={"pinned_model_traces": pinned_model_traces},
                     progress_message="任务超时。",
                     health_status="error",
                     warning_reason="后台任务已超过允许等待时间。",
@@ -519,7 +547,12 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
 
     threading.Thread(target=heartbeat, name=f"heartbeat-{job_id}", daemon=True).start()
     try:
-        with model_call_context(task_id=job_id, stage=str(record.get("current_stage") or ""), operation="出题任务"):
+        with model_call_context(
+            task_id=job_id,
+            run_id=job_id,
+            stage=str(record.get("current_stage") or ""),
+            operation="出题任务",
+        ):
             outcome = worker(str(record["operation"]), {**(record.get("payload") or {}), "_job_id": job_id})
             # A timed-out or cancelled task may return from a provider socket
             # later. Never let that stale response overwrite terminal state.
@@ -544,12 +577,26 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             )
     except BaseException as exc:
         if load_practice_job(job_id).get("status") == "running":
+            exception_traceback = traceback.format_exc()
+            try:
+                pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
+            except Exception:
+                pinned_model_traces = 0
+            failure_context = getattr(exc, "failure_context", {})
+            if not isinstance(failure_context, dict):
+                failure_context = {}
             update_practice_job(
                 job_id,
                 expected_status="running",
                 status="failed",
                 current_stage="failed",
                 error=str(exc) or exc.__class__.__name__,
+                failure_context=failure_context,
+                diagnostic_context={
+                    "pinned_model_traces": pinned_model_traces,
+                    "exception_type": exc.__class__.__name__,
+                    "traceback": exception_traceback,
+                },
                 model_usage=model_call_cost_summary(job_id),
                 progress_message="后台任务异常结束。",
                 last_heartbeat_at=_now(),
@@ -581,12 +628,18 @@ def recover_practice_jobs(*, fail_interrupted: bool = True) -> list[dict[str, An
             continue
         recovered.append(record)
         if fail_interrupted:
+            try:
+                pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
+            except Exception:
+                pinned_model_traces = 0
             update_practice_job(
                 job_id,
                 expected_status=str(record.get("status") or ""),
                 status="failed",
                 current_stage="failed",
                 error="服务重启导致任务中断，请重新发起。",
+                model_usage=model_call_cost_summary(job_id),
+                diagnostic_context={"pinned_model_traces": pinned_model_traces},
                 health_status="error",
                 current_operation="任务已中断",
                 warning_reason="服务重启导致任务中断。",

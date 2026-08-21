@@ -40,6 +40,10 @@ class QualityExecutionBudget:
     # oscillate on repeated model judgments in unattended mode.
     max_prefigure_correctness_repair_rounds: int = 1
     reuse_existing_visual_qa: bool = True
+    max_model_calls_per_run: int = 120
+    max_model_tokens_per_run: int = 2_000_000
+    max_model_wall_seconds_per_run: int = 1800
+    provider_failure_circuit_breaker: int = 3
 
     @classmethod
     def from_environment(cls) -> QualityExecutionBudget:
@@ -75,6 +79,18 @@ class QualityExecutionBudget:
                 "QUALITY_ENABLE_POST_CONTENT_SELECTIVE_REVIEW", False
             ),
             reuse_existing_visual_qa=_env_bool("QUALITY_REUSE_VISUAL_QA", True),
+            max_model_calls_per_run=_bounded_env_int(
+                "QUALITY_MAX_MODEL_CALLS_PER_RUN", 120, minimum=10, maximum=500
+            ),
+            max_model_tokens_per_run=_bounded_env_int(
+                "QUALITY_MAX_MODEL_TOKENS_PER_RUN", 2_000_000, minimum=100_000, maximum=20_000_000
+            ),
+            max_model_wall_seconds_per_run=_bounded_env_int(
+                "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", 1800, minimum=300, maximum=7200
+            ),
+            provider_failure_circuit_breaker=_bounded_env_int(
+                "QUALITY_PROVIDER_FAILURE_CIRCUIT_BREAKER", 3, minimum=2, maximum=10
+            ),
         )
 
     def to_dict(self) -> dict[str, int | bool]:

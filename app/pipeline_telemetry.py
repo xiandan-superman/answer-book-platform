@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .task_store import append_event, load_task, update_task_health
 
@@ -27,8 +28,10 @@ class PipelineRunTelemetry:
         status_path: Path,
         quality_governance: dict[str, Any],
         heartbeat_seconds: int = 10,
+        run_id: str = "",
     ) -> None:
         self.task_id = task_id
+        self.run_id = str(run_id or uuid4().hex)
         self.status_path = status_path
         self.heartbeat_seconds = max(1, int(heartbeat_seconds))
         self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -37,6 +40,7 @@ class PipelineRunTelemetry:
         self._heartbeat_finished = threading.Event()
         self.summary: dict[str, Any] = {
             "task_id": task_id,
+            "run_id": self.run_id,
             "telemetry_version": PIPELINE_TELEMETRY_VERSION,
             "started_at": self.started_at,
             "updated_at": self.started_at,

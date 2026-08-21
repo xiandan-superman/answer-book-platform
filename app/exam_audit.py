@@ -12,6 +12,10 @@ EMBEDDED_SECTION_TITLE_RE = re.compile(
     r"(?:^|\n)\s*(?:选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)\s*[（(].*(?:本题|每小题|共|分)"
 )
 EMBEDDED_SUBJECT_TITLE_RE = re.compile(r"(?:^|\n)\s*[“\"]?[^。\n]{2,20}[”\"]?\s*部分\s*$")
+PER_ITEM_TOTAL_SCORE_PATTERNS = (
+    re.compile(r"(?P<each>\d+(?:\.\d+)?)\s*分\s*/\s*小题[^\d]{0,16}共\s*(?P<total>\d+(?:\.\d+)?)\s*分"),
+    re.compile(r"每小题\s*(?P<each>\d+(?:\.\d+)?)\s*分[^\d]{0,16}共\s*(?P<total>\d+(?:\.\d+)?)\s*分"),
+)
 
 
 def _norm(text: str) -> str:
@@ -62,6 +66,21 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
                     issues.append(
                         f"{qid}: parent score {parent_score:g} does not equal subquestion total {child_total:g}"
                     )
+    section_items: dict[str, list[dict]] = {}
+    for item in items:
+        raw_title = str(item.get("extracted_section_raw") or item.get("section_raw") or item.get("section") or "")
+        section_items.setdefault(raw_title, []).append(item)
+    for raw_title, rows in section_items.items():
+        score_match = next((pattern.search(raw_title) for pattern in PER_ITEM_TOTAL_SCORE_PATTERNS if pattern.search(raw_title)), None)
+        if score_match is None:
+            continue
+        each = float(score_match.group("each"))
+        total = float(score_match.group("total"))
+        expected = round(total / each) if each > 0 else 0
+        if expected > 0 and abs(expected * each - total) < 1e-6 and len(rows) != expected:
+            issues.append(
+                f"section item count mismatch: {raw_title} implies {expected} items from {each:g}×{expected}={total:g}, extracted {len(rows)}"
+            )
     source_paragraphs = [str(x) for x in structured_exam.get("source_paragraphs", []) if str(x).strip()]
     source_coverage = {
         "source_paragraph_count": len(source_paragraphs),

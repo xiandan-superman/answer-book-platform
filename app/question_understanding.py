@@ -14,6 +14,7 @@ from .llm_client import LLMError, OpenAICompatibleClient
 from .concurrency import model_request_slot, run_limited_concurrent
 from .question_requirements import answer_figure_required
 from .question_types import question_has_type
+from .runtime_monitor import model_call_context
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text
 
@@ -396,22 +397,60 @@ def build_question_understanding(
         base["uncertainties"].append("题目需要视觉模型，但当前未配置 provider 或 API key，使用本地题面结构化兜底。")
         return base
     active_model = str(model or provider.vision_model)
-    if not provider_model_supports_vision(provider, active_model):
+    vision_models = list(
+        dict.fromkeys(
+            str(candidate).strip()
+            for candidate in (
+                active_model,
+                *(getattr(provider, "vision_model_options", ()) or ()),
+                *(getattr(provider, "model_options", ()) or ()),
+            )
+            if str(candidate).strip() and provider_model_supports_vision(provider, str(candidate).strip())
+        )
+    )
+    if not vision_models:
         base["uncertainties"].append(
             f"题目需要视觉模型，但 {provider.name}/{active_model or '未选择模型'} 未声明图像输入能力。"
         )
         return base
     active_client = client or OpenAICompatibleClient(provider)
-    try:
-        with model_request_slot(provider):
-            visual = active_client.chat_json_object(_vision_prompt(question, base), model=active_model, max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS))
-    except (LLMError, Exception) as exc:
-        base["uncertainties"].append(f"视觉题面解析失败：{str(exc)[:300]}")
-        return base
-    if not isinstance(visual, dict):
-        base["uncertainties"].append("视觉题面解析返回非 JSON object。")
-        return base
-    return _merge_visual_result(base, visual, provider, active_model)
+    failures: list[str] = []
+    for candidate_model in vision_models:
+        try:
+            with model_request_slot(provider):
+                visual = active_client.chat_json_object(
+                    _vision_prompt(question, base),
+                    model=candidate_model,
+                    max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
+                    attempts=1,
+                )
+        except Exception as exc:
+            failures.append(f"{candidate_model}: {str(exc)[:240]}")
+            continue
+        if not isinstance(visual, dict):
+            failures.append(f"{candidate_model}: 返回非 JSON object")
+            continue
+        merged = _merge_visual_result(base, visual, provider, candidate_model)
+        merged["vision_attempts"] = [
+            *({"model": name, "status": "failed", "error": error} for name, error in (
+                (item.split(": ", 1)[0], item.split(": ", 1)[1] if ": " in item else item)
+                for item in failures
+            )),
+            {"model": candidate_model, "status": "succeeded"},
+        ]
+        return merged
+    base["vision_attempts"] = [
+        {
+            "model": item.split(": ", 1)[0],
+            "status": "failed",
+            "error": item.split(": ", 1)[1] if ": " in item else item,
+        }
+        for item in failures
+    ]
+    base["uncertainties"].append(
+        "视觉题面解析在有界模型切换后仍失败：" + "；".join(failures)[:900]
+    )
+    return base
 
 
 def build_question_understandings(
@@ -451,13 +490,15 @@ def build_question_understandings(
     max_workers = question_understanding_worker_count() if len(questions) > 1 else 1
 
     def understand_one(question: dict[str, Any]) -> dict[str, Any]:
-        return build_question_understanding(
-            question,
-            output_dir,
-            provider=provider,
-            model=model,
-            direct_multimodal=direct_multimodal,
-        )
+        active_item = str(question.get("question_id") or question.get("number") or "")
+        with model_call_context(stage="question_understanding", active_item=active_item):
+            return build_question_understanding(
+                question,
+                output_dir,
+                provider=provider,
+                model=model,
+                direct_multimodal=direct_multimodal,
+            )
 
     def record_completion(index: int, question: dict[str, Any], understanding: dict[str, Any]) -> None:
         question["question_understanding"] = understanding

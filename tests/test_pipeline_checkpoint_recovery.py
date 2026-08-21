@@ -11,6 +11,21 @@ sys.path.insert(0, str(ROOT))
 
 
 class PipelineCheckpointRecoveryTests(unittest.TestCase):
+    def test_new_run_resets_all_transient_stage_progress(self) -> None:
+        from app.pipeline import TRANSIENT_PROGRESS_FILES, reset_transient_progress
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            stage = Path(raw_tmp)
+            for name in TRANSIENT_PROGRESS_FILES:
+                (stage / name).write_text('{"completed": 14, "total": 15}', encoding="utf-8")
+            preserved = stage / "answer_fragments.json"
+            preserved.write_text("{}", encoding="utf-8")
+
+            reset_transient_progress(stage)
+
+            self.assertTrue(all(not (stage / name).exists() for name in TRANSIENT_PROGRESS_FILES))
+            self.assertTrue(preserved.exists())
+
     def test_reconciliation_prefers_valid_fragments_over_stale_progress_counter(self) -> None:
         from app.pipeline_checkpoints import reconcile_answer_generation_checkpoint
 

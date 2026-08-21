@@ -411,6 +411,28 @@ def test_blueprint_audit_blocks_cross_source_design_leakage():
 
     assert audit["status"] == "blocked"
     assert any("未绑定来源" in error for error in audit["errors"])
+    assert audit["findings"] == [{
+        "code": "cross_source_design_leak",
+        "item_number": "1",
+        "plan_item_id": "p1",
+        "bound_source_refs": ["distillation"],
+        "design_fields": {
+            "target_skill": "精馏原理",
+            "variation_type": "直接辨析",
+            "design_intent": "考查精馏原理",
+            "difficulty_rationale": "学生容易混淆晶面指数。",
+            "difficulty_levers": "条件直接程度",
+        },
+        "matches": [{
+            "anchor": "晶面指数",
+            "matched_fields": ["difficulty_rationale"],
+            "foreign_sources": [{
+                "source_id": "crystal",
+                "source_title": "晶体",
+                "knowledge_point": "晶面指数标定步骤",
+            }],
+        }],
+    }]
 
 
 def test_mode_contract_blocks_wrong_per_source_question_counts():
@@ -1217,6 +1239,21 @@ def test_normalize_practice_set_assigns_program_owned_fields():
     assert [item["exercise_id"] for item in result["exercises"]] == ["practice_01", "practice_02"]
     assert [item["number"] for item in result["exercises"]] == [1, 2]
     assert result["quality"]["status"] == "passed"
+
+
+def test_normalize_practice_set_preserves_comprehensive_knowledge_point_contract():
+    points = [f"知识点{i}" for i in range(1, 15)]
+    result = normalize_practice_set(
+        {
+            "exercises": [
+                _exercise(plan_item_id="plan_item_01", knowledge_points=points)
+            ]
+        },
+        requested_count=1,
+        subject="材料科学",
+    )
+
+    assert result["exercises"][0]["knowledge_points"] == points
 
 
 def test_normalize_practice_set_repairs_bare_braced_latex_before_results_are_saved():

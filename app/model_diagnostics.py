@@ -278,6 +278,29 @@ def _enforce_limits(task_id: str) -> None:
             _remove_orphan_attachments(root)
 
 
+def pin_model_diagnostics_for_failure(task_id: str, limit: int = 4) -> int:
+    """Protect the most recent successful calls when their enclosing task later fails.
+
+    A provider call can succeed while a deterministic post-call gate rejects its
+    result. Renaming a few traces into the failure-retention class keeps that
+    evidence available without changing the recorded provider-call outcome.
+    """
+    root = MODEL_DIAGNOSTICS_DIR / _safe_id(task_id)
+    with _LOCK:
+        candidates = [path for path in reversed(_trace_files(root)) if "-ok-" in path.name]
+        pinned = 0
+        for path in candidates[:max(0, int(limit))]:
+            target = path.with_name(path.name.replace("-ok-", "-failed-outer-", 1))
+            try:
+                path.replace(target)
+            except OSError:
+                continue
+            pinned += 1
+        if pinned:
+            _enforce_limits(task_id)
+        return pinned
+
+
 def relevant_model_diagnostics(task_id: str, active_item: str = "", limit: int = 24) -> list[dict[str, Any]]:
     root = MODEL_DIAGNOSTICS_DIR / _safe_id(task_id)
     candidates = _trace_files(root)

@@ -40,6 +40,19 @@ def parse_time(value: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
+def display_local_time(value: Any, target_timezone: Any = None) -> str:
+    """Format an ISO timestamp for people while keeping stored timestamps unchanged."""
+    raw = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        local = parsed.astimezone(target_timezone)
+    except ValueError:
+        return raw or "未知时间"
+    return f"{local.year}年{local.month}月{local.day}日 {local:%H:%M}"
+
+
 def default_root() -> Path:
     if os.sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "Answer Book Support Receiver"
@@ -131,6 +144,45 @@ def issue_summary(manifest: dict[str, Any]) -> str:
     ) or "用户问题反馈"
 
 
+def issue_display_summary(row: dict[str, Any] | sqlite3.Row) -> str:
+    """Render from the latest manifest so records created by older receivers are upgraded in place."""
+    manifest = issue_manifest(row)
+    summary = issue_summary(manifest)
+    if summary != "用户问题反馈":
+        return summary
+    try:
+        return str(row["summary"] or "用户问题反馈")
+    except (KeyError, IndexError):
+        return "用户问题反馈"
+
+
+def diagnostic_score(manifest: dict[str, Any]) -> int:
+    """Prefer the duplicate occurrence that retained the most diagnostic evidence."""
+    coverage = manifest.get("diagnostic_coverage") if isinstance(manifest.get("diagnostic_coverage"), dict) else {}
+    available = coverage.get("available") if isinstance(coverage.get("available"), dict) else {}
+    legacy_counts = manifest.get("counts") if isinstance(manifest.get("counts"), dict) else {}
+    counts = coverage.get("counts") if isinstance(coverage.get("counts"), dict) else legacy_counts
+    missing = coverage.get("missing_expected_evidence") if isinstance(coverage.get("missing_expected_evidence"), list) else []
+    weights = {
+        "failure_context": 120,
+        "failure_diagnostic": 100,
+        "model_diagnostics": 80,
+        "task_lifecycle": 30,
+        "backend_error_traces": 25,
+        "runtime_context": 20,
+        "model_call_summary": 15,
+        "user_feedback": 10,
+    }
+    score = sum(weight for key, weight in weights.items() if available.get(key))
+    score += min(20, int(counts.get("model_traces") or 0)) * 4
+    score += min(40, int(counts.get("lifecycle_events") or 0))
+    score += min(20, int(counts.get("backend_error_traces") or 0))
+    score += min(20, int(counts.get("runtime_events") or 0))
+    score += min(20, int(counts.get("frontend_events") or 0)) // 4
+    score -= len(missing) * 20
+    return score
+
+
 def issue_task_metadata(manifest: dict[str, Any]) -> str:
     context = manifest_context(manifest)
     task_id = str(context.get("task_id") or "").strip()
@@ -147,6 +199,15 @@ def issue_task_metadata(manifest: dict[str, Any]) -> str:
     if report_group:
         parts.append(f"反馈批次：{report_group[:12]}")
     return " · ".join(parts)
+
+
+def codex_triage_prompt(report_id: Any) -> str:
+    identifier = str(report_id or "").strip()
+    return (
+        f"请排查反馈 {identifier}。在 answer-book-platform 项目目录运行 "
+        f"python3 scripts/inspect_support_report.py {identifier}，"
+        "直接读取脚本输出的本地诊断文件，不要使用浏览器页面作为排查依据。"
+    )
 
 
 class Inbox:
@@ -222,10 +283,20 @@ class Inbox:
             devices[device] = int(devices.get(device) or 0) + 1
             duplicate_content = bool(previous and previous["bundle_sha256"] == sha256 and target.is_file())
             canonical_id = str(previous["report_id"]) if previous else incoming_report_id
-            if not duplicate_content:
+            previous_manifest = issue_manifest(previous) if previous else {}
+            preserved_richer_bundle = bool(
+                previous
+                and target.is_file()
+                and diagnostic_score(previous_manifest) > diagnostic_score(manifest)
+            )
+            bundle_replaced = not duplicate_content and not preserved_richer_bundle
+            if bundle_replaced:
                 os.replace(temp_path, target)
             else:
                 temp_path.unlink(missing_ok=True)
+            selected_manifest = previous_manifest if preserved_richer_bundle else manifest
+            selected_summary = issue_summary(selected_manifest)
+            selected_sha256 = str(previous["bundle_sha256"]) if preserved_richer_bundle else sha256
             if previous:
                 status = "open" if previous["status"] == "resolved" else str(previous["status"])
                 connection.execute(
@@ -235,9 +306,9 @@ class Inbox:
                     WHERE fingerprint=?
                     """,
                     (
-                        status, summary, received_at, json.dumps(versions, ensure_ascii=False), json.dumps(devices, ensure_ascii=False),
-                        str(target) if target.exists() else str(previous["bundle_path"]), sha256 if target.exists() else str(previous["bundle_sha256"]),
-                        target.stat().st_size if target.exists() else int(previous["bundle_size"]), json.dumps(manifest, ensure_ascii=False), fingerprint,
+                        status, selected_summary, received_at, json.dumps(versions, ensure_ascii=False), json.dumps(devices, ensure_ascii=False),
+                        str(target) if target.exists() else str(previous["bundle_path"]), selected_sha256 if target.exists() else str(previous["bundle_sha256"]),
+                        target.stat().st_size if target.exists() else int(previous["bundle_size"]), json.dumps(selected_manifest, ensure_ascii=False), fingerprint,
                     ),
                 )
             else:
@@ -257,7 +328,13 @@ class Inbox:
                 (incoming_report_id, fingerprint, sha256, received_at),
             )
         self.cleanup()
-        return {"report_id": canonical_id, "duplicate": bool(previous), "duplicate_content": duplicate_content}
+        return {
+            "report_id": canonical_id,
+            "duplicate": bool(previous),
+            "duplicate_content": duplicate_content,
+            "bundle_replaced": bundle_replaced,
+            "preserved_richer_bundle": preserved_richer_bundle,
+        }
 
     def list_issues(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -270,6 +347,19 @@ class Inbox:
     def issue(self, fingerprint: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM issues WHERE fingerprint = ?", (fingerprint,)).fetchone()
+        return dict(row) if row else None
+
+    def issue_by_report_id(self, report_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT i.* FROM issues i
+                WHERE i.report_id = ?
+                   OR i.fingerprint = (SELECT fingerprint FROM receipts WHERE report_id = ? LIMIT 1)
+                LIMIT 1
+                """,
+                (report_id, report_id),
+            ).fetchone()
         return dict(row) if row else None
 
     def set_status(self, fingerprint: str, status: str) -> bool:
@@ -545,16 +635,19 @@ class AdminHandler(BaseHTTPRequestHandler):
             cards = []
             for row in rows:
                 manifest = issue_manifest(row)
+                summary = issue_display_summary(row)
                 task_metadata = issue_task_metadata(manifest)
+                codex_prompt = html.escape(codex_triage_prompt(row["report_id"]), quote=True)
                 status_label = "待处理" if row["status"] == "open" else "已处理"
                 raw_state = f"诊断包 {round(int(row['bundle_size'] or 0) / 1024)} KiB" if row["bundle_path"] else "原始包已清理"
                 cards.append(f"""
                 <article class="issue {html.escape(row['status'])}">
                   <header><a href="/issues/{quote(row['fingerprint'])}">{html.escape(row['report_id'])}</a><span>{status_label}</span></header>
-                  <p>{html.escape(row['summary'])}</p>
+                  <p>{html.escape(summary)}</p>
                   {f'<div class="task-meta">{html.escape(task_metadata)}</div>' if task_metadata else ''}
-                  <small>出现 {row['occurrence_count']} 次 · 最近 {html.escape(row['last_seen'])} · {raw_state}</small>
+                  <small>出现 {row['occurrence_count']} 次 · 最近：{html.escape(display_local_time(row['last_seen']))} · {raw_state}</small>
                   <form method="post" action="/issues/{quote(row['fingerprint'])}/{'resolve' if row['status'] == 'open' else 'reopen'}"><button>{'标记已处理' if row['status'] == 'open' else '重新打开'}</button></form>
+                  <button type="button" class="secondary" data-codex-prompt="{codex_prompt}" onclick="copyCodexPrompt(this)">复制给 Codex 排查</button>
                 </article>""")
             navigation = '<p class="pagination">'
             if offset:
@@ -571,9 +664,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self.send_html(page("未找到", "<p>问题不存在。</p>"), 404)
                 return
             manifest = issue_manifest(row)
+            summary = issue_display_summary(row)
             task_metadata = issue_task_metadata(manifest)
+            codex_prompt = html.escape(codex_triage_prompt(row["report_id"]), quote=True)
             sections = [
-                f"<h2>{html.escape(row['report_id'])}</h2><p>{html.escape(row['summary'])}</p>"
+                f"<h2>{html.escape(row['report_id'])}</h2><p>{html.escape(summary)}</p>"
                 + (f'<div class="task-meta">{html.escape(task_metadata)}</div>' if task_metadata else "")
             ]
             bundle = Path(str(row["bundle_path"] or ""))
@@ -593,6 +688,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 sections.append(f'<p><a href="/issues/{quote(row["fingerprint"])}/download">下载原始诊断包</a></p>')
             sections.append(f"""
               <form method="post" action="/issues/{quote(row['fingerprint'])}/{'resolve' if row['status'] == 'open' else 'reopen'}"><button>{'标记已处理' if row['status'] == 'open' else '重新打开'}</button></form>
+              <button type="button" class="secondary" data-codex-prompt="{codex_prompt}" onclick="copyCodexPrompt(this)">复制给 Codex 排查</button>
               <form method="post" action="/issues/{quote(row['fingerprint'])}/delete" onsubmit="return confirm('确定永久删除？')"><button class="danger">永久删除</button></form>
             """)
             self.send_html(page(row["report_id"], "".join(sections)))
@@ -635,9 +731,22 @@ def page(title: str, content: str) -> str:
     nav{{margin-bottom:24px}}nav a,a{{color:#1769aa}}.issue{{background:white;border:1px solid #dde2ea;border-radius:12px;padding:18px;margin:12px 0}}
     .issue header{{display:flex;justify-content:space-between;font-weight:700}}.issue.resolved{{opacity:.72}}small{{color:#637083}}
     .task-meta{{margin:6px 0 10px;padding:8px 10px;border-radius:7px;background:#eef5ff;color:#234a78;font-size:13px;word-break:break-all}}
-    form{{display:inline-block;margin:10px 8px 0 0}}button{{padding:7px 12px;border:0;border-radius:7px;background:#1769aa;color:white;cursor:pointer}}button.danger{{background:#b42318}}
+    form{{display:inline-block;margin:10px 8px 0 0}}button{{padding:7px 12px;border:0;border-radius:7px;background:#1769aa;color:white;cursor:pointer}}button.secondary{{margin:10px 8px 0 0;background:#475569}}button.danger{{background:#b42318}}
     details{{background:white;border:1px solid #dde2ea;border-radius:10px;margin:12px 0;padding:12px}}pre{{white-space:pre-wrap;word-break:break-word;max-height:520px;overflow:auto}}
-    </style><body><nav><a href="/">← 问题列表</a></nav><h1>{html.escape(title)}</h1>{content}</body></html>"""
+    </style><body><nav><a href="/">← 问题列表</a></nav><h1>{html.escape(title)}</h1>{content}
+    <script>
+    async function copyCodexPrompt(button) {{
+      const promptText = button.dataset.codexPrompt || "";
+      try {{
+        await navigator.clipboard.writeText(promptText);
+        const original = button.textContent;
+        button.textContent = "已复制，直接发给 Codex";
+        setTimeout(() => {{ button.textContent = original; }}, 1800);
+      }} catch (_error) {{
+        window.prompt("复制下面的排查指令", promptText);
+      }}
+    }}
+    </script></body></html>"""
 
 
 def ensure_token(path: Path, explicit: str = "") -> str:

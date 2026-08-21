@@ -95,3 +95,32 @@ def test_invalid_upload_does_not_create_a_task(tmp_path: Path, monkeypatch) -> N
     else:
         raise AssertionError("无效文件应被拒绝")
     assert not (tmp_path / "tasks").exists()
+
+
+def test_apply_failure_is_persisted_for_support_feedback(tmp_path: Path, monkeypatch) -> None:
+    _configure_storage(tmp_path, monkeypatch)
+    content = _docx_bytes(tmp_path / "input.docx")
+    created = word_format_tasks.create_word_format_task({
+        "filename": "示例答案.docx",
+        "content_base64": base64.b64encode(content).decode("ascii"),
+        "profile": "answer",
+        "mode": "review",
+    })
+
+    def fail_repair(*_args, **_kwargs):
+        raise RuntimeError("分页规则冲突")
+
+    monkeypatch.setattr(word_format_tasks, "repair_docx", fail_repair)
+    try:
+        word_format_tasks.apply_word_format_task(created["task_id"])
+    except ValueError as exc:
+        assert "分页规则冲突" in str(exc)
+    else:
+        raise AssertionError("格式修改失败应抛出错误")
+
+    record = word_format_tasks._load_record(created["task_id"])
+    listed = word_format_tasks.list_word_format_tasks()[0]
+    assert record["status"] == "failed"
+    assert record["diagnostic_context"]["exception_type"] == "RuntimeError"
+    assert "分页规则冲突" in record["diagnostic_context"]["traceback"]
+    assert "分页规则冲突" in listed["error"]

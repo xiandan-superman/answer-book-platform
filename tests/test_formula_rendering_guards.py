@@ -14,13 +14,18 @@ from app.docx_audit import (
     math_node_has_empty_delimiter_character,
     math_node_has_empty_delimiter_slots,
 )
-from app.docx_v4 import build_docx_from_fragments
+from app.docx_v4 import _answer_summary_formula_candidates, build_docx_from_fragments
 from app.expression_normalization import normalize_control_word_boundaries
 from app.final_acceptance import build_final_acceptance_report
 from app.omml import FormulaConversionError, normalize_latex, omml_from_latex
 
 
 class FormulaRenderingGuardTests(unittest.TestCase):
+    def test_unicode_large_operator_with_subscript_is_promoted_to_latex(self) -> None:
+        candidates = _answer_summary_formula_candidates("答案中的 ∑_B 需要保留。")
+
+        self.assertEqual([r"\sum_{B}"], [latex for _start, _end, latex in candidates])
+
     def test_cases_environment_allows_intentionally_invisible_right_delimiter(self) -> None:
         latex = (
             r"F_{HKL}=\begin{cases}"

@@ -33,15 +33,23 @@ def test_practice_job_is_visible_while_running_and_persists_result(tmp_path, mon
 
 def test_practice_job_records_worker_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(practice_jobs, "pin_model_diagnostics_for_failure", lambda _job_id: 2)
     created = practice_jobs.create_practice_job("plan", {"source_mode": "exam"})
 
     def fail(_operation, _payload):
-        raise RuntimeError("模型连接失败")
+        error = RuntimeError("模型连接失败")
+        error.failure_context = {"failure_type": "blueprint_audit", "blueprint": {"exercise_plan": [1]}}
+        raise error
 
     practice_jobs.run_practice_job(created["job_id"], fail)
     failed = practice_jobs.load_practice_job(created["job_id"])
     assert failed["status"] == "failed"
     assert failed["error"] == "模型连接失败"
+    assert failed["failure_context"]["failure_type"] == "blueprint_audit"
+    assert failed["failure_context"]["blueprint"]["exercise_plan"] == [1]
+    assert failed["diagnostic_context"]["pinned_model_traces"] == 2
+    assert failed["diagnostic_context"]["exception_type"] == "RuntimeError"
+    assert "raise error" in failed["diagnostic_context"]["traceback"]
 
 
 def test_interrupted_jobs_can_be_requeued_after_server_restart(tmp_path, monkeypatch):

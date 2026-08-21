@@ -12,6 +12,20 @@ from app.exam_extract import IMAGE_MARKER_PREFIX, _subquestion_entry, question_i
 
 
 class ExamExtractTests(unittest.TestCase):
+    def test_inline_numbered_term_explanations_are_split_into_individual_items(self) -> None:
+        section = split_sections(
+            [
+                "一、名词解释（5分/小题，共30分）",
+                "1、再结晶温度 2、相平衡条件 3、上坡扩散 4、空间点阵",
+                "5、堆垛层错 6、临界分切应力",
+            ]
+        )[0]
+
+        items = question_items(section)
+
+        self.assertEqual(["1", "2", "3", "4", "5", "6"], [item["number"] for item in items])
+        self.assertEqual("临界分切应力", items[-1]["stem"])
+
     def test_unknown_subject_heading_is_detected_by_document_structure(self) -> None:
         sections = split_sections(
             [

@@ -99,6 +99,8 @@ class PracticeExportJobTests(unittest.TestCase):
 
         self.assertEqual("failed", failed["status"])
         self.assertIn("未通过完整性校验", failed["error"])
+        self.assertEqual("ValueError", failed["diagnostic_context"]["exception_type"])
+        self.assertIn("未通过完整性校验", failed["diagnostic_context"]["traceback"])
         self.assertEqual([], cached_files)
 
     def test_repeated_export_clicks_share_one_active_build(self) -> None:

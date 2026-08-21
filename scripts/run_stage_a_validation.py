@@ -48,6 +48,7 @@ AB_ROOT = ANALYSIS_ROOT / ".abtest" / "vnext_ab"
 DEFAULT_OUTPUT_DIR = ROOT / "validation" / "vnext_r3_1_stage_a_20260820"
 P202_TASK = ROOT / "tasks" / "结构重复测试_苯蒸发三小问_20260820_121818"
 P204_TASK = ROOT / "tasks" / "体心立方有序化_XRD_20260820_123309"
+HISTORICAL_REPLAY_FIXTURE = ROOT / "tests" / "fixtures" / "stage_a_historical_replays.json"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -209,17 +210,28 @@ def p204_replays() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 
 
 def historical_replays() -> list[dict[str, Any]]:
+    fixture = read_json(HISTORICAL_REPLAY_FIXTURE)
     cases = [
-        ("V3-A-r2", "识图题（R2 历史产物）", AB_ROOT / "version_r2/tasks/识图题_20260819_183539/stage_outputs"),
-        ("V3-C-r2", "五题型集成（R2 历史产物）", AB_ROOT / "version_r2/tasks/抽题流程测试_覆盖题型_20260819_185638/stage_outputs"),
-        ("V4-A-r3", "识图题（R3 历史产物）", AB_ROOT / "version_r3/tasks/识图题_20260820_103936/stage_outputs"),
-        ("V4-C-r3", "五题型集成（R3 历史产物）", AB_ROOT / "version_r3/tasks/抽题流程测试_覆盖题型_20260820_103938/stage_outputs"),
+        ("V3-A-r2", "识图题（R2 历史合同快照）", "clean"),
+        ("V3-C-r2", "五题型集成（R2 历史缺陷快照）", "contained_calculation_error"),
+        ("V4-A-r3", "识图题（R3 历史合同快照）", "clean"),
+        ("V4-C-r3", "五题型集成（R3 历史缺陷快照）", "contained_calculation_error"),
     ]
     results: list[dict[str, Any]] = []
-    for case_id, name, stage in cases:
-        report, deterministic, replay_hash = replay_twice(lambda stage=stage: content_replay(stage))
-        acceptance_path = stage / "final_acceptance_report.json"
-        acceptance = read_json(acceptance_path) if acceptance_path.is_file() else {}
+    for case_id, name, fixture_key in cases:
+        case = fixture.get(fixture_key) if isinstance(fixture.get(fixture_key), dict) else {}
+
+        def replay_case(case=case) -> dict[str, Any]:
+            return audit_content_quality(
+                copy.deepcopy(case.get("structured_exam") or {}),
+                copy.deepcopy(case.get("answer_fragments") or {}),
+                copy.deepcopy(case.get("answer_drafts") or {}),
+                copy.deepcopy(case.get("evidence_selection") or {}),
+                active_figure_specs_data=copy.deepcopy(case.get("figure_specs") or {"figures": []}),
+            )
+
+        report, deterministic, replay_hash = replay_twice(replay_case)
+        acceptance = case.get("final_acceptance") if isinstance(case.get("final_acceptance"), dict) else {}
         formal_acceptance_passed = bool(acceptance.get("formal_acceptance_passed")) if acceptance else False
         detected_issue_codes = issue_codes(report)
         # A historical fixture can be intentionally dirty.  The replay passes
@@ -244,7 +256,7 @@ def historical_replays() -> list[dict[str, Any]]:
             }
         )
     for variant in ("r2", "v1"):
-        payload = read_json(AB_ROOT / f"results/V3G_{variant}.json")
+        payload = (fixture.get("cancellation") or {}).get(variant) or {}
         results.append(
             {
                 "id": f"V3-G-{variant}",

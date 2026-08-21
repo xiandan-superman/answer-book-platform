@@ -67,6 +67,9 @@ REACTION_SUMMARY_RE = re.compile(
     rf"(?:{SCRIPTED_ATOM_RE}|{CHEM_SUBSCRIPT_RE})(?:\s*(?:[+→⇌])\s*(?:{SCRIPTED_ATOM_RE}|{CHEM_SUBSCRIPT_RE}))+"
 )
 SCRIPTED_SUMMARY_RE = re.compile(SCRIPTED_ATOM_RE)
+UNICODE_LARGE_OPERATOR_RE = re.compile(
+    rf"(?<![A-Za-z0-9])(?P<operator>[∑ΣΠ])(?:_(?:\{{(?P<braced>[A-Za-z0-9{GREEK_CHARS},]+)\}}|(?P<plain>[A-Za-z0-9{GREEK_CHARS}]+)))?"
+)
 CRYSTALLOGRAPHIC_LATEX_ATOM_RE = r"(?:[A-Za-z0-9]+|\\(?:bar|overline)\{[A-Za-z0-9+-]+\})"
 CRYSTALLOGRAPHIC_LATEX_RE = re.compile(
     rf"(?:\(\{{?|\[\{{?|<\{{?|\{{)"
@@ -490,6 +493,11 @@ def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
         candidates.append((match.start(), match.end(), _latex_symbolic_equation(match)))
     for match in EQUATION_SUMMARY_RE.finditer(text):
         candidates.append((match.start(), match.end(), _latex_equation(match)))
+    for match in UNICODE_LARGE_OPERATOR_RE.finditer(text):
+        operator = r"\prod" if match.group("operator") == "Π" else r"\sum"
+        subscript = match.group("braced") or match.group("plain") or ""
+        latex = operator + (rf"_{{{_latex_symbol(subscript)}}}" if subscript else "")
+        candidates.append((match.start(), match.end(), latex))
     for match in SCRIPTED_SUMMARY_RE.finditer(text):
         candidates.append((match.start(), match.end(), _latex_atom(match.group(0))))
     candidates.extend(_crystallographic_formula_candidates(text))

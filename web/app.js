@@ -1444,6 +1444,8 @@ function taskSupportContext(task = {}, reportGroupId = "") {
   const taskId = String(task.task_id || "");
   return {
     task_id: taskId,
+    question_id: "",
+    exercise_index: null,
     job_id: task.is_generation_job ? taskId : "",
     history_id: task.is_generation_task && !task.is_generation_job ? taskId : "",
     task_kind: String(task.task_kind || ""),
@@ -1454,7 +1456,8 @@ function taskSupportContext(task = {}, reportGroupId = "") {
     task_model: String(task.model_label || task.answer_model || task.model || ""),
     task_model_label: shortTaskModelName(task.model_label || task.answer_model || task.model || "", task.provider),
     practice_batch_id: String(task.practice_batch_id || ""),
-    report_group_id: reportGroupId
+    report_group_id: reportGroupId,
+    task_run_started_at: String(task.run_started_at || task.started_at || task.created_at || "")
   };
 }
 
@@ -1506,7 +1509,30 @@ function dismissFailedTaskFeedback() {
 }
 
 async function submitTaskSupportFeedback(task, button = null) {
-  const result = await submitSupportFeedback("task", taskSupportContext(task), button);
+  const status = taskDisplayStatus(task);
+  const failed = status === "failed";
+  let feedbackNote = "";
+  if (!failed) {
+    feedbackNote = await platformPrompt({
+      eyebrow: task.is_format_task ? "Word 与格式反馈" : "任务质量反馈",
+      title: task.is_format_task ? "说明 Word 或排版问题" : "说明结果哪里需要改进",
+      message: task.is_format_task
+        ? "任务显示成功也可以反馈。请说明下载、排版、公式、图片、分页或格式上的问题。"
+        : "任务显示成功也可以反馈。可说明题目质量、答案内容、模型表现、Word 导出或使用体验问题。",
+      inputLabel: "问题描述（选填）",
+      placeholder: "例如：Word 中第 3 题图片缺失；题目难度与选择不一致；答案解释不充分",
+      confirmText: "提交反馈"
+    });
+    if (feedbackNote === null) return null;
+  }
+  const feedbackKind = failed
+    ? "task_failure"
+    : (task.is_format_task ? "word_format_quality" : "completed_task_quality");
+  const result = await submitSupportFeedback("task", {
+    ...taskSupportContext(task),
+    feedback_kind: feedbackKind,
+    feedback_note: feedbackNote,
+  }, button);
   if (result) {
     rememberFailedTaskFeedback(task, result.report_id);
     renderTaskManager();
@@ -8531,18 +8557,20 @@ function taskManagerActions(task = {}, reviewPending = false) {
     add(caps.retry && !caps.reopen_review, "retry-exam", "green-action", "fas fa-rotate", "从检查点重跑");
     add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
   }
-  if (taskDisplayStatus(task) === "failed") {
+  const feedbackStatus = taskDisplayStatus(task);
+  if (["failed", "completed", "completed_with_issues"].includes(feedbackStatus)) {
     const reported = failedTaskFeedbackReported(task);
+    const lockReportedFailure = feedbackStatus === "failed" && reported;
     actions.splice(Math.min(1, actions.length), 0, [
-      reported ? "support-task-reported" : "support-task",
-      reported ? "gray-action" : "blue-action",
-      reported ? "fas fa-check" : "fas fa-bug",
-      reported ? "已反馈" : "反馈此任务",
-      reported,
+      lockReportedFailure ? "support-task-reported" : "support-task",
+      lockReportedFailure ? "gray-action" : "blue-action",
+      lockReportedFailure ? "fas fa-check" : "fas fa-comment-dots",
+      lockReportedFailure ? "已反馈" : (reported ? "再次反馈" : (feedbackStatus === "failed" ? "反馈此任务" : "反馈质量")),
+      lockReportedFailure,
     ]);
   }
   return actions
-    .slice(0, 4)
+    .slice(0, 5)
     .map(([action, color, icon, label, disabled = false]) => `<button type="button" class="task-card-button ${color}" data-action="${action}"${disabled ? " disabled" : ""}><i class="${icon}"></i>${label}</button>`)
     .join("");
 }

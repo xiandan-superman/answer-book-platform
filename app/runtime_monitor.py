@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .concurrency import model_request_context, model_request_snapshot
+from .capabilities.quality_budget import QualityExecutionBudget
 from .paths import DATA_ROOT, LOGS_DIR, PROJECT_ROOT, TASKS_DIR, ensure_project_dirs
 from .resource_ids import bounded_resource_path
 from .task_store import list_tasks, load_task
@@ -34,6 +35,7 @@ _MODEL_LOCK = threading.RLock()
 _MODEL_ACTIVE: dict[str, dict[str, Any]] = {}
 _MODEL_HISTORY: deque[dict[str, Any]] = deque(maxlen=240)
 _MODEL_SEQUENCE = 0
+_RUN_MODEL_BUDGETS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _now() -> str:
@@ -150,9 +152,28 @@ def model_call_cost_summary(task_id: str) -> dict[str, Any]:
 
 
 @contextmanager
-def model_call_context(*, task_id: str = "", stage: str = "", operation: str = "", active_item: str = "") -> Iterator[None]:
+def model_call_context(
+    *,
+    task_id: str = "",
+    run_id: str = "",
+    stage: str = "",
+    operation: str = "",
+    active_item: str = "",
+) -> Iterator[None]:
     current = dict(_MODEL_CALL_CONTEXT.get() or {})
-    current.update({key: value for key, value in {"task_id": task_id, "stage": stage, "operation": operation, "active_item": active_item}.items() if value})
+    current.update(
+        {
+            key: value
+            for key, value in {
+                "task_id": task_id,
+                "run_id": run_id,
+                "stage": stage,
+                "operation": operation,
+                "active_item": active_item,
+            }.items()
+            if value
+        }
+    )
     token = _MODEL_CALL_CONTEXT.set(current)
 
     def ensure_task_is_active() -> None:
@@ -240,14 +261,57 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
     global _MODEL_SEQUENCE
     started = time.monotonic()
     context = dict(_MODEL_CALL_CONTEXT.get() or {})
-    if context.get("task_id") and not context.get("stage"):
+    if context.get("task_id") and (not context.get("stage") or not context.get("active_item")):
         try:
-            task = load_task(str(context["task_id"]))
-            context["stage"] = task.current_stage
-            context.setdefault("active_item", task.active_item)
+            context_task_id = str(context["task_id"])
+            if context_task_id.startswith("generation_"):
+                from .practice_jobs import load_practice_job
+
+                task = load_practice_job(context_task_id)
+                context.setdefault("stage", str(task.get("current_stage") or ""))
+                context.setdefault("active_item", str(task.get("active_item") or ""))
+            else:
+                task = load_task(context_task_id)
+                context.setdefault("stage", task.current_stage)
+                context.setdefault("active_item", task.active_item)
         except Exception:
             pass
+    budget_key = (str(context.get("task_id") or ""), str(context.get("run_id") or ""))
+    budget: QualityExecutionBudget | None = None
     with _MODEL_LOCK:
+        if all(budget_key):
+            budget = QualityExecutionBudget.from_environment()
+            state = _RUN_MODEL_BUDGETS.setdefault(
+                budget_key,
+                {
+                    "started_monotonic": time.monotonic(),
+                    "call_count": 0,
+                    "token_count": 0,
+                    "provider_failures": {},
+                },
+            )
+            elapsed = max(0.0, time.monotonic() - float(state["started_monotonic"]))
+            provider_failures = int((state.get("provider_failures") or {}).get(provider, 0) or 0)
+            exhausted_reason = ""
+            if int(state["call_count"]) >= budget.max_model_calls_per_run:
+                exhausted_reason = f"model call budget exhausted ({budget.max_model_calls_per_run})"
+            elif int(state["token_count"]) >= budget.max_model_tokens_per_run:
+                exhausted_reason = f"model token budget exhausted ({budget.max_model_tokens_per_run})"
+            elif elapsed >= budget.max_model_wall_seconds_per_run:
+                exhausted_reason = f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)"
+            elif provider_failures >= budget.provider_failure_circuit_breaker:
+                exhausted_reason = (
+                    f"provider circuit breaker open for {provider} after {provider_failures} consecutive failures"
+                )
+            if exhausted_reason:
+                append_runtime_log(
+                    "model_budget",
+                    exhausted_reason,
+                    level="warning",
+                    payload={"task_id": budget_key[0], "run_id": budget_key[1], "provider": provider},
+                )
+                raise RuntimeError(exhausted_reason)
+            state["call_count"] = int(state["call_count"]) + 1
         _MODEL_SEQUENCE += 1
         call_id = str(_MODEL_SEQUENCE)
         record = {
@@ -256,6 +320,7 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
             "model": _safe_text(model, 160),
             "purpose": _safe_text(purpose, 80),
             "task_id": _safe_text(context.get("task_id"), 120),
+            "run_id": _safe_text(context.get("run_id"), 120),
             "stage": _safe_text(context.get("stage"), 80),
             "operation": _safe_text(context.get("operation"), 120),
             "active_item": _safe_text(context.get("active_item"), 120),
@@ -285,6 +350,22 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
             }
             _MODEL_HISTORY.append(final_record)
             _append_model_ledger(final_record)
+            if budget is not None and all(budget_key):
+                state = _RUN_MODEL_BUDGETS.get(budget_key)
+                if state is not None:
+                    token_value = record.get("total_tokens")
+                    if not isinstance(token_value, (int, float)):
+                        token_value = int(record.get("prompt_tokens") or 0) + int(record.get("completion_tokens") or 0)
+                    state["token_count"] = int(state.get("token_count") or 0) + int(token_value or 0)
+                    failures = dict(state.get("provider_failures") or {})
+                    failures[provider] = 0 if outcome == "succeeded" else int(failures.get(provider, 0) or 0) + 1
+                    state["provider_failures"] = failures
+                if len(_RUN_MODEL_BUDGETS) > 200:
+                    oldest_key = min(
+                        _RUN_MODEL_BUDGETS,
+                        key=lambda key: float(_RUN_MODEL_BUDGETS[key].get("started_monotonic") or 0),
+                    )
+                    _RUN_MODEL_BUDGETS.pop(oldest_key, None)
 
 
 def model_call_summary() -> dict[str, Any]:

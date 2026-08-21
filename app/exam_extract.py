@@ -21,6 +21,7 @@ SECTION_RE = re.compile(
     rf"^([一二三四五六七八九十]+)(?:\s*、\s*|\s*[.．]\s*(?={SECTION_TITLE_PREFIX})|\s+(?={SECTION_TITLE_PREFIX}))(.*)"
 )
 ITEM_RE = re.compile(r"^(\d{1,2})([、.．])\s*(.*)")
+INLINE_ITEM_MARKER_RE = re.compile(r"(?<!\d)(\d{1,2})([、．]|\.(?!\d))\s*")
 MULTIPART_CUE_RE = re.compile(
     r"(回答下列|回答以下|完成下列|完成以下|按要求|分别|逐项|各小问|小问|问题|如下|试求|计算下列|求下列|试述下列|说明下列|分析下列|作图|画出|绘制)"
 )
@@ -397,6 +398,8 @@ def section_kind(raw_title: str, body: list[str]) -> tuple[str, str]:
         return "判断题", "judge"
     if "填空" in raw_title:
         return "填空题", "fill"
+    if "名词解释" in raw_title or "名解" in raw_title:
+        return "名词解释", "qa"
     if "计算" in raw_title:
         return "计算题", "calc"
     if "简答" in raw_title:
@@ -408,6 +411,8 @@ def section_kind(raw_title: str, body: list[str]) -> tuple[str, str]:
         return "选择题", "choice"
     if "填空" in text:
         return "填空题", "fill"
+    if "名词解释" in text or "名解" in text:
+        return "名词解释", "qa"
     if "计算" in text:
         return "计算题", "calc"
     if "简答" in text:
@@ -677,12 +682,35 @@ def _looks_like_subquestion(current: dict, number: int, delimiter: str, text: st
     return number == last_number + 1
 
 
+def _split_inline_numbered_items(line: str) -> list[str]:
+    """Split compact enumerations such as ``1、术语 2、术语``.
+
+    This is intentionally used only in term-explanation sections; applying it
+    to arbitrary calculation stems would confuse decimal values with item
+    markers.
+    """
+
+    value = clean_text(line)
+    matches = list(INLINE_ITEM_MARKER_RE.finditer(value))
+    if len(matches) < 2 or matches[0].start() != 0:
+        return [value]
+    rows: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+        stem = clean_text(value[match.end() : end])
+        if stem:
+            rows.append(f"{match.group(1)}{match.group(2)} {stem}")
+    return rows or [value]
+
+
 def question_items(section: dict) -> list[dict]:
     major_no = int(section.get("major_no") or cn_to_int(section["cn"]) or 1)
     subject_index = int(section.get("subject_index") or 1)
     kind, prefix = section_kind(section["raw_title"], section["body"])
     final_section_title = f"{section['cn']}、{kind}"
     body = section["body"]
+    if kind == "名词解释":
+        body = [expanded for line in body for expanded in _split_inline_numbered_items(line)]
     items: list[dict] = []
     if prefix in {"judge", "choice", "fill"}:
         current: dict | None = None

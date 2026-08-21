@@ -1003,6 +1003,31 @@ def _normalize_xrd_from_series_spec(spec: dict[str, Any]) -> dict[str, Any]:
 def normalize_figure_spec(spec: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(spec)
     kind = str(normalized.get("kind") or "").strip()
+    if kind in {"generic_axis_curve", "multi_curve_axis_plot"}:
+        defaulted_fields: list[str] = []
+        defaults = {
+            "caption": normalized.get("title") or "坐标关系图",
+            "x_label": "x",
+            "y_label": "y",
+        }
+        for field, fallback in defaults.items():
+            if str(normalized.get(field) or "").strip():
+                continue
+            normalized[field] = fallback
+            defaulted_fields.append(field)
+        if defaulted_fields:
+            normalized["schema_defaulted_fields"] = list(
+                dict.fromkeys(
+                    [
+                        *(
+                            str(field)
+                            for field in normalized.get("schema_defaulted_fields", []) or []
+                            if str(field).strip()
+                        ),
+                        *defaulted_fields,
+                    ]
+                )
+            )
     if kind == "multi_curve_axis_plot" and _looks_like_xrd_series(normalized):
         normalized = _normalize_xrd_from_series_spec(normalized)
         kind = "xrd_pattern"
@@ -3279,6 +3304,15 @@ def prepare_figures_for_fragments(
             )
             continue
         risk_notes = list(program_issues)
+        defaulted_fields = [
+            str(field)
+            for field in spec.get("schema_defaulted_fields", []) or []
+            if str(field).strip()
+        ]
+        if defaulted_fields:
+            risk_notes.append(
+                "结构化图缺少 " + "、".join(defaulted_fields) + "，已使用安全默认值完成渲染；轴语义需结合题面复核。"
+            )
         if not rendered:
             risk_notes.append("程序绘图未能生成有效图片，且生图模型未配置、失败或跳过；已作为自动质量阻断与 renderer 能力缺口记录。")
         schema_status = "schema_found" if registry_entry else str(spec.get("schema_status") or "legacy_programmatic")

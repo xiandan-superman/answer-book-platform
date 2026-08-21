@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from uuid import uuid4
 
 from PIL import Image
 
@@ -49,6 +50,7 @@ from .figures import audit_figures_with_vision, prepare_figures_for_fragments, r
 from .fragment_repair import repair_answer_fragments_for_docx
 from .knowledge_planning import generate_knowledge_plans, load_knowledge_plans
 from .model_usage_report import build_model_usage_report
+from .model_diagnostics import pin_model_diagnostics_for_failure
 from .paths import OUTPUTS_DIR, ensure_project_dirs
 from .pipeline_checkpoints import (
     answer_checkpoint_reusable as _answer_checkpoint_reusable,
@@ -152,6 +154,20 @@ def stage_dir(task_id: str) -> Path:
 
 def output_dir(task_id: str) -> Path:
     return bounded_resource_path(OUTPUTS_DIR, task_id)
+
+
+TRANSIENT_PROGRESS_FILES = (
+    "question_understanding_progress.json",
+    "knowledge_planning_progress.json",
+    "evidence_selection_progress.json",
+    "answer_generation_progress.json",
+    "figure_progress.json",
+)
+
+
+def reset_transient_progress(stage_output_dir: Path) -> None:
+    for progress_name in TRANSIENT_PROGRESS_FILES:
+        (stage_output_dir / progress_name).unlink(missing_ok=True)
 
 
 def write_json(path: Path, value) -> None:
@@ -817,7 +833,7 @@ def build_and_audit_docx_with_repair(
     return {"ok": not issues, "issues": issues, "repair": repair_payload}
 
 
-def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None) -> dict:
+def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, run_id: str = "") -> dict:
     options = options or PipelineOptions()
     quality_budget = QualityExecutionBudget.from_environment()
     ensure_project_dirs()
@@ -826,9 +842,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None) -> 
     odir = output_dir(task_id)
     sdir.mkdir(parents=True, exist_ok=True)
     odir.mkdir(parents=True, exist_ok=True)
+    reset_transient_progress(sdir)
     telemetry = PipelineRunTelemetry(
         task_id=task_id,
         status_path=sdir / "pipeline_status.json",
+        run_id=run_id,
         quality_governance={
             "mode": "unattended",
             "human_review_required": False,
@@ -1055,14 +1073,16 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None) -> 
         if visual_understanding_failures:
             mark(
                 "question_understanding",
-                "failed",
+                "review_candidate",
                 {
                     "failure_count": len(visual_understanding_failures),
                     "failures": visual_understanding_failures[:30],
-                    "reason": "题目必须使用视觉信息，但视觉结果未获得；禁止以空视觉结构继续下游生成。",
+                    "reason": (
+                        "独立视觉理解在有界模型切换后仍未获得。继续下游时，支持视觉的答案模型将直接读取原图；"
+                        "否则该题保留为待复核占位，不再让一题失败中断整份任务。"
+                    ),
                 },
             )
-            raise RuntimeError("Required visual understanding is unavailable")
 
         checkpoint(task_id)
         update_task(task_id, current_stage="textbook_index")
@@ -2592,9 +2612,18 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None) -> 
         raise
     except Exception as exc:
         tb = traceback.format_exc()
+        try:
+            pinned_model_traces = pin_model_diagnostics_for_failure(task_id)
+        except Exception:
+            pinned_model_traces = 0
         write_json(
             sdir / "pipeline_error.json",
-            {"error": str(exc), "traceback": tb, "run_started_at": pipeline_started_at},
+            {
+                "error": str(exc),
+                "traceback": tb,
+                "run_started_at": pipeline_started_at,
+                "diagnostic_context": {"pinned_model_traces": pinned_model_traces},
+            },
         )
         try:
             build_model_usage_report(sdir, odir, task_id)
@@ -2618,5 +2647,6 @@ def run_pipeline(task_id: str, options: PipelineOptions | None = None) -> dict:
     future callers consistent; nested contexts merge safely.
     """
 
-    with model_call_context(task_id=task_id, operation="解析任务"):
-        return _run_pipeline_impl(task_id, options)
+    run_id = uuid4().hex
+    with model_call_context(task_id=task_id, run_id=run_id, operation="解析任务"):
+        return _run_pipeline_impl(task_id, options, run_id=run_id)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -45,6 +46,12 @@ class _FakeSSEResponse:
 
 
 class LLMProtocolAdapterTests(unittest.TestCase):
+    def test_responses_stream_enforces_total_wall_clock_deadline(self):
+        from app.llm_client import _consume_responses_sse
+
+        with self.assertRaisesRegex(TimeoutError, "wall-clock deadline"):
+            _consume_responses_sse(_FakeSSEResponse([]), deadline_monotonic=time.monotonic() - 0.01)
+
     def _provider(self, **overrides):
         from app.settings import ProviderConfig
 

@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -176,6 +177,10 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             status="failed",
             current_operation="Word 生成失败",
             error=str(exc) or exc.__class__.__name__,
+            diagnostic_context={
+                "exception_type": exc.__class__.__name__,
+                "traceback": traceback.format_exc(),
+            },
             elapsed_seconds=round(elapsed, 3),
         )
         append_runtime_log(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -417,6 +418,7 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
+        deadline_monotonic = time.monotonic() + max(1, int(timeout))
         try:
             with model_request_slot(self.config):
                 with track_model_call(
@@ -432,7 +434,7 @@ class OpenAICompatibleClient:
                                 if not isinstance(raw, dict):
                                     raise LLMError(f"Unexpected provider response shape: {raw}")
                             else:
-                                raw = _consume_responses_sse(resp)
+                                raw = _consume_responses_sse(resp, deadline_monotonic=deadline_monotonic)
                     except urllib.error.HTTPError as exc:
                         body = exc.read().decode("utf-8", errors="replace")
                         record_model_diagnostic(
@@ -760,7 +762,34 @@ def _responses_reasoning_effort(thinking_mode: str) -> str:
     return ""
 
 
-def _consume_responses_sse(response: Any) -> dict[str, Any]:
+def _set_stream_read_deadline(response: Any, remaining_seconds: float) -> None:
+    """Apply the remaining wall-clock budget to urllib's underlying socket."""
+
+    candidates = [response]
+    for _ in range(5):
+        current = candidates[-1]
+        nested = next(
+            (
+                getattr(current, name)
+                for name in ("_sock", "raw", "fp", "_fp")
+                if getattr(current, name, None) is not None
+            ),
+            None,
+        )
+        if nested is None or nested in candidates:
+            break
+        candidates.append(nested)
+    for candidate in reversed(candidates):
+        setter = getattr(candidate, "settimeout", None)
+        if callable(setter):
+            try:
+                setter(max(0.05, remaining_seconds))
+                return
+            except Exception:
+                continue
+
+
+def _consume_responses_sse(response: Any, *, deadline_monotonic: float | None = None) -> dict[str, Any]:
     """Normalize Responses API server-sent events into one response object."""
     final_response: dict[str, Any] | None = None
     text_deltas: list[str] = []
@@ -820,6 +849,11 @@ def _consume_responses_sse(response: Any) -> dict[str, Any]:
             final_response = event
 
     while True:
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Responses stream exceeded total wall-clock deadline")
+            _set_stream_read_deadline(response, remaining)
         line = response.readline()
         if not line:
             consume_event()

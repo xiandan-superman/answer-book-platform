@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from .prompts import build_answer_depth_profile, build_answer_draft_prompt
 from .question_types import infer_question_type, is_calculation_question, is_term_explanation_question, iter_leaf_question_parts, question_has_type, question_kind
 from .question_understanding import attach_question_visuals, is_drawing_question, needs_vision_model
 from .retrieval import EvidenceCandidate, candidates_for_question
+from .runtime_monitor import model_call_context
 from .settings import DEFAULT_MODEL_MAX_TOKENS, STRUCTURED_ANSWER_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import cn_to_int
 from .user_facing_text import strip_internal_repair_provenance
@@ -35,6 +37,7 @@ from .v4_schema import validate_v4_answer_fragment
 ANSWER_GENERATION_TIMEOUT_SECONDS = 180
 ANSWER_GENERATION_COMPLEX_TIMEOUT_SECONDS = 300
 ANSWER_GENERATION_REASONING_TIMEOUT_SECONDS = 600
+ANSWER_GENERATION_QUESTION_BUDGET_SECONDS = 360
 ANSWER_SOURCE_CONTRACT_VERSION = "answer_book.answer_source_contract.v1"
 
 
@@ -214,6 +217,26 @@ def answer_generation_timeout_seconds(
             ANSWER_GENERATION_COMPLEX_TIMEOUT_SECONDS,
         )
     return _bounded_env_int("ANSWER_GENERATION_TIMEOUT_SECONDS", ANSWER_GENERATION_TIMEOUT_SECONDS)
+
+
+def answer_generation_question_budget_seconds() -> int:
+    """Bound all model switches and repair attempts for one question."""
+
+    return _bounded_env_int(
+        "ANSWER_GENERATION_QUESTION_BUDGET_SECONDS",
+        ANSWER_GENERATION_QUESTION_BUDGET_SECONDS,
+        minimum=60,
+        maximum=900,
+    )
+
+
+def answer_generation_max_model_candidates() -> int:
+    return _bounded_env_int(
+        "ANSWER_GENERATION_MAX_MODEL_CANDIDATES",
+        2,
+        minimum=1,
+        maximum=3,
+    )
 
 
 def structured_answer_max_tokens(provider: ProviderConfig, question: dict[str, Any] | None = None) -> int:
@@ -2615,6 +2638,7 @@ def generate_one_fragment(
     prompt_evidence: list[dict[str, Any]] | None = None,
     attempt_callback: Any | None = None,
     retries: int = 1,
+    deadline_monotonic: float | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     messages = build_answer_draft_prompt(question, prompt_evidence if prompt_evidence is not None else evidence)
     understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
@@ -2634,6 +2658,11 @@ def generate_one_fragment(
         assistant_content = ""
         thinking_mode = answer_generation_attempt_thinking_mode(provider, question, attempt)
         timeout_seconds = answer_generation_timeout_seconds(question, thinking_mode=thinking_mode)
+        if deadline_monotonic is not None:
+            remaining_seconds = deadline_monotonic - time.monotonic()
+            if remaining_seconds <= 0:
+                raise LLMError("question model-call budget exhausted")
+            timeout_seconds = min(timeout_seconds, max(1, math.ceil(remaining_seconds)))
         try:
             data = client.chat_json_object(
                 messages,
@@ -3030,7 +3059,7 @@ def generate_answer_fragments(
         active_progress["elapsed_text"] = _format_elapsed(active_progress["elapsed_seconds"])
         write_progress("running", completed_counter["value"], question)
 
-    def generate_question(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
+    def generate_question_inner(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
         _, question = item
         qid = str(question.get("question_id", ""))
         evidence_selection = (evidence_selections or {}).get(qid)
@@ -3048,7 +3077,10 @@ def generate_answer_fragments(
             }
         )
         write_progress("running", completed_counter["value"], question)
-        model_candidates = _answer_model_candidates_for_question(provider, model, question)
+        question_deadline = time.monotonic() + answer_generation_question_budget_seconds()
+        model_candidates = _answer_model_candidates_for_question(provider, model, question)[
+            : answer_generation_max_model_candidates()
+        ]
         local_client = OpenAICompatibleClient(provider)
         fragment = None
         issues: list[str] = []
@@ -3059,6 +3091,9 @@ def generate_answer_fragments(
         if not model_candidates:
             issues = [f"question requires vision model, but provider {provider.name} does not declare supports_vision and vision_model"]
         for candidate_model in model_candidates:
+            if time.monotonic() >= question_deadline:
+                issues = ["question model-call budget exhausted before another model fallback"]
+                break
             try:
                 def attempt_callback(status: str, report: dict[str, Any]) -> None:
                     record_progress_event(question, status, report)
@@ -3073,6 +3108,7 @@ def generate_answer_fragments(
                         evidence_selection=evidence_selection,
                         prompt_evidence=prompt_evidence,
                         attempt_callback=attempt_callback,
+                        deadline_monotonic=question_deadline,
                     )
                 except TypeError as exc:
                     if "prompt_evidence" not in str(exc) and "attempt_callback" not in str(exc):
@@ -3137,6 +3173,12 @@ def generate_answer_fragments(
             "model_token_feedback": local_token_feedback,
         }
 
+    def generate_question(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
+        question = item[1]
+        active_item = str(question.get("question_id") or question.get("number") or "")
+        with model_call_context(stage="answer_generation", active_item=active_item):
+            return generate_question_inner(item)
+
     def prepared_batch_item(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
         _, question = item
         qid = str(question.get("question_id", ""))
@@ -3162,7 +3204,14 @@ def generate_answer_fragments(
                 question = batch_items[0]["question"] if batch_items else {}
                 record_progress_event(question, status, {**report, "batch_size": len(batch_items)})
 
-            batch_results = generate_batch_fragments(local_client, provider, batch_items, model, attempt_callback=attempt_callback)
+            with model_call_context(stage="answer_generation", active_item=",".join(batch_qids)):
+                batch_results = generate_batch_fragments(
+                    local_client,
+                    provider,
+                    batch_items,
+                    model,
+                    attempt_callback=attempt_callback,
+                )
             by_qid = {str(item.get("question_id") or ""): item for item in batch_results}
             if set(by_qid) != set(batch_qids):
                 raise RuntimeError("batch output question_id set does not match input")
@@ -3340,18 +3389,43 @@ def generate_answer_fragments(
 
 def write_demo_fragments(structured_exam: dict[str, Any], candidates: list[EvidenceCandidate], output_json: Path) -> GenerationResult:
     fragments = []
+    review_count = 0
     for question in structured_exam.get("items", []):
         qid = str(question.get("question_id", ""))
         evidence = candidates_for_question(candidates, qid)
-        fragments.append(attach_program_evidence_block(fallback_fragment(question, evidence, "demo fragment; configure provider API key for real generation"), evidence))
+        fragment = attach_program_evidence_block(
+            fallback_fragment(question, evidence, "demo fragment; configure provider API key for real generation"),
+            evidence,
+        )
+        if needs_vision_model(question):
+            review_count += 1
+            add_review_flag(
+                fragment,
+                "offline_visual_placeholder",
+                "离线演示模式未调用视觉模型；已保留原图与待复核占位，不宣称该题解析完成。",
+            )
+            fragment.setdefault("_meta", {})["recovered_by"] = "offline_visual_placeholder"
+        fragments.append(fragment)
     output = {
         "schema_version": "answer_book.answer_fragments.v4",
         "source_contract": answer_source_contract(structured_exam),
         "provider": "demo",
         "model": "demo",
         "fragments": fragments,
-        "issues": [],
+        "issues": (
+            [{"code": "offline_visual_placeholders", "count": review_count}]
+            if review_count
+            else []
+        ),
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
-    return GenerationResult(True, len(structured_exam.get("items", [])), len(fragments), 0, str(output_json))
+    return GenerationResult(
+        True,
+        len(structured_exam.get("items", [])),
+        len(fragments),
+        review_count,
+        str(output_json),
+        fallback_count=review_count,
+        review_required=bool(review_count),
+    )

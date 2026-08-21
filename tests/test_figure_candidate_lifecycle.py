@@ -77,6 +77,25 @@ def test_xrd_hkl_and_style_aliases_are_normalized_generically() -> None:
     assert program_check_figure_spec(spec) == []
 
 
+def test_generic_axis_curve_missing_labels_gets_renderable_review_defaults() -> None:
+    from app.figures import normalize_figure_spec, program_check_figure_spec
+
+    spec = normalize_figure_spec(
+        {
+            "kind": "generic_axis_curve",
+            "figure_id": "curve_01",
+            "question_id": "q1",
+            "points": [[0, 0], [1, 1]],
+        }
+    )
+
+    assert spec["caption"] == "坐标关系图"
+    assert spec["x_label"] == "x"
+    assert spec["y_label"] == "y"
+    assert set(spec["schema_defaulted_fields"]) == {"caption", "x_label", "y_label"}
+    assert program_check_figure_spec(spec) == []
+
+
 def test_successful_fallback_prunes_failed_primary_spec(tmp_path) -> None:
     from app.figures import _prune_failed_primary_specs_with_generated_fallback
 

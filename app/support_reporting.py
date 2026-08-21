@@ -61,9 +61,27 @@ _RELATED_STAGE_FILES = (
     "prefigure_correctness_review.json",
     "figure_schema_plan.json",
     "figure_visual_qa.json",
+    "docx_audit.json",
+    "docx_repair.json",
+    "figure_size_audit.json",
+    "render_audit.json",
+    "question_review_docx.json",
+    "figure_review_docx.json",
+    "acceptance_report.json",
     "pipeline_error.json",
     "final_acceptance_report.json",
 )
+
+_GLOBAL_DELIVERY_REPORTS = {
+    "docx_audit.json",
+    "docx_repair.json",
+    "figure_size_audit.json",
+    "render_audit.json",
+    "question_review_docx.json",
+    "figure_review_docx.json",
+    "acceptance_report.json",
+    "final_acceptance_report.json",
+}
 
 
 def _now() -> str:
@@ -164,6 +182,8 @@ def _task_lifecycle(task_id: str) -> list[dict[str, Any]]:
         return []
     if task_id.startswith("generation_"):
         return _practice_job_lifecycle(task_id)
+    if task_id.startswith("word_format_"):
+        return _word_format_task_lifecycle(task_id)
     try:
         event_path = task_dir(task_id) / "events.jsonl"
     except (ValueError, OSError):
@@ -186,18 +206,41 @@ def _task_lifecycle(task_id: str) -> list[dict[str, Any]]:
     return result
 
 
+def _word_format_task_lifecycle(task_id: str) -> list[dict[str, Any]]:
+    try:
+        from .word_format_tasks import word_format_task_payload
+
+        payload = word_format_task_payload(task_id)
+    except Exception:
+        return []
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+    status = str(payload.get("status") or task.get("status") or "")
+    rows = [{
+        "time": _sanitize(task.get("created_at")),
+        "event": "word_format_task_created",
+        "payload": {"status": "running", "operation": "word_format", "stage": "format_review"},
+    }]
+    if status in {"completed", "completed_with_issues", "failed"}:
+        rows.append({
+            "time": _sanitize(task.get("updated_at")),
+            "event": "word_format_task_finished",
+            "payload": {
+                "status": status,
+                "operation": "word_format",
+                "stage": "completed" if status != "failed" else "failed",
+                "error": _sanitize(task.get("error")) if task.get("error") else "",
+            },
+        })
+    return rows
+
+
 def _practice_job_lifecycle(job_id: str) -> list[dict[str, Any]]:
     try:
-        from .practice_jobs import list_practice_jobs, load_practice_job
+        from .practice_jobs import list_practice_jobs_for_batch, load_practice_job
 
         current = load_practice_job(job_id, include_payload=False)
         batch_id = str(current.get("practice_batch_id") or "")
-        records = [
-            row
-            for row in list_practice_jobs(limit=100)
-            if str(row.get("job_id") or "") == job_id
-            or (batch_id and str(row.get("practice_batch_id") or "") == batch_id)
-        ]
+        records = list_practice_jobs_for_batch(batch_id) if batch_id else [current]
         if not any(str(row.get("job_id") or "") == job_id for row in records):
             records.append(current)
     except Exception:
@@ -274,7 +317,9 @@ def _exam_content(task_id: str, question_id: str) -> dict[str, Any]:
         value = _read_json(path)
         if value is None:
             continue
-        if question_id:
+        if name == "pipeline_error.json" or name in _GLOBAL_DELIVERY_REPORTS:
+            content[name] = _sanitize(value)
+        elif question_id:
             nodes = _matching_nodes(value, question_id)
             if nodes:
                 content[name] = nodes
@@ -314,6 +359,31 @@ def _practice_content(history_id: str, exercise_index: Any) -> dict[str, Any]:
         "quality": _sanitize(data.get("quality") or {}),
         "generation": _sanitize(data.get("generation") or {}),
     }
+    try:
+        from .practice_export_jobs import EXPORT_CACHE_DIR
+
+        export_jobs = []
+        job_root = EXPORT_CACHE_DIR / "jobs"
+        for path in sorted(job_root.glob("practice_word_*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+            record = _read_json(path)
+            payload = record.get("payload") if isinstance(record, dict) and isinstance(record.get("payload"), dict) else {}
+            if str(payload.get("history_id") or "") != history_id:
+                continue
+            export_jobs.append(_sanitize({
+                key: record.get(key)
+                for key in (
+                    "job_id", "status", "current_operation", "created_at", "updated_at", "completed_count",
+                    "total_count", "size_bytes", "filename", "cached", "error", "warning_issues",
+                    "release_level", "document_contract_version", "build_seconds", "elapsed_seconds",
+                    "diagnostic_context",
+                )
+            }))
+            if len(export_jobs) >= 5:
+                break
+        if export_jobs:
+            result["word_export_jobs"] = export_jobs
+    except (OSError, ImportError):
+        pass
     if exercise is not None:
         result["exercise_index"] = index
         result["exercise"] = _sanitize(exercise)
@@ -351,9 +421,31 @@ def _practice_job_content(job_id: str) -> dict[str, Any]:
         "error": _sanitize(record.get("error")),
         "progress_message": _sanitize(record.get("progress_message")),
         "model_usage": _sanitize(record.get("model_usage") or {}),
+        "diagnostic_context": _sanitize(record.get("diagnostic_context") or {}),
         "request_payload": _sanitize(record.get("payload") or {}),
+        "failure_context": _sanitize(record.get("failure_context") or {}),
         "partial_or_final_result": _sanitize(record.get("result")) if record.get("result") is not None else None,
     }
+
+
+def _format_task_content(task_id: str) -> dict[str, Any]:
+    try:
+        from .word_format_tasks import _load_record, word_format_task_payload
+
+        payload = word_format_task_payload(task_id)
+        record = _load_record(task_id)
+    except Exception:
+        return {"task_id": task_id, "unavailable": True}
+    return _sanitize({
+        "task_id": task_id,
+        "status": payload.get("status"),
+        "mode": payload.get("mode"),
+        "task": payload.get("task") or {},
+        "initial_audit": payload.get("report") or {},
+        "final_audit": payload.get("final_report") or {},
+        "error": record.get("error") or "",
+        "diagnostic_context": record.get("diagnostic_context") or {},
+    })
 
 
 def _related_runtime(task_id: str, request_ids: set[str], support_ids: set[str]) -> list[dict[str, Any]]:
@@ -362,7 +454,7 @@ def _related_runtime(task_id: str, request_ids: set[str], support_ids: set[str])
     for row in rows:
         text = json.dumps(row, ensure_ascii=False)
         related = bool(task_id and task_id in text) or any(value and value in text for value in request_ids | support_ids)
-        if related or str(row.get("level") or "") == "error":
+        if related:
             result.append(_sanitize(row))
     return result[-300:]
 
@@ -372,7 +464,7 @@ def _model_summary(task_id: str) -> dict[str, Any]:
     if task_id:
         rows = [row for row in rows if str(row.get("task_id") or "") == task_id]
     else:
-        rows = rows[-30:]
+        rows = []
     grouped: dict[str, dict[str, Any]] = {}
     failures: list[dict[str, Any]] = []
     for row in rows:
@@ -400,23 +492,62 @@ def _related_error_traces(task_id: str, request_ids: set[str], support_ids: set[
             result.append(_sanitize(row))
     if result:
         return result[-30:]
-    return [_sanitize(row) for row in rows[-5:]]
+    return []
+
+
+def _diagnostic_score(manifest: dict[str, Any]) -> int:
+    """Rank duplicate bundles by retained evidence, not merely arrival time."""
+    coverage = manifest.get("diagnostic_coverage") if isinstance(manifest.get("diagnostic_coverage"), dict) else {}
+    available = coverage.get("available") if isinstance(coverage.get("available"), dict) else {}
+    legacy_counts = manifest.get("counts") if isinstance(manifest.get("counts"), dict) else {}
+    counts = coverage.get("counts") if isinstance(coverage.get("counts"), dict) else legacy_counts
+    missing = coverage.get("missing_expected_evidence") if isinstance(coverage.get("missing_expected_evidence"), list) else []
+    weights = {
+        "failure_context": 120,
+        "failure_diagnostic": 100,
+        "model_diagnostics": 80,
+        "task_lifecycle": 30,
+        "backend_error_traces": 25,
+        "runtime_context": 20,
+        "model_call_summary": 15,
+        "user_feedback": 10,
+    }
+    score = sum(weight for key, weight in weights.items() if available.get(key))
+    score += min(20, int(counts.get("model_traces") or 0)) * 4
+    score += min(40, int(counts.get("lifecycle_events") or 0))
+    score += min(20, int(counts.get("backend_error_traces") or 0))
+    score += min(20, int(counts.get("runtime_events") or 0))
+    score += min(20, int(counts.get("frontend_events") or 0)) // 4
+    score -= len(missing) * 20
+    return score
 
 
 def _fingerprint(context: dict[str, Any], events: list[dict[str, Any]], lifecycle: list[dict[str, Any]], traces: list[dict[str, Any]]) -> str:
     latest_failure = next((row for row in reversed(events) if row.get("error_code") or str(row.get("status") or "").startswith(("4", "5"))), {})
     failed_trace = next((row for row in reversed(traces) if row.get("outcome") != "ok"), {})
     call = failed_trace.get("call") if isinstance(failed_trace.get("call"), dict) else {}
+    latest_lifecycle = lifecycle[-1] if lifecycle else {}
+    lifecycle_payload = latest_lifecycle.get("payload") if isinstance(latest_lifecycle.get("payload"), dict) else {}
     signature = {
-        "schema": 1,
+        "schema": 2,
         "version": get_app_version(),
         "scope": context.get("scope"),
         "page": context.get("page"),
         "task_id": context.get("task_id"),
         "question_id": context.get("question_id"),
         "exercise_index": context.get("exercise_index"),
+        "task_run_started_at": context.get("task_run_started_at"),
+        "feedback_kind": context.get("feedback_kind"),
+        "feedback_note": context.get("feedback_note"),
         "last_event": {key: latest_failure.get(key) for key in ("kind", "action", "path", "status", "error_code")},
-        "last_lifecycle": lifecycle[-1].get("event") if lifecycle else "",
+        "last_lifecycle": {
+            "event": latest_lifecycle.get("event"),
+            "status": lifecycle_payload.get("status"),
+            "stage": lifecycle_payload.get("stage") or lifecycle_payload.get("current_stage"),
+            "operation": lifecycle_payload.get("operation"),
+            "error": lifecycle_payload.get("error"),
+            "error_code": lifecycle_payload.get("error_code"),
+        },
         "model_failure": {"provider": call.get("provider"), "model": call.get("model"), "stage": call.get("stage"), "error": failed_trace.get("error")},
     }
     raw = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -472,16 +603,71 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     fd, raw_tmp = tempfile.mkstemp(prefix=".support-", suffix=".part", dir=str(PENDING_DIR))
     os.close(fd)
     tmp = Path(raw_tmp)
-    if history_id:
-        content = _practice_content(history_id, context.get("exercise_index"))
-    elif task_id.startswith("generation_"):
+    related_history_content: dict[str, Any] = {}
+    if task_id.startswith("generation_"):
         content = _practice_job_content(task_id)
+        if history_id:
+            related_history_content = _practice_content(history_id, context.get("exercise_index"))
+        primary_content_kind = "practice_job"
+    elif task_id.startswith("word_format_") or str(context.get("task_kind") or "") == "format":
+        content = _format_task_content(task_id)
+        primary_content_kind = "word_format_task"
+    elif history_id:
+        content = _practice_content(history_id, context.get("exercise_index"))
+        primary_content_kind = "practice_history"
     else:
         content = _exam_content(task_id, question_id)
+        primary_content_kind = "exam_task"
     snapshot = content.pop("question_snapshot", "") if isinstance(content, dict) else ""
     selection = str(context.get("selection") or "").strip()
-    manifest = {
+    runtime_context = _related_runtime(task_id, request_ids, support_ids)
+    backend_traces = _related_error_traces(task_id, request_ids, support_ids)
+    model_summary = _model_summary(task_id)
+    model_call_count = sum(int(group.get("count") or 0) for group in model_summary.get("groups") or [])
+    failure_context = content.get("failure_context") if isinstance(content, dict) else {}
+    failure_diagnostic = content.get("diagnostic_context") if isinstance(content, dict) else {}
+    feedback_kind = _redact(context.get("feedback_kind"), 80)
+    feedback_note = _redact(context.get("feedback_note"), 4000)
+    user_feedback = {"kind": feedback_kind, "note": feedback_note} if feedback_kind or feedback_note else {}
+    task_failed = str(content.get("status") or context.get("task_status") or "") == "failed" if isinstance(content, dict) else False
+    missing_expected_evidence: list[str] = []
+    if task_id and primary_content_kind in {"practice_job", "exam_task", "word_format_task"} and not lifecycle:
+        missing_expected_evidence.append("task_lifecycle")
+    pipeline_error = content.get("pipeline_error.json") if isinstance(content.get("pipeline_error.json"), dict) else {}
+    task_error = str(content.get("error") or pipeline_error.get("error") or "")
+    if task_failed and not task_error:
+        missing_expected_evidence.append("task_error")
+    error_text = task_error
+    if task_failed and ("蓝图" in error_text or "门禁" in error_text) and not failure_context:
+        missing_expected_evidence.append("rejected_plan_and_gate_findings")
+    if model_call_count and not traces:
+        missing_expected_evidence.append("model_diagnostics")
+    diagnostic_coverage = {
         "schema_version": 1,
+        "primary_content_kind": primary_content_kind,
+        "related_history_included": bool(related_history_content),
+        "available": {
+            "task_lifecycle": bool(lifecycle),
+            "runtime_context": bool(runtime_context),
+            "backend_error_traces": bool(backend_traces),
+            "model_call_summary": bool(model_call_count),
+            "model_diagnostics": bool(traces),
+            "failure_context": bool(failure_context),
+            "failure_diagnostic": bool(failure_diagnostic),
+            "user_feedback": bool(user_feedback),
+        },
+        "counts": {
+            "frontend_events": len(events),
+            "lifecycle_events": len(lifecycle),
+            "runtime_events": len(runtime_context),
+            "backend_error_traces": len(backend_traces),
+            "model_calls": model_call_count,
+            "model_traces": len(traces),
+        },
+        "missing_expected_evidence": missing_expected_evidence,
+    }
+    manifest = {
+        "schema_version": 2,
         "report_id": report_id,
         "fingerprint": fingerprint,
         "created_at": _now(),
@@ -499,6 +685,9 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             "task_model_label": _redact(context.get("task_model_label"), 120),
             "practice_batch_id": _redact(context.get("practice_batch_id"), 160),
             "report_group_id": _redact(context.get("report_group_id"), 120),
+            "task_run_started_at": _redact(context.get("task_run_started_at"), 80),
+            "feedback_kind": feedback_kind,
+            "feedback_note": feedback_note,
         },
         "content_policy": {
             "related_question_answer_model_context_included": True,
@@ -506,17 +695,27 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             "credentials_included": False,
         },
         "model_context_available": bool(traces),
-        "counts": {"frontend_events": len(events), "lifecycle_events": len(lifecycle), "model_traces": len(traces)},
+        "diagnostic_coverage": diagnostic_coverage,
+        "counts": diagnostic_coverage["counts"],
     }
     try:
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as zf:
             _writestr(zf, "manifest.json", manifest, budget=64 * 1024)
             _writestr(zf, "frontend_events.json", events, budget=256 * 1024)
             _writestr(zf, "task_lifecycle.json", lifecycle, budget=256 * 1024)
-            _writestr(zf, "runtime_error_context.json", _related_runtime(task_id, request_ids, support_ids), budget=1024 * 1024)
-            _writestr(zf, "backend_error_traces.json", _related_error_traces(task_id, request_ids, support_ids), budget=1024 * 1024)
-            _writestr(zf, "model_call_summary.json", _model_summary(task_id), budget=512 * 1024)
+            _writestr(zf, "runtime_error_context.json", runtime_context, budget=1024 * 1024)
+            _writestr(zf, "backend_error_traces.json", backend_traces, budget=1024 * 1024)
+            _writestr(zf, "model_call_summary.json", model_summary, budget=512 * 1024)
+            _writestr(zf, "diagnostic_coverage.json", diagnostic_coverage, budget=128 * 1024)
+            if user_feedback:
+                _writestr(zf, "user_feedback.json", user_feedback, budget=16 * 1024)
             _writestr(zf, "related_content.json", content, budget=3 * 1024 * 1024)
+            if related_history_content:
+                _writestr(zf, "related_history_content.json", related_history_content, budget=1024 * 1024)
+            if failure_context:
+                _writestr(zf, "failure_context.json", failure_context, budget=2 * 1024 * 1024)
+            if failure_diagnostic:
+                _writestr(zf, "task_failure_diagnostic.json", failure_diagnostic, budget=1024 * 1024)
             _writestr(zf, "model_diagnostics.json", traces, budget=2 * 1024 * 1024)
             if snapshot and Path(str(snapshot)).is_file() and Path(str(snapshot)).stat().st_size <= 6 * 1024 * 1024:
                 zf.write(Path(str(snapshot)), "attachments/question_snapshot.png")
@@ -533,14 +732,33 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
                 attachment_budget -= size
         if tmp.stat().st_size > MAX_COMPRESSED_BYTES:
             raise ValueError("诊断包超过 12 MiB 安全上限。")
+        result_target = target
+        result_manifest = manifest
         with _LOCK:
-            for duplicate in PENDING_DIR.glob(f"{fingerprint}-AB-*.zip"):
-                duplicate.unlink(missing_ok=True)
-            os.replace(tmp, target)
+            duplicates = list(PENDING_DIR.glob(f"{fingerprint}-AB-*.zip"))
+            richer_duplicate: tuple[Path, dict[str, Any]] | None = None
+            for duplicate in duplicates:
+                try:
+                    with zipfile.ZipFile(duplicate) as existing_zip:
+                        existing_manifest = json.loads(existing_zip.read("manifest.json"))
+                except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError):
+                    continue
+                if _diagnostic_score(existing_manifest) > _diagnostic_score(manifest):
+                    richer_duplicate = (duplicate, existing_manifest)
+                    break
+            if richer_duplicate:
+                result_target, result_manifest = richer_duplicate
+                for duplicate in duplicates:
+                    if duplicate != result_target:
+                        duplicate.unlink(missing_ok=True)
+            else:
+                for duplicate in duplicates:
+                    duplicate.unlink(missing_ok=True)
+                os.replace(tmp, target)
             _enforce_pending_limits()
     finally:
         tmp.unlink(missing_ok=True)
-    return target, manifest
+    return result_target, result_manifest
 
 
 def _pending_files() -> list[Path]:

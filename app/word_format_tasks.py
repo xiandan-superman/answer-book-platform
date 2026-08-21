@@ -6,6 +6,7 @@ import json
 import shutil
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -147,6 +148,7 @@ def _task_row(record: dict) -> dict:
         "mode": record.get("mode"),
         "mode_label": "先审查，再确认修改" if record.get("mode") == "review" else "直接审查并修改",
         "status": status,
+        "error": record.get("error") or "",
         "current_stage": "format_review" if needs_input else "completed",
         "progress_percent": 60 if needs_input else 100,
         "progress_message": (
@@ -240,6 +242,10 @@ def create_word_format_task(payload: dict) -> dict:
     except Exception as exc:
         record["status"] = "failed"
         record["error"] = f"无法处理该DOCX文件：{exc}"
+        record["diagnostic_context"] = {
+            "exception_type": exc.__class__.__name__,
+            "traceback": traceback.format_exc(),
+        }
         record["updated_at"] = _now_text()
         record["updated_epoch"] = time.time()
         _save_record(record)
@@ -256,16 +262,28 @@ def apply_word_format_task(task_id: str) -> dict:
     source = directory / "source.docx"
     if not source.exists():
         raise FileNotFoundError("原始Word文件不存在")
-    final_report = _with_display_filename(
-        repair_docx(
-            source,
-            directory / "modified.docx",
-            str(record["profile"]),
-            str(record.get("header_text") or ""),
-            record.get("task_options"),
-        ),
-        str(record.get("filename") or "document.docx"),
-    )
+    try:
+        final_report = _with_display_filename(
+            repair_docx(
+                source,
+                directory / "modified.docx",
+                str(record["profile"]),
+                str(record.get("header_text") or ""),
+                record.get("task_options"),
+            ),
+            str(record.get("filename") or "document.docx"),
+        )
+    except Exception as exc:
+        record["status"] = "failed"
+        record["error"] = f"无法应用格式修改：{exc}"
+        record["diagnostic_context"] = {
+            "exception_type": exc.__class__.__name__,
+            "traceback": traceback.format_exc(),
+        }
+        record["updated_at"] = _now_text()
+        record["updated_epoch"] = time.time()
+        _save_record(record)
+        raise ValueError(record["error"]) from exc
     _write_json(directory / "final_audit.json", final_report)
     record["final_report"] = final_report
     record["status"] = _completion_status(final_report)

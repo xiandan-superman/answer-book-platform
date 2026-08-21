@@ -1,0 +1,89 @@
+{
+  "clean": {
+    "structured_exam": {
+      "items": [
+        {"question_id": "q1", "number": "1", "question_type": "简答题", "stem": "说明质量守恒定律。"}
+      ]
+    },
+    "answer_fragments": {
+      "fragments": [
+        {
+          "question_id": "q1",
+          "answer": "封闭系统总质量保持不变。",
+          "answer_summary": "封闭系统总质量保持不变。",
+          "evidence_ids": ["e1"],
+          "formulas": [],
+          "blocks": [
+            {"label": "解析", "segments": [{"type": "text", "text": "质量既不会凭空产生，也不会凭空消失。"}]}
+          ]
+        }
+      ]
+    },
+    "answer_drafts": {
+      "drafts": [
+        {"question_id": "q1", "answer": "封闭系统总质量保持不变。", "formulas": [], "steps": [], "mistake_notes": []}
+      ]
+    },
+    "evidence_selection": {
+      "selections": [
+        {"question_id": "q1", "selected_evidence_ids": ["e1"], "selected_evidence": [{"evidence_id": "e1", "text": "质量守恒"}]}
+      ]
+    },
+    "figure_specs": {"figures": []},
+    "final_acceptance": {"formal_acceptance_passed": true}
+  },
+  "contained_calculation_error": {
+    "structured_exam": {
+      "items": [
+        {"question_id": "calc1", "number": "1", "question_type": "计算题", "stem": "计算质量。"}
+      ]
+    },
+    "answer_fragments": {
+      "fragments": [
+        {
+          "question_id": "calc1",
+          "answer": "5 kg",
+          "answer_summary": "总质量为5 kg。",
+          "evidence_ids": [],
+          "formulas": [{"formula_id": "f1", "latex": "m=2+2=5", "role": "result", "display": false}],
+          "blocks": [
+            {
+              "label": "解题步骤",
+              "segments": [
+                {"type": "text", "text": "建立质量加和关系，代入两个分量并检查最终计算结果。"},
+                {"type": "formula_ref", "formula_id": "f1"}
+              ]
+            },
+            {"label": "易错点及注意事项", "segments": [{"type": "text", "text": "检查加法结果。"}]}
+          ]
+        }
+      ]
+    },
+    "answer_drafts": {
+      "drafts": [
+        {
+          "question_id": "calc1",
+          "answer": "5 kg",
+          "formulas": [{"formula_id": "f1", "latex": "m=2+2=5", "role": "result", "display": false}],
+          "steps": [
+            {
+              "text": "建立质量加和关系并代入。",
+              "relation_formula_indices": [1],
+              "substitution_formula_indices": [1],
+              "result_formula_indices": [1],
+              "result_text": "总质量为5 kg。"
+            }
+          ],
+          "mistake_notes": ["检查加法结果。"]
+        }
+      ]
+    },
+    "evidence_selection": {"selections": []},
+    "figure_specs": {"figures": []},
+    "final_acceptance": {"formal_acceptance_passed": false}
+  },
+  "cancellation": {
+    "r2": {"final_status": "cancelled", "model_calls_after_cancel": 0},
+    "v1": {"final_status": "cancelled", "model_calls_after_cancel": 0}
+  }
+}
