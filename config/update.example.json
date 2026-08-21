@@ -2,6 +2,7 @@
   "schema_version": "answer_book.update_source.v1",
   "repository": "xiandan-superman/answer-book-platform-releases",
   "channel": "beta",
+  "manifest_url": "https://raw.githubusercontent.com/xiandan-superman/answer-book-platform-releases/main/update-beta.json",
   "manifest_asset": "update-manifest.json",
   "source_remote": "origin",
   "source_branch": "main"

@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ DEFAULT_MANIFEST_ASSET = "update-manifest.json"
 UPDATE_CACHE_SECONDS = 600
 MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_RELEASE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STATUS_CACHE: dict[str, Any] = {}
 _STATUS_CACHE_LOCK = threading.Lock()
@@ -99,11 +101,17 @@ def load_update_source() -> dict[str, Any]:
     channel = str(os.environ.get("ANSWER_BOOK_UPDATE_CHANNEL") or raw.get("channel") or "beta").strip().lower()
     if channel not in {"stable", "beta"}:
         channel = "beta"
+    manifest_url = str(os.environ.get("ANSWER_BOOK_UPDATE_MANIFEST_URL") or raw.get("manifest_url") or "").strip()
+    if not manifest_url and repository:
+        manifest_url = f"https://raw.githubusercontent.com/{repository}/main/update-{channel}.json"
+    if manifest_url and not manifest_url.startswith("https://"):
+        manifest_url = ""
     return {
         "schema_version": UPDATE_SOURCE_SCHEMA,
         "enabled": bool(repository),
         "repository": repository,
         "channel": channel,
+        "manifest_url": manifest_url,
         "manifest_asset": str(raw.get("manifest_asset") or DEFAULT_MANIFEST_ASSET).strip(),
         "source_remote": str(raw.get("source_remote") or "origin").strip(),
         "source_branch": str(raw.get("source_branch") or "main").strip(),
@@ -190,6 +198,51 @@ def _release_manifest(release: dict[str, Any], manifest_asset: str) -> dict[str,
     return manifest
 
 
+def _manifest_feed(source: dict[str, Any]) -> dict[str, Any]:
+    url = str(source.get("manifest_url") or "").strip()
+    if not url.startswith("https://"):
+        raise UpdateError("更新清单地址无效。")
+    manifest = _github_json(url)
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != UPDATE_MANIFEST_SCHEMA:
+        raise UpdateError("更新清单格式无效。")
+    return manifest
+
+
+def _release_from_manifest(source: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    repository = str(source.get("repository") or "").strip()
+    version = str(manifest.get("version") or "").strip()
+    tag_name = str(manifest.get("release_tag") or (f"v{version}" if version else "")).strip()
+    if not _REPOSITORY_PATTERN.fullmatch(repository) or not _RELEASE_TAG_PATTERN.fullmatch(tag_name):
+        raise UpdateError("更新清单中的仓库或发布标签无效。")
+    encoded_tag = urllib.parse.quote(tag_name, safe="")
+    assets: list[dict[str, Any]] = []
+    for entry in (manifest.get("platforms") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        raw_name = str(entry.get("asset_name") or "").strip()
+        asset_name = Path(raw_name).name
+        if not asset_name or asset_name != raw_name:
+            continue
+        assets.append(
+            {
+                "name": asset_name,
+                "size": int(entry.get("size_bytes") or 0),
+                "browser_download_url": (
+                    f"https://github.com/{repository}/releases/download/{encoded_tag}/"
+                    f"{urllib.parse.quote(asset_name, safe='')}"
+                ),
+            }
+        )
+    return {
+        "tag_name": tag_name,
+        "name": str(manifest.get("release_name") or version or tag_name),
+        "html_url": f"https://github.com/{repository}/releases/tag/{encoded_tag}",
+        "published_at": str(manifest.get("published_at") or ""),
+        "body": str(manifest.get("notes") or ""),
+        "assets": assets,
+    }
+
+
 def _asset_for_installation(
     release: dict[str, Any],
     manifest: dict[str, Any],
@@ -231,9 +284,8 @@ def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
     }
     if not source.get("enabled"):
         return {**base, "message": "更新源将在 GitHub 首次发布时自动写入。"}
-    releases = _github_json(f"https://api.github.com/repos/{source['repository']}/releases?per_page=20")
-    release = _select_release(releases, str(source.get("channel") or "beta"))
-    manifest = _release_manifest(release, str(source.get("manifest_asset") or DEFAULT_MANIFEST_ASSET))
+    manifest = _manifest_feed(source)
+    release = _release_from_manifest(source, manifest)
     latest = str(manifest.get("version") or str(release.get("tag_name") or "").lstrip("v")).strip()
     if not latest:
         raise UpdateError("发布版没有版本号。")
