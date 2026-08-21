@@ -12,8 +12,17 @@ ALLOWED_API_KEY_NAMES = {
     "DEEPSEEK_API_KEY",
     "ARK_API_KEY",
     "DASHSCOPE_API_KEY",
-    "YUNWU_API_KEY",
-    "LINGSUAN_API_KEY",
+    "LINGSUAN_OPENAI_API_KEY",
+    "LINGSUAN_GOOGLE_API_KEY",
+    "LINGSUAN_XAI_API_KEY",
+    "LINGSUAN_ANTHROPIC_API_KEY",
+}
+
+# 0.9.0 used one shared Lingsuan key.  Its default model family was OpenAI,
+# so migrate that value only to the OpenAI slot; copying it to every supplier
+# would recreate the cross-supplier key routing bug this split is fixing.
+LEGACY_API_KEY_ALIASES = {
+    "LINGSUAN_API_KEY": "LINGSUAN_OPENAI_API_KEY",
 }
 
 API_KEY_FILE = LOCAL_CONFIG_DIR / "api_keys.json"
@@ -31,11 +40,16 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _clean_keys(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
-    return {
+    cleaned = {
         str(key): str(secret).strip()
         for key, secret in value.items()
         if str(key) in ALLOWED_API_KEY_NAMES and str(secret).strip()
     }
+    for legacy_name, current_name in LEGACY_API_KEY_ALIASES.items():
+        legacy_secret = str(value.get(legacy_name) or "").strip()
+        if legacy_secret and current_name not in cleaned:
+            cleaned[current_name] = legacy_secret
+    return cleaned
 
 
 def _payload(keys: dict[str, str]) -> dict[str, Any]:
@@ -76,7 +90,7 @@ def _legacy_dotenv_keys() -> dict[str, str]:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key in ALLOWED_API_KEY_NAMES:
+        if key in ALLOWED_API_KEY_NAMES or key in LEGACY_API_KEY_ALIASES:
             values[key] = value.strip().strip('"').strip("'")
     return _clean_keys(values)
 
@@ -95,9 +109,10 @@ def _legacy_provider_keys() -> dict[str, str]:
             continue
         env_name = str(provider.get("api_key_env") or "").strip()
         secret = str(provider.get("api_key") or "").strip()
-        if env_name in ALLOWED_API_KEY_NAMES and secret:
-            values[env_name] = secret
-    return values
+        target_name = LEGACY_API_KEY_ALIASES.get(env_name, env_name)
+        if target_name in ALLOWED_API_KEY_NAMES and secret:
+            values[target_name] = secret
+    return _clean_keys(values)
 
 
 def ensure_api_key_file() -> Path:
@@ -114,6 +129,10 @@ def ensure_api_key_file() -> Path:
             if str(os.environ.get(name) or "").strip()
         }
     )
+    for legacy_name, current_name in LEGACY_API_KEY_ALIASES.items():
+        legacy_secret = str(os.environ.get(legacy_name) or "").strip()
+        if legacy_secret and current_name not in migrated:
+            migrated[current_name] = legacy_secret
     _write_payload(API_KEY_FILE, migrated)
     return API_KEY_FILE
 

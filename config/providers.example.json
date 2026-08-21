@@ -3,21 +3,38 @@
   "providers": {
     "deepseek": {
       "type": "openai_compatible",
-      "api_protocol": "chat_completions",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
       "base_url": "https://api.deepseek.com/v1",
       "api_key_env": "DEEPSEEK_API_KEY",
       "api_key": "",
       "default_model": "deepseek-v4-flash",
-      "vision_model": "",
-      "supports_vision": false,
+      "vision_model": "deepseek-v4-flash-vision-exp",
+      "vision_model_options": ["deepseek-v4-flash-vision-exp"],
+      "supports_vision": true,
+      "model_capabilities": {
+        "deepseek-v4-flash": ["text"],
+        "deepseek-v4-flash-vision-exp": ["text", "vision"]
+      },
       "image_model": "",
       "image_size": "1024x1024",
-      "model_options": ["deepseek-v4-flash"],
+      "model_options": [
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp"
+      ],
+      "model_option_labels": {
+        "deepseek-v4-flash": "DeepSeek-V4-Flash（文本）",
+        "deepseek-v4-flash-vision-exp": "DeepSeek-V4-Flash-Vision-Exp（多模态视觉）"
+      },
       "temperature": 0.1,
       "max_tokens": 24576
     },
     "ark": {
       "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "api_key_env": "ARK_API_KEY",
       "api_key": "",
@@ -58,6 +75,8 @@
     "bailian": {
       "type": "openai_compatible",
       "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "api_key_env": "DASHSCOPE_API_KEY",
       "api_key": "",
@@ -122,89 +141,13 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
-    "yunwu": {
-      "type": "openai_compatible",
-      "api_protocol": "responses",
-      "base_url": "https://yunwu.ai/v1",
-      "api_key_env": "YUNWU_API_KEY",
-      "api_key": "",
-      "default_model": "gpt-5.6-sol",
-      "vision_model": "gpt-5.6-sol",
-      "vision_model_options": [
-        "gpt-5.6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.5",
-        "gpt-4o",
-        "claude-opus-4-7",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
-        "grok-4.5"
-      ],
-      "supports_vision": true,
-      "model_capabilities": {
-        "gpt-5.6-luna": ["text", "vision"],
-        "gpt-5.6-sol": ["text", "vision"],
-        "gpt-5.6-terra": ["text", "vision"],
-        "gpt-5.5": ["text", "vision"],
-        "gpt-4o": ["text", "vision"],
-        "claude-opus-4-7": ["text", "vision"],
-        "gemini-3.5-flash": ["text", "vision"],
-        "gemini-3.1-flash-lite": ["text", "vision"],
-        "grok-4.5": ["text", "vision"]
-      },
-      "supports_image_generation": true,
-      "image_model": "gpt-image-2",
-      "image_model_options": [
-        "gpt-image-2",
-        "gpt-image-1.5",
-        "gpt-image-1",
-        "gpt-image-1-mini",
-        "qwen-image-max",
-        "qwen-image-2.0-2026-03-03"
-      ],
-      "image_model_option_labels": {
-        "gpt-image-2": "GPT-Image-2",
-        "gpt-image-1.5": "GPT-Image-1.5",
-        "gpt-image-1": "GPT-Image-1",
-        "gpt-image-1-mini": "GPT-Image-1 Mini",
-        "qwen-image-max": "Qwen-Image-Max",
-        "qwen-image-2.0-2026-03-03": "Qwen-Image-2.0"
-      },
-      "image_size": "1024x1024",
-      "model_options": [
-        "gpt-5.6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.5",
-        "gpt-4o",
-        "claude-opus-4-7",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
-        "grok-4.5"
-      ],
-      "model_option_labels": {
-        "gpt-5.6-luna": "GPT-5.6 Luna",
-        "gpt-5.6-sol": "GPT-5.6 Sol",
-        "gpt-5.6-terra": "GPT-5.6 Terra",
-        "gpt-5.5": "GPT-5.5",
-        "gpt-4o": "GPT-4o",
-        "claude-opus-4-7": "Claude Opus 4.7",
-        "gemini-3.5-flash": "Gemini 3.5 Flash（已实测可用）",
-        "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
-        "grok-4.5": "Grok 4.5"
-      },
-      "allow_custom_model": true,
-      "model_hint": "请先用云雾 /v1/models 确认当前 Key 可用的模型。作图题生图默认走 /v1/images/generations，默认模型为 gpt-image-2。",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "lingsuan": {
+    "lingsuan_openai": {
       "type": "openai_compatible",
       "api_protocol": "responses",
       "responses_streaming": true,
+      "responses_fallback_to_chat": false,
       "base_url": "https://lingsuan.top/v1",
-      "api_key_env": "LINGSUAN_API_KEY",
+      "api_key_env": "LINGSUAN_OPENAI_API_KEY",
       "api_key": "",
       "default_model": "gpt-5.6-sol",
       "vision_model": "gpt-5.6-sol",
@@ -227,20 +170,92 @@
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
-        "gpt-5.5",
-        "grok-4.5",
-        "claude-opus-5"
+        "gpt-5.5"
       ],
       "model_option_labels": {
         "gpt-5.6-sol": "GPT-5.6 Sol",
         "gpt-5.6-terra": "GPT-5.6 Terra",
         "gpt-5.6-luna": "GPT-5.6 Luna",
-        "gpt-5.5": "GPT-5.5",
-        "grok-4.5": "Grok 4.5",
-        "claude-opus-5": "Claude Opus 5"
+        "gpt-5.5": "GPT-5.5"
       },
-      "allow_custom_model": true,
-      "model_hint": "请填写灵算密钥所属分组实际支持的模型 ID；灵算当前不提供 /v1/models，模型可用性以控制台“模型价格”和密钥分组为准。",
+      "allow_custom_model": false,
+      "model_hint": "仅使用灵算 OpenAI 供应商分组的密钥，不与 Gemini、Grok 或 Claude 共用。",
+      "thinking_mode": "high",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "lingsuan_google": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
+      "base_url": "https://lingsuan.top/v1",
+      "api_key_env": "LINGSUAN_GOOGLE_API_KEY",
+      "api_key": "",
+      "default_model": "gemini-3.6-flash",
+      "vision_model": "gemini-3.6-flash",
+      "vision_model_options": ["gemini-3.6-flash", "gemini-3.5-flash"],
+      "supports_vision": true,
+      "model_capabilities": {
+        "gemini-3.6-flash": ["text", "vision"],
+        "gemini-3.5-flash": ["text", "vision"]
+      },
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": ["gemini-3.6-flash", "gemini-3.5-flash"],
+      "model_option_labels": {
+        "gemini-3.6-flash": "Gemini 3.6 Flash",
+        "gemini-3.5-flash": "Gemini 3.5 Flash"
+      },
+      "allow_custom_model": false,
+      "model_hint": "仅使用灵算 Google Gemini 供应商分组的密钥，不与 GPT、Grok 或 Claude 共用。",
+      "thinking_mode": "high",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "lingsuan_xai": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
+      "base_url": "https://lingsuan.top/v1",
+      "api_key_env": "LINGSUAN_XAI_API_KEY",
+      "api_key": "",
+      "default_model": "grok-4.5",
+      "vision_model": "grok-4.5",
+      "vision_model_options": ["grok-4.5"],
+      "supports_vision": true,
+      "model_capabilities": {"grok-4.5": ["text", "vision"]},
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": ["grok-4.5"],
+      "model_option_labels": {"grok-4.5": "Grok 4.5"},
+      "allow_custom_model": false,
+      "model_hint": "仅使用灵算 xAI 供应商分组的密钥。",
+      "thinking_mode": "high",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "lingsuan_anthropic": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
+      "base_url": "https://lingsuan.top/v1",
+      "api_key_env": "LINGSUAN_ANTHROPIC_API_KEY",
+      "api_key": "",
+      "default_model": "claude-opus-5",
+      "vision_model": "claude-opus-5",
+      "vision_model_options": ["claude-opus-5"],
+      "supports_vision": true,
+      "model_capabilities": {"claude-opus-5": ["text", "vision"]},
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": ["claude-opus-5"],
+      "model_option_labels": {"claude-opus-5": "Claude Opus 5"},
+      "allow_custom_model": false,
+      "model_hint": "仅使用灵算 Anthropic 供应商分组的密钥。",
+      "thinking_mode": "high",
       "temperature": 0.1,
       "max_tokens": 24576
     }

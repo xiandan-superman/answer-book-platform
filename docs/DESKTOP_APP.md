@@ -29,6 +29,12 @@
 - 更新只替换程序文件，不覆盖 API Key、教材、真题、任务历史和输出文件。
 - 模型 API 仍由用户自行填写和付费，更新仓库不保存任何 API Key。
 
+日常小改动只提交到源码仓库并通过源码预览审查，不触发安装包构建。准备发布时更新
+`APP_VERSION` 并创建同名版本标签（例如 `v0.9.1`）；GitHub Actions 才会同时构建
+Mac Apple 芯片与 Windows 64 位安装包、生成 SHA256 更新清单，并发布到公共安装包仓库。
+跨仓库发布使用源码仓库 Secret `RELEASE_REPO_TOKEN`，该凭据应仅授予
+`answer-book-platform-releases` 的 Contents 读写权限。
+
 正式发布使用私有源码仓库 `xiandan-superman/answer-book-platform` 和公共二进制更新仓库
 `xiandan-superman/answer-book-platform-releases`。公共仓库只放安装包、校验清单和更新说明，用户无需 GitHub Token。
 

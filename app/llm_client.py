@@ -7,7 +7,6 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import parse_qs, urlparse
 
 from .concurrency import ModelRequestAborted, model_request_slot
 from .runtime_monitor import record_model_call_usage, track_model_call
@@ -267,8 +266,6 @@ class OpenAICompatibleClient:
             raise LLMError(f"Image model is not configured for provider: {self.config.name}")
         if _is_dashscope_image_model(self.config, image_model):
             return self._generate_dashscope_image(prompt, output, model=image_model, size=size, timeout=timeout)
-        if _is_yunwu_gemini_image_model(self.config, image_model):
-            return self._generate_yunwu_gemini_image(prompt, output, model=image_model, size=size, timeout=timeout)
         image_size = _effective_image_size(image_model, str(size or self.config.image_size or "1024x1024"))
         last_error: LLMError | None = None
         for use_response_format in (True, False):
@@ -338,51 +335,6 @@ class OpenAICompatibleClient:
             "provider_api": "dashscope_multimodal_generation",
         }
         return ImageGenerationResult(self.config.name, model, output, raw)
-
-    def _generate_yunwu_gemini_image(
-        self,
-        prompt: str,
-        output: Path,
-        *,
-        model: str,
-        size: str | None = None,
-        timeout: int = 240,
-    ) -> ImageGenerationResult:
-        endpoint = f"{_native_api_root(self.config.base_url)}/v1beta/models/{model}:generateContent"
-        payload = {
-            "response_format": "url",
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseModalities": ["IMAGE"],
-                "imageConfig": {"aspectRatio": _gemini_aspect_ratio(size or self.config.image_size)},
-            },
-        }
-        raw = self._post_json(endpoint, payload, timeout=timeout)
-        image_uri, mime_type = _gemini_image_location(raw)
-        image_bytes = self._download_image_uri(image_uri, timeout=timeout)
-        image_path = output.with_suffix(_image_suffix_for_mime_type(mime_type))
-        image_path.parent.mkdir(parents=True, exist_ok=True)
-        image_path.write_bytes(image_bytes)
-        raw["_request"] = {
-            "endpoint": endpoint,
-            "provider_api": "yunwu_gemini_generate_content",
-            "aspect_ratio": payload["generationConfig"]["imageConfig"]["aspectRatio"],
-            "mime_type": mime_type,
-        }
-        return ImageGenerationResult(self.config.name, model, image_path, raw)
-
-    def _download_image_uri(self, image_uri: str, *, timeout: int) -> bytes:
-        if image_uri.startswith("data:") and "," in image_uri:
-            try:
-                return base64.b64decode(image_uri.split(",", 1)[1])
-            except Exception as exc:
-                raise LLMError("Provider returned invalid image data URI") from exc
-        request = urllib.request.Request(image_uri, headers=_image_download_headers(image_uri, self.config.api_key))
-        try:
-            with self._urlopen(request, timeout=timeout) as response:
-                return response.read()
-        except Exception as exc:
-            raise LLMError(f"Failed to download generated image: {exc}") from exc
 
     def _post_json(self, url: str, payload: dict[str, Any], *, timeout: int) -> dict[str, Any]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -533,12 +485,10 @@ class OpenAICompatibleClient:
 
 
 class ResponsesAPIClient(OpenAICompatibleClient):
-    """Opt-in Responses API adapter.
+    """Responses API adapter used by every built-in text provider.
 
-    Existing providers remain on ``OpenAICompatibleClient``. This adapter is
-    selected only by ``create_llm_client`` when ``api_protocol`` is explicitly
-    set to ``responses``. It intentionally reuses the existing retry, image,
-    and JSON parsing helpers so the migration surface stays small.
+    It intentionally reuses the existing retry, image, and JSON parsing helpers
+    so text and multimodal calls share one transport implementation.
     """
 
     def _chat_json_once(
@@ -675,66 +625,6 @@ def _is_dashscope_image_model(config: ProviderConfig, model: str) -> bool:
     base_url = str(getattr(config, "base_url", "") or "").lower()
     model_name = str(model or "").lower()
     return (name in {"bailian", "dashscope"} or "dashscope.aliyuncs.com" in base_url or ".maas.aliyuncs.com" in base_url) and model_name.startswith(("wan", "qwen-image", "z-image"))
-
-
-def _is_yunwu_gemini_image_model(config: ProviderConfig, model: str) -> bool:
-    name = str(getattr(config, "name", "") or "").lower()
-    base_url = str(getattr(config, "base_url", "") or "").lower()
-    model_name = str(model or "").lower()
-    return (name == "yunwu" or "yunwu.ai" in base_url or "yunwu.cloud" in base_url) and model_name.startswith("gemini-") and "image" in model_name
-
-
-def _native_api_root(base_url: str) -> str:
-    text = str(base_url or "").rstrip("/")
-    return text[:-3] if text.endswith("/v1") else text
-
-
-def _gemini_aspect_ratio(size: str) -> str:
-    parsed = _parse_image_size_pixels(size)
-    if not parsed:
-        return "1:1"
-    width, height = parsed
-    ratio = width / height
-    candidates = {"1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "16:9": 16 / 9, "9:16": 9 / 16}
-    return min(candidates, key=lambda key: abs(candidates[key] - ratio))
-
-
-def _image_suffix_for_mime_type(mime_type: str) -> str:
-    normalized = str(mime_type or "").split(";", 1)[0].strip().lower()
-    return {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}.get(normalized, ".png")
-
-
-def _image_download_headers(image_uri: str, api_key: str) -> dict[str, str]:
-    """Do not add Bearer auth to pre-signed object-storage URLs."""
-    query_keys = {key.lower() for key in parse_qs(urlparse(image_uri).query)}
-    if any(key.startswith("x-amz-") for key in query_keys):
-        return {}
-    return {"Authorization": f"Bearer {api_key}"}
-
-
-def _gemini_image_location(raw: dict[str, Any]) -> tuple[str, str]:
-    candidates = raw.get("candidates") if isinstance(raw, dict) else None
-    if not isinstance(candidates, list):
-        raise LLMError(f"Unexpected Gemini image response shape: {raw}")
-    for candidate in candidates:
-        content = candidate.get("content") if isinstance(candidate, dict) else {}
-        parts = content.get("parts") if isinstance(content, dict) else []
-        if not isinstance(parts, list):
-            continue
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            file_data = part.get("fileData") or part.get("file_data")
-            if isinstance(file_data, dict):
-                uri = str(file_data.get("fileUri") or file_data.get("file_uri") or file_data.get("url") or "").strip()
-                if uri:
-                    return uri, str(file_data.get("mimeType") or file_data.get("mime_type") or "")
-            inline_data = part.get("inlineData") or part.get("inline_data")
-            if isinstance(inline_data, dict):
-                encoded = str(inline_data.get("data") or "").strip()
-                if encoded:
-                    return f"data:{inline_data.get('mimeType') or inline_data.get('mime_type') or 'image/png'};base64,{encoded}", str(inline_data.get("mimeType") or inline_data.get("mime_type") or "")
-    raise LLMError(f"Gemini image response has no fileData or inlineData image: {raw}")
 
 
 def _dashscope_multimodal_generation_endpoint(base_url: str) -> str:
