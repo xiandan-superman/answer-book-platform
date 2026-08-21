@@ -73,7 +73,13 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         from app.llm_client import OpenAICompatibleClient, ResponsesAPIClient
         from app.settings import get_provider, list_providers
 
-        responses_providers = {"bailian", "yunwu", "lingsuan"}
+        responses_providers = {
+            "bailian",
+            "lingsuan_openai",
+            "lingsuan_google",
+            "lingsuan_xai",
+            "lingsuan_anthropic",
+        }
         providers = list_providers()
         self.assertNotIn("openai", providers)
         self.assertNotIn("zhipu", providers)

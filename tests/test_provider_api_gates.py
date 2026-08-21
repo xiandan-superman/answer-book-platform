@@ -26,14 +26,14 @@ class ProviderApiGateTests(unittest.TestCase):
             [
                 (
                     "答案生成模型",
-                    SimpleNamespace(name="yunwu", api_key="", api_key_env="YUNWU_API_KEY"),
+                    SimpleNamespace(name="lingsuan_openai", api_key="", api_key_env="LINGSUAN_OPENAI_API_KEY"),
                 )
             ]
         )
 
         self.assertEqual(1, len(errors))
-        self.assertIn("答案生成模型 yunwu 未配置 API Key", errors[0])
-        self.assertIn("YUNWU_API_KEY", errors[0])
+        self.assertIn("答案生成模型 lingsuan_openai 未配置 API Key", errors[0])
+        self.assertIn("LINGSUAN_OPENAI_API_KEY", errors[0])
 
     def test_final_acceptance_blocks_demo_answer_fragments(self) -> None:
         from app.final_acceptance import answer_fragment_blocking_findings

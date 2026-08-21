@@ -21,6 +21,8 @@ BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
     "qwen3.7-max-2026-05-20",
     "qwen3.7-max-preview",
 )
+REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
+LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,11 @@ def list_providers() -> dict[str, ProviderConfig]:
     raw = load_provider_config_file()
     providers: dict[str, ProviderConfig] = {}
     for name, item in raw.get("providers", {}).items():
+        # A copied providers.local.json may still contain removed 0.9.0
+        # entries. Never resurrect Yunwu or the old cross-supplier Lingsuan
+        # provider through a local overlay.
+        if name in REMOVED_PROVIDER_NAMES:
+            continue
         env_name = str(item.get("api_key_env", "")).strip()
         # Frontend key saving writes to .env. Let that saved value override
         # legacy providers.local.json entries so replacing a bad key takes effect.
@@ -286,6 +293,7 @@ def get_provider(name: str | None = None) -> ProviderConfig:
     raw = load_provider_config_file()
     providers = list_providers()
     selected = name or raw.get("active_provider")
+    selected = LEGACY_PROVIDER_ALIASES.get(str(selected or ""), selected)
     if not selected and providers:
         selected = next(iter(providers))
     if selected not in providers:
