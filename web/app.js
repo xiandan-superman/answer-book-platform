@@ -995,8 +995,10 @@ function providerEnvKey(providerName) {
     deepseek: "DEEPSEEK_API_KEY",
     ark: "ARK_API_KEY",
     bailian: "DASHSCOPE_API_KEY",
-    yunwu: "YUNWU_API_KEY",
-    lingsuan: "LINGSUAN_API_KEY"
+    lingsuan_openai: "LINGSUAN_OPENAI_API_KEY",
+    lingsuan_google: "LINGSUAN_GOOGLE_API_KEY",
+    lingsuan_xai: "LINGSUAN_XAI_API_KEY",
+    lingsuan_anthropic: "LINGSUAN_ANTHROPIC_API_KEY"
   };
   return map[name] || "";
 }
@@ -1006,8 +1008,10 @@ function displayProviderName(name) {
     deepseek: "DeepSeek",
     ark: "火山方舟",
     bailian: "阿里云百炼",
-    yunwu: "云雾 API",
-    lingsuan: "灵算 API"
+    lingsuan_openai: "灵算 · OpenAI",
+    lingsuan_google: "灵算 · Google Gemini",
+    lingsuan_xai: "灵算 · xAI",
+    lingsuan_anthropic: "灵算 · Anthropic"
   };
   return labels[String(name || "").toLowerCase()] || name;
 }
@@ -6930,7 +6934,7 @@ async function testKeyProvider(providerName) {
       body: JSON.stringify({
         provider: providerName,
         model: cfg.default_model || undefined,
-        thinking_mode: "auto",
+        thinking_mode: cfg.thinking_mode || "auto",
         api_key: key || undefined
       })
     });
