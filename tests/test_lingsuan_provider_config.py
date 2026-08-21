@@ -34,6 +34,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
                 self.assertEqual("https://lingsuan.top/v1", provider.base_url)
                 self.assertEqual("responses", provider.api_protocol)
                 self.assertTrue(provider.responses_streaming)
+                self.assertFalse(provider.responses_fallback_to_chat)
                 self.assertEqual("high", provider.thinking_mode)
                 self.assertEqual(env_name, provider.api_key_env)
                 self.assertEqual(env_name, provider.redacted()["api_key_env"])

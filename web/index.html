@@ -1045,23 +1045,25 @@
             <p>这套选择只供“按题出题”使用，不会修改真题解析或知识点出题。API Key 仍由全局配置中心统一管理。</p>
           </div>
         </div>
-        <div class="task-model-grid">
+        <div class="task-model-grid task-model-grid-simplified">
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-pen-ruler"></i></span>
-            <div><h3>文字生成</h3><p>分析原题、提取考点、设计蓝图、生成与重做题目。</p></div>
+            <div><h3>主生成模型</h3><p>一个模型完成原题分析、考点提取、蓝图设计、题目生成和解析；支持多模态时也直接读图。</p></div>
             <label>服务商<select id="practiceTextProviderSelect"></select></label>
             <label>具体模型<select id="practiceTextModelSelect"></select></label>
             <input id="practiceTextModelInput" type="text" hidden placeholder="填写模型 ID">
             <p id="practiceTextModelSummary">正在读取模型...</p>
           </article>
-          <article class="practice-model-setting">
-            <span class="task-model-icon"><i class="fas fa-image"></i></span>
-            <div><h3>图片回退</h3><p>仅当主文字模型不支持多模态时，用于处理图片、截图和图表。</p></div>
-            <label>服务商<select id="practiceVisionProviderSelect"></select></label>
-            <label>具体模型<select id="practiceVisionModelSelect"></select></label>
-            <input id="practiceVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
-            <p id="practiceVisionModelSummary">正在读取模型...</p>
-          </article>
+          <details class="task-model-fallback-details">
+            <summary><i class="fas fa-image"></i>高级：主模型不能读图时的图片回退</summary>
+            <article class="practice-model-setting">
+              <div><h3>图片回退模型</h3><p>仅当主生成模型不支持多模态、输入又包含图片时调用。</p></div>
+              <label>服务商<select id="practiceVisionProviderSelect"></select></label>
+              <label>具体模型<select id="practiceVisionModelSelect"></select></label>
+              <input id="practiceVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
+              <p id="practiceVisionModelSummary">正在读取模型...</p>
+            </article>
+          </details>
         </div>
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
@@ -1081,23 +1083,25 @@
             <p>这套选择只供“知识点出题”使用，不会修改真题解析或按题出题。API Key 仍由全局配置中心统一管理。</p>
           </div>
         </div>
-        <div class="task-model-grid">
+        <div class="task-model-grid task-model-grid-simplified">
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-brain"></i></span>
-            <div><h3>文字生成</h3><p>理解知识材料、规划难度与题型、生成完整题目和解析。</p></div>
+            <div><h3>主生成模型</h3><p>一个模型完成材料理解、难度与题型规划、题目生成和完整解析；支持多模态时也直接读图。</p></div>
             <label>服务商<select id="knowledgeTextProviderSelect"></select></label>
             <label>具体模型<select id="knowledgeTextModelSelect"></select></label>
             <input id="knowledgeTextModelInput" type="text" hidden placeholder="填写模型 ID">
             <p id="knowledgeTextModelDetail">正在读取模型...</p>
           </article>
-          <article class="practice-model-setting">
-            <span class="task-model-icon"><i class="fas fa-file-image"></i></span>
-            <div><h3>图片回退</h3><p>仅当主文字模型不支持多模态时，用于理解教材截图、插图和公式图片。</p></div>
-            <label>服务商<select id="knowledgeVisionProviderSelect"></select></label>
-            <label>具体模型<select id="knowledgeVisionModelSelect"></select></label>
-            <input id="knowledgeVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
-            <p id="knowledgeVisionModelDetail">正在读取模型...</p>
-          </article>
+          <details class="task-model-fallback-details">
+            <summary><i class="fas fa-file-image"></i>高级：主模型不能读图时的图片回退</summary>
+            <article class="practice-model-setting">
+              <div><h3>图片回退模型</h3><p>仅当主生成模型不能读图，而材料包含截图、插图或公式图片时调用。</p></div>
+              <label>服务商<select id="knowledgeVisionProviderSelect"></select></label>
+              <label>具体模型<select id="knowledgeVisionModelSelect"></select></label>
+              <input id="knowledgeVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
+              <p id="knowledgeVisionModelDetail">正在读取模型...</p>
+            </article>
+          </details>
         </div>
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
@@ -1134,13 +1138,30 @@
           <div class="model-config-header">
             <div>
               <h3><i class="fas fa-key text-purple"></i>模型 API 配置</h3>
-              <p>按解析职责分配模型。每个环节可以选择不同服务商和具体模型；API Key 在独立配置页面统一管理。</p>
+              <p>先选择一套默认方案即可开始；只有需要精细控制时才展开详细分工。</p>
             </div>
             <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置默认模型和 Thinking 模式"><i class="fas fa-sliders"></i>全局设置</button>
           </div>
           <div class="reference-form-stack">
             <p id="modelCapabilityRisk" class="model-capability-risk hidden"></p>
-            <div class="model-role-config-grid">
+            <section class="exam-model-preset-panel">
+              <div>
+                <strong><i class="fas fa-wand-magic-sparkles"></i>默认模型组合</strong>
+                <p>选择一次，程序自动完成解析、复核、读图和作图兜底的内部模型分工。</p>
+              </div>
+              <label>使用方案
+                <select id="examModelPresetSelect">
+                  <option value="balanced">稳定推荐：DeepSeek + GPT-5.6 Terra/Sol</option>
+                  <option value="quality">质量优先：GPT-5.6 Sol</option>
+                  <option value="economy">性价比：Gemini 3.6 Flash</option>
+                  <option value="custom">自定义详细分工</option>
+                </select>
+              </label>
+              <p id="examModelPresetSummary" class="exam-model-preset-summary">正在读取模型配置...</p>
+            </section>
+            <details id="examModelRoleDetails" class="exam-model-role-details">
+              <summary><i class="fas fa-sliders"></i>高级：查看或自定义各环节模型</summary>
+              <div class="model-role-config-grid">
               <section class="model-role-config-card">
                 <div class="model-role-card-head">
                   <span class="model-role-icon indigo"><i class="fas fa-magnifying-glass-chart"></i></span>
@@ -1231,7 +1252,8 @@
                   <span id="imageRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-            </div>
+              </div>
+            </details>
             <details id="modelAdvancedDetails" class="model-advanced-details">
               <summary>全局模型设置</summary>
               <div class="model-advanced-copy">

@@ -72,6 +72,31 @@ def test_multimodal_answer_model_hides_redundant_vision_stage() -> None:
     assert "不再先调用独立识图模型" in APP_JS
 
 
+def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -> None:
+    assert 'id="examModelPresetSelect"' in INDEX_HTML
+    assert 'value="balanced"' in INDEX_HTML
+    assert 'value="quality"' in INDEX_HTML
+    assert 'value="economy"' in INDEX_HTML
+    assert 'id="examModelRoleDetails"' in INDEX_HTML
+    assert 'EXAM_MODEL_PRESET_STORAGE_KEY = "answerBook.examModelPreset.v1"' in APP_JS
+    assert 'reasoning: ["deepseek", "deepseek-v4-flash"]' in APP_JS
+    assert 'answer: ["lingsuan_openai", "gpt-5.6-terra"]' in APP_JS
+    assert 'correctness: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
+    assert 'answer: ["lingsuan_google", "gemini-3.6-flash"]' in APP_JS
+
+
+def test_practice_and_knowledge_expose_one_primary_model_by_default() -> None:
+    assert INDEX_HTML.count("高级：主模型不能读图时的图片回退") == 2
+    assert INDEX_HTML.count("<h3>主生成模型</h3>") == 2
+    assert 'class="task-model-fallback-details"' in INDEX_HTML
+
+
+def test_unconfigured_optional_image_fallback_does_not_block_exam_creation() -> None:
+    assert "const imageFallbackConfigured = Boolean" in APP_JS
+    assert 'image_provider: imageFallbackConfigured ?' in APP_JS
+    assert 'image_model: imageFallbackConfigured ?' in APP_JS
+
+
 def test_api_key_password_fields_belong_to_non_submitting_forms() -> None:
     assert '<form class="key-provider-card" data-key-provider=' in APP_JS
     assert 'grid.querySelectorAll("form[data-key-provider]")' in APP_JS

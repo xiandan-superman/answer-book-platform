@@ -701,6 +701,98 @@ textarea:focus {
   gap: 17px;
 }
 
+.exam-model-preset-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 18px;
+  border: 1px solid rgba(77, 120, 198, .28);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(239, 246, 255, .92), rgba(248, 250, 255, .84));
+}
+
+.exam-model-preset-panel > div > strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--platform-text-strong);
+  font-size: 16px;
+}
+
+.exam-model-preset-panel > div > p {
+  margin: 6px 0 0;
+  color: var(--platform-text-muted);
+  line-height: 1.55;
+}
+
+.exam-model-preset-panel label {
+  display: grid;
+  gap: 7px;
+  color: var(--platform-text);
+  font-weight: 700;
+}
+
+.exam-model-preset-panel select {
+  width: 100%;
+  min-height: 44px;
+}
+
+.exam-model-preset-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .78);
+  color: var(--platform-text);
+  line-height: 1.55;
+}
+
+.exam-model-preset-summary > span {
+  flex-basis: 100%;
+  color: var(--platform-text-muted);
+}
+
+.exam-model-preset-summary.warn {
+  background: rgba(255, 247, 237, .94);
+  color: #9a3412;
+}
+
+.exam-model-role-details,
+.task-model-fallback-details {
+  border: 1px solid var(--platform-border);
+  border-radius: 16px;
+  background: rgba(249, 251, 255, .72);
+}
+
+.exam-model-role-details > summary,
+.task-model-fallback-details > summary {
+  cursor: pointer;
+  padding: 14px 16px;
+  color: var(--platform-text);
+  font-weight: 750;
+}
+
+.exam-model-role-details > .model-role-config-grid {
+  margin: 0;
+  padding: 4px 14px 16px;
+}
+
+.task-model-grid-simplified {
+  grid-template-columns: 1fr;
+}
+
+.task-model-fallback-details {
+  overflow: hidden;
+}
+
+.task-model-fallback-details > .practice-model-setting {
+  margin: 0 14px 14px;
+  box-shadow: none;
+}
+
 .model-role-config-card {
   overflow: hidden;
   border: 1px solid var(--platform-border);

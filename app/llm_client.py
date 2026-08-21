@@ -485,12 +485,10 @@ class OpenAICompatibleClient:
 
 
 class ResponsesAPIClient(OpenAICompatibleClient):
-    """Opt-in Responses API adapter.
+    """Responses API adapter used by every built-in text provider.
 
-    Existing providers remain on ``OpenAICompatibleClient``. This adapter is
-    selected only by ``create_llm_client`` when ``api_protocol`` is explicitly
-    set to ``responses``. It intentionally reuses the existing retry, image,
-    and JSON parsing helpers so the migration surface stays small.
+    It intentionally reuses the existing retry, image, and JSON parsing helpers
+    so text and multimodal calls share one transport implementation.
     """
 
     def _chat_json_once(

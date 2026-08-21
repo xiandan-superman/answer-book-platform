@@ -23,6 +23,15 @@ BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
 )
 REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
 LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
+BUILTIN_RESPONSES_PROVIDER_NAMES = {
+    "deepseek",
+    "ark",
+    "bailian",
+    "lingsuan_openai",
+    "lingsuan_google",
+    "lingsuan_xai",
+    "lingsuan_anthropic",
+}
 
 
 @dataclass(frozen=True)
@@ -136,6 +145,12 @@ def list_providers() -> dict[str, ProviderConfig]:
         # provider through a local overlay.
         if name in REMOVED_PROVIDER_NAMES:
             continue
+        # Built-in providers have been verified against Responses.  Force the
+        # transport here as well as in the shipped JSON because older installs
+        # may carry a full providers.local.json that still says Chat Completions.
+        # A stale local overlay must not silently restore the old protocol or
+        # the Responses-to-Chat double request fallback after an application update.
+        builtin_responses = name in BUILTIN_RESPONSES_PROVIDER_NAMES
         env_name = str(item.get("api_key_env", "")).strip()
         # Frontend key saving writes to .env. Let that saved value override
         # legacy providers.local.json entries so replacing a bad key takes effect.
@@ -211,8 +226,14 @@ def list_providers() -> dict[str, ProviderConfig]:
             },
             thinking_mode=str(item.get("thinking_mode", "") or os.environ.get("ANSWER_BOOK_THINKING_MODE", "") or "auto"),
             json_mode_unsupported_models=tuple(json_mode_unsupported_models),
-            api_protocol=str(item.get("api_protocol", "chat_completions") or "chat_completions").strip().lower(),
-            responses_fallback_to_chat=bool(item.get("responses_fallback_to_chat", True)),
+            api_protocol=(
+                "responses"
+                if builtin_responses
+                else str(item.get("api_protocol", "chat_completions") or "chat_completions").strip().lower()
+            ),
+            responses_fallback_to_chat=(
+                False if builtin_responses else bool(item.get("responses_fallback_to_chat", True))
+            ),
             responses_streaming=bool(item.get("responses_streaming", True)),
         )
     return providers

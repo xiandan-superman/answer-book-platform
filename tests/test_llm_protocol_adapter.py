@@ -6,6 +6,7 @@ import sys
 import unittest
 import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -69,17 +70,10 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertIsInstance(client, OpenAICompatibleClient)
         self.assertEqual("chat_completions", client.config.api_protocol)
 
-    def test_verified_providers_use_responses_and_unverified_providers_remain_on_chat(self):
+    def test_all_configured_text_providers_use_responses_without_chat_fallback(self):
         from app.llm_client import OpenAICompatibleClient, ResponsesAPIClient
         from app.settings import get_provider, list_providers
 
-        responses_providers = {
-            "bailian",
-            "lingsuan_openai",
-            "lingsuan_google",
-            "lingsuan_xai",
-            "lingsuan_anthropic",
-        }
         providers = list_providers()
         self.assertNotIn("openai", providers)
         self.assertNotIn("zhipu", providers)
@@ -89,13 +83,10 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         for name, provider in providers.items():
             with self.subTest(provider=name):
                 client = OpenAICompatibleClient(provider)
-                if name in responses_providers:
-                    self.assertEqual("responses", provider.api_protocol)
-                    self.assertIsInstance(client, ResponsesAPIClient)
-                else:
-                    self.assertEqual("chat_completions", provider.api_protocol)
-                    self.assertIsInstance(client, OpenAICompatibleClient)
-                    self.assertNotIsInstance(client, ResponsesAPIClient)
+                self.assertEqual("responses", provider.api_protocol)
+                self.assertTrue(provider.responses_streaming)
+                self.assertFalse(provider.responses_fallback_to_chat)
+                self.assertIsInstance(client, ResponsesAPIClient)
 
     def test_deepseek_exposes_text_and_multimodal_flash_models(self):
         from app.settings import list_providers, provider_model_supports_vision
@@ -109,6 +100,22 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual(("deepseek-v4-flash-vision-exp",), provider.vision_model_options)
         self.assertFalse(provider_model_supports_vision(provider, "deepseek-v4-flash"))
         self.assertTrue(provider_model_supports_vision(provider, "deepseek-v4-flash-vision-exp"))
+
+    def test_stale_local_protocol_overrides_cannot_restore_chat_for_builtin_providers(self):
+        from app.settings import list_providers
+
+        raw = json.loads((ROOT / "config" / "providers.example.json").read_text(encoding="utf-8"))
+        for item in raw["providers"].values():
+            item["api_protocol"] = "chat_completions"
+            item["responses_fallback_to_chat"] = True
+
+        with patch("app.settings.load_provider_config_file", return_value=raw):
+            providers = list_providers()
+
+        for name, provider in providers.items():
+            with self.subTest(provider=name):
+                self.assertEqual("responses", provider.api_protocol)
+                self.assertFalse(provider.responses_fallback_to_chat)
 
     def test_unknown_protocol_fails_before_making_a_request(self):
         from app.llm_client import OpenAICompatibleClient

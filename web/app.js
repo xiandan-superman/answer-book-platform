@@ -90,6 +90,40 @@ const textModelRoles = {
   }
 };
 
+const EXAM_MODEL_PRESET_STORAGE_KEY = "answerBook.examModelPreset.v1";
+const examModelPresets = {
+  balanced: {
+    label: "稳定推荐",
+    description: "DeepSeek 负责考点与证据，GPT-5.6 Terra 生成解析，GPT-5.6 Sol 只复核高风险题。",
+    base: ["lingsuan_openai", "gpt-5.6-terra"],
+    reasoning: ["deepseek", "deepseek-v4-flash"],
+    answer: ["lingsuan_openai", "gpt-5.6-terra"],
+    correctness: ["lingsuan_openai", "gpt-5.6-sol"],
+    vision: ["lingsuan_openai", "gpt-5.6-terra"],
+    image: ["bailian", "qwen-image-2.0-pro"],
+  },
+  quality: {
+    label: "质量优先",
+    description: "GPT-5.6 Sol 统一完成考点、解析、复核和直接读图，减少跨模型信息损失。",
+    base: ["lingsuan_openai", "gpt-5.6-sol"],
+    reasoning: ["lingsuan_openai", "gpt-5.6-sol"],
+    answer: ["lingsuan_openai", "gpt-5.6-sol"],
+    correctness: ["lingsuan_openai", "gpt-5.6-sol"],
+    vision: ["lingsuan_openai", "gpt-5.6-sol"],
+    image: ["bailian", "qwen-image-2.0-pro"],
+  },
+  economy: {
+    label: "性价比",
+    description: "Gemini 3.6 Flash 统一完成文字和图片理解，适合常规题量与成本敏感场景。",
+    base: ["lingsuan_google", "gemini-3.6-flash"],
+    reasoning: ["lingsuan_google", "gemini-3.6-flash"],
+    answer: ["lingsuan_google", "gemini-3.6-flash"],
+    correctness: ["lingsuan_google", "gemini-3.6-flash"],
+    vision: ["lingsuan_google", "gemini-3.6-flash"],
+    image: ["bailian", "qwen-image-2.0"],
+  },
+};
+
 const pageOrder = ["home", "keys", "knowledge", "knowledge-models", "practice", "practice-models", "env", "textbook", "exam", "task", "result", "tasks", "monitor"];
 const workflowStepPages = ["env", "exam", "task", "result"];
 const taskStageGroups = [
@@ -1529,6 +1563,7 @@ async function refresh() {
   if (previousProvider && providers[previousProvider]) select.value = previousProvider;
   else if (configuredProvider) select.value = configuredProvider;
   updateModelControls();
+  initializeExamModelPreset();
   updateProviderSummary(providers);
   populatePracticeModelSettings();
   await Promise.all([loadLibraryFiles(), loadPracticeHistory()]);
@@ -6621,6 +6656,117 @@ function updateTextRoleModelControls() {
   }
 }
 
+function examPresetRequiredProviders(preset) {
+  return Array.from(new Set(
+    [preset?.base, preset?.reasoning, preset?.answer, preset?.correctness]
+      .map((route) => route?.[0])
+      .filter(Boolean)
+  ));
+}
+
+function recommendedExamModelPreset() {
+  const saved = localStorage.getItem(EXAM_MODEL_PRESET_STORAGE_KEY) || "";
+  if (saved === "custom" || examModelPresets[saved]) return saved;
+  for (const key of ["balanced", "quality", "economy"]) {
+    const preset = examModelPresets[key];
+    if (examPresetRequiredProviders(preset).every((name) => providerConfigs[name]?.api_key_set)) return key;
+  }
+  return "custom";
+}
+
+function selectHasValue(select, value) {
+  return Boolean(select && Array.from(select.options || []).some((option) => option.value === value));
+}
+
+function setExamTextRoleRoute(roleKey, route) {
+  const role = textModelRoles[roleKey];
+  if (!role || !Array.isArray(route)) return;
+  const [providerName, modelName] = route;
+  const providerSelect = $(role.providerId);
+  if (!providerConfigs[providerName] || !selectHasValue(providerSelect, providerName)) return;
+  providerSelect.value = providerName;
+  populateTextRoleModelSelect(roleKey, modelName);
+  const modelSelect = $(role.modelSelectId);
+  if (selectHasValue(modelSelect, modelName)) modelSelect.value = modelName;
+  updateTextRoleHint(roleKey);
+}
+
+function renderExamModelPresetSummary(key) {
+  const target = $("examModelPresetSummary");
+  if (!target) return;
+  if (key === "custom" || !examModelPresets[key]) {
+    target.classList.remove("warn");
+    target.innerHTML = '<i class="fas fa-sliders"></i>当前使用自定义分工；可展开下方高级设置逐项调整。';
+    return;
+  }
+  const preset = examModelPresets[key];
+  const missingRequired = examPresetRequiredProviders(preset)
+    .filter((name) => !providerConfigs[name]?.api_key_set)
+    .map(displayProviderName);
+  const imageProviderName = preset.image?.[0] || "";
+  const imageOptionalMissing = imageProviderName && !providerConfigs[imageProviderName]?.api_key_set;
+  const notices = [];
+  if (missingRequired.length) notices.push(`需先配置：${missingRequired.join("、")}`);
+  if (imageOptionalMissing) notices.push(`${displayProviderName(imageProviderName)} 未配置时仍可运行，只是不启用生图兜底`);
+  target.classList.toggle("warn", missingRequired.length > 0);
+  target.innerHTML = `<i class="fas ${missingRequired.length ? "fa-triangle-exclamation" : "fa-circle-check"}"></i><strong>${escapeHtml(preset.label)}</strong>：${escapeHtml(preset.description)}${notices.length ? `<span>${escapeHtml(notices.join("；"))}</span>` : ""}`;
+}
+
+function applyExamModelPreset(key, { persist = true } = {}) {
+  const select = $("examModelPresetSelect");
+  const preset = examModelPresets[key];
+  if (select) select.value = preset ? key : "custom";
+  syncPlatformSelectElement(select);
+  if (!preset) {
+    if (persist) localStorage.setItem(EXAM_MODEL_PRESET_STORAGE_KEY, "custom");
+    renderExamModelPresetSummary("custom");
+    return;
+  }
+  const [baseProviderName, baseModel] = preset.base;
+  const baseProviderSelect = $("providerSelect");
+  if (providerConfigs[baseProviderName] && selectHasValue(baseProviderSelect, baseProviderName)) {
+    baseProviderSelect.value = baseProviderName;
+    updateModelControls();
+    if (selectHasValue($("modelSelect"), baseModel)) $("modelSelect").value = baseModel;
+  }
+  setExamTextRoleRoute("reasoning", preset.reasoning);
+  setExamTextRoleRoute("answer", preset.answer);
+  setExamTextRoleRoute("correctness", preset.correctness);
+
+  const [visionProviderName, visionModel] = preset.vision;
+  if (providerConfigs[visionProviderName] && selectHasValue($("visionProviderSelect"), visionProviderName)) {
+    $("visionProviderSelect").value = visionProviderName;
+    populateVisionModelSelect(visionModel);
+    if (selectHasValue($("visionModelSelect"), visionModel)) $("visionModelSelect").value = visionModel;
+  }
+  const [imageProviderName, imageModel] = preset.image;
+  if (providerConfigs[imageProviderName] && selectHasValue($("imageProviderSelect"), imageProviderName)) {
+    $("imageProviderSelect").value = imageProviderName;
+    populateImageModelControls(imageModel);
+    if (selectHasValue($("imageModelSelect"), imageModel)) $("imageModelSelect").value = imageModel;
+  }
+  if ($("thinkingModeSelect")) $("thinkingModeSelect").value = "high";
+  updateCapabilityModelHints();
+  updateModelCapabilityRisk();
+  renderQuestionTypeModelCards();
+  switchQuestionTypeTab(modelQuestionTypeTab);
+  if (persist) localStorage.setItem(EXAM_MODEL_PRESET_STORAGE_KEY, key);
+  renderExamModelPresetSummary(key);
+}
+
+function initializeExamModelPreset() {
+  const key = recommendedExamModelPreset();
+  applyExamModelPreset(key, { persist: true });
+}
+
+function markExamModelPresetCustom() {
+  const select = $("examModelPresetSelect");
+  if (select) select.value = "custom";
+  syncPlatformSelectElement(select);
+  localStorage.setItem(EXAM_MODEL_PRESET_STORAGE_KEY, "custom");
+  renderExamModelPresetSummary("custom");
+}
+
 function switchQuestionTypeTab(tab) {
   modelQuestionTypeTab = ["text", "vision_calc", "drawing", "vision_drawing"].includes(tab) ? tab : "text";
   document.querySelectorAll(".model-type-tab").forEach((button) => {
@@ -7311,6 +7457,7 @@ async function createTask() {
       setVisual("taskVisualResult", "尚未开始", "你可以继续调整真题或教材范围。", "info");
       return;
     }
+    const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel());
     const data = await api("/api/tasks", {
       method: "POST",
       body: JSON.stringify({
@@ -7328,8 +7475,8 @@ async function createTask() {
         correctness_model: selectedTextRoleModel("correctness") || selectedTextRoleModel("answer") || requireSelectedModel(),
         vision_provider: $("visionProviderSelect")?.value || "",
         vision_model: selectedVisionModel(),
-        image_provider: $("imageProviderSelect")?.value || "",
-        image_model: selectedImageModel(),
+        image_provider: imageFallbackConfigured ? ($("imageProviderSelect")?.value || "") : "",
+        image_model: imageFallbackConfigured ? selectedImageModel() : "",
         model_thinking: selectedThinkingMode()
       })
     });
@@ -10484,20 +10631,26 @@ setupUploadInput("textbook");
 $("examSelect").addEventListener("change", () => {
   selectExamFile($("examSelect").value || "");
 });
+$("examModelPresetSelect")?.addEventListener("change", (event) => {
+  applyExamModelPreset(event.target.value || "custom");
+});
 $("providerSelect").addEventListener("change", () => {
   updateModelControls();
   updateProviderSummary(providerConfigs);
   updatePracticeModelSummary();
+  markExamModelPresetCustom();
 });
 $("modelSelect").addEventListener("change", () => {
   updateTextRoleModelControls();
   syncVisionModelFromAnswerModel();
   updatePracticeModelSummary();
+  markExamModelPresetCustom();
 });
 $("modelInput").addEventListener("input", () => {
   updateTextRoleModelControls();
   syncVisionModelFromAnswerModel();
   updatePracticeModelSummary();
+  markExamModelPresetCustom();
 });
 for (const roleKey of Object.keys(textModelRoles)) {
   const role = textModelRoles[roleKey];
@@ -10506,18 +10659,21 @@ for (const roleKey of Object.keys(textModelRoles)) {
     renderQuestionTypeModelCards();
     switchQuestionTypeTab(modelQuestionTypeTab);
     updatePracticeModelSummary();
+    markExamModelPresetCustom();
   });
   $(role.modelSelectId)?.addEventListener("change", () => {
     updateTextRoleHint(roleKey);
     renderQuestionTypeModelCards();
     switchQuestionTypeTab(modelQuestionTypeTab);
     updatePracticeModelSummary();
+    markExamModelPresetCustom();
   });
   $(role.modelInputId)?.addEventListener("input", () => {
     updateTextRoleHint(roleKey);
     renderQuestionTypeModelCards();
     switchQuestionTypeTab(modelQuestionTypeTab);
     updatePracticeModelSummary();
+    markExamModelPresetCustom();
   });
 }
 $("visionProviderSelect").addEventListener("change", () => {
@@ -10526,6 +10682,7 @@ $("visionProviderSelect").addEventListener("change", () => {
   renderQuestionTypeModelCards();
   switchQuestionTypeTab(modelQuestionTypeTab);
   updatePracticeModelSummary();
+  markExamModelPresetCustom();
 });
 $("visionModelSelect").addEventListener("change", () => {
   updateCapabilityModelHints();
@@ -10533,6 +10690,7 @@ $("visionModelSelect").addEventListener("change", () => {
   renderQuestionTypeModelCards();
   switchQuestionTypeTab(modelQuestionTypeTab);
   updatePracticeModelSummary();
+  markExamModelPresetCustom();
 });
 $("visionModelInput").addEventListener("input", () => {
   updateCapabilityModelHints();
@@ -10540,6 +10698,7 @@ $("visionModelInput").addEventListener("input", () => {
   renderQuestionTypeModelCards();
   switchQuestionTypeTab(modelQuestionTypeTab);
   updatePracticeModelSummary();
+  markExamModelPresetCustom();
 });
 for (const profile of ["practice", "knowledge"]) {
   for (const kind of ["text", "vision"]) {
@@ -10564,19 +10723,23 @@ $("imageProviderSelect").addEventListener("change", () => {
   updateModelCapabilityRisk();
   renderQuestionTypeModelCards();
   switchQuestionTypeTab(modelQuestionTypeTab);
+  markExamModelPresetCustom();
 });
 $("imageModelSelect")?.addEventListener("change", () => {
   updateCapabilityModelHints();
   updateModelCapabilityRisk();
   renderQuestionTypeModelCards();
   switchQuestionTypeTab(modelQuestionTypeTab);
+  markExamModelPresetCustom();
 });
 $("imageModelInput").addEventListener("input", () => {
   updateCapabilityModelHints();
   updateModelCapabilityRisk();
   renderQuestionTypeModelCards();
   switchQuestionTypeTab(modelQuestionTypeTab);
+  markExamModelPresetCustom();
 });
+$("thinkingModeSelect")?.addEventListener("change", markExamModelPresetCustom);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopSystemMonitorPolling();
   if (!document.hidden) resumeRememberedPracticeJob().catch(() => {});
@@ -11215,6 +11378,12 @@ function syncPlatformSelect(state) {
       <i class="fas fa-check"></i>
     </button>
   `).join("");
+}
+
+function syncPlatformSelectElement(select) {
+  if (!select) return;
+  const state = Array.from(platformSelectStates).find((item) => item.select === select);
+  if (state) syncPlatformSelect(state);
 }
 
 function openCustomSelect(state) {
