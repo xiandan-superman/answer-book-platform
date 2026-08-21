@@ -21,7 +21,7 @@ from .model_diagnostics import diagnostic_attachments, relevant_model_diagnostic
 from .paths import DATA_ROOT, LOCAL_CONFIG_DIR, PROJECT_ROOT
 from .runtime_monitor import ERROR_TRACE_LOG, MODEL_CALL_LEDGER, RUNTIME_LOG
 from .task_store import task_dir
-from .version import get_source_revision, get_version
+from .version import get_app_version, get_source_revision
 
 SUPPORT_ROOT = DATA_ROOT / "support_reports"
 PENDING_DIR = SUPPORT_ROOT / "pending"
@@ -160,8 +160,10 @@ def _jsonl_rows(path: Path, limit: int = 1000) -> list[dict[str, Any]]:
 
 
 def _task_lifecycle(task_id: str) -> list[dict[str, Any]]:
-    if not task_id or task_id.startswith("generation_"):
+    if not task_id:
         return []
+    if task_id.startswith("generation_"):
+        return _practice_job_lifecycle(task_id)
     try:
         event_path = task_dir(task_id) / "events.jsonl"
     except (ValueError, OSError):
@@ -181,6 +183,56 @@ def _task_lifecycle(task_id: str) -> list[dict[str, Any]]:
             continue
         result.append(row)
         previous_signature = signature
+    return result
+
+
+def _practice_job_lifecycle(job_id: str) -> list[dict[str, Any]]:
+    try:
+        from .practice_jobs import list_practice_jobs, load_practice_job
+
+        current = load_practice_job(job_id, include_payload=False)
+        batch_id = str(current.get("practice_batch_id") or "")
+        records = [
+            row
+            for row in list_practice_jobs(limit=100)
+            if str(row.get("job_id") or "") == job_id
+            or (batch_id and str(row.get("practice_batch_id") or "") == batch_id)
+        ]
+        if not any(str(row.get("job_id") or "") == job_id for row in records):
+            records.append(current)
+    except Exception:
+        return []
+    result: list[dict[str, Any]] = []
+    for record in sorted(records, key=lambda row: str(row.get("created_at") or "")):
+        base = {
+            "job_id": _sanitize(record.get("job_id")),
+            "operation": _sanitize(record.get("operation")),
+            "stage": _sanitize(record.get("current_stage")),
+        }
+        result.append({
+            "time": _sanitize(record.get("created_at")),
+            "event": "practice_job_created",
+            "payload": {**base, "status": "queued"},
+        })
+        if record.get("started_at"):
+            result.append({
+                "time": _sanitize(record.get("started_at")),
+                "event": "practice_job_started",
+                "payload": {**base, "status": "running"},
+            })
+        status = str(record.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            result.append({
+                "time": _sanitize(record.get("completed_at") or record.get("updated_at")),
+                "event": "practice_job_finished",
+                "payload": {
+                    **base,
+                    "status": status,
+                    "error": _sanitize(record.get("error")) if record.get("error") else "",
+                    "completed": _sanitize(record.get("completed_count")),
+                    "total": _sanitize(record.get("total_count")),
+                },
+            })
     return result
 
 
@@ -277,6 +329,33 @@ def _practice_content(history_id: str, exercise_index: Any) -> dict[str, Any]:
     return result
 
 
+def _practice_job_content(job_id: str) -> dict[str, Any]:
+    try:
+        from .practice_jobs import load_practice_job
+
+        record = load_practice_job(job_id, include_payload=True)
+    except Exception:
+        return {"job_id": job_id, "unavailable": True}
+    return {
+        "job_id": job_id,
+        "task_kind": _sanitize(record.get("task_kind")),
+        "practice_batch_id": _sanitize(record.get("practice_batch_id")),
+        "title": _sanitize(record.get("title")),
+        "operation": _sanitize(record.get("operation")),
+        "status": _sanitize(record.get("status")),
+        "current_stage": _sanitize(record.get("current_stage")),
+        "created_at": _sanitize(record.get("created_at")),
+        "started_at": _sanitize(record.get("started_at")),
+        "completed_at": _sanitize(record.get("completed_at")),
+        "elapsed_seconds": _sanitize(record.get("elapsed_seconds")),
+        "error": _sanitize(record.get("error")),
+        "progress_message": _sanitize(record.get("progress_message")),
+        "model_usage": _sanitize(record.get("model_usage") or {}),
+        "request_payload": _sanitize(record.get("payload") or {}),
+        "partial_or_final_result": _sanitize(record.get("result")) if record.get("result") is not None else None,
+    }
+
+
 def _related_runtime(task_id: str, request_ids: set[str], support_ids: set[str]) -> list[dict[str, Any]]:
     rows = _jsonl_rows(RUNTIME_LOG, 2000)
     result: list[dict[str, Any]] = []
@@ -330,9 +409,10 @@ def _fingerprint(context: dict[str, Any], events: list[dict[str, Any]], lifecycl
     call = failed_trace.get("call") if isinstance(failed_trace.get("call"), dict) else {}
     signature = {
         "schema": 1,
-        "version": get_version(),
+        "version": get_app_version(),
         "scope": context.get("scope"),
         "page": context.get("page"),
+        "task_id": context.get("task_id"),
         "question_id": context.get("question_id"),
         "exercise_index": context.get("exercise_index"),
         "last_event": {key: latest_failure.get(key) for key in ("kind", "action", "path", "status", "error_code")},
@@ -392,7 +472,12 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     fd, raw_tmp = tempfile.mkstemp(prefix=".support-", suffix=".part", dir=str(PENDING_DIR))
     os.close(fd)
     tmp = Path(raw_tmp)
-    content = _practice_content(history_id, context.get("exercise_index")) if history_id else _exam_content(task_id, question_id)
+    if history_id:
+        content = _practice_content(history_id, context.get("exercise_index"))
+    elif task_id.startswith("generation_"):
+        content = _practice_job_content(task_id)
+    else:
+        content = _exam_content(task_id, question_id)
     snapshot = content.pop("question_snapshot", "") if isinstance(content, dict) else ""
     selection = str(context.get("selection") or "").strip()
     manifest = {
@@ -401,12 +486,17 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         "fingerprint": fingerprint,
         "created_at": _now(),
         "scope": _redact(context.get("scope"), 40),
-        "application": {"version": get_version(), "source_revision": get_source_revision()},
+        "application": {"version": get_app_version(), "source_revision": get_source_revision()},
         "system": {"platform": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": platform.python_version()},
         "context": {
             "session_id": _redact(context.get("session_id"), 120), "page": _redact(context.get("page"), 80),
             "task_id": task_id, "question_id": question_id, "history_id": history_id,
             "exercise_index": context.get("exercise_index"), "selected_text": _redact(selection, 2000),
+            "task_kind": _redact(context.get("task_kind"), 40), "task_status": _redact(context.get("task_status"), 40),
+            "task_stage": _redact(context.get("task_stage"), 120), "operation": _redact(context.get("operation"), 80),
+            "task_title": _redact(context.get("task_title"), 200),
+            "practice_batch_id": _redact(context.get("practice_batch_id"), 160),
+            "report_group_id": _redact(context.get("report_group_id"), 120),
         },
         "content_policy": {
             "related_question_answer_model_context_included": True,

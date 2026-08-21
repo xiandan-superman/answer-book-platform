@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -43,6 +42,7 @@ class VersionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw_tmp:
             project_root = Path(raw_tmp)
+            (project_root / "APP_VERSION").write_text("8.17\n", encoding="utf-8")
             (project_root / "VERSION").write_text("8.17\n", encoding="utf-8")
             (project_root / "RELEASE_MANIFEST.json").write_text(
                 json.dumps({"version": "8.17"}),
@@ -53,6 +53,23 @@ class VersionTests(unittest.TestCase):
 
         self.assertTrue(status["version_matches"])
         self.assertEqual([], status["issues"])
+
+    def test_release_manifest_status_rejects_user_visible_version_divergence(self) -> None:
+        from app.version import release_manifest_status
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            project_root = Path(raw_tmp)
+            (project_root / "APP_VERSION").write_text("0.9.3\n", encoding="utf-8")
+            (project_root / "VERSION").write_text("8.27-vnext.r3.1\n", encoding="utf-8")
+            (project_root / "RELEASE_MANIFEST.json").write_text(
+                json.dumps({"version": "0.9.3"}),
+                encoding="utf-8",
+            )
+            with patch("app.version.PROJECT_ROOT", project_root):
+                status = release_manifest_status()
+
+        self.assertFalse(status["version_matches"])
+        self.assertIn("APP_VERSION=0.9.3", " ".join(status["issues"]))
 
 
 if __name__ == "__main__":

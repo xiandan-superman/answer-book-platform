@@ -66,6 +66,12 @@ def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert "API Key、教材、任务和输出不会被覆盖" in APP_JS
 
 
+def test_frontend_displays_formal_app_version_without_legacy_internal_label() -> None:
+    assert 'version.app_version || versionParts[0]' in APP_JS
+    assert '$("platformVersion").textContent = `v${appVersion}`;' in APP_JS
+    assert "V${baseVersion}+${sourceRevision}" not in APP_JS
+
+
 def test_multimodal_answer_model_hides_redundant_vision_stage() -> None:
     assert "const answerDirectVision = modelLooksVisionCapable" in APP_JS
     assert "结构化解析模型（直接读图）" in APP_JS
@@ -158,8 +164,16 @@ def test_reusing_knowledge_generation_restores_files_as_a_new_session() -> None:
 
 def test_task_manager_labels_creation_time_and_truncates_only_material_name() -> None:
     assert "function shortTaskMaterialName(value, limit = 18)" in APP_JS
-    assert "${kindMeta.label} · ${shortTaskMaterialName(materialName)}" in APP_JS
+    assert "function shortTaskModelName(value, provider = \"\")" in APP_JS
+    assert "${kindMeta.label} · ${shortTaskModelName(primaryModel, task.provider)} · ${shortTaskMaterialName(materialName)}" in APP_JS
     assert "开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}" in APP_JS
+
+
+def test_task_manager_opens_all_tasks_instead_of_action_required_filter() -> None:
+    assert 'onclick="openTaskManager()" aria-label="打开任务管理"' in INDEX_HTML
+    start = APP_JS.index('function openTaskManager(kind = "all")')
+    end = APP_JS.index("function openWordFormatReviewer", start)
+    assert 'filterTasks("all");' in APP_JS[start:end]
 
 
 def test_exam_confirmation_counts_textbook_groups_instead_of_file_parts() -> None:

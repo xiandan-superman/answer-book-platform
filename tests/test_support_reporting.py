@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest.mock import patch
 
-from app import model_diagnostics, support_reporting
+from app import model_diagnostics, practice_jobs, support_reporting
 from scripts import support_receiver
 
 
@@ -109,6 +109,75 @@ def test_offline_queue_replaces_same_fingerprint_instead_of_adding_files() -> No
             support_reporting._build_report({"scope": "page", "page": "home", "events": []})
             files = list(pending.glob("*.zip"))
         assert len(files) == 1
+
+
+def test_failed_generation_report_contains_request_model_result_and_batch_lifecycle() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        jobs = root / "practice_jobs"
+        with patch.object(practice_jobs, "PRACTICE_JOB_DIR", jobs):
+            first = practice_jobs.create_practice_job("analyze", {
+                "source_mode": "exam",
+                "practice_batch_id": "batch-feedback",
+                "question_text": "原题：分析恒温条件下的平衡组成。",
+                "provider": "lingsuan_openai",
+                "model": "gpt-5.6-terra",
+            })
+            practice_jobs.update_practice_job(
+                first["job_id"],
+                status="failed",
+                current_stage="failed",
+                error="模型没有返回完整范围",
+                result={"partial_scope": ["化学平衡"]},
+                started_at="2026-08-22T10:01:00+08:00",
+                completed_at="2026-08-22T10:03:00+08:00",
+            )
+            pending = root / "support_reports" / "pending"
+            with (
+                patch.object(support_reporting, "SUPPORT_ROOT", pending.parent),
+                patch.object(support_reporting, "PENDING_DIR", pending),
+                patch.object(support_reporting, "RECEIPTS_PATH", pending.parent / "receipts.jsonl"),
+                patch.object(support_reporting, "RUNTIME_LOG", root / "runtime.jsonl"),
+                patch.object(support_reporting, "ERROR_TRACE_LOG", root / "errors.jsonl"),
+                patch.object(support_reporting, "MODEL_CALL_LEDGER", root / "models.jsonl"),
+                patch("app.support_reporting.relevant_model_diagnostics", return_value=[]),
+                patch("app.support_reporting.diagnostic_attachments", return_value=[]),
+            ):
+                path, manifest = support_reporting._build_report({
+                    "scope": "task",
+                    "page": "tasks",
+                    "task_id": first["job_id"],
+                    "task_kind": "practice",
+                    "report_group_id": "group-1",
+                    "events": [],
+                })
+        assert manifest["context"]["report_group_id"] == "group-1"
+        with zipfile.ZipFile(path) as zf:
+            content = json.loads(zf.read("related_content.json"))
+            lifecycle = json.loads(zf.read("task_lifecycle.json"))
+        content_text = json.dumps(content, ensure_ascii=False)
+        lifecycle_text = json.dumps(lifecycle, ensure_ascii=False)
+        assert "分析恒温条件下的平衡组成" in content_text
+        assert "gpt-5.6-terra" in content_text
+        assert "模型没有返回完整范围" in content_text
+        assert "partial_scope" in content_text
+        assert "practice_job_created" in lifecycle_text
+        assert "practice_job_finished" in lifecycle_text
+        assert "模型没有返回完整范围" in lifecycle_text
+
+
+def test_support_fingerprint_keeps_different_failed_tasks_separate() -> None:
+    first = support_reporting._fingerprint(
+        {"scope": "task", "page": "tasks", "task_id": "generation_one"}, [], [], []
+    )
+    repeated = support_reporting._fingerprint(
+        {"scope": "task", "page": "tasks", "task_id": "generation_one"}, [], [], []
+    )
+    second = support_reporting._fingerprint(
+        {"scope": "task", "page": "tasks", "task_id": "generation_two"}, [], [], []
+    )
+    assert first == repeated
+    assert first != second
 
 
 def test_receiver_groups_duplicate_issue_and_keeps_one_latest_bundle() -> None:
@@ -250,6 +319,10 @@ def test_frontend_support_is_contextual_and_api_requests_have_correlation_ids() 
     assert 'id="supportFeedbackBtn"' in html_text
     assert '"X-Request-ID": correlationId' in api_js
     assert "window.SupportTelemetry?.snapshot()" in app_js
+    assert "反馈此任务" in app_js
+    assert "submitFailedTaskFeedback" in app_js
+    assert 'id="taskFeedbackFailedBtn"' in html_text
+    assert "report_group_id" in app_js
 
 
 def test_upload_implementation_streams_instead_of_reading_whole_bundle() -> None:

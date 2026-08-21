@@ -34,7 +34,7 @@
         <button id="checkUpdateBtn" class="ghost-button" type="button" onclick="checkPlatformUpdate()">
           <i class="fas fa-cloud-arrow-down"></i><span>检查更新</span>
         </button>
-        <button class="ghost-button nav-task-button" type="button" onclick="openPendingTasks()" aria-label="打开待处理任务">
+        <button class="ghost-button nav-task-button" type="button" onclick="openTaskManager()" aria-label="打开任务管理">
           <i class="fas fa-tasks"></i>任务管理
           <span id="taskReviewBadge" class="nav-review-badge hidden">1项待处理</span>
         </button>
@@ -1634,6 +1634,14 @@
             <div><strong id="taskStatCancelled">0</strong><span>已取消</span></div>
             <i class="fas fa-ban"></i>
           </article>
+        </div>
+
+        <div id="taskFailedFeedbackBar" class="task-failed-feedback hidden" role="status">
+          <div>
+            <span class="task-failed-feedback-icon"><i class="fas fa-bug"></i></span>
+            <span><strong id="taskFailedFeedbackTitle">发现失败任务</strong><small>系统会逐个整理任务输入、模型上下文、执行阶段和错误日志。</small></span>
+          </div>
+          <button id="taskFeedbackFailedBtn" class="task-failed-feedback-button" type="button"><i class="fas fa-paper-plane"></i><span>一键反馈失败任务</span></button>
         </div>
 
         <div class="task-kind-filter" aria-label="按任务类型筛选">

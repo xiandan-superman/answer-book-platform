@@ -60,16 +60,20 @@ def get_source_revision() -> str:
 
 
 def release_manifest_status() -> dict[str, Any]:
-    """Return whether checked-in release metadata matches the VERSION source."""
+    """Return whether all checked-in version metadata matches APP_VERSION."""
     manifest_path = PROJECT_ROOT / "RELEASE_MANIFEST.json"
-    version = get_base_version()
+    version = get_app_version()
+    platform_version = get_base_version()
     result: dict[str, Any] = {
         "exists": manifest_path.exists(),
         "version": version,
+        "platform_version": platform_version,
         "manifest_version": "",
-        "version_matches": False,
+        "version_matches": version == platform_version,
         "issues": [],
     }
+    if version != platform_version:
+        result["issues"].append(f"版本不一致：APP_VERSION={version}，VERSION={platform_version}")
     if not manifest_path.exists():
         result["issues"].append("RELEASE_MANIFEST.json 不存在")
         return result
@@ -80,7 +84,8 @@ def release_manifest_status() -> dict[str, Any]:
         return result
     manifest_version = str(data.get("version") or "").strip()
     result["manifest_version"] = manifest_version
-    result["version_matches"] = manifest_version == version
-    if not result["version_matches"]:
-        result["issues"].append(f"版本不一致：VERSION={version}，manifest={manifest_version or '未填写'}")
+    manifest_matches = manifest_version == version
+    result["version_matches"] = bool(result["version_matches"] and manifest_matches)
+    if not manifest_matches:
+        result["issues"].append(f"版本不一致：APP_VERSION={version}，manifest={manifest_version or '未填写'}")
     return result

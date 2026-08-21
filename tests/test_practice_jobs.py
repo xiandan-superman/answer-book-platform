@@ -220,3 +220,24 @@ def test_practice_task_title_uses_text_summary_when_no_file_name_exists(tmp_path
 
     assert created["title"].startswith("在恒温条件下")
     assert created["title"] != "未命名材料"
+
+
+def test_practice_task_title_ignores_generated_pasted_screenshot_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+
+    created = practice_jobs.create_practice_job(
+        "analyze",
+        {
+            "source_mode": "exam",
+            "source_files": [{"name": "粘贴截图-2026-08-21T14-21-51.png"}],
+            "count": 6,
+            "difficulty": "基础到进阶",
+            "provider": "lingsuan_openai",
+            "model": "gpt-5.6-terra",
+        },
+    )
+
+    assert created["title"] == "图像原题 · 6题 · 基础到进阶"
+    listed = practice_jobs.list_practice_jobs()
+    assert listed[0]["model"] == "gpt-5.6-terra"
+    assert "粘贴截图" not in listed[0]["title"]

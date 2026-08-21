@@ -117,7 +117,7 @@ from .task_store import create_task, list_tasks, load_task, recover_interrupted_
 from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
 from .update_manager import UpdateError, apply_update, check_for_updates
 from .v4_schema import validate_v4_answer_fragment
-from .version import get_base_version, get_source_revision, get_version, release_manifest_status
+from .version import get_app_version, get_source_revision, get_version, release_manifest_status
 from .word_format_tasks import (
     apply_word_format_task,
     create_word_format_task,
@@ -580,10 +580,8 @@ def _safe_task_file(task_id: str, raw_path: str) -> Path:
 
 
 def _index_version_label() -> str:
-    """服务端注入到首页的版本标签：V{base}+{short_hash}（如 V8.4+483144d）。"""
-    base = get_base_version()
-    rev = get_source_revision()
-    return f"V{base}+{rev}" if rev else f"V{base}"
+    """Inject the formal user-facing app version without internal build labels."""
+    return f"v{get_app_version()}"
 
 
 def _inject_index_version(html: str) -> str:
@@ -790,6 +788,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 {
                     "platform": "Answer Book Platform",
                     "version": get_version(),
+                    "app_version": get_app_version(),
                     "source_revision": get_source_revision(),
                     "release_manifest": "RELEASE_MANIFEST.json",
                     "release_manifest_exists": manifest_status["exists"],

@@ -8,10 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
+    app_version = (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip()
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     issues: list[str] = []
+    if not app_version:
+        issues.append("APP_VERSION 为空")
     if not version:
         issues.append("VERSION 为空")
+    if app_version != version:
+        issues.append(f"版本不一致：APP_VERSION={app_version!r}，VERSION={version!r}")
 
     manifest_path = ROOT / "RELEASE_MANIFEST.json"
     try:
@@ -21,14 +26,14 @@ def main() -> int:
         manifest = {}
 
     manifest_version = str(manifest.get("version") or "").strip()
-    if manifest_version != version:
-        issues.append(f"版本不一致：VERSION={version!r}，RELEASE_MANIFEST={manifest_version!r}")
+    if manifest_version != app_version:
+        issues.append(f"版本不一致：APP_VERSION={app_version!r}，RELEASE_MANIFEST={manifest_version!r}")
 
     result = {
         "ok": not issues,
-        "source": "VERSION",
-        "version": version,
-        "checked": ["RELEASE_MANIFEST.json"],
+        "source": "APP_VERSION",
+        "version": app_version,
+        "checked": ["VERSION", "RELEASE_MANIFEST.json"],
         "issues": issues,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

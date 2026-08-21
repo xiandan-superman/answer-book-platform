@@ -20,7 +20,6 @@ from standalone_word_format_reviewer.format_engine import (
 
 from .paths import CONFIG_DIR, TASKS_DIR
 
-
 SETTINGS_FILE = CONFIG_DIR / "word_format_reviewer_settings.json"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _SETTINGS_LOCK = threading.Lock()
@@ -142,6 +141,7 @@ def _task_row(record: dict) -> dict:
         "display_title": f"格式审查 · {record.get('filename') or 'Word 文档'}",
         "description": record.get("filename") or "Word 文档",
         "exam_path": record.get("filename") or "Word 文档",
+        "model_label": "规则引擎",
         "textbooks_dir": PROFILE_LABELS.get(str(record.get("profile") or ""), "格式标准"),
         "format_profile_label": PROFILE_LABELS.get(str(record.get("profile") or ""), "格式标准"),
         "mode": record.get("mode"),

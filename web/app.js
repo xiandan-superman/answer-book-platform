@@ -1385,14 +1385,9 @@ async function api(path, options = {}) {
   return window.PlatformApi.request(path, options);
 }
 
-async function submitSupportFeedback(scope = "page", extra = {}, button = null) {
-  const original = button?.innerHTML || "";
-  if (button) {
-    button.disabled = true;
-    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>正在提交</span>';
-  }
+function supportFeedbackPayload(scope = "page", extra = {}) {
   const taskScopedPage = ["task", "result", "practice", "knowledge", "tasks"].includes(currentPage);
-  const payload = {
+  return {
     scope,
     page: currentPage,
     session_id: window.SupportTelemetry?.sessionId || "",
@@ -1403,6 +1398,10 @@ async function submitSupportFeedback(scope = "page", extra = {}, button = null) 
     history_id: taskScopedPage ? (currentPracticeHistoryId || "") : "",
     ...extra
   };
+}
+
+async function sendSupportFeedback(scope = "page", extra = {}) {
+  const payload = supportFeedbackPayload(scope, extra);
   window.SupportTelemetry?.record("support_feedback", {
     action: "submit_feedback",
     task_id: payload.task_id,
@@ -1411,8 +1410,17 @@ async function submitSupportFeedback(scope = "page", extra = {}, button = null) 
     exercise_index: payload.exercise_index,
     status: "started"
   });
+  return api("/api/support/report", { method: "POST", body: JSON.stringify(payload) });
+}
+
+async function submitSupportFeedback(scope = "page", extra = {}, button = null) {
+  const original = button?.innerHTML || "";
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>正在提交</span>';
+  }
   try {
-    const result = await api("/api/support/report", { method: "POST", body: JSON.stringify(payload) });
+    const result = await sendSupportFeedback(scope, extra);
     const queued = result.status === "queued";
     await platformAlert(
       `${result.message || (queued ? "反馈已保存，将自动提交。" : "问题反馈已提交。")}\n问题编号：${result.report_id || "-"}`,
@@ -1427,6 +1435,78 @@ async function submitSupportFeedback(scope = "page", extra = {}, button = null) 
       button.disabled = false;
       button.innerHTML = original;
     }
+  }
+}
+
+function taskSupportContext(task = {}, reportGroupId = "") {
+  const taskId = String(task.task_id || "");
+  return {
+    task_id: taskId,
+    job_id: task.is_generation_job ? taskId : "",
+    history_id: task.is_generation_task && !task.is_generation_job ? taskId : "",
+    task_kind: String(task.task_kind || ""),
+    task_status: String(task.status || ""),
+    task_stage: String(task.current_stage || ""),
+    operation: String(task.operation || ""),
+    task_title: String(task.description || task.exam_path || task.display_title || ""),
+    practice_batch_id: String(task.practice_batch_id || ""),
+    report_group_id: reportGroupId
+  };
+}
+
+async function submitTaskSupportFeedback(task, button = null) {
+  return submitSupportFeedback("task", taskSupportContext(task), button);
+}
+
+function newSupportReportGroupId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `feedback-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+async function submitFailedTaskFeedback(button = null) {
+  const failedTasks = sortedTasks(latestTasks.filter((task) => taskDisplayStatus(task) === "failed"));
+  if (!failedTasks.length) {
+    await platformAlert("当前没有需要反馈的失败任务。", { title: "没有失败任务" });
+    return;
+  }
+  const original = button?.innerHTML || "";
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = `<i class="fas fa-spinner fa-spin"></i><span>正在反馈 0/${failedTasks.length}</span>`;
+  }
+  const groupId = newSupportReportGroupId();
+  const submitted = [];
+  const queued = [];
+  const failed = [];
+  for (const [index, task] of failedTasks.entries()) {
+    if (button) button.innerHTML = `<i class="fas fa-spinner fa-spin"></i><span>正在反馈 ${index + 1}/${failedTasks.length}</span>`;
+    try {
+      const result = await sendSupportFeedback("task", taskSupportContext(task, groupId));
+      if (result.status === "queued") queued.push(result.report_id || task.task_id);
+      else submitted.push(result.report_id || task.task_id);
+      // 本机离线队列最多保留 5 份；到达上限后停止，避免挤掉刚保存的报告。
+      if (queued.length >= 5 && index < failedTasks.length - 1) {
+        failed.push(...failedTasks.slice(index + 1).map((item) => `${item.task_id}（离线队列已满）`));
+        break;
+      }
+    } catch (error) {
+      failed.push(`${task.task_id}（${String(error).replace(/^Error:\s*/, "")}）`);
+    }
+  }
+  const lines = [
+    submitted.length ? `已提交：${submitted.length} 个` : "",
+    queued.length ? `已在本机安全保存：${queued.length} 个，连接恢复后自动发送` : "",
+    failed.length ? `未保存：${failed.length} 个` : "",
+  ].filter(Boolean);
+  const ids = [...submitted, ...queued].slice(0, 5);
+  if (ids.length) lines.push(`问题编号：${ids.join("、")}`);
+  await platformAlert(lines.join("\n"), {
+    title: failed.length ? "反馈部分完成" : "失败任务已反馈",
+    tone: failed.length ? "warning" : "success"
+  });
+  if (button) {
+    button.disabled = false;
+    button.innerHTML = original;
   }
 }
 
@@ -1582,11 +1662,9 @@ async function resumeRememberedPracticeJob() {
 async function refresh() {
   const version = await api("/api/version");
   const versionParts = String(version.version || "").trim().split(/\s+/);
-  const baseVersion = (versionParts[0] || "未知").replace(/^v/i, "");
-  const sourceRevision = String(version.source_revision || versionParts[1] || "unknown").trim();
-  const platformVersion = `V${baseVersion}+${sourceRevision}`;
-  $("platformVersion").textContent = platformVersion;
-  $("versionBox").textContent = `平台版本 ${platformVersion} · 发布清单 ${version.release_manifest_exists ? "已存在" : "仅源码运行"}`;
+  const appVersion = String(version.app_version || versionParts[0] || "未知").replace(/^v/i, "");
+  $("platformVersion").textContent = `v${appVersion}`;
+  $("versionBox").textContent = `应用版本 v${appVersion} · ${version.release_manifest_exists ? "正式发布清单已就绪" : "本地源码预览"}`;
   const [providers, keyFile] = await Promise.all([
     api("/api/providers"),
     api("/api/providers/key-file").catch(() => ({}))
@@ -7852,6 +7930,12 @@ function updateTaskManagerStats(tasks) {
   setText("taskStatFailed", counts.failed);
   setText("taskStatCancelled", counts.cancelled);
   setText("taskStatCompleted", counts.completed);
+  $("taskFailedFeedbackBar")?.classList.toggle("hidden", counts.failed === 0);
+  setText("taskFailedFeedbackTitle", `发现 ${counts.failed} 个执行失败任务`);
+  const feedbackButton = $("taskFeedbackFailedBtn");
+  if (feedbackButton && !feedbackButton.disabled) {
+    feedbackButton.innerHTML = `<i class="fas fa-paper-plane"></i><span>一键反馈这 ${counts.failed} 个失败任务</span>`;
+  }
 }
 
 function formatTaskTimestamp(value) {
@@ -7869,10 +7953,34 @@ function shortTaskMaterialName(value, limit = 18) {
   return characters.length > limit ? `${characters.slice(0, limit).join("")}…` : text;
 }
 
+function shortTaskModelName(value, provider = "") {
+  let model = String(value || "").trim().split("/").filter(Boolean).pop() || "";
+  model = model
+    .replace(/-(?:preview|latest)$/i, "")
+    .replace(/-(?:20\d{2}[01]\d(?:[0-3]\d)?|20\d{6})$/i, "");
+  const readableSuffix = (value) => String(value || "")
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => /^v\d/i.test(part) ? part.toUpperCase() : `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(" ");
+  const known = [
+    [/^gpt[-_]?([\d.]+)(?:[-_](sol|terra|luna))?/i, (_all, version, tier) => `GPT-${version}${tier ? ` ${tier[0].toUpperCase()}${tier.slice(1)}` : ""}`],
+    [/^deepseek[-_]?(.+)?/i, (_all, version) => `DeepSeek${version ? ` ${readableSuffix(version)}` : ""}`],
+    [/^gemini[-_]?(.+)?/i, (_all, version) => `Gemini${version ? ` ${readableSuffix(version)}` : ""}`],
+    [/^claude[-_]?(.+)?/i, (_all, version) => `Claude${version ? ` ${readableSuffix(version)}` : ""}`],
+  ];
+  for (const [pattern, format] of known) {
+    const match = model.match(pattern);
+    if (match) return shortTaskMaterialName(format(...match), 22);
+  }
+  if (model) return shortTaskMaterialName(model.replace(/[-_]+/g, " "), 22);
+  return shortTaskMaterialName(displayProviderName(provider) || "默认模型", 22);
+}
+
 function taskManagerTitle(task, kindMeta) {
-  if (!task?.is_generation_task) return task?.display_title || shortName(task?.exam_path);
   const materialName = task.description || task.exam_path || "未命名材料";
-  return `${kindMeta.label} · ${shortTaskMaterialName(materialName)}`;
+  const primaryModel = task.model_label || task.answer_model || task.model || "";
+  return `${kindMeta.label} · ${shortTaskModelName(primaryModel, task.provider)} · ${shortTaskMaterialName(materialName)}`;
 }
 
 function renderTaskManagerPagination(total) {
@@ -8356,6 +8464,9 @@ function taskManagerActions(task = {}, reviewPending = false) {
     add(caps.retry && !caps.reopen_review, "retry-exam", "green-action", "fas fa-rotate", "从检查点重跑");
     add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
   }
+  if (taskDisplayStatus(task) === "failed") {
+    actions.splice(Math.min(1, actions.length), 0, ["support-task", "blue-action", "fas fa-bug", "反馈此任务"]);
+  }
   return actions
     .slice(0, 4)
     .map(([action, color, icon, label]) => `<button type="button" class="task-card-button ${color}" data-action="${action}"><i class="${icon}"></i>${label}</button>`)
@@ -8427,6 +8538,10 @@ async function handleTaskManagerAction(task, action, button = null) {
   if (!task?.task_id) return;
   if (action === "copy-task-id") {
     await copyTaskId(task, button);
+    return;
+  }
+  if (action === "support-task") {
+    await submitTaskSupportFeedback(task, button);
     return;
   }
   if (task.is_format_task) {
@@ -8760,6 +8875,7 @@ function filterTaskKind(kind) {
 }
 
 function openTaskManager(kind = "all") {
+  filterTasks("all");
   filterTaskKind(kind);
   goToPage("tasks");
 }
@@ -10642,6 +10758,7 @@ $("taskSortSelect")?.addEventListener("change", (event) => {
   renderTaskManager();
 });
 $("taskBulkModeBtn")?.addEventListener("click", () => setTaskBulkMode(true));
+$("taskFeedbackFailedBtn")?.addEventListener("click", (event) => submitFailedTaskFeedback(event.currentTarget));
 $("taskBulkCancelBtn")?.addEventListener("click", () => setTaskBulkMode(false));
 $("taskBulkDeleteBtn")?.addEventListener("click", deleteSelectedTasks);
 $("taskBulkSelectAllBtn")?.addEventListener("click", () => {

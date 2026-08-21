@@ -454,7 +454,11 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
                 "source_mode": source_mode,
                 "task_kind": "knowledge" if source_mode == "knowledge" else "practice",
                 "practice_batch_id": request.get("practice_batch_id") or "",
-                "request": {"practice_batch_id": request.get("practice_batch_id") or ""},
+                "request": {
+                    "practice_batch_id": request.get("practice_batch_id") or "",
+                    "provider": request.get("provider") or "",
+                    "model": request.get("model") or "",
+                },
                 "source_recovery": request.get("source_recovery") or {"status": "blocked" if request.get("source_file_names") else "not_required"},
                 "revision_count": len(record.get("revisions") or []),
             }
