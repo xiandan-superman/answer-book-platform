@@ -8,11 +8,23 @@
       "api_key_env": "DEEPSEEK_API_KEY",
       "api_key": "",
       "default_model": "deepseek-v4-flash",
-      "vision_model": "",
-      "supports_vision": false,
+      "vision_model": "deepseek-v4-flash-vision-exp",
+      "vision_model_options": ["deepseek-v4-flash-vision-exp"],
+      "supports_vision": true,
+      "model_capabilities": {
+        "deepseek-v4-flash": ["text"],
+        "deepseek-v4-flash-vision-exp": ["text", "vision"]
+      },
       "image_model": "",
       "image_size": "1024x1024",
-      "model_options": ["deepseek-v4-flash"],
+      "model_options": [
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp"
+      ],
+      "model_option_labels": {
+        "deepseek-v4-flash": "DeepSeek-V4-Flash（文本）",
+        "deepseek-v4-flash-vision-exp": "DeepSeek-V4-Flash-Vision-Exp（多模态视觉）"
+      },
       "temperature": 0.1,
       "max_tokens": 24576
     },

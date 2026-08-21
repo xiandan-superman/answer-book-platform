@@ -97,11 +97,18 @@ class LLMProtocolAdapterTests(unittest.TestCase):
                     self.assertIsInstance(client, OpenAICompatibleClient)
                     self.assertNotIsInstance(client, ResponsesAPIClient)
 
-    def test_deepseek_responses_exposes_only_supported_flash_model(self):
-        from app.settings import list_providers
+    def test_deepseek_exposes_text_and_multimodal_flash_models(self):
+        from app.settings import list_providers, provider_model_supports_vision
 
         provider = list_providers()["deepseek"]
-        self.assertEqual(("deepseek-v4-flash",), provider.model_options)
+        self.assertEqual(
+            ("deepseek-v4-flash", "deepseek-v4-flash-vision-exp"),
+            provider.model_options,
+        )
+        self.assertEqual("deepseek-v4-flash-vision-exp", provider.vision_model)
+        self.assertEqual(("deepseek-v4-flash-vision-exp",), provider.vision_model_options)
+        self.assertFalse(provider_model_supports_vision(provider, "deepseek-v4-flash"))
+        self.assertTrue(provider_model_supports_vision(provider, "deepseek-v4-flash-vision-exp"))
 
     def test_unknown_protocol_fails_before_making_a_request(self):
         from app.llm_client import OpenAICompatibleClient
