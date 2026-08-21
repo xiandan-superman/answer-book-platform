@@ -131,6 +131,13 @@ class TextbookPackageTests(unittest.TestCase):
                 status = textbook_index_cache_status(combined, combined_names)
                 self.assertTrue(status["indexed"])
                 self.assertEqual(2, len(status["manifest"]))
+                self.assertEqual(
+                    {str(first.resolve()), str(second.resolve())},
+                    {item["source_zip"] for item in status["textbook_package_audits"]},
+                )
+                self.assertTrue(
+                    all(Path(item["root"]).parent == package_cache for item in status["textbook_package_audits"])
+                )
                 combined_status = json.loads((cache / status["cache_key"] / "textbook_index_status.json").read_text(encoding="utf-8"))
                 self.assertEqual(2, len(combined_status["composed_from"]))
 

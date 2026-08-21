@@ -47,6 +47,16 @@ def test_real_equation_text_is_still_treated_as_formula_leak():
     assert symbolic_formula_like_matches(text)
 
 
+def test_fractional_crystallographic_coordinate_is_not_formula_leak():
+    text = "A原子位于(0,0,0)，B原子位于(1/2,1/2,1/2)晶胞坐标。"
+
+    assert symbolic_formula_like_matches(text) == []
+
+
+def test_ordinary_fraction_outside_coordinate_tuple_remains_formula_like():
+    assert symbolic_formula_like_matches("计算结果为1/2。") == ["1/2"]
+
+
 def test_answer_prompt_requires_latex_overbar_for_negative_crystal_indices():
     messages = build_answer_draft_prompt(
         {"question_id": "q_index", "question_type": "简答题", "stem": "写出晶面族{10-10}和晶向族<11-20>的规范表示。"},
@@ -60,6 +70,24 @@ def test_answer_prompt_requires_latex_overbar_for_negative_crystal_indices():
     assert "{10-10}" in payload
     assert "<11-20>" in payload
     assert "every negative index must use LaTeX overbar notation" in payload
+
+
+def test_answer_prompt_hides_internal_word_mathml_metadata_but_keeps_visible_formula_text():
+    marker = '⟦MATHML:<math xmlns="http://www.w3.org/1998/Math/MathML"><mn>1000</mn><mi>K</mi></math>⟧'
+    messages = build_answer_draft_prompt(
+        {
+            "question_id": "q_mathml",
+            "question_type": "简答题",
+            "stem": f"在1000 K{marker}保温。",
+            "subquestions": [{"number": "1", "stem": f"比较1000 K{marker}下的组织。"}],
+        },
+        [],
+    )
+    question = json.loads(str(messages[-1]["content"]))["question"]
+
+    assert question["stem"] == "在1000 K保温。"
+    assert question["subquestions"][0]["stem"] == "比较1000 K下的组织。"
+    assert "MATHML" not in json.dumps(question, ensure_ascii=False)
 
 
 def test_drawing_prompt_rules_require_latex_overbar_for_negative_crystal_indices():

@@ -4,11 +4,9 @@ import json
 import os
 import secrets
 import socket
-from pathlib import Path
 from typing import Any
 
 from .paths import DATA_ROOT, ensure_project_dirs
-
 
 LAN_CONFIG_PATH = DATA_ROOT / "runtime" / "lan_access.json"
 DEFAULT_USERNAME = "monitor"
@@ -77,17 +75,31 @@ def lan_ipv4_addresses() -> list[str]:
     return sorted(addresses)
 
 
-def lan_access_info(port: int, include_secret: bool = False) -> dict[str, Any]:
+def lan_access_info(port: int, include_secret: bool = False, *, bind_host: str = "") -> dict[str, Any]:
+    normalized_host = str(bind_host or "").strip().lower()
+    listening_on_lan = normalized_host not in {"", "127.0.0.1", "::1", "localhost"}
+    if not listening_on_lan:
+        return {
+            "enabled": False,
+            "listening_on_lan": False,
+            "addresses": [],
+            "urls": [],
+            "port": int(port),
+            "reason": "当前服务仅允许本机访问；如需局域网监控，请使用局域网启动入口。",
+            "transport_security": "local_only",
+        }
     username, password = lan_credentials()
     addresses = lan_ipv4_addresses()
     result: dict[str, Any] = {
         "enabled": lan_access_enabled(),
+        "listening_on_lan": True,
         "username": username,
         "addresses": addresses,
         "urls": [f"http://{address}:{port}" for address in addresses],
         "port": int(port),
-        "config_path": str(LAN_CONFIG_PATH),
+        "transport_security": "http_basic",
+        "warning": "当前为局域网 HTTP 访问，请仅在可信网络中使用；跨网络访问建议通过 Tailscale HTTPS。",
     }
-    if include_secret:
+    if include_secret and result["enabled"]:
         result["password"] = password
     return result

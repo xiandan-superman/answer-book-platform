@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,12 +12,112 @@ from docx import Document
 from docx.shared import Cm
 from PIL import Image
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
 class FigureRuntimeObservabilityTests(unittest.TestCase):
+    def test_local_image_integrity_rejects_blank_and_accepts_visible_figure(self) -> None:
+        from app.figures import audit_figure_image_integrity
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            blank = root / "blank.png"
+            visible = root / "visible.png"
+            Image.new("RGB", (400, 300), "white").save(blank)
+            rendered = Image.new("RGB", (400, 300), "white")
+            for x in range(30, 370):
+                rendered.putpixel((x, 150), (0, 0, 0))
+                rendered.putpixel((x, 151), (0, 0, 0))
+            rendered.save(visible)
+
+            self.assertIn("figure_image_blank_or_nearly_uniform", audit_figure_image_integrity(blank))
+            self.assertEqual([], audit_figure_image_integrity(visible))
+
+    def test_generation_removes_stale_output_when_renderer_fails_integrity(self) -> None:
+        from app.figures import generate_figures
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            output_dir = root / "figures"
+            output_dir.mkdir()
+            stale = output_dir / "f1.png"
+            Image.new("RGB", (400, 300), "black").save(stale)
+            specs = root / "specs.json"
+            specs.write_text(
+                json.dumps({"figures": [{"figure_id": "f1", "question_id": "q1", "kind": "custom_diagram"}]}),
+                encoding="utf-8",
+            )
+            with patch("app.figures.draw_custom_diagram", lambda _spec, output: Image.new("RGB", (400, 300), "white").save(output)):
+                generated = generate_figures(specs, output_dir)
+
+            self.assertEqual([], generated)
+            self.assertFalse(stale.exists())
+            stored = json.loads(specs.read_text(encoding="utf-8"))["figures"][0]
+            self.assertIn("figure_image_blank_or_nearly_uniform", stored["validation_issues"])
+
+    def test_visual_qa_reuses_unchanged_content_by_fingerprint(self) -> None:
+        from app.figures import audit_figures_with_vision
+        from app.settings import ProviderConfig
+
+        provider = ProviderConfig(
+            name="vision",
+            type="openai_compatible",
+            base_url="http://unused",
+            api_key="key",
+            default_model="text",
+            model_options=("text",),
+            allow_custom_model=True,
+            model_hint="",
+            temperature=0.2,
+            max_tokens=12288,
+            vision_model="vision-model",
+            supports_vision=True,
+        )
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            figures = root / "figures"
+            figures.mkdir()
+            Image.new("RGB", (200, 120), "white").save(figures / "f1.png")
+            specs = root / "figure_specs.json"
+            specs.write_text(
+                json.dumps({"figures": [{"figure_id": "f1", "question_id": "q1", "kind": "curve", "caption": "图"}]}),
+                encoding="utf-8",
+            )
+            report_path = root / "figure_visual_qa.json"
+            worker_result = {
+                "items": [
+                    {
+                        "question_id": "q1",
+                        "figure_id": "f1",
+                        "path": str(figures / "f1.png"),
+                        "qa": {"ok": True, "summary": "ok"},
+                    }
+                ]
+            }
+            with patch("app.figures._audit_figures_with_vision_serial", return_value=worker_result) as audit:
+                first = audit_figures_with_vision(
+                    {"items": [{"question_id": "q1", "stem": "画图"}]},
+                    specs,
+                    figures,
+                    report_path,
+                    provider=provider,
+                    model="vision-model",
+                )
+                second = audit_figures_with_vision(
+                    {"items": [{"question_id": "q1", "stem": "画图"}]},
+                    specs,
+                    figures,
+                    report_path,
+                    provider=provider,
+                    model="vision-model",
+                )
+
+        self.assertEqual(1, audit.call_count)
+        self.assertEqual(1, first["cache"]["audited_count"])
+        self.assertEqual(1, second["cache"]["reused_count"])
+        self.assertTrue(second["items"][0]["reused"])
+
     def test_wide_figure_is_flagged_when_embedded_too_short(self) -> None:
         from app.figure_size_audit import audit_docx_figure_sizes
 
@@ -83,6 +183,18 @@ class FigureRuntimeObservabilityTests(unittest.TestCase):
         self.assertEqual("figures", data["stage"])
         self.assertEqual("figure_rendering", data["active_event"])
         self.assertEqual("fig_01", data["figure_id"])
+
+    def test_figure_progress_tracker_persists_terminal_status(self) -> None:
+        from app.pipeline import FigureProgressTracker
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            output = Path(raw_tmp) / "figure_progress.json"
+            tracker = FigureProgressTracker(output, heartbeat_seconds=60)
+            tracker.emit("stage_completed", {"status": "passed", "generated_count": 3})
+            data = __import__("json").loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual("passed", data["status"])
+        self.assertEqual(3, data["generated_count"])
 
     def test_figure_generation_emits_per_figure_events(self) -> None:
         from app.figures import prepare_figures_for_fragments
@@ -178,7 +290,12 @@ class FigureRuntimeObservabilityTests(unittest.TestCase):
                 return {"figure_id": "fig_01", "caption": "测试图", "code": "def draw(output_path: str):\n    pass"}
 
         client = FakeClient()
-        question = {"question_id": "q1", "stem": "画出衍射花样。"}
+        question = {
+            "question_id": "q1",
+            "stem": "画出衍射花样。",
+            "question_understanding": {"images": [{"detected_labels": ["000"]}]},
+            "figure_schema_plan": {"figure_semantic_contract": {"required_labels": ["000"]}},
+        }
         fragment = {"question_id": "q1", "answer_summary": "标出中心斑点和衍射斑点。"}
         prompt = build_drawing_code_prompt(question, fragment)
         result = generate_drawing_code_spec(client, question, fragment, model="deepseek-v4-flash")
@@ -189,6 +306,8 @@ class FigureRuntimeObservabilityTests(unittest.TestCase):
         payload = __import__("json").loads(prompt[1]["content"])
         self.assertIn("monochrome_code_template", payload)
         self.assertIn("color=BLACK", payload["monochrome_code_template"])
+        self.assertEqual(["000"], payload["question"]["question_understanding"]["images"][0]["detected_labels"])
+        self.assertEqual(["000"], payload["question"]["figure_schema_plan"]["figure_semantic_contract"]["required_labels"])
 
     def test_drawing_code_file_block_protocol_keeps_code_outside_json(self) -> None:
         from app.drawing_code import generate_drawing_code_spec, parse_drawing_code_model_response
@@ -230,7 +349,16 @@ def draw(output_path: str) -> None:
         from app.figures import _apply_crystallographic_index_whitelist
 
         question = {"stem": "画出体心立方[110]带轴电子衍射花样，并标出晶面指数。"}
-        spec = {"caption": "BCC [110] 电子衍射花样"}
+        spec = {
+            "kind": "zone_axis_diffraction",
+            "caption": "BCC [110] 电子衍射花样",
+            "zone_axis": [1, 1, 0],
+            "lattice": "bcc",
+            "max_index": 3,
+            "label_indices": [[0, 0, 0], [1, -1, 0], [0, 0, 2]],
+            "spot_size": 42,
+            "apply_extinction": True,
+        }
         physics_only = {
             "ok": False,
             "summary": "(110) 为非法反射，违反消光条件。",
@@ -299,8 +427,50 @@ def draw(output_path: str) -> None:
         issues = validate_drawing_code(code)
         self.assertTrue(any("Chinese or standard notation" in issue for issue in issues), issues)
 
+    def test_drawing_validator_allows_compact_scientific_point_and_phase_labels(self) -> None:
+        from app.drawing_code import validate_drawing_code
+
+        code = """import matplotlib.pyplot as plt
+
+def draw(output_path: str) -> None:
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], color='black')
+    ax.annotate('A', xy=(0, 0), color='black')
+    ax.annotate('Fe₃CⅡ', xy=(1, 1), color='black')
+    fig.savefig(output_path)
+    plt.close(fig)
+"""
+
+        self.assertEqual([], validate_drawing_code(code))
+
+    def test_drawing_prompt_scope_excludes_non_drawing_siblings(self) -> None:
+        from app.drawing_code import _drawing_prompt_question
+
+        question = {
+            "stem": "综合题",
+            "subquestions": [
+                {"number": "1", "question_type": "简答题", "stem": "解释反应。"},
+                {
+                    "number": "2",
+                    "question_type": "计算题",
+                    "stem": "作图并计算。",
+                    "requirements": [
+                        {"number": "2.1", "question_type": "作图题", "stem": "画出冷却曲线。"},
+                        {"number": "2.2", "question_type": "计算题", "stem": "计算质量比。"},
+                    ],
+                },
+            ],
+        }
+
+        scoped = _drawing_prompt_question(question)
+
+        self.assertIn("画出冷却曲线", scoped["stem"])
+        self.assertNotIn("解释反应", scoped["stem"])
+        self.assertNotIn("计算质量比", scoped["stem"])
+
     def test_literal_string_resolver_stops_on_cyclic_aliases(self) -> None:
         import ast
+
         from app.drawing_code import _literal_strings
 
         tree = ast.parse("a = b\nb = a\n")
@@ -383,6 +553,88 @@ def draw(output_path: str) -> None:
         self.assertTrue(report["latest_visual_qa"]["items"][0]["qa"]["ok"])
         self.assertEqual(2, len(target["candidates"]))
         self.assertTrue(final_image_exists)
+
+    def test_visual_repair_reuses_completed_identical_attempt_without_model_calls(self) -> None:
+        from app.figures import repair_figures_with_model_for_visual_qa
+
+        structured_exam = {"items": [{"question_id": "q1", "question_type": "作图题", "stem": "画图"}]}
+        spec = {
+            "figure_id": "fig_01",
+            "question_id": "q1",
+            "kind": "generic_axis_curve",
+            "caption": "测试图",
+            "x_label": "x",
+            "y_label": "y",
+            "points": [[0, 0], [1, 1]],
+        }
+        qa = {
+            "enabled": True,
+            "items": [{"question_id": "q1", "figure_id": "fig_01", "qa": {"ok": False, "summary": "标签问题"}}],
+            "skipped": [],
+        }
+        repair_provider = SimpleNamespace(name="repair", api_key="key", default_model="repair-model")
+        vision_provider = SimpleNamespace(name="vision", api_key="key", supports_vision=True, vision_model="vision-model")
+
+        class FakeClient:
+            calls = 0
+
+            def __init__(self, _provider):
+                pass
+
+            def chat_json_object(self, *_args, **_kwargs):
+                type(self).calls += 1
+                return {"figure_spec": spec, "repair_notes": []}
+
+        def fake_audit(_exam, _candidate_specs_json, candidate_dir, report_json, **_kwargs):
+            result = {
+                "enabled": True,
+                "items": [
+                    {
+                        "question_id": "q1",
+                        "figure_id": "fig_01",
+                        "path": str(candidate_dir / "fig_01.png"),
+                        "qa": {"ok": False, "summary": "仍未通过，但服务已正常完成"},
+                    }
+                ],
+                "skipped": [],
+            }
+            report_json.write_text(json.dumps(result), encoding="utf-8")
+            return result
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            specs_json = tmp / "figure_specs.json"
+            figures_dir = tmp / "figures"
+            figures_dir.mkdir()
+            specs_json.write_text(json.dumps({"figures": [spec]}), encoding="utf-8")
+            from PIL import Image
+
+            Image.new("RGB", (120, 120), "white").save(figures_dir / "fig_01.png")
+            kwargs = {
+                "structured_exam": structured_exam,
+                "fragments_json": None,
+                "specs_json": specs_json,
+                "output_dir": figures_dir,
+                "visual_qa_json": tmp / "figure_visual_qa.json",
+                "repair_report_json": tmp / "repair.json",
+                "qa_report": qa,
+                "provider": repair_provider,
+                "model": "repair-model",
+                "vision_provider": vision_provider,
+                "vision_model": "vision-model",
+            }
+            with patch("app.figures.OpenAICompatibleClient", FakeClient), patch(
+                "app.figures.audit_figures_with_vision", fake_audit
+            ):
+                first = repair_figures_with_model_for_visual_qa(**kwargs)
+                first_calls = FakeClient.calls
+                second = repair_figures_with_model_for_visual_qa(**kwargs)
+
+        self.assertGreater(first_calls, 0)
+        self.assertFalse(first["cache"]["hit"])
+        self.assertTrue(second["cache"]["hit"])
+        self.assertEqual(first_calls, FakeClient.calls)
+        self.assertEqual(0, second["remote_model_calls_this_run"])
 
 
 if __name__ == "__main__":

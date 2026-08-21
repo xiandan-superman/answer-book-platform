@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -10,7 +11,8 @@ from typing import Any
 
 from .concurrency import run_limited_concurrent
 from .llm_client import LLMError, OpenAICompatibleClient
-from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
+from .question_understanding import attach_question_visuals, needs_vision_model
+from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text, tokenize_zh_en
 
 
@@ -29,11 +31,11 @@ class KnowledgePlanResult:
 
 
 def knowledge_planning_worker_count() -> int:
-    raw = os.environ.get("KNOWLEDGE_PLANNING_MAX_WORKERS") or os.environ.get("ANSWER_GENERATION_MAX_WORKERS", "5")
+    raw = os.environ.get("KNOWLEDGE_PLANNING_MAX_WORKERS") or os.environ.get("ANSWER_GENERATION_MAX_WORKERS", "10")
     try:
-        return max(1, min(6, int(raw)))
+        return max(1, min(10, int(raw)))
     except ValueError:
-        return 5
+        return 10
 
 
 def knowledge_planning_timeout_seconds() -> int:
@@ -69,22 +71,60 @@ def _strings(value: Any, limit: int = 12) -> list[str]:
 
 
 def fallback_knowledge_plan(question: dict[str, Any], reason: str = "") -> dict[str, Any]:
-    stem = str(question.get("stem", ""))
-    tokens = tokenize_zh_en(" ".join([str(question.get("section", "")), stem]))
+    stem = clean_text(str(question.get("stem", "")))
+    understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
+
+    # Prefer normalized visual semantics and explicit requirements over page
+    # furniture.  This keeps the no-model/timeout path useful for every visual
+    # question instead of discarding work already completed by understanding.
+    semantic_texts: list[str] = []
+    for image in understanding.get("images", []) or []:
+        if not isinstance(image, dict):
+            continue
+        semantic_texts.extend(
+            clean_text(str(value))
+            for value in [image.get("visual_description"), *(image.get("answer_relevant_observations") or [])]
+            if clean_text(str(value or ""))
+        )
+    requirement_texts = [
+        clean_text(str(item.get("text") or ""))
+        for item in understanding.get("question_requirements", []) or []
+        if isinstance(item, dict) and clean_text(str(item.get("text") or ""))
+    ]
+    source_texts = semantic_texts + requirement_texts + ([stem] if stem else [])
+    tokens = tokenize_zh_en(" ".join(source_texts))
+    boilerplate = {
+        "简答题", "选择题", "填空题", "计算题", "示意图", "如题", "所示", "图所示",
+        "题四", "四图", "题四图", "分别指出", "回答下列", "根据下图", "已知",
+    }
     key_terms = []
     for token in tokens:
-        if len(token) < 2:
+        normalized = clean_text(token)
+        if len(normalized) < 2 or normalized in boilerplate:
             continue
-        if token not in key_terms:
-            key_terms.append(token)
+        if re.fullmatch(r"[A-Za-zΑ-ω]+", normalized) and len(normalized) < 3:
+            continue
+        if any(marker in normalized for marker in ("如题", "所示", "示意图")):
+            continue
+        if normalized not in key_terms:
+            key_terms.append(normalized)
         if len(key_terms) >= 12:
             break
+    search_queries: list[str] = []
+    for value in source_texts:
+        query = clean_text(value)[:160]
+        if query and query not in search_queries:
+            search_queries.append(query)
+        if len(search_queries) >= 6:
+            break
+    if not search_queries:
+        search_queries = [" ".join(key_terms[:8])] if key_terms else [stem[:80]]
     plan = {
         "question_id": str(question.get("question_id", "")),
         "knowledge_points": key_terms[:6],
         "formulas": [],
         "key_terms": key_terms,
-        "search_queries": [" ".join(key_terms[:8])] if key_terms else [stem[:80]],
+        "search_queries": search_queries,
         "warnings": [],
     }
     if reason:
@@ -110,7 +150,7 @@ def normalize_knowledge_plan(question: dict[str, Any], data: dict[str, Any]) -> 
     return plan
 
 
-def build_knowledge_plan_prompt(question: dict[str, Any]) -> list[dict[str, str]]:
+def build_knowledge_plan_prompt(question: dict[str, Any], *, include_visual_assets: bool = False) -> list[dict[str, Any]]:
     understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
     payload = {
         "task": "solve_question_for_textbook_retrieval_intent",
@@ -137,10 +177,11 @@ def build_knowledge_plan_prompt(question: dict[str, Any]) -> list[dict[str, str]
         "question": question,
         "question_understanding": understanding,
     }
-    return [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": "你是真题解析平台的考点定位器。你先判断题目考查内容，只输出一个合法 JSON object。不要输出 Markdown 或 JSON 之外的文字。"},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
+    return attach_question_visuals(messages, question) if include_visual_assets else messages
 
 
 def generate_knowledge_plans(
@@ -150,6 +191,8 @@ def generate_knowledge_plans(
     output_json: Path,
     use_model: bool = True,
     progress_json: Path | None = None,
+    visual_provider: ProviderConfig | None = None,
+    visual_model: str = "",
 ) -> KnowledgePlanResult:
     questions = list(structured_exam.get("items", []))
     max_workers = knowledge_planning_worker_count() if use_model and provider.api_key else 1
@@ -201,11 +244,25 @@ def generate_knowledge_plans(
                 "token_feedback": [],
                 "status": "fallback",
             }
-        client = OpenAICompatibleClient(provider)
+        active_provider = provider
+        active_model = model
+        if (
+            needs_vision_model(question)
+            and not provider_model_supports_vision(active_provider, active_model)
+            and visual_provider is not None
+            and provider_model_supports_vision(visual_provider, visual_model)
+        ):
+            active_provider = visual_provider
+            active_model = visual_model
+        include_visual_assets = bool(
+            needs_vision_model(question)
+            and provider_model_supports_vision(active_provider, active_model)
+        )
+        client = OpenAICompatibleClient(active_provider)
         try:
             data = client.chat_json_object(
-                build_knowledge_plan_prompt(question),
-                model=model,
+                build_knowledge_plan_prompt(question, include_visual_assets=include_visual_assets),
+                model=active_model,
                 max_tokens=DEFAULT_MODEL_MAX_TOKENS,
                 timeout=timeout,
                 attempts=1,
@@ -220,6 +277,9 @@ def generate_knowledge_plans(
                 "issues": [],
                 "token_feedback": feedback,
                 "status": "passed",
+                "provider": active_provider.name,
+                "model": active_model,
+                "direct_visual_input": include_visual_assets,
             }
         except (LLMError, Exception) as exc:
             report = getattr(client, "last_json_retry_report", {})

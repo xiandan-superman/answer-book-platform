@@ -3,8 +3,8 @@
 当前 v1 平台交付检查项：
 
 - [x] 独立项目目录。
-- [x] OpenAI / DeepSeek 配置。
-- [x] Web 保存本机 OpenAI / DeepSeek API Key，接口只返回脱敏状态。
+- [x] DeepSeek / 火山方舟 / 百炼 / 云雾配置。
+- [x] Web 保存本机供应商 API Key，接口只返回脱敏状态。
 - [x] Web 顶部显示平台版本。
 - [x] `/api/version` 版本接口。
 - [x] API Key 本地读取且不进入项目文件。

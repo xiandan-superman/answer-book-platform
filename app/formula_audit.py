@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .capabilities.catalog import DEFAULT_CAPABILITY_REGISTRY
+
 
 FORMULA_TEXT_RE = re.compile(
     r"("
@@ -16,18 +18,15 @@ FORMULA_TEXT_RE = re.compile(
     r")"
 )
 
-DOMAIN_NOTATION_CONTEXT_RE = re.compile(
-    r"(晶面|晶向|晶胞|晶带|米勒|截距|点阵|衍射|峰位|相图|相区|横坐标|纵坐标|坐标轴|标出|标明|标签|图中|示意图|作图|绘制|Fe-Fe|Fe3C|hkl|uvw)",
+GENERIC_LABEL_CONTEXT_RE = re.compile(
+    r"(横坐标|纵坐标|坐标轴|标出|标明|标签|图中|示意图|作图|绘制)",
     re.IGNORECASE,
 )
 
-DOMAIN_NOTATION_MATCH_RE = re.compile(
+GENERIC_LABEL_MATCH_RE = re.compile(
     r"^(?:"
-    r"[abc]/(?:\d+|[hkl])|"
-    r"[hkl](?:\s*[+＋]\s*[hkl])+(?:\s*=\s*(?:偶数|奇数|0|零))?|"
-    r"[A-Za-z]\([A-Za-z]\)|"
-    r"Fe-Fe3?C|Fe3?C|"
-    r"[LΑ-Ωα-ω](?:、[LΑ-Ωα-ω])+"
+    r"[A-Za-z]/(?:\d+|[A-Za-z])|"
+    r"[A-Za-z]\([A-Za-z]\)"
     r")$"
 )
 
@@ -51,10 +50,40 @@ def is_allowed_domain_notation(text: str, match_text: str) -> bool:
     value = str(match_text or "").strip()
     if not value:
         return False
-    if not DOMAIN_NOTATION_CONTEXT_RE.search(source):
-        return False
     compact = re.sub(r"\s+", "", value)
-    return bool(DOMAIN_NOTATION_MATCH_RE.fullmatch(compact))
+    capability_matches = DEFAULT_CAPABILITY_REGISTRY.match_expressions(
+        value,
+        source_format="text",
+        context=source,
+    )
+    if any(
+        match.expression_kind == "domain_notation"
+        and re.sub(r"\s+", "", match.value) == compact
+        for match in capability_matches
+    ):
+        return True
+    if not GENERIC_LABEL_CONTEXT_RE.search(source):
+        return False
+    return bool(GENERIC_LABEL_MATCH_RE.fullmatch(compact))
+
+
+def _allowed_domain_notation_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in DEFAULT_CAPABILITY_REGISTRY.match_expressions(
+        str(text or ""),
+        source_format="text",
+        context=str(text or ""),
+    ):
+        if match.expression_kind == "domain_notation":
+            spans.append((match.start, match.end))
+    return spans
+
+
+def _inside_allowed_span(match: re.Match[str], spans: list[tuple[int, int]]) -> bool:
+    for start, end in spans:
+        if start <= match.start() and match.end() <= end:
+            return True
+    return False
 
 
 def _filter_allowed_domain_notation(text: str, matches: list[str]) -> list[str]:
@@ -68,12 +97,15 @@ def formula_like_matches(
     ignore_allowed_domain_notation: bool = True,
 ) -> list[str]:
     matches: list[str] = []
+    allowed_spans = _allowed_domain_notation_spans(str(text)) if ignore_allowed_domain_notation else []
     regexes = [FORMULA_TEXT_RE]
     if include_chinese_paraphrase:
         regexes.append(CHINESE_FORMULA_PARAPHRASE_RE)
     for regex in regexes:
         for match in regex.finditer(str(text)):
             value = match.group(0).strip()
+            if _inside_allowed_span(match, allowed_spans):
+                continue
             if value and value not in matches:
                 matches.append(value)
     if ignore_allowed_domain_notation:
@@ -83,8 +115,11 @@ def formula_like_matches(
 
 def symbolic_formula_like_matches(text: str, *, ignore_allowed_domain_notation: bool = True) -> list[str]:
     matches: list[str] = []
+    allowed_spans = _allowed_domain_notation_spans(str(text)) if ignore_allowed_domain_notation else []
     for match in FORMULA_TEXT_RE.finditer(str(text)):
         value = match.group(0).strip()
+        if _inside_allowed_span(match, allowed_spans):
+            continue
         if value and value not in matches:
             matches.append(value)
     if ignore_allowed_domain_notation:

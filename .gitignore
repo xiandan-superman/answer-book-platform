@@ -1,4 +1,5 @@
 config/providers.local.json
+config/api_keys.json
 .env
 textbooks/textbook_page_map.manual.csv
 textbooks/*.zip
@@ -17,6 +18,18 @@ runtime/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Platform runtime/build outputs. These are local state, never source files.
+practice_jobs/
+build/*
+!build/answer_book_platform.spec
 dist/
-build/pyinstaller-work/
-build/generated/
+artifacts/final_delivery/
+.artifacts/
+archive/local/
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.venv/

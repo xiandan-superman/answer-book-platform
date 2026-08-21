@@ -1,0 +1,12 @@
+{
+  "currency": "CNY",
+  "models": {
+    "provider-name/model-name": {
+      "input_per_million": 0,
+      "output_per_million": 0
+    },
+    "provider-name/image-model-name": {
+      "per_call": 0
+    }
+  }
+}

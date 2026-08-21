@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -31,8 +30,11 @@ class BailianQwen37MaxTests(unittest.TestCase):
         bailian = providers["providers"]["bailian"]
 
         self.assertIn("qwen3.7-max", bailian["model_options"])
+        self.assertIn("qwen3.7-flash", bailian["model_options"])
+        self.assertNotIn("qwen3-vl-plus", bailian["model_options"])
         self.assertIn("qwen3.7-max", bailian["json_mode_unsupported_models"])
         self.assertNotEqual("qwen3.7-max", bailian["vision_model"])
+        self.assertEqual("qwen3.7-flash", bailian["vision_model"])
 
     def test_qwen37max_skips_unsupported_response_format(self) -> None:
         from app.llm_client import OpenAICompatibleClient
@@ -92,6 +94,14 @@ class BailianQwen37MaxTests(unittest.TestCase):
 
         self.assertIn("qwen3.7-max", bailian.model_options)
         self.assertIn("qwen3.7-max", bailian.json_mode_unsupported_models)
+
+    def test_model_level_vision_capability_does_not_inherit_from_provider(self) -> None:
+        from app.settings import get_provider, provider_model_supports_vision
+
+        bailian = get_provider("bailian")
+
+        self.assertFalse(provider_model_supports_vision(bailian, "qwen3.7-max"))
+        self.assertTrue(provider_model_supports_vision(bailian, "qwen3.7-flash"))
 
 
 if __name__ == "__main__":

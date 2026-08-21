@@ -1,0 +1,14 @@
+# Known-good Python 3.9 environment. Python 3.10+ may resolve newer compatible
+# wheels within the bounds declared by requirements.txt.
+python-docx==1.2.0
+lxml==6.1.1
+latex2mathml==3.78.1
+Pillow==11.3.0
+pydantic==2.13.4
+pypdfium2==5.12.1
+bm25s==0.3.10
+huey==3.3.4
+matplotlib==3.9.4
+# Matplotlib 3.9 calls APIs deprecated by pyparsing 3.2+, producing hundreds
+# of warnings. Keep the compatible parser series for the Python 3.9 runtime.
+pyparsing>=3.1.0,<3.2

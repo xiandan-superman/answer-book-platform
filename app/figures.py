@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import json
 import base64
-from io import BytesIO
-import mimetypes
+import hashlib
+import json
 import math
+import mimetypes
+import os
 import re
 import shutil
 import textwrap
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -15,17 +17,90 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Arc, Circle, Ellipse, FancyArrowPatch
 from matplotlib import font_manager
-from PIL import Image
+from matplotlib.patches import Arc, Circle, Ellipse, FancyArrowPatch, Polygon, Rectangle
+from PIL import Image, ImageDraw, ImageFont, ImageStat
 
-from .figure_schema_registry import get_schema
+from .capabilities.catalog import (
+    apply_capability_policy_transforms,
+    capability_policy_contributions,
+    get_schema,
+    registry_snapshot,
+)
+from .capabilities.figure_semantics import (
+    FigureRenderDecision,
+    RenderStrategy,
+    audit_figure_render_outcome,
+    semantic_contract_from_mapping,
+)
+from .capabilities.rendering import RendererRegistry, assemble_renderer_registry
+from .concurrency import model_request_slot, run_limited_concurrent
+from .drawing_code import (
+    drawing_domain_quality_rules,
+    generate_drawing_code_spec,
+    parse_drawing_code_model_response,
+    question_drawing_mode,
+    run_drawing_code,
+    validate_drawing_code,
+)
 from .llm_client import OpenAICompatibleClient
-from .question_types import question_has_type
+from .question_requirements import answer_figure_required
 from .settings import FIGURE_AUXILIARY_MAX_TOKENS, provider_supports_image_generation
-from .drawing_code import drawing_domain_quality_rules, generate_drawing_code_spec, parse_drawing_code_model_response, question_drawing_mode, run_drawing_code, validate_drawing_code
 
 BUNDLED_FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+
+
+def audit_figure_image_integrity(path: Path) -> list[str]:
+    """Check only cheap, objective image facts before semantic visual QA."""
+
+    if not path.exists() or path.stat().st_size <= 0:
+        return ["figure_image_missing_or_empty"]
+    try:
+        with Image.open(path) as raw:
+            raw.load()
+            width, height = raw.size
+            if "A" in raw.getbands():
+                rgba = raw.convert("RGBA")
+                base = Image.new("RGBA", rgba.size, "white")
+                base.alpha_composite(rgba)
+                image = base.convert("RGB")
+            else:
+                image = raw.convert("RGB")
+            gray = image.convert("L")
+            stats = ImageStat.Stat(gray)
+            extrema = gray.getextrema()
+            histogram = gray.histogram()
+    except Exception as exc:
+        return [f"figure_image_unreadable:{type(exc).__name__}"]
+
+    issues: list[str] = []
+    if width < 96 or height < 96:
+        issues.append(f"figure_image_dimensions_too_small:{width}x{height}")
+    total = max(width * height, 1)
+    nonwhite_ratio = sum(histogram[:250]) / total
+    variation = int(extrema[1]) - int(extrema[0])
+    standard_deviation = float(stats.stddev[0]) if stats.stddev else 0.0
+    if variation < 4 or standard_deviation < 0.8 or nonwhite_ratio < 0.0001:
+        issues.append("figure_image_blank_or_nearly_uniform")
+    return issues
+
+
+def figure_model_worker_count() -> int:
+    raw = os.environ.get("FIGURE_MODEL_MAX_WORKERS", "6")
+    try:
+        return max(1, min(6, int(raw)))
+    except ValueError:
+        return 6
+
+
+def figure_visual_audit_worker_count() -> int:
+    """Keep vision review below common provider burst-concurrency limits."""
+
+    raw = os.environ.get("FIGURE_VISUAL_AUDIT_MAX_WORKERS", "2")
+    try:
+        return max(1, min(3, int(raw)))
+    except ValueError:
+        return 2
 
 
 def configure_fonts() -> None:
@@ -81,6 +156,28 @@ def _wrap_plot_title(value: Any, width: int = 34) -> str:
     return "\n".join(textwrap.wrap(text, width=width, break_long_words=True, replace_whitespace=False))
 
 
+_UNICODE_SUBSCRIPT_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+
+
+def _matplotlib_scientific_text(value: Any) -> str:
+    """Render common scientific subscripts without relying on CJK glyph coverage."""
+
+    text = str(value or "")
+    if not text or "$" in text:
+        return text
+    text = re.sub(
+        r"[₀₁₂₃₄₅₆₇₈₉]+",
+        lambda match: f"$_{{{match.group(0).translate(_UNICODE_SUBSCRIPT_DIGITS)}}}$",
+        text,
+    )
+    text = re.sub(
+        r"_([A-Za-z0-9]+)",
+        lambda match: f"$_{{\\mathrm{{{match.group(1)}}}}}$",
+        text,
+    )
+    return text
+
+
 def draw_phase_diagram(spec: dict[str, Any], output: Path) -> None:
     eutectic_x = float(spec.get("eutectic_x", 0.5))
     eutectic_t = float(spec.get("eutectic_t", 0))
@@ -107,13 +204,115 @@ def draw_phase_diagram(spec: dict[str, Any], output: Path) -> None:
 
 def draw_line_chart(spec: dict[str, Any], output: Path) -> None:
     points = spec.get("points") or []
-    xs = [float(p[0]) for p in points]
-    ys = [float(p[1]) for p in points]
+    parsed_points = [_point_xy(point) for point in points]
+    parsed_points = [point for point in parsed_points if point is not None]
+    if not parsed_points:
+        raise ValueError("line chart has no valid numeric points")
+    xs = [point[0] for point in parsed_points]
+    ys = [point[1] for point in parsed_points]
     fig, ax = plt.subplots(figsize=(5.8, 3.6), dpi=180)
     ax.plot(xs, ys, marker="o", color="#111", lw=1.8)
-    ax.set_xlabel(spec.get("x_label", "x"))
-    ax.set_ylabel(spec.get("y_label", "y"))
-    ax.set_title(spec.get("title") or spec.get("caption") or "Line chart", fontsize=11)
+    ax.set_xlabel(_matplotlib_scientific_text(spec.get("x_label", "x")))
+    ax.set_ylabel(_matplotlib_scientific_text(spec.get("y_label", "y")))
+    # The caption is rendered by Word.  Repeating it inside the plot wastes
+    # vertical space and was consistently rejected by visual QA.
+    if spec.get("render_title_inside") is True and str(spec.get("title") or "").strip():
+        ax.set_title(str(spec.get("title")), fontsize=11)
+    annotations = list(spec.get("annotations")) if isinstance(spec.get("annotations"), list) else []
+    # Labeled points carry semantic content such as phase/region names.  The
+    # old generic renderer plotted the points but silently dropped their labels.
+    # Merge adjacent duplicate labels into one centered annotation to avoid
+    # clutter on plateaus while retaining every distinct requested label.
+    point_label_groups: list[dict[str, Any]] = []
+    for raw_point in points:
+        if not isinstance(raw_point, dict):
+            continue
+        xy = _point_xy(raw_point)
+        label = str(raw_point.get("label") or "").strip()
+        if xy is None or not label:
+            continue
+        if point_label_groups and point_label_groups[-1]["text"] == label:
+            point_label_groups[-1]["coordinates"].append(xy)
+        else:
+            point_label_groups.append({"text": label, "coordinates": [xy]})
+    explicit_texts = {
+        str(item.get("text") or item.get("label") or "").strip()
+        for item in annotations
+        if isinstance(item, dict)
+    }
+    explicit_texts.update(str(item).strip() for item in annotations if isinstance(item, str))
+    for group_index, group in enumerate(point_label_groups):
+        if group["text"] in explicit_texts:
+            continue
+        coordinates = group["coordinates"]
+        annotations.append(
+            {
+                "text": group["text"],
+                "x": sum(point[0] for point in coordinates) / len(coordinates),
+                "y": sum(point[1] for point in coordinates) / len(coordinates),
+                "dx": 7 if group_index % 2 == 0 else -7,
+                "dy": 13 + (group_index % 3) * 8,
+            }
+        )
+    plateaus = [
+        ((left[0] + right[0]) / 2.0, left[1])
+        for left, right in zip(parsed_points, parsed_points[1:])
+        if math.isclose(left[1], right[1], rel_tol=1e-9, abs_tol=1e-9)
+    ]
+    generic_index = 0
+    for annotation_index, annotation in enumerate(annotations):
+        if isinstance(annotation, str):
+            text = annotation.strip()
+            if not text:
+                continue
+            temperature_match = re.search(r"(?<![\d.])(-?\d+(?:\.\d+)?)\s*℃", text)
+            semantic_offset: tuple[float, float] | None = None
+            if temperature_match:
+                temperature = float(temperature_match.group(1))
+                x, y = min(parsed_points, key=lambda point: abs(point[1] - temperature))
+            elif "共晶" in text and plateaus:
+                x, y = max(plateaus, key=lambda point: point[1])
+                text = f"{text}（{y:g} ℃）"
+                semantic_offset = (14, 34)
+            elif ("共析" in text or "低温" in text) and plateaus:
+                x, y = min(plateaus, key=lambda point: point[1])
+                text = f"{text}（{y:g} ℃）"
+                semantic_offset = (14, 34)
+            elif any(token in text.lower() for token in ("液相线", "liquidus")):
+                x, y = parsed_points[min(2, len(parsed_points) - 1)]
+                semantic_offset = (-18, 34)
+            else:
+                candidate_index = min(
+                    len(parsed_points) - 1,
+                    round((generic_index + 1) * (len(parsed_points) - 1) / (len(annotations) + 1)),
+                )
+                x, y = parsed_points[candidate_index]
+                generic_index += 1
+            annotation = {"text": text, "x": x, "y": y}
+            if semantic_offset is not None:
+                annotation["dx"], annotation["dy"] = semantic_offset
+        if not isinstance(annotation, dict):
+            continue
+        try:
+            x = float(annotation.get("x"))
+            y = float(annotation.get("y"))
+        except (TypeError, ValueError):
+            continue
+        text = str(annotation.get("text") or annotation.get("label") or "").strip()
+        if not text:
+            continue
+        dx = float(annotation.get("dx") or (8 if annotation_index % 2 == 0 else -8))
+        dy = float(annotation.get("dy") or (12 + (annotation_index % 3) * 7))
+        ax.annotate(
+            _matplotlib_scientific_text(text),
+            xy=(x, y),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            fontsize=8,
+            ha="left" if dx >= 0 else "right",
+            arrowprops={"arrowstyle": "-", "lw": 0.7, "color": "#444"},
+            bbox={"boxstyle": "round,pad=0.12", "facecolor": "white", "edgecolor": "none", "alpha": 0.9},
+        )
     ax.grid(True, alpha=0.2)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -296,6 +495,138 @@ def draw_custom_diagram(spec: dict[str, Any], output: Path) -> None:
     plt.close(fig)
 
 
+def _overlay_point(value: Any, width: int, height: int) -> tuple[int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("overlay point must contain two normalized coordinates")
+    try:
+        x, y = float(value[0]), float(value[1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("overlay coordinates must be numeric") from exc
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        raise ValueError("overlay coordinates must be normalized to [0,1]")
+    return round(x * max(0, width - 1)), round(y * max(0, height - 1))
+
+
+def _overlay_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = (
+        BUNDLED_FONT_DIR / "dolbydu-font" / "unicode" / "Microsoft Yahei.ttf",
+        BUNDLED_FONT_DIR / "dolbydu-font" / "unicode" / "SimHei.ttf",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            try:
+                return ImageFont.truetype(str(candidate), size=max(10, size))
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+
+def validate_source_image_overlay_spec(spec: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    source = Path(str(spec.get("source_image") or ""))
+    expected_hash = str(spec.get("source_image_sha256") or "").strip().lower()
+    if not source.exists() or not source.is_file():
+        issues.append("source_image_overlay: source image is missing")
+    elif not expected_hash:
+        issues.append("source_image_overlay: source image hash is missing")
+    elif hashlib.sha256(source.read_bytes()).hexdigest() != expected_hash:
+        issues.append("source_image_overlay: source image hash mismatch")
+    annotations = spec.get("annotations")
+    if not isinstance(annotations, list) or not annotations:
+        issues.append("source_image_overlay: annotations must be a non-empty list")
+        return issues
+    allowed = {"line", "arrow", "rectangle", "ellipse", "point", "text"}
+    labels: set[str] = set()
+    for index, annotation in enumerate(annotations):
+        if not isinstance(annotation, dict):
+            issues.append(f"source_image_overlay: annotations[{index}] must be an object")
+            continue
+        kind = str(annotation.get("type") or "").strip()
+        if kind not in allowed:
+            issues.append(f"source_image_overlay: annotations[{index}].type is invalid")
+            continue
+        labels.update(
+            str(annotation.get(key) or "").strip()
+            for key in ("text", "label")
+            if str(annotation.get(key) or "").strip()
+        )
+        points = ("xy",) if kind in {"point", "text"} else ("start", "end")
+        for field in points:
+            value = annotation.get(field)
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                issues.append(f"source_image_overlay: annotations[{index}].{field} is required")
+                continue
+            try:
+                coordinates = [float(item) for item in value]
+            except (TypeError, ValueError):
+                issues.append(f"source_image_overlay: annotations[{index}].{field} must be numeric")
+                continue
+            if any(item < 0.0 or item > 1.0 for item in coordinates):
+                issues.append(f"source_image_overlay: annotations[{index}].{field} must use [0,1] coordinates")
+        if kind == "text" and not str(annotation.get("text") or "").strip():
+            issues.append(f"source_image_overlay: annotations[{index}].text is required")
+    for required in spec.get("required_labels") or []:
+        required_text = str(required or "").strip()
+        if required_text and not any(required_text in label for label in labels):
+            issues.append(f"source_image_overlay: missing required label: {required_text}")
+    return issues
+
+
+def draw_source_image_overlay(spec: dict[str, Any], output: Path) -> None:
+    issues = validate_source_image_overlay_spec(spec)
+    if issues:
+        raise ValueError("; ".join(issues))
+    source = Path(str(spec["source_image"]))
+    with Image.open(source) as raw:
+        image = raw.convert("RGB")
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+    base_width = max(2, round(min(width, height) * 0.006))
+    for annotation in spec.get("annotations") or []:
+        kind = str(annotation.get("type") or "")
+        color = str(annotation.get("color") or "#c00000")
+        line_width = max(1, int(annotation.get("width") or base_width))
+        if kind in {"line", "arrow", "rectangle", "ellipse"}:
+            start = _overlay_point(annotation.get("start"), width, height)
+            end = _overlay_point(annotation.get("end"), width, height)
+            box = [min(start[0], end[0]), min(start[1], end[1]), max(start[0], end[0]), max(start[1], end[1])]
+            if kind == "line":
+                draw.line([start, end], fill=color, width=line_width)
+            elif kind == "arrow":
+                draw.line([start, end], fill=color, width=line_width)
+                angle = math.atan2(end[1] - start[1], end[0] - start[0])
+                arrow_size = max(8, line_width * 4)
+                wing_a = (
+                    round(end[0] - arrow_size * math.cos(angle - math.pi / 6)),
+                    round(end[1] - arrow_size * math.sin(angle - math.pi / 6)),
+                )
+                wing_b = (
+                    round(end[0] - arrow_size * math.cos(angle + math.pi / 6)),
+                    round(end[1] - arrow_size * math.sin(angle + math.pi / 6)),
+                )
+                draw.polygon([end, wing_a, wing_b], fill=color)
+            elif kind == "rectangle":
+                draw.rectangle(box, outline=color, width=line_width)
+            else:
+                draw.ellipse(box, outline=color, width=line_width)
+            label = str(annotation.get("label") or "").strip()
+            if label:
+                font = _overlay_font(int(annotation.get("font_size") or max(16, round(min(width, height) * 0.035))))
+                label_xy = (round((start[0] + end[0]) / 2), round((start[1] + end[1]) / 2))
+                draw.text(label_xy, label, fill=color, font=font, stroke_width=max(1, line_width // 2), stroke_fill="white")
+        elif kind == "point":
+            xy = _overlay_point(annotation.get("xy"), width, height)
+            radius = max(3, int(annotation.get("radius") or line_width * 2))
+            draw.ellipse([xy[0] - radius, xy[1] - radius, xy[0] + radius, xy[1] + radius], fill=color)
+        elif kind == "text":
+            xy = _overlay_point(annotation.get("xy"), width, height)
+            font = _overlay_font(int(annotation.get("font_size") or max(16, round(min(width, height) * 0.035))))
+            text = str(annotation.get("text") or "")
+            draw.text(xy, text, fill=color, font=font, stroke_width=max(1, line_width // 2), stroke_fill="white")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output, format="PNG")
+
+
 def draw_diffraction_pattern(spec: dict[str, Any], output: Path) -> None:
     points = spec.get("points") or []
     fig, ax = plt.subplots(figsize=(4.8, 4.8), dpi=180)
@@ -344,24 +675,18 @@ def draw_fcc_cell(spec: dict[str, Any], output: Path) -> None:
     plt.close(fig)
 
 
-def _default_points() -> list[list[float]]:
-    return [[0, 0], [1, 0.35], [2, 0.9], [3, 1.15], [4, 1.05]]
-
-
 def draw_generic_axis_curve(spec: dict[str, Any], output: Path) -> None:
     if not spec.get("points"):
-        spec = {**spec, "points": _default_points()}
+        raise ValueError("generic_axis_curve: points are required; refusing to invent curve data")
     draw_line_chart(spec, output)
 
 
 def draw_multi_curve_axis_plot(spec: dict[str, Any], output: Path) -> None:
     series = spec.get("series") if isinstance(spec.get("series"), list) else []
     if not series:
-        series = [
-            {"label": "条件 A", "points": [[0, 0.15], [1, 0.4], [2, 0.75], [3, 0.95]]},
-            {"label": "条件 B", "points": [[0, 0.1], [1, 0.25], [2, 0.52], [3, 0.8]]},
-        ]
+        raise ValueError("multi_curve_axis_plot: series are required; refusing to invent comparison data")
     fig, ax = plt.subplots(figsize=(5.8, 3.6), dpi=180)
+    rendered_series = 0
     for item in series:
         if not isinstance(item, dict):
             continue
@@ -375,6 +700,10 @@ def draw_multi_curve_axis_plot(spec: dict[str, Any], output: Path) -> None:
         xs = [point[0] for point in parsed_points]
         ys = [point[1] for point in parsed_points]
         ax.plot(xs, ys, marker="o", lw=1.7, label=str(item.get("label") or "曲线"))
+        rendered_series += 1
+    if not rendered_series:
+        plt.close(fig)
+        raise ValueError("multi_curve_axis_plot: no series contains valid numeric points")
     ax.set_xlabel(spec.get("x_label", "x"))
     ax.set_ylabel(spec.get("y_label", "y"))
     ax.set_title(spec.get("title") or spec.get("caption") or "多曲线对比图", fontsize=11)
@@ -389,12 +718,7 @@ def draw_multi_curve_axis_plot(spec: dict[str, Any], output: Path) -> None:
 def draw_binary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
     curves = spec.get("curves") if isinstance(spec.get("curves"), list) else []
     if not curves:
-        eutectic_x = float(spec.get("eutectic_x", 0.45))
-        eutectic_t = float(spec.get("eutectic_t", 577))
-        curves = [
-            {"label": "液相线", "points": [[0, 660], [eutectic_x, eutectic_t], [1, 760]]},
-            {"label": "共晶线", "points": [[0, eutectic_t], [1, eutectic_t]], "style": "dashed"},
-        ]
+        raise ValueError("binary_phase_diagram: curves are required; refusing to invent phase boundaries")
     fig, ax = plt.subplots(figsize=(6.0, 3.8), dpi=180)
     for curve in curves:
         points = curve.get("points") if isinstance(curve, dict) else []
@@ -405,12 +729,8 @@ def draw_binary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
         ax.plot(xs, ys, lw=1.8, linestyle="--" if curve.get("style") == "dashed" else "-", label=str(curve.get("label") or "相界线"))
     regions = spec.get("phase_regions") if isinstance(spec.get("phase_regions"), list) else []
     if not regions:
-        regions = [
-            {"xy": [0.5, 720], "label": "L"},
-            {"xy": [0.2, 610], "label": "α + L"},
-            {"xy": [0.72, 610], "label": "β + L"},
-            {"xy": [0.5, 520], "label": "α + β"},
-        ]
+        plt.close(fig)
+        raise ValueError("binary_phase_diagram: phase_regions are required; refusing to invent phase labels")
     for region in regions:
         if isinstance(region, dict):
             x, y = _xy(region.get("xy"), (0.5, 0.5))
@@ -429,7 +749,9 @@ def draw_binary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
 
 def draw_crystal_unit_cell(spec: dict[str, Any], output: Path) -> None:
     structure = str(spec.get("structure") or "").lower()
-    if structure in {"fcc", "face_centered_cubic", "面心立方", ""}:
+    if not structure:
+        raise ValueError("crystal_unit_cell: structure is required")
+    if structure in {"fcc", "face_centered_cubic", "面心立方"}:
         draw_fcc_cell(spec, output)
         return
     fig, ax = plt.subplots(figsize=(4.8, 4.2), dpi=180)
@@ -459,27 +781,41 @@ def draw_crystal_unit_cell(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_crystal_plane_direction(spec: dict[str, Any], output: Path) -> None:
+    planes = spec.get("planes") if isinstance(spec.get("planes"), list) else []
+    directions = spec.get("directions") if isinstance(spec.get("directions"), list) else []
+    if not planes or not directions:
+        raise ValueError("crystal_plane_direction: planes and directions are required")
+
+    def item_label(item: Any) -> str:
+        if isinstance(item, dict):
+            return str(item.get("label") or item.get("index") or item.get("name") or "").strip()
+        return str(item or "").strip()
+
+    plane_label = item_label(planes[0])
+    direction_label = item_label(directions[0])
+    if not plane_label or not direction_label:
+        raise ValueError("crystal_plane_direction: plane and direction labels are required")
     custom = {
         **spec,
         "kind": "custom_diagram",
-        "elements": spec.get("elements") or [
+        "elements": [
             {"type": "line", "start": [0, 0], "end": [1, 0], "label": "a"},
             {"type": "line", "start": [0, 0], "end": [0, 1], "label": "b"},
             {"type": "line", "start": [1, 0], "end": [1, 1]},
             {"type": "line", "start": [0, 1], "end": [1, 1]},
-            {"type": "line", "start": [0.15, 0.8], "end": [0.85, 0.2], "label": "(hkl)晶面", "color": "#2563eb", "linewidth": 2},
-            {"type": "arrow", "start": [0.15, 0.15], "end": [0.85, 0.75], "label": "[uvw]晶向", "color": "#dc2626"},
+            {"type": "line", "start": [0.15, 0.8], "end": [0.85, 0.2], "label": plane_label, "linewidth": 2},
+            {"type": "arrow", "start": [0.15, 0.15], "end": [0.85, 0.75], "label": direction_label},
         ],
     }
     draw_custom_diagram(custom, output)
 
 
-def _passes_cubic_extinction(h: int, k: int, l: int, lattice: str) -> bool:
+def _passes_cubic_extinction(h: int, k: int, l_index: int, lattice: str) -> bool:
     lattice = _normalize_lattice_name(lattice)
     if lattice in {"bcc", "body_centered_cubic"}:
-        return (h + k + l) % 2 == 0
+        return (h + k + l_index) % 2 == 0
     if lattice in {"fcc", "face_centered_cubic"}:
-        return (h % 2 == k % 2 == l % 2)
+        return h % 2 == k % 2 == l_index % 2
     return True
 
 
@@ -503,6 +839,12 @@ def _parse_hkl_index(value: Any) -> list[int] | None:
     if not text:
         return None
     text = text.strip("()[]{}")
+    # The materials prompt contract requires crystallographic negative
+    # indices to use overbars. Accept that representation at the renderer
+    # boundary instead of requiring the legacy ``1-10`` form.
+    text = re.sub(r"\\(?:bar|overline)\{\s*([+-]?\d+)\s*\}", r"-\1", text)
+    text = re.sub(r"(\d)\u0305", r"-\1", text)
+    text = re.sub(r"[\u00af\u203e]\s*(\d)", r"-\1", text)
     text = text.replace(",", " ")
     if " " in text:
         parts = [part for part in text.split() if part]
@@ -528,8 +870,15 @@ def _parse_hkl_index(value: Any) -> list[int] | None:
     return values if len(values) == 3 else None
 
 
-def _format_hkl_label(h: int, k: int, l: int) -> str:
-    return f"({h} {k} {l})"
+def _format_hkl_label(h: int, k: int, l_index: int) -> str:
+    return f"({h} {k} {l_index})"
+
+
+def _format_hkl_plot_label(h: int, k: int, l_index: int) -> str:
+    """Use crystallographic overbars for negative indices in plotted labels."""
+
+    parts = [rf"\overline{{{abs(value)}}}" if value < 0 else str(value) for value in (h, k, l_index)]
+    return r"$(" + r"\ ".join(parts) + r")$"
 
 
 def _normalized_peak_position(peak: dict[str, Any]) -> float | None:
@@ -693,8 +1042,20 @@ def normalize_figure_spec(spec: dict[str, Any]) -> dict[str, Any]:
                 peak["two_theta"] = position
             if "intensity" not in peak and "height" not in peak:
                 peak["intensity"] = 1.0
+            if not peak.get("label") and peak.get("hkl") not in (None, ""):
+                peak["label"] = peak.get("hkl")
             if peak.get("label"):
                 peak["label"] = _normalize_peak_label(peak.get("label"))
+            style_aliases = {
+                "solid": "-",
+                "dashed": "--",
+                "dotted": ":",
+                "dashdot": "-.",
+                "dash-dot": "-.",
+            }
+            raw_style = str(peak.get("style") or peak.get("linestyle") or "").strip().lower()
+            if raw_style in style_aliases:
+                peak["style"] = style_aliases[raw_style]
             phase = peak.get("phase")
             phase_index = peak.get("phase_index", peak.get("phaseIndex"))
             phase_text = str(phase or "").strip().lower()
@@ -729,8 +1090,24 @@ def normalize_figure_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def program_check_figure_spec(spec: dict[str, Any]) -> list[str]:
+    spec = normalize_figure_spec(spec)
     kind = str(spec.get("kind") or "").strip()
     issues: list[str] = []
+    registry_entry = get_schema(kind)
+    # Every registered renderer honours the same contract, regardless of
+    # whether the spec came from a model, a restored task, or internal code.
+    # Source-dependent validation previously let legacy calls manufacture
+    # plausible-looking professional figures from renderer defaults.
+    if registry_entry:
+        for field in registry_entry.get("required_fields", []) or []:
+            value = spec.get(field)
+            if value in (None, "", []):
+                issues.append(f"{kind}: required field {field} is missing")
+        if issues:
+            return issues
+    if kind == "source_image_overlay":
+        binding_issue = str(spec.get("overlay_binding_issue") or "").strip()
+        return [binding_issue] if binding_issue else validate_source_image_overlay_spec(spec)
     if kind == "zone_axis_diffraction":
         zone_axis = spec.get("zone_axis") or [1, 1, 0]
         parsed_axis = _parse_hkl_index(zone_axis)
@@ -753,11 +1130,11 @@ def program_check_figure_spec(spec: dict[str, Any]) -> list[str]:
             issues.append("zone_axis_diffraction: invalid spot_size")
         lattice = _normalize_lattice_name(spec.get("lattice") or "generic_cubic")
         apply_extinction = bool(spec.get("apply_extinction", False))
-        for h, k, l in non_origin_labels:
-            if h * u + k * v + l * w != 0:
-                issues.append(f"zone_axis_diffraction: labelled index {_format_hkl_label(h, k, l)} does not satisfy zone-axis law")
-            if apply_extinction and not _passes_cubic_extinction(h, k, l, lattice):
-                issues.append(f"zone_axis_diffraction: labelled index {_format_hkl_label(h, k, l)} violates cubic extinction rule")
+        for h, k, l_index in non_origin_labels:
+            if h * u + k * v + l_index * w != 0:
+                issues.append(f"zone_axis_diffraction: labelled index {_format_hkl_label(h, k, l_index)} does not satisfy zone-axis law")
+            if apply_extinction and not _passes_cubic_extinction(h, k, l_index, lattice):
+                issues.append(f"zone_axis_diffraction: labelled index {_format_hkl_label(h, k, l_index)} violates cubic extinction rule")
         return issues
     if kind == "xrd_pattern":
         peaks = spec.get("peaks") if isinstance(spec.get("peaks"), list) else []
@@ -789,15 +1166,15 @@ def draw_zone_axis_diffraction(spec: dict[str, Any], output: Path) -> None:
     points: list[tuple[int, int, int]] = []
     for h in range(-max_index, max_index + 1):
         for k in range(-max_index, max_index + 1):
-            for l in range(-max_index, max_index + 1):
-                if h == k == l == 0 or h * u + k * v + l * w == 0:
-                    if not apply_extinction or _passes_cubic_extinction(h, k, l, lattice):
-                        points.append((h, k, l))
+            for l_index in range(-max_index, max_index + 1):
+                if h == k == l_index == 0 or h * u + k * v + l_index * w == 0:
+                    if not apply_extinction or _passes_cubic_extinction(h, k, l_index, lattice):
+                        points.append((h, k, l_index))
     if (0, 0, 0) not in points:
         points.append((0, 0, 0))
     if abs(u) == abs(v) and w == 0 and u and v:
-        def project(h: int, k: int, l: int) -> tuple[float, float]:
-            return ((h - k) / math.sqrt(2), float(l))
+        def project(h: int, k: int, l_index: int) -> tuple[float, float]:
+            return ((h - k) / math.sqrt(2), float(l_index))
 
         basis_labels = ("", "")
     else:
@@ -806,19 +1183,22 @@ def draw_zone_axis_diffraction(spec: dict[str, Any], output: Path) -> None:
         if b2 == (0, 0, 0):
             b2 = (0, 0, 1)
 
-        def project(h: int, k: int, l: int) -> tuple[float, float]:
-            return (float(h * b1[0] + k * b1[1] + l * b1[2]), float(-(h * b2[0] + k * b2[1] + l * b2[2])))
+        def project(h: int, k: int, l_index: int) -> tuple[float, float]:
+            return (
+                float(h * b1[0] + k * b1[1] + l_index * b1[2]),
+                float(-(h * b2[0] + k * b2[1] + l_index * b2[2])),
+            )
 
         basis_labels = ("g1*", "g2*")
     fig, ax = plt.subplots(figsize=(5.2, 4.8), dpi=200)
-    projected_points = [(h, k, l, *project(h, k, l)) for h, k, l in points]
-    for h, k, l in points:
-        x, y = project(h, k, l)
+    projected_points = [(h, k, l_index, *project(h, k, l_index)) for h, k, l_index in points]
+    for h, k, l_index in points:
+        x, y = project(h, k, l_index)
         base_size = float(spec.get("spot_size") or 42)
-        size = base_size * 1.45 if (h, k, l) == (0, 0, 0) else base_size
+        size = base_size * 1.45 if (h, k, l_index) == (0, 0, 0) else base_size
         ax.scatter([x], [y], s=size, c="#111")
-        if (h, k, l) in labels or (h, k, l) == (0, 0, 0):
-            ax.text(x + 0.08, y + 0.08, _format_hkl_label(h, k, l), fontsize=8)
+        if (h, k, l_index) in labels or (h, k, l_index) == (0, 0, 0):
+            ax.text(x + 0.08, y + 0.08, _format_hkl_plot_label(h, k, l_index), fontsize=8)
     xs = [item[3] for item in projected_points] or [-1, 1]
     ys = [item[4] for item in projected_points] or [-1, 1]
     xpad = max(0.8, (max(xs) - min(xs)) * 0.12)
@@ -836,7 +1216,7 @@ def draw_zone_axis_diffraction(spec: dict[str, Any], output: Path) -> None:
     ax.text(
         xmin + 0.12,
         ymax - 0.38,
-        f"zone axis [{u} {v} {w}]",
+        f"带轴 [{u} {v} {w}]",
         fontsize=8,
         color="#555",
         ha="left",
@@ -858,40 +1238,54 @@ def draw_xrd_pattern(spec: dict[str, Any], output: Path) -> None:
     spec = normalize_figure_spec(spec)
     peaks = spec.get("peaks") if isinstance(spec.get("peaks"), list) else []
     if not peaks:
-        peaks = [
-            {"two_theta": 32, "intensity": 0.45, "label": "(111)"},
-            {"two_theta": 45, "intensity": 1.0, "label": "(200)"},
-            {"two_theta": 56, "intensity": 0.6, "label": "(220)"},
-            {"two_theta": 75, "intensity": 0.35, "label": "(311)"},
-        ]
+        raise ValueError("xrd_pattern: peaks are required; refusing to invent diffraction data")
     fig, ax = plt.subplots(figsize=(6.0, 3.4), dpi=180)
     xs: list[float] = []
     legend_seen: set[str] = set()
+    pattern_labels = list(
+        dict.fromkeys(
+            str(peak.get("pattern_label") or peak.get("pattern") or "").strip()
+            for peak in peaks
+            if str(peak.get("pattern_label") or peak.get("pattern") or "").strip()
+        )
+    )
+    pattern_rows = {label: float(index) for index, label in enumerate(pattern_labels)}
     for peak in peaks:
         position = _normalized_peak_position(peak)
         if position is None:
             continue
         x = float(position)
         xs.append(x)
-        y = float(peak.get("intensity") or peak.get("height") or 0.5)
+        height = float(peak.get("intensity") or peak.get("height") or 0.5)
+        pattern_label = str(peak.get("pattern_label") or peak.get("pattern") or "").strip()
+        baseline = pattern_rows.get(pattern_label, 0.0) if pattern_rows else 0.0
+        y = baseline + (height * 0.72 if pattern_rows else height)
         style = str(peak.get("style") or peak.get("linestyle") or "-")
         is_super = style in {"--", ":", "-."}
-        color = str(peak.get("color") or ("#b45309" if is_super else "#111"))
+        color = "#111"
         raw_legend = peak.get("phase_label") or ("新增超结构峰" if is_super else "原有峰")
         legend_label = str(raw_legend) if str(raw_legend) not in legend_seen else None
         if legend_label:
             legend_seen.add(str(raw_legend))
-        ax.vlines(x, 0, y, color=color, lw=2.0, linestyles=style, label=legend_label)
+        ax.vlines(x, baseline, y, color=color, lw=2.0, linestyles=style, label=legend_label)
         if peak.get("label"):
-            ax.text(x, y + 0.04, str(peak.get("label")), fontsize=8, ha="center", color=color)
-    ax.set_xlabel(spec.get("x_label", "2θ / °"))
-    ax.set_ylabel(spec.get("y_label", "Intensity / a.u."))
-    ax.set_ylim(0, max(float(p.get("intensity") or p.get("height") or 0.5) for p in peaks) * 1.25)
+            ax.text(x, y + 0.035, str(peak.get("label")), fontsize=7.5, ha="center", color=color)
+    ax.set_xlabel(spec.get("x_label", "相对峰位"))
+    if pattern_rows:
+        ax.set_ylabel(spec.get("y_label", "状态"))
+        ax.set_yticks([baseline + 0.26 for baseline in pattern_rows.values()], labels=list(pattern_rows))
+        for baseline in pattern_rows.values():
+            ax.axhline(baseline, color="#777", lw=0.7)
+        ax.set_ylim(-0.08, max(pattern_rows.values()) + 0.98)
+    else:
+        ax.set_ylabel(spec.get("y_label", "Intensity / a.u."))
+        ax.set_ylim(0, max(float(p.get("intensity") or p.get("height") or 0.5) for p in peaks) * 1.25)
     if xs:
         span = max(xs) - min(xs)
-        pad = max(3.0, span * 0.08)
+        pad = max(0.05, span * 0.08)
         ax.set_xlim(min(xs) - pad, max(xs) + pad)
-    ax.set_title(_wrap_plot_title(spec.get("title") or spec.get("caption") or "XRD 衍射峰示意图"), fontsize=11, pad=10)
+    if spec.get("title"):
+        ax.set_title(_wrap_plot_title(spec.get("title")), fontsize=11, pad=10)
     ax.grid(True, axis="y", alpha=0.18)
     if legend_seen:
         ax.legend(fontsize=8, frameon=False, loc="lower right")
@@ -902,25 +1296,431 @@ def draw_xrd_pattern(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_microstructure_schematic(spec: dict[str, Any], output: Path) -> None:
-    fig, ax = plt.subplots(figsize=(5.2, 3.8), dpi=180)
+    fig, ax = plt.subplots(figsize=(6.2, 4.2), dpi=180)
     ax.set_aspect("equal")
     ax.axis("off")
-    grain_centers = [(0.1, 0.2), (0.45, 0.22), (0.82, 0.2), (0.25, 0.62), (0.65, 0.62)]
-    for idx, (x, y) in enumerate(grain_centers):
-        ax.add_patch(Ellipse((x, y), 0.42, 0.32, angle=idx * 25, fill=False, edgecolor="#111", linewidth=1.4))
-    features = spec.get("features") if isinstance(spec.get("features"), list) else []
+    field = Rectangle((0.0, 0.0), 1.0, 0.78, facecolor="#fafafa", edgecolor="#111", linewidth=1.25, zorder=1)
+    ax.add_patch(field)
+    raw_features = spec.get("features") if isinstance(spec.get("features"), list) else []
+    features = [item if isinstance(item, dict) else {"label": str(item)} for item in raw_features]
     if not features:
-        features = [{"label": "第二相/析出物", "xy": [0.5, 0.5]}, {"label": "晶界", "xy": [0.18, 0.44]}]
-    for item in features:
-        xy = _xy(item.get("xy"), (0.5, 0.5)) if isinstance(item, dict) else (0.5, 0.5)
-        ax.scatter([xy[0]], [xy[1]], s=36, color="#2563eb")
-        label = str(item.get("label") or "") if isinstance(item, dict) else ""
-        if label:
-            ax.text(xy[0] + 0.03, xy[1] + 0.03, label, fontsize=8, color="#2563eb")
-    ax.text(0.5, -0.08, str(spec.get("matrix_label") or "基体晶粒"), fontsize=9, ha="center")
-    ax.set_xlim(-0.15, 1.15)
-    ax.set_ylim(-0.15, 1.0)
-    ax.set_title(spec.get("title") or spec.get("caption") or "显微组织示意图", fontsize=11)
+        plt.close(fig)
+        raise ValueError("microstructure_schematic: features are required; refusing to invent constituents")
+
+    def morphology_for(item: dict[str, Any]) -> str:
+        explicit = str(item.get("morphology") or item.get("shape") or "").strip().lower()
+        aliases = {
+            "grain_boundary_network": "boundary_network",
+            "blocky": "island",
+            "block": "island",
+            "base": "matrix",
+        }
+        if explicit:
+            normalized = aliases.get(explicit, explicit)
+            if normalized in {
+                "matrix",
+                "grain",
+                "boundary_network",
+                "particles",
+                "island",
+                "dendrite",
+                "lamellar_colony",
+                "lamellar",
+                "eutectic",
+            }:
+                return normalized
+            # Figure specs are model-authored and commonly use descriptive
+            # natural language rather than the registry enum. Normalize those
+            # phrases before routing; otherwise valid morphology silently
+            # falls through to the generic particle renderer.
+            phrase_rules = (
+                (("枝晶", "dendrit"), "dendrite"),
+                (("层片", "片层", "lamell", "eutectic", "共晶"), "lamellar_colony"),
+                (("晶界", "边界网", "boundary", "network"), "boundary_network"),
+                (("等轴", "晶粒", "grain"), "grain"),
+                (("基体", "matrix", "background"), "matrix"),
+                (("岛", "块状", "blocky", "island"), "island"),
+                (("颗粒", "粒子", "析出物", "particle", "precipitate"), "particles"),
+            )
+            for tokens, canonical in phrase_rules:
+                if any(token in normalized for token in tokens):
+                    return canonical
+        label = str(item.get("label") or "")
+        if any(token in label for token in ("晶界", "网状", "二次渗碳体", "Fe3C_II", "Fe₃C_II")):
+            return "boundary_network"
+        if any(token in label for token in ("层片", "共晶", "珠光体", "莱氏体", "Ld", "Le")):
+            return "lamellar_colony"
+        if any(token in label for token in ("初生", "基体", "晶粒", "树枝")):
+            return "island"
+        return "particles"
+
+    def distribution_for(item: dict[str, Any]) -> str:
+        distribution = str(item.get("distribution") or "").strip().lower()
+        spatial_role = str(item.get("spatial_role") or "").strip().lower()
+        return " ".join(value for value in (spatial_role, distribution) if value)
+
+    def is_matrix_feature(item: dict[str, Any]) -> bool:
+        distribution = distribution_for(item)
+        return morphology_for(item) == "matrix" or any(
+            token in distribution
+            for token in ("基体", "占据大部分", "填满", "整个背景", "连续", "matrix", "surrounding", "background")
+        )
+
+    def is_boundary_feature(item: dict[str, Any]) -> bool:
+        morphology = morphology_for(item)
+        distribution = distribution_for(item)
+        return morphology in {"boundary_network", "boundary", "network"} or any(
+            token in distribution for token in ("沿晶界", "晶界网", "grain boundary network", "boundary_network")
+        )
+
+    def is_interstitial_feature(item: dict[str, Any]) -> bool:
+        distribution = distribution_for(item)
+        return any(token in distribution for token in ("晶界或枝晶间", "晶粒之间", "枝晶间", "interdendritic", "intergranular"))
+
+    def add_clipped_line(xs: list[float], ys: list[float], **kwargs: Any) -> Any:
+        lines = ax.plot(xs, ys, clip_on=True, **kwargs)
+        for line in lines:
+            line.set_clip_path(field)
+        return lines[0] if lines else None
+
+    def add_oriented_region(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        width: float,
+        *,
+        facecolor: str,
+        zorder: int,
+        lamellae: bool = False,
+    ) -> Polygon:
+        x0, y0 = start
+        x1, y1 = end
+        length = math.hypot(x1 - x0, y1 - y0) or 1.0
+        nx = -(y1 - y0) / length * width / 2
+        ny = (x1 - x0) / length * width / 2
+        region = Polygon(
+            [(x0 + nx, y0 + ny), (x1 + nx, y1 + ny), (x1 - nx, y1 - ny), (x0 - nx, y0 - ny)],
+            closed=True,
+            facecolor=facecolor,
+            edgecolor="#111",
+            linewidth=1.05,
+            zorder=zorder,
+        )
+        region.set_clip_path(field)
+        ax.add_patch(region)
+        if lamellae:
+            angle = math.atan2(y1 - y0, x1 - x0)
+            normal = angle + math.pi / 2
+            # Explicit alternating dark lamellae are more informative than a
+            # decorative hatch: they visibly describe a two-constituent colony.
+            for fraction in (0.10, 0.22, 0.34, 0.46, 0.58, 0.70, 0.82, 0.94):
+                cx = x0 + (x1 - x0) * fraction
+                cy = y0 + (y1 - y0) * fraction
+                dx = width * 0.47 * math.cos(normal)
+                dy = width * 0.47 * math.sin(normal)
+                line = add_clipped_line(
+                    [cx - dx, cx + dx],
+                    [cy - dy, cy + dy],
+                    color="#222",
+                    linewidth=1.05,
+                    zorder=zorder + 1,
+                )
+                line.set_clip_path(region)
+        return region
+
+    label_anchors: list[tuple[str, tuple[float, float]]] = []
+    seen_labels: set[str] = set()
+
+    def remember_label(label: str, anchor: tuple[float, float]) -> None:
+        clean = str(label or "").strip()
+        if clean and clean not in seen_labels:
+            seen_labels.add(clean)
+            label_anchors.append((clean, anchor))
+
+    ordered_features = sorted(enumerate(features), key=lambda pair: 0 if is_matrix_feature(pair[1]) else 1)
+    for index, item in ordered_features:
+        xy = _xy(item.get("xy"), (0.5, 0.4))
+        morphology = morphology_for(item)
+        distribution = distribution_for(item)
+        label = str(item.get("label") or "").strip()
+        is_matrix = is_matrix_feature(item)
+
+        if is_matrix and morphology == "matrix":
+            # A eutectic/ledeburite matrix is itself a two-constituent field.
+            # Fine stippling communicates that fact at textbook overview scale
+            # without competing with the dark proeutectic constituent.
+            matrix_is_composite = any(
+                token in f"{label} {distribution}".lower()
+                for token in ("莱氏体", "ledebur", "eutectic", "共晶")
+            )
+            matrix_patch = Rectangle(
+                (0.005, 0.005),
+                0.99,
+                0.77,
+                facecolor="#f1f1f1",
+                edgecolor="#888",
+                linewidth=0.45,
+                hatch="////" if matrix_is_composite else "..",
+                zorder=2,
+            )
+            ax.add_patch(matrix_patch)
+            remember_label(label, (0.86, 0.66))
+            continue
+
+        if is_matrix and morphology in {"grain", "island"}:
+            # A grain matrix is a continuous field partition, not a set of
+            # floating ellipses.  The deterministic cellular network works for
+            # metals, ceramics, geology, and biological tissue schematics.
+            grain_polygons = [
+                [(0.01, 0.01), (0.34, 0.01), (0.29, 0.26), (0.05, 0.35)],
+                [(0.34, 0.01), (0.66, 0.01), (0.58, 0.28), (0.29, 0.26)],
+                [(0.66, 0.01), (0.99, 0.01), (0.98, 0.31), (0.73, 0.38), (0.58, 0.28)],
+                [(0.05, 0.35), (0.29, 0.26), (0.48, 0.48), (0.27, 0.77), (0.01, 0.77)],
+                [(0.29, 0.26), (0.58, 0.28), (0.73, 0.38), (0.60, 0.77), (0.27, 0.77), (0.48, 0.48)],
+                [(0.73, 0.38), (0.98, 0.31), (0.99, 0.77), (0.60, 0.77)],
+            ]
+            for polygon in grain_polygons:
+                ax.add_patch(Polygon(polygon, closed=True, facecolor="#fafafa", edgecolor="#555", linewidth=1.0, zorder=3))
+            remember_label(label, (0.16, 0.52))
+            continue
+
+        if is_boundary_feature(item):
+            network = [
+                ([0.02, 0.28, 0.48, 0.72, 0.98], [0.12, 0.31, 0.16, 0.36, 0.22]),
+                ([0.05, 0.30, 0.56, 0.78, 0.97], [0.67, 0.50, 0.69, 0.51, 0.65]),
+                ([0.28, 0.30, 0.48, 0.56, 0.72, 0.78], [0.31, 0.50, 0.16, 0.69, 0.36, 0.51]),
+            ]
+            for xs, ys in network:
+                add_clipped_line(xs, ys, color="#111", linewidth=1.5, solid_capstyle="round", zorder=6)
+            remember_label(label, (0.48, 0.16))
+            continue
+
+        if morphology == "dendrite" or "树枝" in distribution:
+            main_anchor = (0.46, 0.40) if is_matrix else (0.26, 0.29)
+
+            def add_oriented_lamellar_region(
+                start: tuple[float, float],
+                end: tuple[float, float],
+                width: float,
+                *,
+                zorder: int,
+            ) -> None:
+                """Draw one filled part of a dendritic colony with real lamellae.
+
+                The filled region establishes the dark dendritic constituent at
+                overview scale. Fine light transverse strokes hint at its
+                lamellar substructure without changing the constituent boundary.
+                """
+
+                x0, y0 = start
+                x1, y1 = end
+                region = add_oriented_region(
+                    start,
+                    end,
+                    width,
+                    facecolor="#cfcfcf",
+                    zorder=zorder,
+                )
+                angle = math.atan2(y1 - y0, x1 - x0)
+                normal = angle + math.pi / 2
+                for fraction in (0.18, 0.34, 0.50, 0.66, 0.82):
+                    cx = x0 + (x1 - x0) * fraction
+                    cy = y0 + (y1 - y0) * fraction
+                    dx = width * 0.34 * math.cos(normal)
+                    dy = width * 0.34 * math.sin(normal)
+                    line = add_clipped_line(
+                        [cx - dx, cx + dx],
+                        [cy - dy, cy + dy],
+                        color="#222222",
+                        linewidth=0.65,
+                        zorder=zorder + 2,
+                    )
+                    line.set_clip_path(region)
+
+            stems = (
+                (
+                    (0.03, 0.60, -0.30, 0.46),
+                    (0.25, 0.13, 0.46, 0.52),
+                    (0.58, 0.58, -0.40, 0.49),
+                )
+                if is_matrix
+                else (
+                    # Distribute isolated dendritic colonies through the field
+                    # instead of lining them up along the lower margin.  The
+                    # three orientations remain deterministic and leave enough
+                    # surrounding matrix visible for a clear two-constituent
+                    # textbook schematic.
+                    (0.04, 0.60, -0.28, 0.40),
+                    (0.29, 0.14, 0.43, 0.42),
+                    (0.59, 0.62, -0.42, 0.40),
+                )
+            )
+            for stem_index, (x0, y0, angle, length) in enumerate(stems):
+                x1 = x0 + length * math.cos(angle)
+                y1 = y0 + length * math.sin(angle)
+                lamellar_dendrite = morphology in {"lamellar_colony", "lamellar", "eutectic"}
+                if lamellar_dendrite:
+                    add_oriented_lamellar_region((x0, y0), (x1, y1), 0.072, zorder=7)
+                elif is_matrix:
+                    add_clipped_line(
+                        [x0, x1], [y0, y1], color="#111", linewidth=22, solid_capstyle="round", zorder=4
+                    )
+                    add_clipped_line(
+                        [x0, x1], [y0, y1], color="#dedede", linewidth=17, solid_capstyle="round", zorder=5
+                    )
+                else:
+                    # An isolated/dispersed dendrite is still a constituent
+                    # region, not a one-pixel skeleton. Draw a bounded filled
+                    # arm so it remains legible against an interstitial matrix.
+                    add_clipped_line(
+                        [x0, x1], [y0, y1], color="#111", linewidth=13, solid_capstyle="round", zorder=6
+                    )
+                    add_clipped_line(
+                        [x0, x1], [y0, y1], color="#e2e2e2", linewidth=9, solid_capstyle="round", zorder=7
+                    )
+                for branch_index, fraction in enumerate((0.25, 0.48, 0.70, 0.86)):
+                    bx = x0 + (x1 - x0) * fraction
+                    by = y0 + (y1 - y0) * fraction
+                    direction = -1 if (branch_index + stem_index) % 2 else 1
+                    branch_angle = angle + direction * 1.05
+                    dx = 0.06 * math.cos(branch_angle)
+                    dy = 0.06 * math.sin(branch_angle)
+                    if lamellar_dendrite:
+                        add_oriented_lamellar_region((bx, by), (bx + dx, by + dy), 0.043, zorder=8)
+                    elif is_matrix:
+                        branch_length = 0.13
+                        dx = branch_length * math.cos(branch_angle)
+                        dy = branch_length * math.sin(branch_angle)
+                        add_clipped_line(
+                            [bx, bx + dx],
+                            [by, by + dy],
+                            color="#111",
+                            linewidth=14,
+                            solid_capstyle="round",
+                            zorder=4,
+                        )
+                        add_clipped_line(
+                            [bx, bx + dx],
+                            [by, by + dy],
+                            color="#dedede",
+                            linewidth=10,
+                            solid_capstyle="round",
+                            zorder=5,
+                        )
+                    else:
+                        add_clipped_line(
+                            [bx, bx + dx], [by, by + dy], color="#111", linewidth=8, solid_capstyle="round", zorder=6
+                        )
+                        add_clipped_line(
+                            [bx, bx + dx], [by, by + dy], color="#e2e2e2", linewidth=5, solid_capstyle="round", zorder=7
+                        )
+            remember_label(label, main_anchor)
+            continue
+
+        if morphology in {"lamellar_colony", "lamellar", "eutectic"}:
+            if is_interstitial_feature(item):
+                # Intergranular/interdendritic eutectic is the continuous
+                # residual field around the primary framework, not a handful
+                # of floating colonies.  Draw it below the primary phase so
+                # the primary dendrites remain visible while every remaining
+                # interdendritic area carries a clear two-phase lamellar
+                # texture.  This interpretation is discipline-neutral: the
+                # same spatial contract applies to any matrix/framework plus
+                # interstitial constituent schematic.
+                interstitial_field = Rectangle(
+                    (0.005, 0.005),
+                    0.99,
+                    0.77,
+                    facecolor="#fbfbfb",
+                    edgecolor="#777",
+                    linewidth=0.45,
+                    hatch="||||",
+                    zorder=2,
+                )
+                interstitial_field.set_clip_path(field)
+                ax.add_patch(interstitial_field)
+                remember_label(label, (0.84, 0.18))
+            elif is_matrix:
+                lamellar_matrix = Rectangle((0.005, 0.005), 0.99, 0.77, facecolor="#f5f5f5", edgecolor="#777", linewidth=0.5, hatch="////", zorder=2)
+                ax.add_patch(lamellar_matrix)
+                remember_label(label, (0.86, 0.12))
+            else:
+                centers = [(0.28, 0.32), (0.66, 0.53)] if any(token in distribution for token in ("分布", "块状", "colony")) else [xy]
+                for colony_index, center in enumerate(centers):
+                    colony = Ellipse(center, 0.27, 0.18, angle=25 + colony_index * 55, facecolor="#f5f5f5", edgecolor="#111", linewidth=1.0, hatch="////", zorder=5)
+                    colony.set_clip_path(field)
+                    ax.add_patch(colony)
+                remember_label(label, centers[0])
+            continue
+
+        if morphology in {"grain", "island"}:
+            centers = [(0.24, 0.25), (0.55, 0.56), (0.81, 0.27)] if any(token in distribution for token in ("分散", "多个", "块状")) else [xy]
+            for grain_index, center in enumerate(centers):
+                island = Ellipse(
+                    center,
+                    0.25,
+                    0.15,
+                    angle=(index * 29 + grain_index * 37) % 110,
+                    facecolor="white",
+                    edgecolor="#111",
+                    linewidth=1.15,
+                    hatch=".." if morphology == "island" else None,
+                    zorder=5,
+                )
+                island.set_clip_path(field)
+                ax.add_patch(island)
+            remember_label(label, centers[0])
+            continue
+
+        count = max(8, min(24, int(item.get("count") or 14)))
+        if any(token in distribution for token in ("弥散", "分散", "throughout", "within", "分布于", "内部")):
+            # Keep intragranular particles away from the intergranular bands so
+            # the intended containment relation remains visible.
+            px = [0.10 + ((n * 37) % 78) / 100 for n in range(count)]
+            py = [0.09 + ((n * 53) % 62) / 100 for n in range(count)]
+        else:
+            px = [xy[0] + 0.08 * math.cos(2 * math.pi * n / count) for n in range(count)]
+            py = [xy[1] + 0.055 * math.sin(2 * math.pi * n / count) for n in range(count)]
+        scatter = ax.scatter(px, py, s=13, color="#111", marker="o", zorder=8, clip_on=True)
+        scatter.set_clip_path(field)
+        middle = len(px) // 2
+        remember_label(label, (px[middle], py[middle]))
+
+    matrix_label = str(spec.get("matrix_label") or "").strip()
+    if matrix_label and matrix_label not in seen_labels:
+        remember_label(matrix_label, (0.88, 0.10))
+
+    # Labels are laid out in dedicated margins and point to actual rendered
+    # geometry.  This prevents model-provided placeholder coordinates from
+    # creating overlaps or pointing every label at the background.
+    # Keep labels below a stable top safety margin. Matplotlib's tight layout
+    # can otherwise crop CJK glyph ascenders when annotations sit close to the
+    # axes limit, especially for wide scientific labels.
+    top_slots = [(0.03, 0.86), (0.38, 0.86), (0.73, 0.86)]
+    bottom_slots = [(0.03, -0.09), (0.38, -0.09), (0.73, -0.09)]
+    available_top = list(top_slots)
+    assigned_top: list[tuple[float, float]] = []
+    for _, anchor in label_anchors[:3]:
+        nearest = min(available_top, key=lambda slot: abs(slot[0] - anchor[0]))
+        assigned_top.append(nearest)
+        available_top.remove(nearest)
+    for label_index, (label, anchor) in enumerate(label_anchors[:6]):
+        slot = assigned_top[label_index] if label_index < 3 else bottom_slots[label_index - 3]
+        ax.annotate(
+            _matplotlib_scientific_text(label),
+            xy=anchor,
+            xytext=slot,
+            fontsize=8,
+            ha="left",
+            va="center",
+            color="#111",
+            arrowprops={"arrowstyle": "-", "lw": 0.7, "color": "#444"},
+            bbox={"boxstyle": "round,pad=0.12", "facecolor": "white", "edgecolor": "none", "alpha": 0.94},
+            zorder=10,
+        )
+    ax.set_xlim(-0.06, 1.06)
+    ax.set_ylim(-0.14, 1.00)
+    if str(spec.get("title") or "").strip():
+        ax.set_title(str(spec.get("title")), fontsize=11)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output)
@@ -951,18 +1751,26 @@ def draw_fe_c_phase_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_ttt_diagram(spec: dict[str, Any], output: Path) -> None:
+    start_points = [point for point in (_point_xy(item) for item in spec.get("start_curve") or []) if point is not None]
+    finish_points = [point for point in (_point_xy(item) for item in spec.get("finish_curve") or []) if point is not None]
+    if not start_points or not finish_points:
+        raise ValueError("ttt_diagram: start_curve and finish_curve are required")
     fig, ax = plt.subplots(figsize=(5.8, 3.8), dpi=180)
-    y = [720, 650, 560, 460, 360, 300]
-    start_x = [0.8, 1.2, 2.2, 4.5, 8, 14]
-    finish_x = [3, 5, 9, 18, 40, 80]
-    ax.semilogx(start_x, y, color="#111", lw=1.8, label="开始")
-    ax.semilogx(finish_x, y, color="#111", lw=1.8, ls="--", label="终了")
-    ax.axhline(float(spec.get("ms_temperature") or 230), color="#dc2626", lw=1.2)
-    ax.text(1.1, 690, "珠光体区", fontsize=8)
-    ax.text(10, 410, "贝氏体区", fontsize=8)
-    ax.text(0.12, float(spec.get("ms_temperature") or 230) + 8, "Ms", fontsize=8, color="#dc2626")
-    ax.set_xlabel("t / s")
-    ax.set_ylabel("T / °C")
+    ax.semilogx([point[0] for point in start_points], [point[1] for point in start_points], color="#111", lw=1.8, label="开始")
+    ax.semilogx([point[0] for point in finish_points], [point[1] for point in finish_points], color="#111", lw=1.8, ls="--", label="终了")
+    if spec.get("ms_temperature") not in (None, ""):
+        ms_temperature = float(spec["ms_temperature"])
+        ax.axhline(ms_temperature, color="#666", lw=1.2)
+        ax.text(min(point[0] for point in start_points), ms_temperature, "Ms", fontsize=8, color="#555")
+    for region in spec.get("regions") or []:
+        if not isinstance(region, dict):
+            continue
+        point = _point_xy(region.get("xy"))
+        label = str(region.get("label") or "").strip()
+        if point is not None and label:
+            ax.text(point[0], point[1], label, fontsize=8)
+    ax.set_xlabel(spec.get("x_label") or "t / s")
+    ax.set_ylabel(spec.get("y_label") or "T / °C")
     ax.set_title(spec.get("title") or spec.get("caption") or "TTT 等温转变曲线", fontsize=11)
     ax.grid(True, alpha=0.18)
     ax.legend(fontsize=8)
@@ -973,16 +1781,22 @@ def draw_ttt_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_stress_strain_curve(spec: dict[str, Any], output: Path) -> None:
-    points = spec.get("points") or [[0, 0], [0.01, 120], [0.04, 180], [0.16, 330], [0.25, 360], [0.34, 310]]
+    points = [point for point in (_point_xy(item) for item in spec.get("points") or []) if point is not None]
+    if not points:
+        raise ValueError("stress_strain_curve: points are required; refusing to invent material behavior")
     fig, ax = plt.subplots(figsize=(5.8, 3.6), dpi=180)
-    xs = [float(p[0]) for p in points]
-    ys = [float(p[1]) for p in points]
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
     ax.plot(xs, ys, color="#111", lw=1.9)
-    for label, idx in [("弹性段", 1), ("屈服/强化", 2), ("抗拉强度", 4), ("断裂", 5)]:
-        if idx < len(points):
-            ax.text(xs[idx], ys[idx] + 14, label, fontsize=8)
-    ax.set_xlabel("ε")
-    ax.set_ylabel("σ / MPa")
+    for annotation in spec.get("annotations") or spec.get("labels") or []:
+        if not isinstance(annotation, dict):
+            continue
+        point = _point_xy(annotation.get("xy") or [annotation.get("x"), annotation.get("y")])
+        label = str(annotation.get("text") or annotation.get("label") or "").strip()
+        if point is not None and label:
+            ax.text(point[0], point[1], label, fontsize=8)
+    ax.set_xlabel(spec.get("x_label") or "ε")
+    ax.set_ylabel(spec.get("y_label") or "σ")
     ax.set_title(spec.get("title") or spec.get("caption") or "应力-应变曲线", fontsize=11)
     ax.grid(True, alpha=0.18)
     fig.tight_layout()
@@ -992,18 +1806,21 @@ def draw_stress_strain_curve(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_dsc_curve(spec: dict[str, Any], output: Path) -> None:
+    points = [point for point in (_point_xy(item) for item in spec.get("points") or []) if point is not None]
+    if not points:
+        raise ValueError("dsc_curve: points are required; refusing to invent thermal events")
     fig, ax = plt.subplots(figsize=(6.0, 3.4), dpi=180)
-    xs = [20, 50, 80, 110, 140, 170, 200, 230]
-    ys = [0.0, 0.02, -0.05, -0.08, 0.28, 0.05, -0.42, 0.0]
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
     ax.plot(xs, ys, color="#111", lw=1.8)
-    tg = float(spec.get("tg") or 85)
-    tc = float(spec.get("tc") or 145)
-    tm = float(spec.get("tm") or 205)
-    for x, label in [(tg, "Tg"), (tc, "Tc"), (tm, "Tm")]:
+    for field, label in (("tg", "Tg"), ("tc", "Tc"), ("tm", "Tm")):
+        if spec.get(field) in (None, ""):
+            continue
+        x = float(spec[field])
         ax.axvline(x, color="#666", ls="--", lw=0.9)
-        ax.text(x + 2, 0.32 if label != "Tm" else -0.34, label, fontsize=8)
-    ax.set_xlabel("T / °C")
-    ax.set_ylabel("Heat flow")
+        ax.text(x, max(ys), label, fontsize=8)
+    ax.set_xlabel(spec.get("x_label") or "T / °C")
+    ax.set_ylabel(spec.get("y_label") or "Heat flow")
     ax.set_title(spec.get("title") or spec.get("caption") or "DSC 曲线示意图", fontsize=11)
     ax.grid(True, alpha=0.16)
     fig.tight_layout()
@@ -1036,12 +1853,16 @@ def draw_polymer_chain_structure(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_ceramic_crystal_structure(spec: dict[str, Any], output: Path) -> None:
-    draw_crystal_unit_cell({**spec, "structure": spec.get("structure") or "陶瓷晶体"}, output)
+    if not str(spec.get("structure") or "").strip():
+        raise ValueError("ceramic_crystal_structure: structure is required")
+    draw_crystal_unit_cell(spec, output)
 
 
 def draw_sintering_microstructure_evolution(spec: dict[str, Any], output: Path) -> None:
+    titles = spec.get("stages") if isinstance(spec.get("stages"), list) else []
+    if len(titles) != 3:
+        raise ValueError("sintering_microstructure_evolution: exactly three named stages are required")
     fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.8), dpi=180)
-    titles = spec.get("stages") if isinstance(spec.get("stages"), list) else ["粉末接触", "烧结颈形成", "致密化/晶粒长大"]
     for idx, ax in enumerate(axes):
         ax.set_aspect("equal")
         ax.axis("off")
@@ -1070,20 +1891,30 @@ def _draw_profile_curve(
     title: str,
     x_label: str,
     y_label: str,
-    points: list[list[float]],
-    labels: list[tuple[float, float, str]] | None = None,
     logx: bool = False,
 ) -> None:
-    raw_points = spec.get("points") if isinstance(spec.get("points"), list) and spec.get("points") else points
-    xs = [float(p[0]) for p in raw_points]
-    ys = [float(p[1]) for p in raw_points]
+    raw_points = spec.get("points") if isinstance(spec.get("points"), list) else []
+    parsed_points = [_point_xy(point) for point in raw_points]
+    parsed_points = [point for point in parsed_points if point is not None]
+    if not parsed_points:
+        raise ValueError(f"{str(spec.get('kind') or 'profile_curve')}: points are required; refusing to invent curve data")
+    if logx and any(point[0] <= 0 for point in parsed_points):
+        raise ValueError(f"{str(spec.get('kind') or 'profile_curve')}: logarithmic x values must be positive")
+    xs = [point[0] for point in parsed_points]
+    ys = [point[1] for point in parsed_points]
     fig, ax = plt.subplots(figsize=(5.8, 3.6), dpi=180)
     if logx:
         ax.semilogx(xs, ys, color="#111", lw=1.8, marker="o")
     else:
         ax.plot(xs, ys, color="#111", lw=1.8, marker="o")
-    for x, y, label in labels or []:
-        ax.text(x, y, label, fontsize=8)
+    annotations = spec.get("annotations") or spec.get("stage_labels") or []
+    for annotation in annotations if isinstance(annotations, list) else []:
+        if not isinstance(annotation, dict):
+            continue
+        point = _point_xy(annotation.get("xy") or [annotation.get("x"), annotation.get("y")])
+        label = str(annotation.get("text") or annotation.get("label") or "").strip()
+        if point is not None and label:
+            ax.text(point[0], point[1], _matplotlib_scientific_text(label), fontsize=8)
     ax.set_xlabel(spec.get("x_label", x_label))
     ax.set_ylabel(spec.get("y_label", y_label))
     ax.set_title(spec.get("title") or spec.get("caption") or title, fontsize=11)
@@ -1094,7 +1925,31 @@ def _draw_profile_curve(
     plt.close(fig)
 
 
+def _semantic_labels(value: Any) -> list[str]:
+    labels: list[str] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, str):
+            if item.strip():
+                labels.append(item.strip())
+            return
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("name") or item.get("type") or "").strip()
+            if label:
+                labels.append(label)
+            return
+        if isinstance(item, (list, tuple)):
+            for child in item:
+                collect(child)
+
+    collect(value)
+    return list(dict.fromkeys(labels))
+
+
 def _draw_simple_schematic(spec: dict[str, Any], output: Path, *, title: str, labels: list[str]) -> None:
+    labels = [str(label).strip() for label in labels if str(label).strip()]
+    if not labels:
+        raise ValueError(f"{str(spec.get('kind') or 'schematic')}: semantic labels are required")
     fig, ax = plt.subplots(figsize=(5.8, 3.6), dpi=180)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -1118,7 +1973,9 @@ def _draw_simple_schematic(spec: dict[str, Any], output: Path, *, title: str, la
 
 
 def draw_ternary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
-    components = spec.get("components") if isinstance(spec.get("components"), list) and len(spec.get("components")) >= 3 else ["A", "B", "C"]
+    components = spec.get("components") if isinstance(spec.get("components"), list) else []
+    if len(components) < 3:
+        raise ValueError("ternary_phase_diagram: three components are required")
     fig, ax = plt.subplots(figsize=(4.8, 4.4), dpi=180)
     triangle = [(0, 0), (1, 0), (0.5, 0.866), (0, 0)]
     ax.plot([p[0] for p in triangle], [p[1] for p in triangle], color="#111", lw=1.6)
@@ -1131,7 +1988,8 @@ def draw_ternary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
     ax.text(0.48, 0.92, str(components[2]), fontsize=10)
     regions = spec.get("phase_regions") if isinstance(spec.get("phase_regions"), list) else []
     if not regions:
-        regions = [{"xy": [0.5, 0.48], "label": "单相区"}, {"xy": [0.28, 0.18], "label": "两相区"}, {"xy": [0.68, 0.2], "label": "三相区"}]
+        plt.close(fig)
+        raise ValueError("ternary_phase_diagram: phase_regions are required; refusing to invent phase labels")
     for region in regions:
         if isinstance(region, dict):
             x, y = _xy(region.get("xy"), (0.5, 0.45))
@@ -1146,7 +2004,9 @@ def draw_ternary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_process_flow_diagram(spec: dict[str, Any], output: Path) -> None:
-    steps = spec.get("steps") if isinstance(spec.get("steps"), list) and spec.get("steps") else ["原料", "混合/成形", "热处理", "性能测试"]
+    steps = spec.get("steps") if isinstance(spec.get("steps"), list) else []
+    if not steps:
+        raise ValueError("process_flow_diagram: steps are required; refusing to invent process stages")
     fig, ax = plt.subplots(figsize=(6.4, 2.4), dpi=180)
     ax.axis("off")
     xs = [0.12 + i * (0.76 / max(1, len(steps) - 1)) for i in range(len(steps))]
@@ -1162,16 +2022,34 @@ def draw_process_flow_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_cct_diagram(spec: dict[str, Any], output: Path) -> None:
+    start_curve = spec.get("start_curve") if isinstance(spec.get("start_curve"), list) else []
+    finish_curve = spec.get("finish_curve") if isinstance(spec.get("finish_curve"), list) else []
+    cooling_curves = spec.get("cooling_curves") if isinstance(spec.get("cooling_curves"), list) else []
+    start_points = [point for point in (_point_xy(item) for item in start_curve) if point is not None]
+    finish_points = [point for point in (_point_xy(item) for item in finish_curve) if point is not None]
+    if not start_points or not finish_points or not cooling_curves:
+        raise ValueError("cct_diagram: start_curve, finish_curve, and cooling_curves are required")
     fig, ax = plt.subplots(figsize=(5.8, 3.8), dpi=180)
-    y = [720, 650, 560, 460, 360]
-    ax.semilogx([1, 2, 5, 15, 50], y, color="#111", lw=1.7, label="转变开始")
-    ax.semilogx([4, 8, 20, 70, 180], y, color="#111", lw=1.7, ls="--", label="转变终了")
-    for idx, factor in enumerate([0.8, 2.2, 6.0]):
-        ax.semilogx([factor, factor * 4, factor * 16, factor * 50], [760, 620, 450, 260], lw=1.1, label=f"冷却曲线{idx + 1}")
-    ax.axhline(float(spec.get("ms_temperature") or 230), color="#dc2626", lw=1.1)
-    ax.text(1.0, 240, "Ms", fontsize=8, color="#dc2626")
-    ax.set_xlabel("t / s")
-    ax.set_ylabel("T / °C")
+    ax.semilogx([point[0] for point in start_points], [point[1] for point in start_points], color="#111", lw=1.7, label="转变开始")
+    ax.semilogx([point[0] for point in finish_points], [point[1] for point in finish_points], color="#111", lw=1.7, ls="--", label="转变终了")
+    rendered_cooling = 0
+    for idx, curve in enumerate(cooling_curves):
+        if not isinstance(curve, dict):
+            continue
+        points = [point for point in (_point_xy(item) for item in curve.get("points") or []) if point is not None]
+        if not points:
+            continue
+        ax.semilogx([point[0] for point in points], [point[1] for point in points], lw=1.1, label=str(curve.get("label") or f"冷却曲线{idx + 1}"))
+        rendered_cooling += 1
+    if not rendered_cooling:
+        plt.close(fig)
+        raise ValueError("cct_diagram: cooling_curves contain no valid numeric points")
+    if spec.get("ms_temperature") not in (None, ""):
+        ms_temperature = float(spec["ms_temperature"])
+        ax.axhline(ms_temperature, color="#666", lw=1.1)
+        ax.text(min(point[0] for point in start_points), ms_temperature, "Ms", fontsize=8, color="#555")
+    ax.set_xlabel(spec.get("x_label") or "t / s")
+    ax.set_ylabel(spec.get("y_label") or "T / °C")
     ax.set_title(spec.get("title") or spec.get("caption") or "CCT 连续冷却转变曲线", fontsize=11)
     ax.grid(True, alpha=0.18)
     ax.legend(fontsize=7)
@@ -1182,90 +2060,78 @@ def draw_cct_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_heat_treatment_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="热处理温度-时间曲线", x_label="t", y_label="T / °C", points=[[0, 25], [1, 850], [3, 850], [3.4, 60], [5, 200], [6.5, 200], [7, 25]], labels=[(1.5, 880, "保温"), (3.3, 120, "淬火"), (5.2, 230, "回火")])
+    _draw_profile_curve(spec, output, title="热处理温度-时间曲线", x_label="t", y_label="T / °C")
 
 
 def draw_creep_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="蠕变三阶段曲线", x_label="t", y_label="ε", points=[[0, 0], [1, 0.22], [3, 0.34], [5, 0.48], [6, 0.78], [6.6, 1.1]], labels=[(0.4, 0.16, "初始蠕变"), (2.8, 0.39, "稳态蠕变"), (5.35, 0.84, "加速蠕变")])
+    _draw_profile_curve(spec, output, title="蠕变三阶段曲线", x_label="t", y_label="ε")
 
 
 def draw_fatigue_sn_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="S-N 疲劳曲线", x_label="N", y_label="σa", points=[[1e3, 520], [1e4, 420], [1e5, 330], [1e6, 270], [1e7, 250]], labels=[(2e6, 260, "疲劳极限")], logx=True)
+    _draw_profile_curve(spec, output, title="S-N 疲劳曲线", x_label="N", y_label="σa", logx=True)
 
 
 def draw_precipitation_aging_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="时效强化曲线", x_label="时效时间", y_label="硬度/强度", points=[[0, 0.2], [1, 0.55], [2.5, 0.95], [4, 0.82], [6, 0.55]], labels=[(0.5, 0.42, "欠时效"), (2.3, 1.0, "峰时效"), (4.2, 0.72, "过时效")])
+    _draw_profile_curve(spec, output, title="时效强化曲线", x_label="时效时间", y_label="硬度/强度")
 
 
 def draw_corrosion_polarization_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="腐蚀极化曲线", x_label="log i", y_label="E", points=[[-3, -0.45], [-2, -0.28], [-1, -0.18], [0, -0.18], [1, 0.25]], labels=[(-2.4, -0.26, "Ecorr"), (0.05, -0.12, "钝化区")])
+    _draw_profile_curve(spec, output, title="腐蚀极化曲线", x_label="log i", y_label="E")
 
 
 def draw_welding_thermal_cycle(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="焊接热循环曲线", x_label="t", y_label="T / °C", points=[[0, 25], [0.6, 1350], [1.2, 900], [2.5, 500], [5, 150]], labels=[(0.58, 1390, "峰值温度"), (1.5, 700, "冷却阶段")])
+    _draw_profile_curve(spec, output, title="焊接热循环曲线", x_label="t", y_label="T / °C")
 
 
 def draw_tga_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="TGA 热重曲线", x_label="T / °C", y_label="质量保留率 / %", points=[[30, 100], [180, 98], [280, 84], [390, 38], [600, 22]], labels=[(300, 78, "分解阶段"), (520, 28, "残炭/残余")])
+    _draw_profile_curve(spec, output, title="TGA 热重曲线", x_label="T / °C", y_label="质量保留率 / %")
 
 
 def draw_dma_curve(spec: dict[str, Any], output: Path) -> None:
-    series = [
-        {"label": "储能模量", "points": [[-80, 1.0], [-20, 0.85], [40, 0.28], [120, 0.12]]},
-        {"label": "tanδ", "points": [[-80, 0.05], [-20, 0.12], [40, 0.65], [120, 0.16]]},
-    ]
-    draw_multi_curve_axis_plot({**spec, "series": spec.get("series") or series, "x_label": "T / °C", "y_label": "相对值", "caption": spec.get("caption") or "DMA 曲线"}, output)
+    draw_multi_curve_axis_plot({**spec, "x_label": spec.get("x_label") or "T / °C", "y_label": spec.get("y_label") or "相对值", "caption": spec.get("caption") or "DMA 曲线"}, output)
 
 
 def draw_viscoelastic_creep_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="黏弹性蠕变-回复曲线", x_label="t", y_label="ε", points=[[0, 0], [1, 0.42], [3, 0.62], [3.2, 0.32], [5, 0.18]], labels=[(1.2, 0.55, "加载蠕变"), (3.35, 0.3, "卸载回复"), (4.2, 0.2, "残余形变")])
+    _draw_profile_curve(spec, output, title="黏弹性蠕变-回复曲线", x_label="t", y_label="ε")
 
 
 def draw_stress_relaxation_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="应力松弛曲线", x_label="t", y_label="σ", points=[[0, 1.0], [1, 0.68], [2, 0.49], [4, 0.32], [8, 0.22]], labels=[(1.2, 0.7, "恒定应变")])
+    _draw_profile_curve(spec, output, title="应力松弛曲线", x_label="t", y_label="σ")
 
 
 def draw_time_temperature_superposition(spec: dict[str, Any], output: Path) -> None:
-    series = [
-        {"label": "低温", "points": [[0.01, 0.85], [0.1, 0.7], [1, 0.48]]},
-        {"label": "参考温度", "points": [[0.1, 0.85], [1, 0.7], [10, 0.48]]},
-        {"label": "高温", "points": [[1, 0.85], [10, 0.7], [100, 0.48]]},
-    ]
-    draw_multi_curve_axis_plot({**spec, "series": spec.get("series") or series, "x_label": "约化时间", "y_label": "模量", "caption": spec.get("caption") or "时温等效主曲线"}, output)
+    draw_multi_curve_axis_plot({**spec, "x_label": spec.get("x_label") or "约化时间", "y_label": spec.get("y_label") or "模量", "caption": spec.get("caption") or "时温等效主曲线"}, output)
 
 
 def draw_polymer_stress_strain_curve(spec: dict[str, Any], output: Path) -> None:
-    series = [
-        {"label": "塑料", "points": [[0, 0], [0.05, 0.6], [0.25, 0.8], [0.6, 0.72]]},
-        {"label": "橡胶", "points": [[0, 0], [0.8, 0.18], [2.0, 0.45], [4.0, 1.0]]},
-        {"label": "纤维", "points": [[0, 0], [0.03, 1.05]]},
-    ]
-    draw_multi_curve_axis_plot({**spec, "series": spec.get("series") or series, "x_label": "ε", "y_label": "σ", "caption": spec.get("caption") or "高分子应力-应变曲线"}, output)
+    series = spec.get("series")
+    if not series and spec.get("points"):
+        series = [{"label": str(spec.get("material_type") or "材料"), "points": spec["points"]}]
+    draw_multi_curve_axis_plot({**spec, "series": series, "x_label": spec.get("x_label") or "ε", "y_label": spec.get("y_label") or "σ", "caption": spec.get("caption") or "高分子应力-应变曲线"}, output)
 
 
 def draw_molecular_weight_distribution(spec: dict[str, Any], output: Path) -> None:
-    points = [[1, 0.02], [2, 0.16], [3, 0.58], [4, 1.0], [5, 0.62], [6, 0.22], [7, 0.05]]
-    _draw_profile_curve(spec, output, title="分子量分布曲线", x_label="log M", y_label="频率", points=points, labels=[(3.1, 0.72, "Mn"), (4.4, 0.86, "Mw")])
+    _draw_profile_curve(spec, output, title="分子量分布曲线", x_label="log M", y_label="频率")
 
 
 def draw_polymer_blend_phase_diagram(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="高分子共混相图", x_label="组分 B 体积分数", y_label="T", points=[[0.05, 0.85], [0.25, 0.55], [0.5, 0.35], [0.75, 0.55], [0.95, 0.85]], labels=[(0.5, 0.72, "单相区"), (0.5, 0.25, "两相区")])
+    _draw_profile_curve(spec, output, title="高分子共混相图", x_label="组分 B 体积分数", y_label="T")
 
 
 def draw_rheology_flow_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="流变流动曲线", x_label="剪切速率", y_label="黏度", points=[[0.1, 1.0], [1, 0.72], [10, 0.42], [100, 0.25]], labels=[(2, 0.65, "剪切变稀")], logx=True)
+    _draw_profile_curve(spec, output, title="流变流动曲线", x_label="剪切速率", y_label="黏度", logx=True)
 
 
 def draw_sintering_densification_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="烧结致密化曲线", x_label="烧结时间/温度", y_label="相对密度", points=[[0, 0.55], [1, 0.68], [2, 0.82], [4, 0.93], [6, 0.97]], labels=[(0.5, 0.64, "初期"), (2.0, 0.86, "中期"), (4.5, 0.96, "后期")])
+    _draw_profile_curve(spec, output, title="烧结致密化曲线", x_label="烧结时间/温度", y_label="相对密度")
 
 
 def draw_ionic_conductivity_arrhenius(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="离子电导 Arrhenius 曲线", x_label="1000/T", y_label="log(σT)", points=[[0.9, -0.8], [1.1, -1.1], [1.3, -1.45], [1.5, -1.82], [1.7, -2.1]], labels=[(1.25, -1.25, "斜率对应Ea")])
+    _draw_profile_curve(spec, output, title="离子电导 Arrhenius 曲线", x_label="1000/T", y_label="log(σT)")
 
 
 def draw_dielectric_temperature_curve(spec: dict[str, Any], output: Path) -> None:
-    _draw_profile_curve(spec, output, title="介电常数-温度曲线", x_label="T / °C", y_label="εr", points=[[0, 120], [50, 180], [100, 850], [150, 220], [220, 130]], labels=[(100, 900, "Tc")])
+    _draw_profile_curve(spec, output, title="介电常数-温度曲线", x_label="T / °C", y_label="εr")
 
 
 def draw_hysteresis_loop(spec: dict[str, Any], output: Path, *, title: str, x_label: str, y_label: str, coercive_label: str, remanent_label: str) -> None:
@@ -1300,33 +2166,55 @@ def draw_magnetic_hysteresis_loop(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_defect_structure_schematic(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="晶体缺陷结构示意图", labels=["空位", "间隙原子", "置换原子", "晶界"])
+    _draw_simple_schematic(spec, output, title="晶体缺陷结构示意图", labels=_semantic_labels(spec.get("defects")))
 
 
 def draw_dislocation_schematic(spec: dict[str, Any], output: Path) -> None:
+    dislocation_type = str(spec.get("dislocation_type") or "").strip()
+    if not dislocation_type:
+        raise ValueError("dislocation_schematic: dislocation_type is required")
+    burgers_vector = str(spec.get("burgers_vector") or "b").strip()
     custom = {**spec, "kind": "custom_diagram", "elements": [
         {"type": "line", "start": [0, 0.3], "end": [1, 0.3], "label": "滑移面"},
         {"type": "line", "start": [0.5, 0.0], "end": [0.5, 0.8], "label": "半原子面", "color": "#2563eb"},
-        {"type": "arrow", "start": [0.35, 0.18], "end": [0.7, 0.18], "label": "b", "color": "#dc2626"},
-        {"type": "text", "xy": [0.38, 0.86], "text": "刃型位错"},
+        {"type": "arrow", "start": [0.35, 0.18], "end": [0.7, 0.18], "label": burgers_vector},
+        {"type": "text", "xy": [0.38, 0.86], "text": dislocation_type},
     ]}
     draw_custom_diagram(custom, output)
 
 
 def draw_slip_system_schematic(spec: dict[str, Any], output: Path) -> None:
-    draw_crystal_plane_direction({**spec, "caption": spec.get("caption") or "滑移系示意图"}, output)
+    plane = spec.get("plane")
+    direction = spec.get("direction")
+    if plane in (None, "") or direction in (None, ""):
+        raise ValueError("slip_system_schematic: plane and direction are required")
+    draw_crystal_plane_direction(
+        {
+            **spec,
+            "cell": spec.get("cell") or "schematic",
+            "planes": [plane],
+            "directions": [direction],
+            "caption": spec.get("caption") or "滑移系示意图",
+        },
+        output,
+    )
 
 
 def draw_recrystallization_grain_growth(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="回复-再结晶-晶粒长大示意图", labels=["冷变形组织", "回复", "再结晶形核", "晶粒长大"])
+    _draw_simple_schematic(spec, output, title="回复-再结晶-晶粒长大示意图", labels=_semantic_labels(spec.get("stages")))
 
 
 def draw_polymer_configuration_conformation(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="高分子构型/构象示意图", labels=["等规", "间规", "无规", "链段构象"])
+    _draw_simple_schematic(
+        spec,
+        output,
+        title="高分子构型/构象示意图",
+        labels=_semantic_labels([spec.get("configuration"), spec.get("side_groups")]),
+    )
 
 
 def draw_polymer_crystalline_morphology(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="高分子晶态形貌示意图", labels=["晶区", "非晶区", "片晶", "折叠链"])
+    _draw_simple_schematic(spec, output, title="高分子晶态形貌示意图", labels=_semantic_labels(spec.get("crystalline_regions")))
 
 
 def draw_spherulite_schematic(spec: dict[str, Any], output: Path) -> None:
@@ -1352,11 +2240,21 @@ def draw_spherulite_schematic(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_silicate_structure_schematic(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="硅酸盐结构示意图", labels=["硅氧四面体", "链状", "层状", "架状"])
+    _draw_simple_schematic(
+        spec,
+        output,
+        title="硅酸盐结构示意图",
+        labels=_semantic_labels([spec.get("structure_type"), spec.get("tetrahedra")]),
+    )
 
 
 def draw_glass_network_structure(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="玻璃网络结构示意图", labels=["网络形成体", "桥氧", "修饰体", "非桥氧"])
+    _draw_simple_schematic(
+        spec,
+        output,
+        title="玻璃网络结构示意图",
+        labels=_semantic_labels([spec.get("network_formers"), spec.get("modifiers")]),
+    )
 
 
 def draw_ceramic_phase_diagram(spec: dict[str, Any], output: Path) -> None:
@@ -1367,11 +2265,11 @@ def draw_ceramic_phase_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_porous_ceramic_microstructure(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="多孔陶瓷组织示意图", labels=["晶粒", "连通孔", "闭口孔", "晶界"])
+    _draw_simple_schematic(spec, output, title="多孔陶瓷组织示意图", labels=_semantic_labels(spec.get("pore_labels")))
 
 
 def draw_defect_chemistry_diagram(spec: dict[str, Any], output: Path) -> None:
-    _draw_simple_schematic(spec, output, title="陶瓷缺陷化学示意图", labels=["氧空位", "阳离子空位", "间隙离子", "缺陷反应"])
+    _draw_simple_schematic(spec, output, title="陶瓷缺陷化学示意图", labels=_semantic_labels(spec.get("defects")))
 
 
 def draw_fracture_toughness_schematic(spec: dict[str, Any], output: Path) -> None:
@@ -1386,7 +2284,123 @@ def draw_fracture_toughness_schematic(spec: dict[str, Any], output: Path) -> Non
 
 
 def _figure_needed(question: dict[str, Any]) -> bool:
-    return question_has_type(question, "作图题")
+    return answer_figure_required(question)
+
+
+def _planned_render_strategy(question: dict[str, Any]) -> str:
+    raw_plan = question.get("figure_schema_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_decision = plan.get("render_decision")
+    decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
+    return str(decision.get("strategy") or "").strip()
+
+
+def _planned_fallback_allowed(question: dict[str, Any]) -> bool:
+    raw_plan = question.get("figure_schema_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_decision = plan.get("render_decision")
+    decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
+    return bool(decision.get("fallback_allowed", True))
+
+
+def _image_model_fallback_allowed_for_question(question: dict[str, Any]) -> bool:
+    """Allow raster fallback only when no deterministic renderer contract exists."""
+
+    strategy = _planned_render_strategy(question)
+    return strategy not in {"unavailable", "programmatic_renderer"} and _planned_fallback_allowed(question)
+
+
+def _planned_schema_kind(question: dict[str, Any]) -> str:
+    raw_plan = question.get("figure_schema_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_resolution = plan.get("schema_resolution")
+    resolution: dict[str, Any] = raw_resolution if isinstance(raw_resolution, dict) else {}
+    raw_decision = plan.get("render_decision")
+    decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
+    return str(decision.get("schema_kind") or resolution.get("kind") or resolution.get("proposed_kind") or "").strip()
+
+
+def _planned_figure_metadata(question: dict[str, Any]) -> dict[str, Any]:
+    raw_plan = question.get("figure_schema_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_contract = plan.get("figure_semantic_contract")
+    contract: dict[str, Any] = raw_contract if isinstance(raw_contract, dict) else {}
+    raw_decision = plan.get("render_decision")
+    decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
+    raw_resolution = plan.get("schema_resolution")
+    resolution: dict[str, Any] = raw_resolution if isinstance(raw_resolution, dict) else {}
+    return {
+        "semantic_contract_id": str(contract.get("contract_id") or decision.get("semantic_contract_id") or "").strip(),
+        "planned_render_strategy": str(decision.get("strategy") or "").strip(),
+        "planned_schema_kind": str(
+            decision.get("schema_kind") or resolution.get("kind") or resolution.get("proposed_kind") or ""
+        ).strip(),
+        "figure_semantic_contract": contract,
+        "figure_render_decision": decision,
+    }
+
+
+def _question_context_for_figure_spec(question: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Bind a figure to the semantic plan of its originating answer unit."""
+
+    unit_number = str(spec.get("answer_unit_number") or "").strip()
+    raw_plan = question.get("figure_schema_plan")
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    if not unit_number:
+        return question
+    for unit_plan in plan.get("figure_units", []) or []:
+        if not isinstance(unit_plan, dict):
+            continue
+        if str(unit_plan.get("answer_unit_number") or "").strip() != unit_number:
+            continue
+        scoped = dict(question)
+        scoped["figure_schema_plan"] = unit_plan
+        scoped["stem"] = str(unit_plan.get("answer_unit_stem") or scoped.get("stem") or "")
+        return scoped
+    return question
+
+
+def _semantic_route_issues(spec: dict[str, Any], *, generation_method: str) -> list[str]:
+    raw_contract = spec.get("figure_semantic_contract")
+    raw_decision = spec.get("figure_render_decision")
+    planned = bool(
+        spec.get("semantic_contract_id")
+        or spec.get("planned_render_strategy")
+        or raw_contract
+        or raw_decision
+    )
+    if not planned:
+        return []
+    if not isinstance(raw_contract, dict) or not isinstance(raw_decision, dict):
+        return ["semantic_contract_not_bound_to_figure_spec"]
+    contract = semantic_contract_from_mapping(raw_contract)
+    metadata_contract_id = str(spec.get("semantic_contract_id") or "").strip()
+    issues = (
+        ["semantic_contract_metadata_mismatch"]
+        if metadata_contract_id and metadata_contract_id != contract.contract_id
+        else []
+    )
+    try:
+        strategy = RenderStrategy(str(raw_decision.get("strategy") or ""))
+    except ValueError:
+        return [*issues, "invalid_planned_render_strategy"]
+    decision = FigureRenderDecision(
+        strategy=strategy,
+        reason=str(raw_decision.get("reason") or ""),
+        semantic_contract_id=str(raw_decision.get("semantic_contract_id") or ""),
+        schema_kind=str(raw_decision.get("schema_kind") or ""),
+        renderer=str(raw_decision.get("renderer") or ""),
+        fallback_allowed=bool(raw_decision.get("fallback_allowed", True)),
+    )
+    return [
+        *issues,
+        *audit_figure_render_outcome(
+            contract,
+            decision,
+            actual_kind=str(spec.get("kind") or ""),
+            generation_method=generation_method,
+        ),
+    ]
 
 
 def _block_plain_text(fragment: dict[str, Any], labels: set[str] | None = None, max_chars: int = 1200) -> str:
@@ -1408,6 +2422,17 @@ def _direct_figure_prompt(question: dict[str, Any], fragment: dict[str, Any], sp
     answer = str(fragment.get("answer_summary") or fragment.get("answer") or "").strip()
     analysis = _block_plain_text(fragment, {"解析", "解题步骤", "易错点及注意事项"}, max_chars=1200)
     spec_text = json.dumps(specs[:2], ensure_ascii=False)[:1200] if specs else ""
+    understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
+    understanding_text = json.dumps(
+        {
+            "question_requirements": understanding.get("question_requirements") or [],
+            "images": understanding.get("images") or [],
+            "tables": understanding.get("tables") or [],
+            "uncertainties": understanding.get("uncertainties") or [],
+        },
+        ensure_ascii=False,
+    )[:3500]
+    schema_plan_text = json.dumps(question.get("figure_schema_plan") or {}, ensure_ascii=False)[:2500]
     return "\n".join(
         [
             "请直接生成一张可插入真题解析册的学术作图图片。",
@@ -1417,7 +2442,10 @@ def _direct_figure_prompt(question: dict[str, Any], fragment: dict[str, Any], sp
             f"题目：{stem}",
             f"答案要点：{answer}" if answer else "",
             f"解析上下文：{analysis}" if analysis else "",
+            f"题面视觉理解：{understanding_text}" if understanding else "",
+            f"图件语义合同与 Schema：{schema_plan_text}" if schema_plan_text else "",
             f"已有结构化作图要求：{spec_text}" if spec_text else "",
+            "必须满足图件语义合同中的 required_elements、required_labels 和 relationship_constraints；不得添加 forbidden_assumptions 中禁止的内容。",
             "最终图片中不要出现 figure_specs、占位符、JSON、代码、内部字段或题目无关说明。",
         ]
     ).strip()
@@ -1427,7 +2455,37 @@ def _direct_model_figure_id(qid: str) -> str:
     return f"{qid}_model_fig_01"
 
 
-def _explicit_figure_specs(fragment: dict[str, Any], qid: str) -> list[dict[str, Any]]:
+def _bind_source_image_overlay_spec(spec: dict[str, Any], question: dict[str, Any]) -> dict[str, Any]:
+    bound = dict(spec)
+    refs = [Path(str(raw)) for raw in question.get("image_refs") or []]
+    try:
+        source_index = int(bound.get("source_image_index") or 1)
+    except (TypeError, ValueError):
+        source_index = 0
+    bound.pop("source_image", None)
+    bound.pop("source_image_sha256", None)
+    if len(refs) > 1 and "source_image_index" not in bound:
+        bound["overlay_binding_issue"] = "multiple source images require an explicit source_image_index"
+        return bound
+    if source_index < 1 or source_index > len(refs):
+        bound["overlay_binding_issue"] = "source_image_index does not identify an attached source image"
+        return bound
+    source = refs[source_index - 1]
+    if not source.exists() or not source.is_file():
+        bound["overlay_binding_issue"] = "selected source image is missing"
+        return bound
+    bound["source_image_index"] = source_index
+    bound["source_image"] = str(source)
+    bound["source_image_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+    bound.pop("overlay_binding_issue", None)
+    return bound
+
+
+def _explicit_figure_specs(
+    fragment: dict[str, Any],
+    qid: str,
+    question: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     draft = fragment.get("_draft") if isinstance(fragment.get("_draft"), dict) else {}
     raw_specs = draft.get("figure_specs") or draft.get("diagram_specs") or fragment.get("figure_specs") or []
     if isinstance(raw_specs, dict):
@@ -1441,6 +2499,11 @@ def _explicit_figure_specs(fragment: dict[str, Any], qid: str) -> list[dict[str,
         spec = dict(raw)
         spec.setdefault("question_id", qid)
         spec.setdefault("figure_id", f"{qid}_fig_{index:02d}")
+        spec.setdefault("source", "answer_unit" if spec.get("answer_unit_number") else "answer_draft")
+        if question is not None and _planned_render_strategy(question) == "source_image_overlay":
+            spec["kind"] = "source_image_overlay"
+        if spec.get("kind") == "source_image_overlay" and question is not None:
+            spec = _bind_source_image_overlay_spec(spec, question)
         registry_entry = get_schema(str(spec.get("kind") or ""))
         if registry_entry:
             spec.setdefault("schema_id", registry_entry["schema_id"])
@@ -1451,7 +2514,72 @@ def _explicit_figure_specs(fragment: dict[str, Any], qid: str) -> list[dict[str,
             if issues:
                 spec["validation_issues"] = issues
         specs.append(spec)
-    return specs
+
+    # Durable fragments from older runs may contain both the question-level
+    # mirror and the answer-unit copy.  A semantic drawing contract represents
+    # one required final figure, so collapse those copies at this execution
+    # boundary as well as at draft normalization.
+    # First collapse the legacy question-level mirror when its semantic body is
+    # identical to one answer-unit copy. Two explicitly different units remain
+    # independent even if they happen to request similar figures.
+    mirror_deduplicated: list[dict[str, Any]] = []
+    mirror_positions: dict[str, int] = {}
+
+    def mirror_key(spec: dict[str, Any]) -> str:
+        ignored = {
+            "figure_id", "question_id", "source", "answer_unit_number",
+            "schema_id", "renderer", "schema_status",
+        }
+        payload = {key: value for key, value in spec.items() if key not in ignored}
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+    for spec in specs:
+        key = mirror_key(spec)
+        previous_index = mirror_positions.get(key)
+        if previous_index is not None:
+            previous = mirror_deduplicated[previous_index]
+            previous_unit = str(previous.get("answer_unit_number") or "").strip()
+            current_unit = str(spec.get("answer_unit_number") or "").strip()
+            if bool(previous_unit) != bool(current_unit):
+                # Prefer the unit-bound copy because downstream ordering can
+                # place it precisely.
+                if current_unit:
+                    mirror_deduplicated[previous_index] = spec
+                continue
+        mirror_positions.setdefault(key, len(mirror_deduplicated))
+        mirror_deduplicated.append(spec)
+
+    deduplicated: list[dict[str, Any]] = []
+    positions: dict[tuple[str, str], int] = {}
+
+    def semantic_key(spec: dict[str, Any]) -> tuple[str, str] | None:
+        contract = str(spec.get("semantic_contract_id") or "").strip()
+        if not contract and isinstance(spec.get("figure_semantic_contract"), dict):
+            contract = str(spec["figure_semantic_contract"].get("contract_id") or "").strip()
+        unit = str(spec.get("answer_unit_number") or "").strip()
+        identity = contract or unit
+        kind = str(spec.get("kind") or "").strip()
+        return (identity, kind) if identity and kind else None
+
+    def richness(spec: dict[str, Any]) -> tuple[int, int, int]:
+        preferred_source = int(str(spec.get("source") or "").startswith("visual_qa_"))
+        structural = sum(
+            len(spec.get(key) or []) if isinstance(spec.get(key), list) else int(bool(spec.get(key)))
+            for key in ("required_labels", "features", "annotations", "points", "regions")
+        )
+        return preferred_source, structural, len(json.dumps(spec, ensure_ascii=False, sort_keys=True))
+
+    for spec in mirror_deduplicated:
+        key = semantic_key(spec)
+        if key is not None and key in positions:
+            index = positions[key]
+            if richness(spec) > richness(deduplicated[index]):
+                deduplicated[index] = spec
+            continue
+        if key is not None:
+            positions[key] = len(deduplicated)
+        deduplicated.append(spec)
+    return deduplicated
 
 
 def _explicit_drawing_code_specs(fragment: dict[str, Any], qid: str) -> list[dict[str, Any]]:
@@ -1494,56 +2622,95 @@ def _explicit_drawing_code_specs(fragment: dict[str, Any], qid: str) -> list[dic
 
 
 def _figure_spec_for_question(question: dict[str, Any]) -> dict[str, Any] | None:
-    if not _figure_needed(question):
-        return None
-    qid = str(question.get("question_id", "")).strip()
-    if not qid:
-        return None
-    stem = str(question.get("stem", ""))
-    figure_id = f"{qid}_fig_01"
-    if "面心立方" in stem or "fcc" in stem.lower() or "晶胞" in stem:
-        return {
-            "figure_id": figure_id,
-            "question_id": qid,
-            "kind": "fcc_cell",
-            "caption": "面心立方晶胞示意图",
-        }
-    if "倒易" in stem or "衍射" in stem:
-        return {
-            "figure_id": figure_id,
-            "question_id": qid,
-            "kind": "diffraction_pattern",
-            "caption": "倒易点阵/衍射花样示意图",
-            "points": [
-                {"xy": [0, 0], "label": "000", "size": 40},
-                {"xy": [1, 0], "label": "200", "size": 44},
-                {"xy": [0, 1], "label": "020", "size": 44},
-                {"xy": [1, 1], "label": "220", "size": 44},
-                {"xy": [1.5, 0.5], "label": "311", "size": 36},
-            ],
-        }
-    if (
-        "弯曲液面" in stem
-        or "附加压力" in stem
-        or ("表面张力" in stem and "曲率" in stem)
-        or "Laplace" in stem
-        or "拉普拉斯" in stem
-    ):
-        return {
-            "figure_id": figure_id,
-            "question_id": qid,
-            "kind": "curved_liquid_surface",
-            "caption": "弯曲液面附加压力示意图",
-        }
+    """Ask the selected capability pack for a machine-verifiable proposal."""
+
+    raw_plan = question.get("figure_schema_plan")
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    planned_kinds = {_planned_schema_kind(question)}
+    planned_kinds.update(
+        str((unit.get("schema_resolution") or {}).get("kind") or (unit.get("render_decision") or {}).get("schema_kind") or "").strip()
+        for unit in plan.get("figure_units", []) or []
+        if isinstance(unit, dict)
+    )
+    text = "\n".join(str(question.get(key) or "") for key in ("stem", "section", "section_raw"))
+    contributions = capability_policy_contributions(
+        "deterministic_figure_spec",
+        {"question": question, "planned_kinds": sorted(planned_kinds)},
+        text=text,
+    )
+    for proposal in contributions:
+        if isinstance(proposal, dict) and proposal.get("kind"):
+            return dict(proposal)
     return None
+
+
+def _hydrate_explicit_figure_spec(question: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Fill only missing fields that a capability can derive from explicit text.
+
+    The schema plan and model-authored figure remain authoritative. Capability
+    packs may complete a required field such as ``structure=fcc`` only when the
+    question states it explicitly; existing model values are never overwritten.
+    """
+
+    planned_kinds = {_planned_schema_kind(question), str(spec.get("kind") or "").strip()}
+    text = "\n".join(str(question.get(key) or "") for key in ("stem", "section", "section_raw"))
+    contributions = capability_policy_contributions(
+        "deterministic_figure_spec",
+        {
+            "question": question,
+            "planned_kinds": sorted(kind for kind in planned_kinds if kind),
+            "purpose": "hydrate_explicit_spec",
+            "candidate_spec": spec,
+        },
+        text=text,
+    )
+    hydrated = dict(spec)
+    for proposal in contributions:
+        if not isinstance(proposal, dict) or str(proposal.get("kind") or "") != str(spec.get("kind") or ""):
+            continue
+        filled_fields: list[str] = []
+        for key, value in proposal.items():
+            if key in {
+                "question_id",
+                "figure_id",
+                "kind",
+                "caption",
+                "source",
+                "capability_id",
+                "generation_basis",
+            }:
+                continue
+            if hydrated.get(key) in (None, "", [], {}):
+                hydrated[key] = value
+                filled_fields.append(key)
+        if filled_fields:
+            hydrated["deterministic_hydration"] = {
+                "capability_id": str(proposal.get("capability_id") or ""),
+                "generation_basis": str(proposal.get("generation_basis") or ""),
+                "filled_fields": sorted(filled_fields),
+            }
+        break
+    return hydrated
 
 
 def _insert_figure_block(fragment: dict[str, Any], spec: dict[str, Any]) -> None:
     figure_id = str(spec.get("figure_id", ""))
     rel_path = f"figures/{figure_id}.png"
+    answer_unit_number = str(spec.get("answer_unit_number") or "").strip()
     new_segments = [
-        {"type": "image_ref", "image_id": figure_id, "path": rel_path},
-        {"type": "text", "text": str(spec.get("caption") or "题目图示")},
+        {
+            "type": "image_ref",
+            "image_id": figure_id,
+            "path": rel_path,
+            "role": "answer_generated_figure",
+            **({"answer_unit_number": answer_unit_number} if answer_unit_number else {}),
+        },
+        {
+            "type": "text",
+            "text": str(spec.get("caption") or "题目图示"),
+            "figure_caption_for": figure_id,
+            **({"answer_unit_number": answer_unit_number} if answer_unit_number else {}),
+        },
     ]
     blocks = list(fragment.get("blocks", []))
     for block in blocks:
@@ -1647,6 +2814,15 @@ def prepare_figures_for_fragments(
             return specs
         return [item for item in current.get("figures", []) if isinstance(item, dict)]
 
+    try:
+        previous_specs_data = json.loads(specs_json.read_text(encoding="utf-8")) if specs_json.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        previous_specs_data = {}
+    previous_specs = [
+        item
+        for item in previous_specs_data.get("figures", [])
+        if isinstance(item, dict)
+    ]
     fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
     fragments_by_id = {
         str(fragment.get("question_id", "")).strip(): fragment
@@ -1661,6 +2837,7 @@ def prepare_figures_for_fragments(
         "image_model": getattr(provider, "image_model", "") if provider is not None else "",
         "image_size": getattr(provider, "image_size", "") if provider is not None else "",
         "generated": [],
+        "reused": [],
         "failed": [],
         "skipped": [],
     }
@@ -1679,6 +2856,39 @@ def prepare_figures_for_fragments(
         for question in structured_exam.get("items", [])
         if str(question.get("question_id", "")).strip()
     }
+    initial_code_targets = [
+        (str(question.get("question_id") or "").strip(), question, fragments_by_id[str(question.get("question_id") or "").strip()])
+        for question in structured_exam.get("items", [])
+        if isinstance(question, dict)
+        and str(question.get("question_id") or "").strip() in fragments_by_id
+        and _figure_needed(question)
+        and question_drawing_mode(question) == "code"
+        and _planned_render_strategy(question) != "unavailable"
+        and code_client is not None
+    ]
+
+    def request_drawing_code(target: tuple[str, dict[str, Any], dict[str, Any]]) -> tuple[str, dict[str, Any] | None, str]:
+        qid, question, fragment = target
+        try:
+            drawing_client = OpenAICompatibleClient(code_provider)
+            with model_request_slot(code_provider):
+                spec = generate_drawing_code_spec(
+                    drawing_client,
+                    question,
+                    fragment,
+                    model=str(code_report["model"]),
+                    previous_issues=[],
+                )
+            return qid, spec, ""
+        except Exception as exc:
+            return qid, None, str(exc)
+
+    initial_code_results = run_limited_concurrent(
+        initial_code_targets,
+        request_drawing_code,
+        max_workers=figure_model_worker_count(),
+    )
+    initial_code_by_qid = {qid: (spec, error) for qid, spec, error in initial_code_results}
     needed_question_ids: set[str] = set()
     for question in structured_exam.get("items", []):
         qid = str(question.get("question_id", "")).strip()
@@ -1686,19 +2896,25 @@ def prepare_figures_for_fragments(
         if not fragment:
             continue
         needs_figure = _figure_needed(question)
+        planned_strategy = _planned_render_strategy(question)
         mode = question_drawing_mode(question)
         question_specs: list[dict[str, Any]] = []
+        if needs_figure and planned_strategy == "unavailable":
+            code_report["skipped"].append(
+                {
+                    "question_id": qid,
+                    "reason": "semantic contract forbids replacement and no compatible renderer is available",
+                }
+            )
+            needed_question_ids.add(qid)
+            continue
         if needs_figure and mode == "code":
             if code_client is not None:
                 try:
                     report("drawing_code_request_started", question_id=qid, model=code_report["model"], phase="initial")
-                    code_spec = generate_drawing_code_spec(
-                        code_client,
-                        question,
-                        fragment,
-                        model=str(code_report["model"]),
-                        previous_issues=[],
-                    )
+                    code_spec, code_error = initial_code_by_qid.get(qid, (None, "未获得独立作图代码结果"))
+                    if code_spec is None:
+                        raise RuntimeError(code_error)
                     figure_id = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(code_spec.get("figure_id") or "").strip()).strip("._")
                     code_spec["figure_id"] = figure_id or f"{qid}_code_fig_01"
                     code_spec["question_id"] = qid
@@ -1736,17 +2952,34 @@ def prepare_figures_for_fragments(
                         }
                     )
         elif needs_figure:
-            question_specs = _explicit_figure_specs(fragment, qid)
-        if needs_figure and mode == "figure_specs" and not question_specs:
-            spec = _figure_spec_for_question(question)
-            question_specs = [spec] if spec else []
+            # A deterministic, machine-verifiable professional-diagram
+            # contract is authoritative when available. Model-authored specs
+            # remain the fallback for open-ended diagrams.
+            inferred_spec = _figure_spec_for_question(question) if mode == "figure_specs" else None
+            if inferred_spec:
+                question_specs = [inferred_spec]
+            else:
+                question_specs = _explicit_figure_specs(fragment, qid, question)
+                question_specs = [
+                    _hydrate_explicit_figure_spec(_question_context_for_figure_spec(question, spec), spec)
+                    for spec in question_specs
+                ]
+                filtered_specs: list[dict[str, Any]] = []
+                for spec in question_specs:
+                    planned_kind = _planned_schema_kind(_question_context_for_figure_spec(question, spec))
+                    if planned_kind in {"xrd_pattern", "zone_axis_diffraction"} and str(spec.get("kind") or "") != planned_kind:
+                        continue
+                    filtered_specs.append(spec)
+                question_specs = filtered_specs
         if needs_figure:
             needed_question_ids.add(qid)
         for spec in question_specs:
             if not spec:
                 continue
             spec = spec if str(spec.get("kind") or "") == "model_drawing_code" else normalize_figure_spec(spec)
+            figure_question = _question_context_for_figure_spec(question, spec)
             spec["drawing_generation_mode"] = mode
+            spec.update({key: value for key, value in _planned_figure_metadata(figure_question).items() if value})
             specs.append(spec)
             fragments_by_figure_id[str(spec.get("figure_id", ""))] = fragment
     specs_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1765,7 +2998,7 @@ def prepare_figures_for_fragments(
         for spec in specs
         if str(spec.get("figure_id") or "").strip() in generated_ids
     }
-    retry_code_specs: list[dict[str, Any]] = []
+    retry_code_targets: list[tuple[str, dict[str, Any], dict[str, Any], list[str]]] = []
     for qid in sorted(needed_question_ids - covered_qids):
         question = questions_by_id.get(qid)
         fragment = fragments_by_id.get(qid)
@@ -1782,21 +3015,38 @@ def prepare_figures_for_fragments(
         if code_client is None:
             code_report["skipped"].append({"question_id": qid, "reason": "drawing code was missing or failed, and text model provider is not configured for code retry"})
             continue
+
+        retry_code_targets.append((qid, question, fragment, previous_issues[:12]))
+
+    def request_retry_drawing_code(target: tuple[str, dict[str, Any], dict[str, Any], list[str]]) -> tuple[str, dict[str, Any] | None, str]:
+        qid, question, fragment, previous_issues = target
         try:
-            report("drawing_code_request_started", question_id=qid, model=code_report["model"], phase="retry")
-            retry_spec = generate_drawing_code_spec(
-                code_client,
-                question,
-                fragment,
-                model=str(code_report["model"]),
-                previous_issues=previous_issues[:12],
-            )
+            drawing_client = OpenAICompatibleClient(code_provider)
+            with model_request_slot(code_provider):
+                retry_spec = generate_drawing_code_spec(
+                    drawing_client,
+                    question,
+                    fragment,
+                    model=str(code_report["model"]),
+                    previous_issues=previous_issues,
+                )
+            retry_spec.update({key: value for key, value in _planned_figure_metadata(question).items() if value})
+            return qid, retry_spec, ""
+        except Exception as exc:
+            return qid, None, str(exc)
+
+    for qid, _question, _fragment, _issues in retry_code_targets:
+        report("drawing_code_request_started", question_id=qid, model=code_report["model"], phase="retry")
+    retry_code_results = run_limited_concurrent(retry_code_targets, request_retry_drawing_code, max_workers=figure_model_worker_count())
+    retry_code_specs: list[dict[str, Any]] = []
+    for qid, retry_spec, error in retry_code_results:
+        if retry_spec is not None:
             figure_id = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(retry_spec.get("figure_id") or "").strip()).strip("._")
             retry_spec["figure_id"] = figure_id or f"{qid}_code_fig_01"
             retry_spec["source"] = "model_retry"
             retry_spec["drawing_generation_mode"] = "code"
             retry_code_specs.append(retry_spec)
-            fragments_by_figure_id[str(retry_spec.get("figure_id", ""))] = fragment
+            fragments_by_figure_id[str(retry_spec.get("figure_id", ""))] = fragments_by_id[qid]
             code_report["generated"].append(
                 {
                     "question_id": qid,
@@ -1806,9 +3056,9 @@ def prepare_figures_for_fragments(
                 }
             )
             report("drawing_code_request_succeeded", question_id=qid, figure_id=retry_spec.get("figure_id"), model=code_report["model"], phase="retry")
-        except Exception as exc:
-            code_report["failed"].append({"question_id": qid, "error": str(exc)[:700]})
-            report("drawing_code_request_failed", question_id=qid, model=code_report["model"], phase="retry", error=str(exc)[:300])
+            continue
+        code_report["failed"].append({"question_id": qid, "error": error[:700]})
+        report("drawing_code_request_failed", question_id=qid, model=code_report["model"], phase="retry", error=error[:300])
     if retry_code_specs:
         specs.extend(retry_code_specs)
         specs_json.write_text(json.dumps({"figures": specs, "direct_model_generation": direct_report, "drawing_code_generation": code_report}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1826,35 +3076,78 @@ def prepare_figures_for_fragments(
             for spec in specs
             if str(spec.get("figure_id") or "").strip() in generated_ids
         }
-    direct_generated_specs: list[dict[str, Any]] = []
-    for qid in sorted(needed_question_ids - covered_qids):
-        question = questions_by_id.get(qid)
-        fragment = fragments_by_id.get(qid)
-        if not question or not fragment:
-            continue
-        if direct_client is None:
-            direct_report["skipped"].append(
-                {
-                    "question_id": qid,
-                    "reason": "program/code figure generation could not render and image model is not configured or provider API key is missing",
-                }
-            )
-            continue
+    direct_targets = [
+        (qid, questions_by_id[qid], fragments_by_id[qid])
+        for qid in sorted(needed_question_ids - covered_qids)
+        if questions_by_id.get(qid) is not None and fragments_by_id.get(qid) is not None
+        # A registered deterministic schema is a quality contract. If its
+        # spec fails validation or rendering, preserve that failure for the
+        # hard gate instead of silently replacing it with an image model.
+        and _image_model_fallback_allowed_for_question(questions_by_id[qid])
+    ]
+    previous_fallbacks = {
+        str(spec.get("question_id") or "").strip(): spec
+        for spec in previous_specs
+        if str(spec.get("kind") or "").strip() == "model_generated_image"
+    }
+    reusable_fallback_specs: list[dict[str, Any]] = []
+    pending_direct_targets: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for qid, question, fragment in direct_targets:
+        previous = previous_fallbacks.get(qid)
         figure_id = _direct_model_figure_id(qid)
         output = output_dir / f"{figure_id}.png"
-        prompt = _direct_figure_prompt(question, fragment, _explicit_figure_specs(fragment, qid))
+        current_prompt = _direct_figure_prompt(question, fragment, _explicit_figure_specs(fragment, qid, question))
+        reusable = bool(
+            previous
+            and str(previous.get("figure_id") or "") == figure_id
+            and str(previous.get("prompt") or "") == current_prompt
+            and str(previous.get("provider") or "") == str(getattr(provider, "name", "") or "")
+            and str(previous.get("model") or "") == str(getattr(provider, "image_model", "") or "")
+            and str(previous.get("image_size") or "") == str(getattr(provider, "image_size", "") or "")
+            and not audit_figure_image_integrity(output)
+        )
+        if not reusable:
+            pending_direct_targets.append((qid, question, fragment))
+            continue
+        reused_spec = dict(previous)
+        reused_spec["path"] = str(output)
+        reused_spec.update(_planned_figure_metadata(question))
+        reusable_fallback_specs.append(reused_spec)
+        fragments_by_figure_id[figure_id] = fragment
+        generated.append(output)
+        generated_ids.add(figure_id)
+        direct_report["reused"].append(
+            {"question_id": qid, "figure_id": figure_id, "model": reused_spec.get("model", ""), "path": str(output)}
+        )
+        report("image_fallback_reused", question_id=qid, figure_id=figure_id, model=reused_spec.get("model", ""))
+    direct_targets = pending_direct_targets
+    if direct_client is None:
+        direct_report["skipped"].extend(
+            {
+                "question_id": qid,
+                "reason": "program/code figure generation could not render and image model is not configured or provider API key is missing",
+            }
+            for qid, _question, _fragment in direct_targets
+        )
+
+    def generate_image_fallback(target: tuple[str, dict[str, Any], dict[str, Any]]) -> tuple[str, dict[str, Any] | None, str]:
+        qid, question, fragment = target
+        figure_id = _direct_model_figure_id(qid)
+        output = output_dir / f"{figure_id}.png"
+        prompt = _direct_figure_prompt(question, fragment, _explicit_figure_specs(fragment, qid, question))
         try:
-            report("image_fallback_started", question_id=qid, figure_id=figure_id, model=getattr(provider, "image_model", ""))
-            image_result = direct_client.generate_image(
-                prompt,
-                output,
-                model=getattr(provider, "image_model", ""),
-                size=getattr(provider, "image_size", "1024x1024"),
-            )
+            image_client = OpenAICompatibleClient(provider)
+            with model_request_slot(provider):
+                image_result = image_client.generate_image(
+                    prompt,
+                    output,
+                    model=getattr(provider, "image_model", ""),
+                    size=getattr(provider, "image_size", "1024x1024"),
+                )
             output = image_result.path
             if not output.exists() or output.stat().st_size <= 0:
                 raise RuntimeError("image provider returned success but no image file was written")
-            spec = {
+            return qid, {
                 "figure_id": figure_id,
                 "question_id": qid,
                 "kind": "model_generated_image",
@@ -1862,39 +3155,47 @@ def prepare_figures_for_fragments(
                 "prompt": prompt,
                 "provider": image_result.provider,
                 "model": image_result.model,
+                "image_size": str(getattr(provider, "image_size", "") or ""),
                 "path": str(output),
-            }
-            direct_generated_specs.append(spec)
-            fragments_by_figure_id[figure_id] = fragment
-            generated.append(output)
-            generated_ids.add(figure_id)
-            direct_report["generated"].append(
-                {
-                    "question_id": qid,
-                    "figure_id": figure_id,
-                    "model": image_result.model,
-                    "path": str(output),
-                }
-            )
-            report("image_fallback_succeeded", question_id=qid, figure_id=figure_id, model=image_result.model)
+                **_planned_figure_metadata(question),
+            }, ""
         except Exception as exc:
-            direct_report["failed"].append(
-                {
-                    "question_id": qid,
-                    "figure_id": figure_id,
-                    "error": str(exc)[:500],
-                    "fallback": "none",
-                }
-            )
-            report("image_fallback_failed", question_id=qid, figure_id=figure_id, error=str(exc)[:300])
+            return qid, None, str(exc)
+
+    if direct_client is not None:
+        for qid, _question, _fragment in direct_targets:
+            report("image_fallback_started", question_id=qid, figure_id=_direct_model_figure_id(qid), model=getattr(provider, "image_model", ""))
+        direct_results = run_limited_concurrent(direct_targets, generate_image_fallback, max_workers=figure_model_worker_count())
+    else:
+        direct_results = []
+    direct_generated_specs: list[dict[str, Any]] = []
+    for qid, spec, error in direct_results:
+        figure_id = _direct_model_figure_id(qid)
+        if spec is None:
+            direct_report["failed"].append({"question_id": qid, "figure_id": figure_id, "error": error[:500], "fallback": "none"})
+            report("image_fallback_failed", question_id=qid, figure_id=figure_id, error=error[:300])
+            continue
+        output = Path(str(spec["path"]))
+        direct_generated_specs.append(spec)
+        fragments_by_figure_id[figure_id] = fragments_by_id[qid]
+        generated.append(output)
+        generated_ids.add(figure_id)
+        direct_report["generated"].append({"question_id": qid, "figure_id": figure_id, "model": spec["model"], "path": str(output)})
+        report("image_fallback_succeeded", question_id=qid, figure_id=figure_id, model=spec["model"])
+    accepted_fallback_specs = [*reusable_fallback_specs, *direct_generated_specs]
+    if accepted_fallback_specs:
+        specs.extend(accepted_fallback_specs)
     if direct_generated_specs:
-        specs.extend(direct_generated_specs)
         _archive_generated_stage_images(
             specs_json.parent,
             [Path(str(spec.get("path") or "")) for spec in direct_generated_specs],
             specs,
             "image_model_fallback",
         )
+    if accepted_fallback_specs:
+        active_specs_data = {"figures": specs}
+        if _prune_failed_primary_specs_with_generated_fallback(active_specs_data, output_dir):
+            specs = [spec for spec in active_specs_data["figures"] if isinstance(spec, dict)]
     specs_json.write_text(json.dumps({"figures": specs, "direct_model_generation": direct_report, "drawing_code_generation": code_report}, ensure_ascii=False, indent=2), encoding="utf-8")
     (specs_json.parent / "direct_model_figures.json").write_text(json.dumps(direct_report, ensure_ascii=False, indent=2), encoding="utf-8")
     (specs_json.parent / "drawing_code_generation.json").write_text(json.dumps(code_report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1908,14 +3209,32 @@ def prepare_figures_for_fragments(
             continue
         audited_qids.add(qid)
         kind = str(spec.get("kind") or "")
+        semantic_contract_id = str(spec.get("semantic_contract_id") or "")
+        planned_render_strategy = str(spec.get("planned_render_strategy") or "")
+        planned_schema_kind = str(spec.get("planned_schema_kind") or "")
         registry_entry = get_schema(kind)
         program_issues = program_check_figure_spec(spec)
         rendered = figure_id in generated_ids
+        output_path = output_dir / f"{figure_id}.png"
+        if rendered:
+            image_issues = audit_figure_image_integrity(output_path)
+            if image_issues:
+                program_issues.extend(image_issues)
+                generated_ids.discard(figure_id)
+                generated = [path for path in generated if path.stem != figure_id]
+                output_path.unlink(missing_ok=True)
+                rendered = False
         if kind == "model_drawing_code":
             code_issues = validate_drawing_code(str(spec.get("code") or ""))
             run_issues = ((spec.get("run_result") or {}) if isinstance(spec.get("run_result"), dict) else {}).get("issues") or []
             program_issues = [*program_issues, *code_issues, *[str(issue) for issue in run_issues]]
             risk_notes = [] if rendered and not program_issues else list(program_issues or ["模型代码绘图未能生成有效图片。"])
+            semantic_route_issues = _semantic_route_issues(
+                spec,
+                generation_method="model_code_renderer" if rendered else "none",
+            )
+            program_issues.extend(semantic_route_issues)
+            risk_notes.extend(issue for issue in semantic_route_issues if issue not in risk_notes)
             audit_items.append(
                 {
                     "question_id": qid,
@@ -1925,6 +3244,9 @@ def prepare_figures_for_fragments(
                     "schema_id": "",
                     "renderer": "model_code_drawer",
                     "generation_method": "model_code_renderer" if rendered else "none",
+                    "semantic_contract_id": semantic_contract_id,
+                    "planned_render_strategy": planned_render_strategy,
+                    "planned_schema_kind": planned_schema_kind,
                     "needs_manual_review": bool(risk_notes),
                     "program_check_issues": program_issues,
                     "risk_notes": risk_notes,
@@ -1933,6 +3255,8 @@ def prepare_figures_for_fragments(
             )
             continue
         if kind == "model_generated_image":
+            semantic_route_issues = _semantic_route_issues(spec, generation_method="image_model")
+            program_issues.extend(semantic_route_issues)
             audit_items.append(
                 {
                     "question_id": qid,
@@ -1942,20 +3266,32 @@ def prepare_figures_for_fragments(
                     "schema_id": "",
                     "renderer": "",
                     "generation_method": "image_model",
+                    "semantic_contract_id": semantic_contract_id,
+                    "planned_render_strategy": planned_render_strategy,
+                    "planned_schema_kind": planned_schema_kind,
                     "needs_manual_review": True,
                     "program_check_issues": program_issues,
-                    "risk_notes": ["未命中可渲染 schema 或程序绘图失败，已使用生图模型兜底，专业准确性需复核。"],
+                    "risk_notes": [
+                        "未命中可渲染 schema 或程序绘图失败，已使用生图模型兜底，已标记为高风险并交由自动视觉质检处理。",
+                        *semantic_route_issues,
+                    ],
                 }
             )
             continue
         risk_notes = list(program_issues)
         if not rendered:
-            risk_notes.append("程序绘图未能生成有效图片，且生图模型未配置、失败或跳过；需要人工复核、修复绘图代码或新增 renderer。")
+            risk_notes.append("程序绘图未能生成有效图片，且生图模型未配置、失败或跳过；已作为自动质量阻断与 renderer 能力缺口记录。")
         schema_status = "schema_found" if registry_entry else str(spec.get("schema_status") or "legacy_programmatic")
-        generation_method = "programmatic_renderer" if rendered else "none"
+        generation_method = (
+            "source_image_overlay"
+            if rendered and kind == "source_image_overlay"
+            else ("programmatic_renderer" if rendered else "none")
+        )
         if not rendered and not registry_entry:
-            schema_status = "image_model_fallback"
-            generation_method = "image_model"
+            schema_status = "render_failed"
+        semantic_route_issues = _semantic_route_issues(spec, generation_method=generation_method)
+        program_issues.extend(semantic_route_issues)
+        risk_notes.extend(issue for issue in semantic_route_issues if issue not in risk_notes)
         audit_items.append(
             {
                 "question_id": qid,
@@ -1965,24 +3301,37 @@ def prepare_figures_for_fragments(
                 "schema_id": str(spec.get("schema_id") or (registry_entry or {}).get("schema_id") or ""),
                 "renderer": str(spec.get("renderer") or (registry_entry or {}).get("renderer") or ""),
                 "generation_method": generation_method,
+                "semantic_contract_id": semantic_contract_id,
+                "planned_render_strategy": planned_render_strategy,
+                "planned_schema_kind": planned_schema_kind,
                 "needs_manual_review": bool(risk_notes),
                 "program_check_issues": program_issues,
                 "risk_notes": risk_notes,
             }
         )
     for qid in sorted(needed_question_ids - audited_qids):
+        question = questions_by_id.get(qid) or {}
+        planned_metadata = _planned_figure_metadata(question)
+        planned_strategy = _planned_render_strategy(question)
+        replacement_forbidden = not _planned_fallback_allowed(question)
+        unavailable = planned_strategy == "unavailable" or replacement_forbidden
         audit_items.append(
             {
                 "question_id": qid,
                 "figure_id": _direct_model_figure_id(qid),
                 "diagram_type": "",
-                "schema_status": "image_model_fallback",
+                "schema_status": "semantic_contract_unrenderable" if unavailable else "image_model_fallback",
                 "schema_id": "",
                 "renderer": "",
-                "generation_method": "image_model",
+                "generation_method": "none" if unavailable else "image_model",
+                **planned_metadata,
                 "needs_manual_review": True,
                 "program_check_issues": [],
-                "risk_notes": ["未获得可渲染程序作图输出，需走生图模型或人工补图。"],
+                "risk_notes": [
+                    "题目要求保留原图并在其上标注，但未获得通过结构与原图哈希校验的标注规格；为避免错误替换原图，已禁止生图兜底。"
+                    if unavailable
+                    else "未获得可渲染程序作图输出，已记录为自动质量阻断与 renderer 能力缺口。"
+                ],
             }
         )
     generation_audit = {
@@ -1998,6 +3347,50 @@ def prepare_figures_for_fragments(
             _insert_figure_block(fragments_by_figure_id[figure_id], spec)
     fragments_json.write_text(json.dumps(fragments_data, ensure_ascii=False, indent=2), encoding="utf-8")
     return generated
+
+
+def _model_code_renderer(spec: dict[str, Any], output: Path) -> None:
+    code = str(spec.get("code") or "").strip()
+    code_path = output.with_suffix(".py")
+    result = run_drawing_code(code, output, code_path)
+    spec["code_path"] = result.code_path
+    spec["run_result"] = {
+        "ok": result.ok,
+        "issues": result.issues,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "returncode": result.returncode,
+    }
+    if not result.ok:
+        raise RuntimeError("; ".join(result.issues or ["drawing code execution failed"]))
+
+
+def _figure_renderer_registry() -> RendererRegistry:
+    """Assemble capability renderers behind one dispatch contract.
+
+    Renderer implementations stay in this module during the compatibility phase;
+    capability packs declare implementation names and are wired automatically.
+    Stored legacy kinds remain explicit until their old task data is retired.
+    """
+
+    implementations = {
+        name: value
+        for name, value in globals().items()
+        if name.startswith("draw_") and callable(value)
+    }
+    return assemble_renderer_registry(
+        registry_snapshot(),
+        implementations,
+        compatibility_renderers={
+            "phase_diagram": draw_phase_diagram,
+            "line_chart": draw_line_chart,
+            "diffraction_pattern": draw_diffraction_pattern,
+            "fcc_cell": draw_fcc_cell,
+            "model_drawing_code": _model_code_renderer,
+            "curved_liquid_surface": draw_curved_liquid_surface,
+            "custom_diagram": draw_custom_diagram,
+        },
+    )
 
 
 def generate_figures(specs_json: Path, output_dir: Path, progress_callback: Any | None = None) -> list[Path]:
@@ -2016,6 +3409,7 @@ def generate_figures(specs_json: Path, output_dir: Path, progress_callback: Any 
     data["figures"] = normalized_figures
     specs_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     generated: list[Path] = []
+    renderers = _figure_renderer_registry()
     for spec in normalized_figures:
         figure_id = str(spec.get("figure_id", "")).strip()
         if not figure_id:
@@ -2031,138 +3425,29 @@ def generate_figures(specs_json: Path, output_dir: Path, progress_callback: Any 
         spec.pop("validation_issues", None)
         if callable(progress_callback):
             progress_callback("figure_rendering", {"figure_id": figure_id, "question_id": spec.get("question_id", ""), "kind": kind})
-        if kind == "phase_diagram":
-            draw_phase_diagram(spec, output)
-        elif kind == "line_chart":
-            draw_line_chart(spec, output)
-        elif kind == "generic_axis_curve":
-            draw_generic_axis_curve(spec, output)
-        elif kind == "multi_curve_axis_plot":
-            draw_multi_curve_axis_plot(spec, output)
-        elif kind == "binary_phase_diagram":
-            draw_binary_phase_diagram(spec, output)
-        elif kind == "ternary_phase_diagram":
-            draw_ternary_phase_diagram(spec, output)
-        elif kind == "diffraction_pattern":
-            draw_diffraction_pattern(spec, output)
-        elif kind == "fcc_cell":
-            draw_fcc_cell(spec, output)
-        elif kind == "crystal_unit_cell":
-            draw_crystal_unit_cell(spec, output)
-        elif kind == "crystal_plane_direction":
-            draw_crystal_plane_direction(spec, output)
-        elif kind == "zone_axis_diffraction":
-            draw_zone_axis_diffraction(spec, output)
-        elif kind == "xrd_pattern":
-            draw_xrd_pattern(spec, output)
-        elif kind == "model_drawing_code":
-            code = str(spec.get("code") or "").strip()
-            code_path = output_dir / f"{figure_id}.py"
-            result = run_drawing_code(code, output, code_path)
-            spec["code_path"] = result.code_path
-            spec["run_result"] = {
-                "ok": result.ok,
-                "issues": result.issues,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "returncode": result.returncode,
-            }
-            if not result.ok:
-                spec["validation_issues"] = result.issues or ["drawing code execution failed"]
-                if callable(progress_callback):
-                    progress_callback("figure_render_failed", {"figure_id": figure_id, "question_id": spec.get("question_id", ""), "error": "; ".join((result.issues or ["drawing code execution failed"])[:3])})
-                continue
-        elif kind == "microstructure_schematic":
-            draw_microstructure_schematic(spec, output)
-        elif kind == "defect_structure_schematic":
-            draw_defect_structure_schematic(spec, output)
-        elif kind == "process_flow_diagram":
-            draw_process_flow_diagram(spec, output)
-        elif kind == "fe_c_phase_diagram":
-            draw_fe_c_phase_diagram(spec, output)
-        elif kind == "ttt_diagram":
-            draw_ttt_diagram(spec, output)
-        elif kind == "cct_diagram":
-            draw_cct_diagram(spec, output)
-        elif kind == "heat_treatment_curve":
-            draw_heat_treatment_curve(spec, output)
-        elif kind == "stress_strain_curve":
-            draw_stress_strain_curve(spec, output)
-        elif kind == "creep_curve":
-            draw_creep_curve(spec, output)
-        elif kind == "fatigue_sn_curve":
-            draw_fatigue_sn_curve(spec, output)
-        elif kind == "dislocation_schematic":
-            draw_dislocation_schematic(spec, output)
-        elif kind == "slip_system_schematic":
-            draw_slip_system_schematic(spec, output)
-        elif kind == "precipitation_aging_curve":
-            draw_precipitation_aging_curve(spec, output)
-        elif kind == "recrystallization_grain_growth":
-            draw_recrystallization_grain_growth(spec, output)
-        elif kind == "corrosion_polarization_curve":
-            draw_corrosion_polarization_curve(spec, output)
-        elif kind == "welding_thermal_cycle":
-            draw_welding_thermal_cycle(spec, output)
-        elif kind == "dsc_curve":
-            draw_dsc_curve(spec, output)
-        elif kind == "polymer_chain_structure":
-            draw_polymer_chain_structure(spec, output)
-        elif kind == "polymer_configuration_conformation":
-            draw_polymer_configuration_conformation(spec, output)
-        elif kind == "polymer_crystalline_morphology":
-            draw_polymer_crystalline_morphology(spec, output)
-        elif kind == "spherulite_schematic":
-            draw_spherulite_schematic(spec, output)
-        elif kind == "tga_curve":
-            draw_tga_curve(spec, output)
-        elif kind == "dma_curve":
-            draw_dma_curve(spec, output)
-        elif kind == "viscoelastic_creep_curve":
-            draw_viscoelastic_creep_curve(spec, output)
-        elif kind == "stress_relaxation_curve":
-            draw_stress_relaxation_curve(spec, output)
-        elif kind == "time_temperature_superposition":
-            draw_time_temperature_superposition(spec, output)
-        elif kind == "polymer_stress_strain_curve":
-            draw_polymer_stress_strain_curve(spec, output)
-        elif kind == "molecular_weight_distribution":
-            draw_molecular_weight_distribution(spec, output)
-        elif kind == "polymer_blend_phase_diagram":
-            draw_polymer_blend_phase_diagram(spec, output)
-        elif kind == "rheology_flow_curve":
-            draw_rheology_flow_curve(spec, output)
-        elif kind == "ceramic_crystal_structure":
-            draw_ceramic_crystal_structure(spec, output)
-        elif kind == "silicate_structure_schematic":
-            draw_silicate_structure_schematic(spec, output)
-        elif kind == "glass_network_structure":
-            draw_glass_network_structure(spec, output)
-        elif kind == "ceramic_phase_diagram":
-            draw_ceramic_phase_diagram(spec, output)
-        elif kind == "sintering_densification_curve":
-            draw_sintering_densification_curve(spec, output)
-        elif kind == "sintering_microstructure_evolution":
-            draw_sintering_microstructure_evolution(spec, output)
-        elif kind == "porous_ceramic_microstructure":
-            draw_porous_ceramic_microstructure(spec, output)
-        elif kind == "defect_chemistry_diagram":
-            draw_defect_chemistry_diagram(spec, output)
-        elif kind == "ionic_conductivity_arrhenius":
-            draw_ionic_conductivity_arrhenius(spec, output)
-        elif kind == "dielectric_temperature_curve":
-            draw_dielectric_temperature_curve(spec, output)
-        elif kind == "ferroelectric_hysteresis_loop":
-            draw_ferroelectric_hysteresis_loop(spec, output)
-        elif kind == "magnetic_hysteresis_loop":
-            draw_magnetic_hysteresis_loop(spec, output)
-        elif kind == "fracture_toughness_schematic":
-            draw_fracture_toughness_schematic(spec, output)
-        elif kind == "curved_liquid_surface":
-            draw_curved_liquid_surface(spec, output)
-        elif kind == "custom_diagram" and not spec.get("validation_issues"):
-            draw_custom_diagram(spec, output)
-        else:
+        output.unlink(missing_ok=True)
+        try:
+            rendered = renderers.render(kind, spec, output)
+        except (RuntimeError, ValueError) as exc:
+            spec["validation_issues"] = [str(exc)]
+            if callable(progress_callback):
+                progress_callback("figure_render_failed", {"figure_id": figure_id, "question_id": spec.get("question_id", ""), "error": str(exc)})
+            continue
+        if not rendered:
+            continue
+        integrity_issues = audit_figure_image_integrity(output)
+        if integrity_issues:
+            output.unlink(missing_ok=True)
+            spec["validation_issues"] = integrity_issues
+            if callable(progress_callback):
+                progress_callback(
+                    "figure_render_failed",
+                    {
+                        "figure_id": figure_id,
+                        "question_id": spec.get("question_id", ""),
+                        "error": "; ".join(integrity_issues),
+                    },
+                )
             continue
         generated.append(output)
         if callable(progress_callback):
@@ -2259,6 +3544,8 @@ def _minimal_question_for_figure_repair(question: dict[str, Any], qid: str) -> d
         "question_type": _short_text(question.get("question_type"), 80),
         "stem": _short_text(question.get("stem"), 1600),
         "subquestions": subquestions[:10],
+        "question_understanding": question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {},
+        "figure_schema_plan": question.get("figure_schema_plan") if isinstance(question.get("figure_schema_plan"), dict) else {},
     }
 
 
@@ -2272,49 +3559,255 @@ def _compact_visual_qa(qa: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-CRYSTALLOGRAPHIC_INDEX_CONTEXT_MARKERS = (
-    "晶面指数",
-    "晶向",
-    "电子衍射",
-    "衍射花样",
-    "带轴",
-    "xrd",
-    "x射线衍射",
-    "粉末衍射",
-    "diffraction",
-    "zone axis",
-)
-
-CRYSTALLOGRAPHIC_INDEX_JUDGMENT_MARKERS = (
-    "非法",
-    "消光",
-    "晶带",
-    "h+k",
-    "h + k",
-    "h+k+l",
-    "h + k + l",
-    "反射条件",
-    "衍射条件",
-    "不应出现",
-    "允许反射",
-    "指数错误",
-    "标签错误",
-    "标准指数",
-    "上划线",
-    "overbar",
-)
+def _declared_figure_labels(spec: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for value in spec.get("required_labels") or []:
+        if str(value or "").strip():
+            labels.append(str(value).strip())
+    for item in spec.get("features") or []:
+        if isinstance(item, dict) and str(item.get("label") or "").strip():
+            labels.append(str(item["label"]).strip())
+    for item in spec.get("annotations") or []:
+        if isinstance(item, dict):
+            value = item.get("text") or item.get("label")
+            if str(value or "").strip():
+                labels.append(str(value).strip())
+    for field in ("x_label", "y_label", "matrix_label"):
+        if str(spec.get(field) or "").strip():
+            labels.append(str(spec[field]).strip())
+    return list(dict.fromkeys(labels))
 
 
-def _uses_crystallographic_index_whitelist(question: dict[str, Any], spec: dict[str, Any]) -> bool:
-    text = " ".join(
+def _ground_visual_qa_to_figure_spec(qa: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Keep raster review inside its remit and retain deterministic text truth."""
+
+    if not isinstance(qa, dict):
+        return qa
+    nested = qa.get("output_schema")
+    if "ok" not in qa and isinstance(nested, dict) and "ok" in nested:
+        qa = dict(nested)
+    if qa.get("error"):
+        return qa
+
+    grounded = dict(qa)
+    declared_labels = _declared_figure_labels(spec)
+    source_text_is_exact = str(spec.get("kind") or "") not in {
+        "direct_model_image",
+        "model_drawing_code",
+        "source_image_overlay",
+    }
+    suppressed: list[dict[str, str]] = []
+
+    def mentions_declared_label(issue: str) -> bool:
+        compact_issue = re.sub(r"\s+", "", issue).replace("₍", "(").replace("₎", ")")
+        for label in declared_labels:
+            compact_label = re.sub(r"\s+", "", label)
+            variants = {
+                compact_label,
+                re.sub(r"[_₀₁₂₃₄₅₆₇₈₉]+", "", compact_label),
+            }
+            # A reviewer often quotes only the scientific token inside a
+            # longer deterministic annotation (for example Fe₃C inside
+            # "共晶转变 L→γ+Fe₃C").  Treat that token as a declared
+            # label fragment when it includes an explicit numeric subscript.
+            for token in re.findall(r"[A-Z][a-z]?[₀-₉0-9]+[A-Za-z₀-₉0-9]*", compact_label):
+                variants.add(token)
+                variants.add(token.translate(_UNICODE_SUBSCRIPT_DIGITS))
+            if any(variant and variant in compact_issue for variant in variants):
+                return True
+        return False
+
+    missing_values = qa.get("missing_requirements") if isinstance(qa.get("missing_requirements"), list) else []
+    kept_missing: list[Any] = []
+    for value in missing_values:
+        issue = str(value or "")
+        quoted = re.findall(r"['‘’\"“”]([^'‘’\"“”]{1,40})['‘’\"“”]", issue)
+        quoted_is_declared = any(
+            any(re.sub(r"\s+", "", quote) in re.sub(r"\s+", "", label) or re.sub(r"\s+", "", label) in re.sub(r"\s+", "", quote) for label in declared_labels)
+            for quote in quoted
+        )
+        missing_scope_expansion = (
+            any(token in issue for token in ("缺失", "未展示", "未标注", "不包括", "未包含"))
+            and not mentions_declared_label(issue)
+            and not any(
+                token in issue
+                for token in (
+                    "坐标轴",
+                    "单位",
+                    "刻度",
+                    "方向",
+                    "箭头",
+                    "图例",
+                    "标题",
+                    "边界",
+                    "平台",
+                    "转折",
+                )
+            )
+        )
+        if source_text_is_exact and mentions_declared_label(issue) and any(token in issue for token in ("标签", "文字", "错别字")):
+            suppressed.append({"field": "missing_requirements", "issue": issue, "reason": "deterministic_label_source"})
+        elif (quoted and not quoted_is_declared and any(token in issue for token in ("缺失", "未展示", "未清晰展示"))) or missing_scope_expansion:
+            suppressed.append({"field": "missing_requirements", "issue": issue, "reason": "undeclared_scope_expansion"})
+        else:
+            kept_missing.append(value)
+    grounded["missing_requirements"] = kept_missing
+
+    label_values = qa.get("label_issues") if isinstance(qa.get("label_issues"), list) else []
+    kept_labels: list[Any] = []
+    for value in label_values:
+        issue = str(value or "")
+        if source_text_is_exact and mentions_declared_label(issue) and any(
+            token in issue for token in ("错别字", "文字错误", "缺少 required label", "缺少required label", "标签缺失")
+        ):
+            suppressed.append({"field": "label_issues", "issue": issue, "reason": "deterministic_label_source"})
+        else:
+            kept_labels.append(value)
+    grounded["label_issues"] = kept_labels
+    visual_values = qa.get("visual_issues") if isinstance(qa.get("visual_issues"), list) else []
+    kept_visual: list[Any] = []
+    for value in visual_values:
+        issue = str(value or "")
+        missing_clause = re.search(
+            r"(缺少|缺失|未包含|未体现|完全未体现|未完整|应为|还应增加|且缺)([^。；;]{1,80})",
+            issue,
+        )
+        missing_clause_mentions_declared = bool(
+            missing_clause and mentions_declared_label(missing_clause.group(2))
+        )
+        introduces_undeclared_subject = False
+        if any(token in issue for token in ("缺少", "缺失", "未体现", "未完整", "应为", "还应", "且缺")):
+            if missing_clause is None:
+                introduces_undeclared_subject = not mentions_declared_label(issue)
+            else:
+                marker = missing_clause.group(1)
+                prefix_mentions_declared = mentions_declared_label(issue[: missing_clause.start()])
+                # In "declared label + 未体现/应为 + morphology", the omitted
+                # clause describes a property of an already-declared object.  It is
+                # therefore a real raster defect, not a request to invent a new
+                # constituent.  Additive wording such as "缺少 X" remains scoped
+                # to the clause itself so mixed issues cannot smuggle in X.
+                property_marker = marker in {"未体现", "完全未体现", "未完整", "应为"}
+                introduces_undeclared_subject = not (
+                    missing_clause_mentions_declared
+                    or (property_marker and prefix_mentions_declared)
+                )
+        deterministic_text_ocr = (
+            source_text_is_exact
+            and mentions_declared_label(issue)
+            and any(token in issue for token in ("文字", "文本", "错别字", "缺字", "OCR", "下标", "上标", "化学式"))
+            and not any(token in issue for token in ("重叠", "遮挡", "裁切", "超出", "过小"))
+        )
+        if introduces_undeclared_subject:
+            suppressed.append({"field": "visual_issues", "issue": issue, "reason": "undeclared_scope_expansion"})
+        elif deterministic_text_ocr:
+            suppressed.append({"field": "visual_issues", "issue": issue, "reason": "deterministic_label_source"})
+        else:
+            kept_visual.append(value)
+    grounded["visual_issues"] = kept_visual
+    if suppressed:
+        grounded["figure_spec_grounding"] = {
+            "applied": True,
+            "declared_labels": declared_labels,
+            "suppressed_issues": suppressed,
+        }
+    if not grounded["missing_requirements"] and not grounded["label_issues"] and not grounded["visual_issues"]:
+        grounded["ok"] = True
+        if suppressed:
+            grounded["summary"] = "未发现超出规格文本真值之外的可确认视觉问题。"
+    return grounded
+
+
+def _figure_candidate_scope_issues(
+    current_spec: dict[str, Any],
+    repaired_spec: dict[str, Any],
+    *,
+    grounded_labels: set[str] | None = None,
+) -> list[str]:
+    """Reject semantic scope expansion performed only by a raster reviewer.
+
+    Visual repair may change geometry, morphology, spacing and rendering hints.
+    Adding a new named peer object is different: it changes the answer's
+    scientific/disciplinary meaning and must first be justified in the answer
+    and evidence stages.  Keeping this check local and deterministic avoids an
+    extra model round while preventing visually plausible semantic drift.
+    """
+
+    current_labels = set(_declared_figure_labels(current_spec))
+    repaired_labels = set(_declared_figure_labels(repaired_spec))
+    grounded = {str(label or "").strip() for label in (grounded_labels or set()) if str(label or "").strip()}
+    grounded |= {re.sub(r"\s+", "", label) for label in grounded}
+    added_labels = sorted(
+        label
+        for label in repaired_labels - current_labels
+        if label and label not in grounded and re.sub(r"\s+", "", label) not in grounded
+    )
+    issues = [f"figure_candidate_scope_expansion: added undeclared label {label}" for label in added_labels]
+    current_kind = str(current_spec.get("kind") or "").strip()
+    repaired_kind = str(repaired_spec.get("kind") or "").strip()
+    if current_kind and repaired_kind and current_kind != repaired_kind:
+        issues.append(
+            f"figure_candidate_scope_expansion: kind changed from {current_kind} to {repaired_kind}"
+        )
+    return issues
+
+
+def _confirmed_figure_repair_labels(structured_exam: dict[str, Any], question_id: str) -> set[str]:
+    """Return peer labels explicitly confirmed from the source question image."""
+
+    question = next(
+        (
+            item
+            for item in structured_exam.get("items", []) or []
+            if isinstance(item, dict) and str(item.get("question_id") or "").strip() == question_id
+        ),
+        {},
+    )
+    understanding = question.get("question_understanding") if isinstance(question, dict) else {}
+    labels: set[str] = set()
+    for image in understanding.get("images", []) if isinstance(understanding, dict) else []:
+        if not isinstance(image, dict):
+            continue
+        labels.update(str(value or "").strip() for value in image.get("detected_labels", []) or [])
+        for path in image.get("fixed_condition_phase_paths", []) or []:
+            if not isinstance(path, dict):
+                continue
+            for region in path.get("ordered_regions", []) or []:
+                if isinstance(region, dict):
+                    labels.add(str(region.get("phase_or_region") or "").strip())
+            terminals = path.get("terminal_regions") if isinstance(path.get("terminal_regions"), dict) else {}
+            for terminal in terminals.values():
+                if isinstance(terminal, dict):
+                    labels.add(str(terminal.get("phase_or_region") or "").strip())
+    return {label for label in labels if label}
+
+
+def _figure_policy_text(question: dict[str, Any], spec: dict[str, Any]) -> str:
+    return " ".join(
         [
             str(question.get("stem") or ""),
-            " ".join(str(item.get("stem") or "") for item in question.get("subquestions") or [] if isinstance(item, dict)),
+            " ".join(
+                str(item.get("stem") or "")
+                for item in question.get("subquestions") or []
+                if isinstance(item, dict)
+            ),
             str(spec.get("caption") or ""),
             str(spec.get("notes") or ""),
         ]
     ).lower()
-    return any(marker in text for marker in CRYSTALLOGRAPHIC_INDEX_CONTEXT_MARKERS)
+
+
+def _uses_crystallographic_index_whitelist(question: dict[str, Any], spec: dict[str, Any]) -> bool:
+    text = _figure_policy_text(question, spec)
+    return any(
+        contribution.get("crystallographic_index_whitelist") is True
+        for contribution in capability_policy_contributions(
+            "visual_qa",
+            {"question": question, "spec": spec, "text": text},
+            text=text,
+        )
+        if isinstance(contribution, dict)
+    )
 
 
 def _apply_crystallographic_index_whitelist(
@@ -2323,69 +3816,40 @@ def _apply_crystallographic_index_whitelist(
     spec: dict[str, Any],
 ) -> dict[str, Any]:
     """Keep visual QA from treating raster hkl/direction OCR as a physics oracle."""
-    if not isinstance(qa, dict) or qa.get("error") or not _uses_crystallographic_index_whitelist(question, spec):
+    if not isinstance(qa, dict):
         return qa
-
-    filtered = dict(qa)
-    removed: list[dict[str, str]] = []
-    remaining_issue_count = 0
-    for field in ("missing_requirements", "label_issues", "visual_issues"):
-        values = qa.get(field) if isinstance(qa.get(field), list) else []
-        kept: list[Any] = []
-        for value in values:
-            text = str(value or "")
-            lowered = text.lower()
-            if any(marker in lowered for marker in CRYSTALLOGRAPHIC_INDEX_JUDGMENT_MARKERS):
-                removed.append({"field": field, "issue": text})
-            else:
-                kept.append(value)
-        filtered[field] = kept
-        remaining_issue_count += len(kept)
-
-    if not removed:
-        return filtered
-    filtered["crystallographic_index_whitelist"] = {
-        "applied": True,
-        "reason": "晶面/晶向/电子衍射指数的物理合法性不由视觉 OCR 判定。",
-        "suppressed_issues": removed,
-    }
-    if qa.get("ok") is not True and remaining_issue_count == 0:
-        filtered["ok"] = True
-        filtered["summary"] = "未发现可由视觉审查直接确认的排版或图像问题；晶体学指数合法性由程序规则校验。"
-    return filtered
+    text = _figure_policy_text(question, spec)
+    return apply_capability_policy_transforms(
+        "filter_visual_qa",
+        qa,
+        {
+            "question": question,
+            "spec": spec,
+            "text": text,
+            "deterministic_validation_passed": not program_check_figure_spec(spec),
+        },
+        text=text,
+    )
 
 
 def _drawing_code_repair_constraints(question: dict[str, Any], spec: dict[str, Any]) -> list[str]:
-    text = " ".join(
-        [
-            str(question.get("stem") or ""),
-            " ".join(str(item.get("stem") or "") for item in question.get("subquestions") or [] if isinstance(item, dict)),
-            str(spec.get("caption") or ""),
-            str(spec.get("notes") or ""),
-        ]
-    ).lower()
+    text = _figure_policy_text(question, spec)
     constraints = [
         "把 visual_qa 当作问题线索，不要照抄其中可能不存在的元素；必须以题干、当前图像要求和代码自身为准。",
         "优先修正错误指数、缺失图形、排版重叠和可读性问题；不要添加题目没有要求的解释性装饰。",
         "不要使用过大的图内标题；如果需要标题，字号应小于主体标签，且不得挤压图形主体。",
         "所有标签必须与点、线、箭头、其他标签保持清晰间距；宁可减少非必要标签，也不要重叠。",
     ]
-    if ("[110]" in text or "110" in text) and ("衍射" in text or "带轴" in text or "diffraction" in text):
-        constraints.extend(
-            [
-                "电子衍射带轴图以斑点阵列和指数标注为主体；除非题目要求，不要画粗大的基矢箭头或坐标轴。",
-                "只标注满足 h+k=0 的[110]零层倒易点；(110)、(220)这类 h+k != 0 的指数不能作为斑点标签。",
-                "5×5 阵列可以只标注中心和若干代表性非中心点；未标注点可保留为黑点以表现周期性。",
-            ]
-        )
-    if ("x射线" in text or "xrd" in text or "粉末衍射" in text) and ("体心" in text or "bcc" in text or "有序" in text):
-        constraints.extend(
-            [
-                "XRD 峰图应避免相邻峰标签重叠；对密集峰可交错上下标注、旋转标签或增加画布宽度。",
-                "不能用颜色区分关键含义；用实线/虚线、圆点/菱形、上下分图或直接文字说明区分。",
-            ]
-        )
-    return constraints
+    for contribution in capability_policy_contributions(
+        "drawing_repair",
+        {"question": question, "spec": spec, "text": text},
+        text=text,
+    ):
+        if isinstance(contribution, dict):
+            constraints.extend(
+                str(item) for item in contribution.get("constraints", []) if str(item).strip()
+            )
+    return list(dict.fromkeys(constraints))
 
 
 def _compact_generation_audit(item: dict[str, Any] | None) -> dict[str, Any]:
@@ -2421,6 +3885,8 @@ def build_figure_spec_repair_payload(
             "如果题目包含多个小问，只处理该 figure_id 对应的图像要求。",
             "如果同一题有多张图，当前图只需满足 current_spec/caption 对应的那一部分要求；不要把其他图承担的要求合并到当前图。",
             "如果 visual_qa 要求当前图补充其他图已经承担的内容，应优先保持 current_spec 的单图职责，只修正真实的可视化错误。",
+            "可修改已声明对象的形态、空间关系、位置与排版；不得新增 current_spec 未声明的同级标签、组成或对象。",
+            "若视觉审查暗示答案语义本身缺项，本轮不能由图像修复器自行扩展；应保留原语义边界，仅修形态和可读性。",
             "输出必须是一个 JSON 对象，顶层只允许包含 figure_spec 和 repair_notes。",
         ],
         "question": _minimal_question_for_figure_repair(questions_by_id.get(qid, {}), qid),
@@ -2515,7 +3981,7 @@ def build_drawing_code_repair_payload(
             "代码必须定义且只定义一个顶层函数 draw(output_path: str) -> None。",
             "只能使用 matplotlib、numpy、math、textwrap；不得读写除 output_path 之外的文件，不得使用网络、shell、subprocess、OS API、eval、exec、open。",
             "必须保存 PNG 到 output_path。",
-            "图中解释性文字使用中文；XRD/BCC/FCC/CsCl/hkl/2θ/a.u./[110]/(110) 等惯用标识可保留英文或符号。",
+            "图中解释性文字使用中文；题目要求的标准专业术语和符号可保留原始写法。",
             "图必须黑白打印可读，只使用黑、白、灰；用线型、点型、填充、直接标注、上下分图或位置区分关键含义，不能靠颜色。",
             "修复目标是考试答案级插图，不是最低可运行示意图。",
             "不要添加题目未要求的大标题、粗箭头、坐标轴、图例或说明文字；这些元素会压缩图形主体并造成重叠。",
@@ -2551,6 +4017,11 @@ def _visual_qa_failed_targets(qa_report: dict[str, Any], specs: list[dict[str, A
             continue
         qa = item.get("qa") if isinstance(item.get("qa"), dict) else {}
         if qa.get("ok") is True:
+            continue
+        # Provider/transport failures mean that no visual judgement exists.
+        # Rewriting the figure cannot repair an unavailable reviewer and only
+        # repeats the same failing service call.
+        if str(qa.get("error") or "").strip():
             continue
         figure_id = str(item.get("figure_id") or "").strip()
         if figure_id and figure_id in specs_by_id and figure_id not in seen:
@@ -2599,6 +4070,71 @@ def _figure_visual_qa_issue_count(report: dict[str, Any]) -> int:
     return count
 
 
+def _figure_visual_repair_fingerprint(
+    *,
+    structured_exam: dict[str, Any],
+    specs_data: dict[str, Any],
+    qa_report: dict[str, Any],
+    output_dir: Path,
+    repair_provider: str,
+    repair_model: str,
+    vision_provider: str,
+    vision_model: str,
+    max_rounds: int,
+    max_candidates_per_target: int,
+) -> str:
+    image_hashes: dict[str, str] = {}
+    for spec in specs_data.get("figures", []) or []:
+        if not isinstance(spec, dict):
+            continue
+        figure_id = str(spec.get("figure_id") or "").strip()
+        image = output_dir / f"{figure_id}.png"
+        if figure_id and image.is_file():
+            image_hashes[figure_id] = hashlib.sha256(image.read_bytes()).hexdigest()
+    payload = {
+        "version": "answer_book.figure_visual_qa_repair.v3",
+        "structured_exam": structured_exam,
+        "specs": specs_data,
+        "qa_report": qa_report,
+        "image_hashes": image_hashes,
+        "repair_provider": repair_provider,
+        "repair_model": repair_model,
+        "vision_provider": vision_provider,
+        "vision_model": vision_model,
+        "max_rounds": max(0, int(max_rounds)),
+        "max_candidates_per_target": max(1, min(2, int(max_candidates_per_target))),
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _reusable_figure_visual_repair_report(path: Path, fingerprint: str) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(existing, dict) or existing.get("input_fingerprint") != fingerprint:
+        return None
+    # A provider/runtime error must be retried. Only a fully evaluated result is
+    # reusable; otherwise a transient outage would suppress future repairs.
+    candidates = [
+        candidate
+        for round_item in existing.get("rounds", []) or []
+        if isinstance(round_item, dict)
+        for target in round_item.get("targets", []) or []
+        if isinstance(target, dict)
+        for candidate in target.get("candidates", []) or []
+        if isinstance(candidate, dict)
+    ]
+    if any(str(candidate.get("status") or "") == "error" for candidate in candidates):
+        return None
+    cached = dict(existing)
+    cached["cache"] = {"hit": True, "content_addressed": True}
+    cached["remote_model_calls_this_run"] = 0
+    return cached
+
+
 def _sync_generated_figure_blocks(fragments_json: Path | None, specs: list[dict[str, Any]], output_dir: Path) -> None:
     if fragments_json is None or not fragments_json.exists():
         return
@@ -2612,6 +4148,53 @@ def _sync_generated_figure_blocks(fragments_json: Path | None, specs: list[dict[
         if isinstance(fragment, dict) and str(fragment.get("question_id") or "").strip()
     }
     changed = False
+    active_ids = {
+        str(spec.get("figure_id") or "").strip()
+        for spec in specs
+        if str(spec.get("figure_id") or "").strip()
+        and (output_dir / f"{str(spec.get('figure_id') or '').strip()}.png").exists()
+    }
+    # Specs are the authoritative lifecycle registry. Remove answer-generated
+    # images that were superseded, pruned, or failed to render, while always
+    # preserving original question images.
+    for fragment in fragments_by_id.values():
+        for block in fragment.get("blocks", []) or []:
+            if not isinstance(block, dict) or not isinstance(block.get("segments"), list):
+                continue
+            before_segments = block["segments"]
+            kept_segments: list[dict[str, Any]] = []
+            index = 0
+            while index < len(before_segments):
+                segment = before_segments[index]
+                index += 1
+                if not isinstance(segment, dict):
+                    continue
+                if segment.get("type") == "image_ref":
+                    role = str(segment.get("role") or "").strip()
+                    path = str(segment.get("path") or "").strip().replace("\\", "/")
+                    image_id = str(segment.get("image_id") or Path(path).stem).strip()
+                    generated_ref = role == "answer_generated_figure" or path.startswith("figures/")
+                    if role != "source_question_image" and generated_ref and image_id not in active_ids:
+                        changed = True
+                        # Legacy fragments stored an untagged caption directly
+                        # after each generated image. Remove that paired caption
+                        # only inside the dedicated figure block.
+                        if str(block.get("label") or "").strip() == "图示" and index < len(before_segments):
+                            following = before_segments[index]
+                            if (
+                                isinstance(following, dict)
+                                and following.get("type") == "text"
+                                and not following.get("figure_caption_for")
+                            ):
+                                index += 1
+                        continue
+                caption_for = str(segment.get("figure_caption_for") or "").strip()
+                if caption_for and caption_for not in active_ids:
+                    changed = True
+                    continue
+                kept_segments.append(segment)
+            if len(kept_segments) != len(before_segments):
+                block["segments"] = kept_segments
     for spec in specs:
         figure_id = str(spec.get("figure_id") or "").strip()
         qid = str(spec.get("question_id") or "").strip()
@@ -2647,6 +4230,38 @@ def _prune_redundant_model_fallback_specs(specs_data: dict[str, Any], output_dir
         figure_id = str(spec.get("figure_id") or "").strip()
         is_direct_fallback = kind == "model_generated_image" or figure_id.endswith("_model_fig_01")
         if is_direct_fallback and qid in generated_primary_qids:
+            changed = True
+            continue
+        pruned.append(spec)
+    if changed:
+        specs_data["figures"] = pruned
+    return changed
+
+
+def _prune_failed_primary_specs_with_generated_fallback(specs_data: dict[str, Any], output_dir: Path) -> bool:
+    """Make a successful fallback authoritative over missing primary artifacts."""
+
+    specs = [spec for spec in specs_data.get("figures", []) or [] if isinstance(spec, dict)]
+    fallback_qids = {
+        str(spec.get("question_id") or "").strip()
+        for spec in specs
+        if str(spec.get("kind") or "").strip() == "model_generated_image"
+        and str(spec.get("question_id") or "").strip()
+        and str(spec.get("figure_id") or "").strip()
+        and (output_dir / f"{str(spec.get('figure_id') or '').strip()}.png").exists()
+    }
+    if not fallback_qids:
+        return False
+    pruned: list[dict[str, Any]] = []
+    changed = False
+    for spec in specs:
+        qid = str(spec.get("question_id") or "").strip()
+        kind = str(spec.get("kind") or "").strip()
+        figure_id = str(spec.get("figure_id") or "").strip()
+        missing_primary = kind != "model_generated_image" and (
+            not figure_id or not (output_dir / f"{figure_id}.png").exists()
+        )
+        if qid in fallback_qids and missing_primary:
             changed = True
             continue
         pruned.append(spec)
@@ -2696,6 +4311,7 @@ def repair_figures_with_model_for_visual_qa(
     vision_provider: Any | None = None,
     vision_model: str = "",
     max_rounds: int = 1,
+    max_candidates_per_target: int = 2,
     progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Create and visually validate independent repair candidates before promotion.
@@ -2706,7 +4322,7 @@ def repair_figures_with_model_for_visual_qa(
     figure merely because its code passed the static validator.
     """
     report: dict[str, Any] = {
-        "schema_version": "answer_book.figure_visual_qa_repair.v2",
+        "schema_version": "answer_book.figure_visual_qa_repair.v3",
         "enabled": bool(
             provider is not None
             and getattr(provider, "api_key", "")
@@ -2725,6 +4341,11 @@ def repair_figures_with_model_for_visual_qa(
         "rounds": [],
         "changed": False,
         "latest_visual_qa": qa_report or {},
+        "budget": {
+            "max_rounds": max(0, int(max_rounds)),
+            "max_candidates_per_target": max(1, min(2, int(max_candidates_per_target))),
+        },
+        "cache": {"hit": False, "content_addressed": True},
     }
     if not report["enabled"]:
         report["skipped_reason"] = "repair or vision provider is not configured"
@@ -2733,11 +4354,33 @@ def repair_figures_with_model_for_visual_qa(
         return report
     if qa_report is None:
         qa_report = json.loads(visual_qa_json.read_text(encoding="utf-8")) if visual_qa_json.exists() else {}
+    specs_data_for_fingerprint = (
+        json.loads(specs_json.read_text(encoding="utf-8")) if specs_json.exists() else {"figures": []}
+    )
+    fingerprint = _figure_visual_repair_fingerprint(
+        structured_exam=structured_exam,
+        specs_data=specs_data_for_fingerprint,
+        qa_report=qa_report,
+        output_dir=output_dir,
+        repair_provider=str(report["repair_model"]["provider"]),
+        repair_model=str(report["repair_model"]["model"]),
+        vision_provider=str(report["vision_model"]["provider"]),
+        vision_model=str(report["vision_model"]["model"]),
+        max_rounds=max_rounds,
+        max_candidates_per_target=max_candidates_per_target,
+    )
+    report["input_fingerprint"] = fingerprint
+    cached_report = _reusable_figure_visual_repair_report(repair_report_json, fingerprint)
+    if cached_report is not None:
+        return cached_report
+    if max_rounds <= 0:
+        report["skipped_reason"] = "figure repair budget is zero"
+        repair_report_json.parent.mkdir(parents=True, exist_ok=True)
+        repair_report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
     latest_qa = qa_report
     repair_model = str(report["repair_model"]["model"])
     reviewer_model = str(report["vision_model"]["model"])
-    repair_client = OpenAICompatibleClient(provider)
-    reviewer_client = OpenAICompatibleClient(vision_provider)
     candidate_root = output_dir.parent / "figure_visual_qa_candidates"
 
     def emit(event: str, detail: dict[str, Any]) -> None:
@@ -2811,13 +4454,36 @@ def repair_figures_with_model_for_visual_qa(
         repaired["figure_id"] = str(current_spec.get("figure_id") or "").strip()
         repaired["question_id"] = str(current_spec.get("question_id") or "").strip()
         repaired["kind"] = "model_drawing_code" if kind == "model_drawing_code" else (repaired.get("kind") or kind)
+        if kind == "source_image_overlay":
+            repaired["kind"] = kind
+            for key in (
+                "source_image_index",
+                "source_image",
+                "source_image_sha256",
+                "semantic_contract_id",
+                "planned_render_strategy",
+                "planned_schema_kind",
+                "figure_semantic_contract",
+                "figure_render_decision",
+            ):
+                if key in current_spec:
+                    repaired[key] = current_spec[key]
         repaired.setdefault("caption", current_spec.get("caption") or "题目图示")
         repaired["source"] = f"visual_qa_{strategy}_candidate"
         if kind == "model_drawing_code":
             validation_issues = validate_drawing_code(str(repaired.get("code") or ""))
         else:
             repaired = normalize_figure_spec(repaired)
-            validation_issues = program_check_figure_spec(repaired)
+            validation_issues = [
+                *program_check_figure_spec(repaired),
+                *_figure_candidate_scope_issues(
+                    current_spec,
+                    repaired,
+                    grounded_labels=_confirmed_figure_repair_labels(
+                        structured_exam, str(current_spec.get("question_id") or "").strip()
+                    ),
+                ),
+            ]
         if validation_issues:
             repaired["validation_issues"] = validation_issues
         return repaired, {
@@ -2875,7 +4541,7 @@ def repair_figures_with_model_for_visual_qa(
         merged["skipped"] = [item for item in base.get("skipped", []) or [] if str(item.get("figure_id") or "") != figure_id]
         return merged
 
-    for round_index in range(1, max(1, int(max_rounds)) + 1):
+    for round_index in range(1, int(max_rounds) + 1):
         specs_data = json.loads(specs_json.read_text(encoding="utf-8")) if specs_json.exists() else {"figures": []}
         specs = [spec for spec in specs_data.get("figures", []) or [] if isinstance(spec, dict)]
         generation_by_figure = _load_generation_audit_by_figure(specs_json)
@@ -2892,7 +4558,16 @@ def repair_figures_with_model_for_visual_qa(
             break
         specs_by_id = {str(spec.get("figure_id") or "").strip(): idx for idx, spec in enumerate(specs)}
         selected_candidates: list[dict[str, Any]] = []
-        for target in targets:
+
+        def repair_target(
+            target: dict[str, Any],
+            *,
+            generation_by_figure: dict[str, dict[str, Any]] = generation_by_figure,
+            round_index: int = round_index,
+            specs_by_id: dict[str, int] = specs_by_id,
+            specs: list[dict[str, Any]] = specs,
+            round_report: dict[str, Any] = round_report,
+        ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             figure_id = target["figure_id"]
             current_spec = target["spec"]
             kind = str(current_spec.get("kind") or "").strip()
@@ -2904,13 +4579,26 @@ def repair_figures_with_model_for_visual_qa(
                 "candidates": [],
             }
             source_image = output_dir / f"{figure_id}.png"
-            candidate_configs = [
-                ("original_model", provider, repair_model, repair_client),
-                ("vision_reviewer", vision_provider, reviewer_model, reviewer_client),
+            raw_candidate_configs = [
+                ("original_model", provider, repair_model),
+                ("vision_reviewer", vision_provider, reviewer_model),
             ]
-            for strategy, candidate_provider, candidate_model, candidate_client in candidate_configs:
+            # When one visual provider owns both image repair and re-audit, do
+            # not send the same request twice under two strategy names. Prefer
+            # the vision-aware strategy because it receives the source raster.
+            candidate_by_route: dict[tuple[str, str], tuple[str, Any, str]] = {}
+            for config in raw_candidate_configs:
+                strategy, candidate_provider, candidate_model = config
+                route = (str(getattr(candidate_provider, "name", "")), str(candidate_model or ""))
+                if route not in candidate_by_route or strategy == "vision_reviewer":
+                    candidate_by_route[route] = config
+            candidate_configs = list(candidate_by_route.values())[: max(1, min(2, int(max_candidates_per_target)))]
+            def repair_candidate(config: tuple[str, Any, str]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+                strategy, candidate_provider, candidate_model = config
+                candidate_client = OpenAICompatibleClient(candidate_provider)
                 candidate_report: dict[str, Any] = {"strategy": strategy, "provider": getattr(candidate_provider, "name", ""), "model": candidate_model}
                 emit("visual_qa_repair_candidate_started", {"figure_id": figure_id, "question_id": target_report["question_id"], "strategy": strategy, "model": candidate_model})
+                passing_candidate: dict[str, Any] | None = None
                 try:
                     repaired, request_report = request_candidate(
                         strategy=strategy,
@@ -2935,20 +4623,27 @@ def repair_figures_with_model_for_visual_qa(
                         candidate_report["status"] = "passed" if candidate_report["passed"] else "visual_qa_failed"
                         emit("visual_qa_repair_candidate_audited", {"figure_id": figure_id, "question_id": target_report["question_id"], "strategy": strategy, "ok": candidate_report["passed"]})
                         if candidate_report["passed"]:
-                            selected_candidates.append(
-                                {
-                                    "strategy": strategy,
-                                    "spec": repaired,
-                                    "qa": candidate_qa,
-                                    "image": candidate_image,
-                                    "target_report": target_report,
-                                }
-                            )
+                            passing_candidate = {
+                                "strategy": strategy,
+                                "spec": repaired,
+                                "qa": candidate_qa,
+                                "image": candidate_image,
+                                "target_report": target_report,
+                            }
                 except Exception as exc:
                     candidate_report["status"] = "error"
                     candidate_report["error"] = str(exc)[:700]
-                target_report["candidates"].append(candidate_report)
-            passing = [candidate for candidate in selected_candidates if candidate["target_report"] is target_report]
+                return candidate_report, passing_candidate
+
+            candidate_results = run_limited_concurrent(
+                candidate_configs,
+                repair_candidate,
+                max_workers=min(len(candidate_configs), figure_model_worker_count()),
+            )
+            target_report["candidates"] = [item[0] for item in candidate_results]
+            target_passing = [item[1] for item in candidate_results if isinstance(item[1], dict)]
+            passing = target_passing
+            promoted: list[dict[str, Any]] = []
             if passing:
                 # Prefer the visual reviewer's own repair when both candidates pass.
                 selected = next((candidate for candidate in passing if candidate["strategy"] == "vision_reviewer"), passing[0])
@@ -2963,7 +4658,17 @@ def repair_figures_with_model_for_visual_qa(
                 # A passing re-audit is a valid promotion even if its spec happens
                 # to serialize identically to the failed source spec.
                 round_report["changed"] = True
+                promoted = [selected]
+            return target_report, promoted
+
+        target_results = run_limited_concurrent(
+            targets,
+            repair_target,
+            max_workers=min(len(targets), figure_model_worker_count()),
+        )
+        for target_report, target_passing in target_results:
             round_report["targets"].append(target_report)
+            selected_candidates.extend(target_passing)
         if round_report["changed"]:
             specs_data["figures"] = specs
             specs_json.write_text(json.dumps(specs_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2977,6 +4682,7 @@ def repair_figures_with_model_for_visual_qa(
                     emit("visual_qa_repair_candidate_selected", {"figure_id": figure_id, "question_id": str(selected["spec"].get("question_id") or ""), "strategy": selected["strategy"]})
             refreshed_specs_data = json.loads(specs_json.read_text(encoding="utf-8")) if specs_json.exists() else {"figures": []}
             pruned = _prune_redundant_model_fallback_specs(refreshed_specs_data, output_dir)
+            pruned = _prune_failed_primary_specs_with_generated_fallback(refreshed_specs_data, output_dir) or pruned
             pruned = _prune_stale_failed_code_specs(refreshed_specs_data, output_dir) or pruned
             if pruned:
                 specs_json.write_text(json.dumps(refreshed_specs_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2994,12 +4700,21 @@ def repair_figures_with_model_for_visual_qa(
         if _figure_visual_qa_issue_count(latest_qa) == 0:
             break
     report["latest_visual_qa"] = latest_qa
+    report["remote_model_calls_this_run"] = sum(
+        1
+        for round_item in report.get("rounds", [])
+        if isinstance(round_item, dict)
+        for target in round_item.get("targets", []) or []
+        if isinstance(target, dict)
+        for candidate in target.get("candidates", []) or []
+        if isinstance(candidate, dict)
+    )
     repair_report_json.parent.mkdir(parents=True, exist_ok=True)
     repair_report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 
-def audit_figures_with_vision(
+def _audit_figures_with_vision_serial(
     structured_exam: dict[str, Any],
     specs_json: Path,
     output_dir: Path,
@@ -3048,25 +4763,46 @@ def audit_figures_with_vision(
             if callable(progress_callback):
                 progress_callback("visual_qa_skipped", {"figure_id": figure_id, "question_id": qid, "reason": "figure image missing"})
             continue
-        question = questions_by_id.get(qid, {})
+        question = _question_context_for_figure_spec(questions_by_id.get(qid, {}), spec)
+        integrity_issues = audit_figure_image_integrity(path)
+        if integrity_issues:
+            qa = {
+                "ok": False,
+                "deterministic": True,
+                "error": "; ".join(integrity_issues),
+                "missing_requirements": ["generated figure is not a usable image"],
+                "label_issues": [],
+                "visual_issues": integrity_issues,
+                "summary": "The generated figure failed local image-integrity checks.",
+            }
+            report["items"].append(
+                {
+                    "question_id": qid,
+                    "figure_id": figure_id,
+                    "path": str(path),
+                    "vision_input": None,
+                    "qa": qa,
+                }
+            )
+            if callable(progress_callback):
+                progress_callback(
+                    "visual_qa_completed",
+                    {"figure_id": figure_id, "question_id": qid, "ok": False, "error": qa["error"]},
+                )
+            continue
         kind = str(spec.get("kind") or "").strip()
-        crystallographic_whitelist = _uses_crystallographic_index_whitelist(question, spec)
         domain_rules: list[str] = drawing_domain_quality_rules(question, str(spec.get("caption") or spec.get("title") or ""))
-        if kind == "zone_axis_diffraction" and not crystallographic_whitelist:
-            domain_rules.extend(
-                [
-                    "For a cubic [110] zone-axis diffraction pattern, the diffraction spots must satisfy h + k = 0.",
-                    "In a BCC lattice, reflections with h+k+l even are allowed and h+k+l odd are extinct.",
-                    "In a [110] zone-axis pattern, in-plane reciprocal basis directions such as [1 -1 0]* and [0 0 1]* are not the beam/zone axis; do not treat them as contradicting the [110] zone axis.",
-                ]
-            )
-        elif kind == "xrd_pattern" and not crystallographic_whitelist:
-            domain_rules.extend(
-                [
-                    "For disordered BCC powder XRD, allowed fundamental peaks satisfy h+k+l even, such as (110), (200), (211), (220), (310), (222).",
-                    "For CsCl-type ordering, new superlattice peaks occur at odd h+k+l positions such as (100), (111), (210), and should be visually distinguished from fundamental peaks.",
-                ]
-            )
+        policy_text = _figure_policy_text(question, spec)
+        visual_qa_policy_rules: list[str] = []
+        for contribution in capability_policy_contributions(
+            "visual_qa",
+            {"question": question, "spec": spec, "text": policy_text},
+            text=policy_text,
+        ):
+            if isinstance(contribution, dict):
+                visual_qa_policy_rules.extend(
+                    str(rule) for rule in contribution.get("hard_rules", []) if str(rule).strip()
+                )
         if kind == "model_drawing_code":
             domain_rules.extend(
                 [
@@ -3095,42 +4831,182 @@ def audit_figures_with_vision(
             "hard_rules": [
                 "Return exactly one valid JSON object.",
                 "Check whether the generated figure satisfies the question and figure_spec.",
+                "Treat question.figure_schema_plan.figure_semantic_contract as the semantic source of truth: every required element, label, and relationship must be visibly satisfied, and forbidden assumptions must not be introduced.",
                 "Audit only the current figure_spec and its caption. If the same question has multiple figure_specs, do not require this single figure to cover requirements assigned to other figures.",
+                "Do not require extra phases, constituents, labels, or quantitative proportions that are absent from the current figure semantic contract and figure_spec; those belong to the content-correctness gate.",
+                "Do not infer that a plateau length, region area, particle count, or schematic size represents a quantitative fraction unless the current figure_spec explicitly declares that relationship.",
                 "Focus on missing labels, wrong directions, wrong axes, unreadable text, and irrelevant decorative content.",
                 "Report only visible problems that you can directly verify from the image. Do not mention elements that are not visible in the current image.",
                 "Treat label overlap, oversized titles, cramped legends, or text covering plotted marks as visual_issues.",
                 "Keep each issue concise; do not include long derivations.",
-                *(
-                    [
-                        "This figure contains crystallographic plane/direction indices or diffraction indexing.",
-                        "Do not judge any hkl, uvw, zone-axis, extinction, reflection, or indexing label as physically illegal, wrong, or missing based on the raster image.",
-                        "For crystallographic labels, report only directly visible readability defects such as blur, clipping, or overlap. If uncertain, do not report an index issue.",
-                    ]
-                    if crystallographic_whitelist
-                    else []
-                ),
+                *visual_qa_policy_rules,
                 *domain_rules,
             ],
         }
         try:
             if callable(progress_callback):
                 progress_callback("visual_qa_started", {"figure_id": figure_id, "question_id": qid, "model": report["vision_model"]})
-            qa = client.chat_json_object(
-                [
-                    {"role": "system", "content": "你是真题解析册插图质量审查器，只输出 JSON。"},
-                    {"role": "user", "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}, {"type": "image_url", "image_url": {"url": image_url}}]},
-                ],
-                model=str(report["vision_model"]),
-                max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
-                timeout=90,
-                attempts=1,
-            )
+            with model_request_slot(provider):
+                qa = client.chat_json_object(
+                    [
+                        {"role": "system", "content": "你是真题解析册插图质量审查器，只输出 JSON。"},
+                        {"role": "user", "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}, {"type": "image_url", "image_url": {"url": image_url}}]},
+                    ],
+                    model=str(report["vision_model"]),
+                    max_tokens=min(FIGURE_AUXILIARY_MAX_TOKENS, 2048),
+                    timeout=120,
+                    attempts=1,
+                )
         except Exception as exc:
             qa = {"ok": False, "error": str(exc)[:500]}
+        qa = _ground_visual_qa_to_figure_spec(qa, spec)
         qa = _apply_crystallographic_index_whitelist(qa, question, spec)
         if callable(progress_callback):
             progress_callback("visual_qa_completed", {"figure_id": figure_id, "question_id": qid, "ok": qa.get("ok") is True, "error": str(qa.get("error") or "")[:300]})
         report["items"].append({"question_id": qid, "figure_id": figure_id, "path": str(path), "vision_input": image_input, "qa": qa})
+    report_json.parent.mkdir(parents=True, exist_ok=True)
+    report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
+def audit_figures_with_vision(
+    structured_exam: dict[str, Any],
+    specs_json: Path,
+    output_dir: Path,
+    report_json: Path,
+    *,
+    provider: Any | None = None,
+    model: str = "",
+    reuse_unchanged: bool = True,
+    progress_callback: Any | None = None,
+) -> dict[str, Any]:
+    """Audit independent figure PNGs concurrently and persist one stable report."""
+    specs_data = json.loads(specs_json.read_text(encoding="utf-8")) if specs_json.exists() else {"figures": []}
+    enabled = bool(provider is not None and getattr(provider, "api_key", "") and getattr(provider, "supports_vision", False) and getattr(provider, "vision_model", ""))
+    if not enabled:
+        return _audit_figures_with_vision_serial(
+            structured_exam, specs_json, output_dir, report_json, provider=provider, model=model, progress_callback=progress_callback,
+        )
+    specs = [item for item in specs_data.get("figures", []) or [] if isinstance(item, dict)]
+    questions = {
+        str(item.get("question_id") or "").strip(): item
+        for item in structured_exam.get("items", []) or []
+        if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+    }
+    existing_report: dict[str, Any] = {}
+    if reuse_unchanged and report_json.exists():
+        try:
+            loaded = json.loads(report_json.read_text(encoding="utf-8"))
+            existing_report = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            existing_report = {}
+    existing_items = {
+        str(item.get("figure_id") or "").strip(): item
+        for item in existing_report.get("items", []) or []
+        if isinstance(item, dict) and str(item.get("figure_id") or "").strip()
+    }
+    audit_specs: list[dict[str, Any]] = []
+    reused_items: list[dict[str, Any]] = []
+    fingerprints: dict[str, str] = {}
+    skipped: list[dict[str, Any]] = []
+    for spec in specs:
+        figure_id = str(spec.get("figure_id") or "").strip()
+        qid = str(spec.get("question_id") or "").strip()
+        image_path = output_dir / f"{figure_id}.png"
+        if not figure_id or not image_path.exists():
+            skipped.append({"question_id": qid, "figure_id": figure_id, "reason": "figure image missing"})
+        else:
+            fingerprint_payload = {
+                "image_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
+                "spec": _compact_figure_spec_for_visual_qa(spec),
+                "question": _minimal_question_for_figure_repair(questions.get(qid, {}), qid),
+                "provider": str(getattr(provider, "name", "") or ""),
+                "model": str(model or getattr(provider, "vision_model", "") or ""),
+                # Cached raw reviewer output is only reusable under the same
+                # deterministic grounding policy.  Otherwise an obsolete OCR
+                # false positive can remain sticky after the program learns
+                # how to adjudicate it.
+                "grounding_policy_version": "figure_spec_grounding.v2",
+            }
+            fingerprint = hashlib.sha256(
+                json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            fingerprints[figure_id] = fingerprint
+            existing = existing_items.get(figure_id)
+            if isinstance(existing, dict) and existing.get("audit_fingerprint") == fingerprint:
+                reused_items.append({**existing, "path": str(image_path), "reused": True})
+            else:
+                audit_specs.append(spec)
+    max_workers = figure_visual_audit_worker_count() if len(audit_specs) > 1 else 1
+    worker_root = report_json.parent / "figure_visual_qa_workers"
+
+    def audit_one(spec: dict[str, Any]) -> dict[str, Any]:
+        figure_id = str(spec.get("figure_id") or "").strip()
+        worker_dir = worker_root / figure_id
+        worker_specs = worker_dir / "figure_specs.json"
+        worker_report = worker_dir / "figure_visual_qa.json"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        worker_specs.write_text(json.dumps({"figures": [spec]}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return _audit_figures_with_vision_serial(
+            structured_exam,
+            worker_specs,
+            output_dir,
+            worker_report,
+            provider=provider,
+            model=model,
+            progress_callback=None,
+        )
+
+    def completed(_index: int, spec: dict[str, Any], result: dict[str, Any]) -> None:
+        if not callable(progress_callback):
+            return
+        item = next((row for row in result.get("items", []) if isinstance(row, dict)), {})
+        qa = item.get("qa") if isinstance(item.get("qa"), dict) else {}
+        progress_callback(
+            "visual_qa_completed",
+            {
+                "figure_id": str(spec.get("figure_id") or ""),
+                "question_id": str(spec.get("question_id") or ""),
+                "ok": qa.get("ok") is True,
+                "error": str(qa.get("error") or "")[:300],
+            },
+        )
+
+    if callable(progress_callback):
+        for spec in audit_specs:
+            progress_callback("visual_qa_started", {"figure_id": str(spec.get("figure_id") or ""), "question_id": str(spec.get("question_id") or ""), "model": str(model or getattr(provider, "vision_model", "") or "")})
+        for item in reused_items:
+            progress_callback("visual_qa_reused", {"figure_id": item.get("figure_id"), "question_id": item.get("question_id")})
+        for item in skipped:
+            progress_callback("visual_qa_skipped", item)
+    worker_reports = run_limited_concurrent(audit_specs, audit_one, max_workers=max_workers, on_complete=completed)
+    items = [
+        {
+            **item,
+            "audit_fingerprint": fingerprints.get(str(item.get("figure_id") or "").strip(), ""),
+            "reused": False,
+        }
+        for worker_report in worker_reports
+        for item in worker_report.get("items", [])
+        if isinstance(item, dict)
+    ] + reused_items
+    report = {
+        "schema_version": "answer_book.figure_visual_qa.v1",
+        "enabled": True,
+        "provider": getattr(provider, "name", ""),
+        "vision_model": str(model or getattr(provider, "vision_model", "") or ""),
+        "items": items,
+        "skipped": skipped,
+        "cache": {
+            "content_addressed": True,
+            "reused_count": len(reused_items),
+            "audited_count": len(audit_specs),
+        },
+        "concurrency": {
+            "max_workers": max_workers,
+            "parallel_enabled": max_workers > 1 and len(audit_specs) > 1,
+        },
+    }
     report_json.parent.mkdir(parents=True, exist_ok=True)
     report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

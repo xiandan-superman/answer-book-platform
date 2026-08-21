@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -9,16 +10,64 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .calculation_consistency import (
+    calculation_contract_issues,
+    calculation_draft_consistency_issues,
+    reconcile_calculation_reference_structure,
+)
+from .capabilities.catalog import capability_policy_contributions
 from .concurrency import run_limited_concurrent
-from .llm_client import LLMError, OpenAICompatibleClient
-from .prompts import build_answer_depth_profile, build_answer_draft_prompt
+from .document_presentation import is_synthetic_requirement_parent
+from .drawing_code import question_drawing_mode
+from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import looks_like_formula
-from .question_types import infer_question_type, is_calculation_question, question_has_type, question_kind
-from .question_understanding import is_drawing_question, needs_vision_model
+from .llm_client import LLMError, OpenAICompatibleClient
+from .omml_input import strip_structured_math_metadata
+from .prompts import build_answer_depth_profile, build_answer_draft_prompt
+from .question_types import infer_question_type, is_calculation_question, is_term_explanation_question, iter_leaf_question_parts, question_has_type, question_kind
+from .question_understanding import attach_question_visuals, is_drawing_question, needs_vision_model
 from .retrieval import EvidenceCandidate, candidates_for_question
-from .settings import DEFAULT_MODEL_MAX_TOKENS, STRUCTURED_ANSWER_MAX_TOKENS, ProviderConfig
+from .settings import DEFAULT_MODEL_MAX_TOKENS, STRUCTURED_ANSWER_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import cn_to_int
+from .user_facing_text import strip_internal_repair_provenance
 from .v4_schema import validate_v4_answer_fragment
+
+ANSWER_GENERATION_TIMEOUT_SECONDS = 180
+ANSWER_GENERATION_COMPLEX_TIMEOUT_SECONDS = 300
+ANSWER_GENERATION_REASONING_TIMEOUT_SECONDS = 600
+ANSWER_SOURCE_CONTRACT_VERSION = "answer_book.answer_source_contract.v1"
+
+
+def _clean_question_stem(question: dict[str, Any]) -> str:
+    """Return visible question text without internal Word formula metadata."""
+
+    return strip_structured_math_metadata(str(question.get("stem") or ""))
+
+
+def question_answer_source_fingerprint(question: dict[str, Any]) -> str:
+    payload = json.dumps(question, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def answer_source_contract(structured_exam: dict[str, Any]) -> dict[str, Any]:
+    questions = [item for item in structured_exam.get("items", []) or [] if isinstance(item, dict)]
+    question_fingerprints = {
+        str(question.get("question_id") or "").strip(): question_answer_source_fingerprint(question)
+        for question in questions
+        if str(question.get("question_id") or "").strip()
+    }
+    ordered = [
+        {"question_id": str(question.get("question_id") or "").strip(), "fingerprint": question_answer_source_fingerprint(question)}
+        for question in questions
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(ordered, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "version": ANSWER_SOURCE_CONTRACT_VERSION,
+        "fingerprint": fingerprint,
+        "question_fingerprints": question_fingerprints,
+    }
 
 
 @dataclass
@@ -32,14 +81,35 @@ class GenerationResult:
     fallback_count: int = 0
     max_workers: int = 1
     parallel_enabled: bool = False
+    reused_fragment_count: int = 0
+    review_required: bool = False
+
+
+def generation_completion_state(
+    question_count: int,
+    fragment_count: int,
+    *,
+    issue_count: int = 0,
+    fallback_count: int = 0,
+) -> dict[str, Any]:
+    """Separate pipeline continuity from formal-delivery readiness."""
+
+    coverage_complete = fragment_count == question_count
+    review_required = bool(issue_count or fallback_count)
+    return {
+        "ok": coverage_complete,
+        "coverage_complete": coverage_complete,
+        "review_required": review_required,
+        "delivery_readiness": "review_candidate" if review_required else "formal_candidate",
+    }
 
 
 def answer_generation_worker_count() -> int:
-    raw = os.environ.get("ANSWER_GENERATION_MAX_WORKERS", "5")
+    raw = os.environ.get("ANSWER_GENERATION_MAX_WORKERS", "10")
     try:
-        return max(1, min(6, int(raw)))
+        return max(1, min(12, int(raw)))
     except ValueError:
-        return 3
+        return 10
 
 
 def answer_generation_batch_enabled() -> bool:
@@ -70,9 +140,96 @@ def answer_generation_evidence_target_count() -> int:
         return 10
 
 
-def structured_answer_max_tokens(provider: ProviderConfig) -> int:
-    """Keep the longer budget scoped to answer-draft generation only."""
-    return max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), STRUCTURED_ANSWER_MAX_TOKENS)
+def _bounded_env_int(name: str, default: int, *, minimum: int = 30, maximum: int = 1800) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        return max(minimum, min(maximum, int(raw)))
+    except ValueError:
+        return default
+
+
+def answer_generation_thinking_mode(provider: ProviderConfig) -> str:
+    """Honor explicit Thinking choices and keep structured JSON safe on auto.
+
+    The web task records the user's explicit choice in ``provider.thinking_mode``.
+    Explicit effort levels remain a user-controlled latency/cost trade-off.
+    Some reasoning providers use their entire output allowance on hidden
+    reasoning under ``auto`` and never emit JSON, so automatic mode uses the
+    configurable safe default instead of repeatedly exhausting the request.
+    """
+
+    mode = str(getattr(provider, "thinking_mode", "auto") or "auto").strip().lower()
+    if mode == "auto":
+        configured = str(os.environ.get("ANSWER_GENERATION_AUTO_THINKING_MODE", "disabled") or "disabled").strip().lower()
+        return configured if configured in {"auto", "enabled", "disabled", "low", "medium", "high", "xhigh"} else "disabled"
+    if mode in {"enabled", "disabled", "low", "medium", "high", "xhigh"}:
+        return mode
+    return "disabled"
+
+
+def answer_generation_attempt_thinking_mode(
+    provider: ProviderConfig,
+    question: dict[str, Any] | None,
+    attempt: int,
+) -> str:
+    """Escalate only a failed automatic complex-answer retry to low reasoning."""
+
+    base = answer_generation_thinking_mode(provider)
+    selected = str(getattr(provider, "thinking_mode", "auto") or "auto").strip().lower()
+    if (
+        attempt > 0
+        and selected == "auto"
+        and question
+        and (question_has_type(question, "计算题") or question_has_type(question, "作图题"))
+    ):
+        configured = str(os.environ.get("ANSWER_GENERATION_COMPLEX_RETRY_THINKING_MODE", "low") or "low").strip().lower()
+        if configured in {"auto", "enabled", "disabled", "low", "medium", "high", "xhigh"}:
+            return configured
+    return base
+
+
+def answer_generation_timeout_seconds(
+    question: dict[str, Any] | None = None,
+    *,
+    thinking_mode: str = "auto",
+) -> int:
+    """Return a configurable deadline sized for question and reasoning cost."""
+
+    complex_question = bool(
+        question
+        and (
+            question_has_type(question, "计算题")
+            or question_has_type(question, "作图题")
+            or is_drawing_question(question)
+        )
+    )
+    if thinking_mode in {"enabled", "medium", "high", "xhigh"}:
+        return _bounded_env_int(
+            "ANSWER_GENERATION_REASONING_TIMEOUT_SECONDS",
+            ANSWER_GENERATION_REASONING_TIMEOUT_SECONDS,
+        )
+    if complex_question:
+        return _bounded_env_int(
+            "ANSWER_GENERATION_COMPLEX_TIMEOUT_SECONDS",
+            ANSWER_GENERATION_COMPLEX_TIMEOUT_SECONDS,
+        )
+    return _bounded_env_int("ANSWER_GENERATION_TIMEOUT_SECONDS", ANSWER_GENERATION_TIMEOUT_SECONDS)
+
+
+def structured_answer_max_tokens(provider: ProviderConfig, question: dict[str, Any] | None = None) -> int:
+    """Bound answer output by the number of independently required units.
+
+    A very large static ceiling made providers spend several minutes streaming
+    or timing out even for short exams.  The v4 fragment schema is compact: a
+    base budget plus a bounded allowance per leaf unit gives multipart problems
+    enough room without turning every request into a 49k-token generation.
+    """
+
+    if question is None:
+        return STRUCTURED_ANSWER_MAX_TOKENS
+    leaf_count = max(1, len(iter_leaf_question_parts(question)))
+    adaptive = 6144 + min(leaf_count, 10) * 1536
+    return min(STRUCTURED_ANSWER_MAX_TOKENS, max(8192, adaptive))
 
 
 def _rough_token_estimate(value: Any) -> int:
@@ -112,15 +269,29 @@ def _is_microbatch_candidate(question: dict[str, Any]) -> bool:
 
 
 def _answer_model_candidates_for_question(provider: ProviderConfig, requested_model: str, question: dict[str, Any]) -> list[str]:
+    def unique(*groups: Any) -> list[str]:
+        return list(dict.fromkeys(str(item).strip() for group in groups for item in group if str(item).strip()))
+
     if needs_vision_model(question):
         understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
+        if understanding.get("direct_multimodal"):
+            # Direct delivery has no separate OCR/vision transcript to fall
+            # back to. Every candidate must therefore be able to see the
+            # original image itself.
+            return [
+                candidate
+                for candidate in unique([requested_model], provider.model_options)
+                if provider_model_supports_vision(provider, candidate)
+            ]
         if understanding.get("vision_used"):
-            return [requested_model] + [candidate for candidate in provider.model_options if candidate != requested_model]
+            return unique([requested_model], provider.model_options)
         vision_model = str(getattr(provider, "vision_model", "") or "").strip()
         if not getattr(provider, "supports_vision", False) or not vision_model:
             return []
-        return [vision_model] + [candidate for candidate in provider.model_options if candidate not in {vision_model, requested_model}]
-    return [requested_model] + [candidate for candidate in provider.model_options if candidate != requested_model]
+        # The vision model sees the source artifact first; the user's selected
+        # answer model remains a visible fallback and is never silently lost.
+        return unique([vision_model, requested_model], provider.model_options)
+    return unique([requested_model], provider.model_options)
 
 
 def _batch_group_key(question: dict[str, Any]) -> tuple[str, str, str]:
@@ -267,6 +438,78 @@ def attach_program_evidence_block(fragment: dict[str, Any], evidence: list[dict[
     return fragment
 
 
+def selected_evidence_ids(evidence_selection: dict[str, Any] | None) -> list[str]:
+    """Return the authoritative per-question evidence IDs in stable order."""
+
+    selected: list[str] = []
+    if not isinstance(evidence_selection, dict):
+        return selected
+    for point in evidence_selection.get("knowledge_points", []) or []:
+        if not isinstance(point, dict):
+            continue
+        for raw in point.get("selected_evidence_ids", []) or []:
+            evidence_id = str(raw or "").strip()
+            if evidence_id and evidence_id not in selected:
+                selected.append(evidence_id)
+    return selected
+
+
+def reconcile_confirmed_evidence_binding(
+    fragment: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    evidence_selection: dict[str, Any] | None,
+) -> bool:
+    """Synchronize a fragment with the latest confirmed evidence selection.
+
+    Reused answer checkpoints and bounded model repairs may retain evidence IDs
+    from an earlier retrieval run.  The selection result is authoritative for
+    both IDs and the student-facing citation block; keeping only one of those
+    in sync creates a deterministic late-stage gate failure.
+    """
+
+    if not isinstance(evidence_selection, dict):
+        return False
+    before = json.dumps(
+        {
+            "evidence_ids": fragment.get("evidence_ids", []),
+            "evidence_block": [
+                block
+                for block in fragment.get("blocks", []) or []
+                if isinstance(block, dict) and str(block.get("label") or "") == "教材依据"
+            ],
+            "binding": (fragment.get("_meta") or {}).get("evidence_binding")
+            if isinstance(fragment.get("_meta"), dict)
+            else None,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    confirmed_ids = selected_evidence_ids(evidence_selection)
+    fragment["evidence_ids"] = confirmed_ids
+    attach_program_evidence_block(fragment, evidence, evidence_selection)
+    meta = dict(fragment.get("_meta") or {})
+    meta["evidence_binding"] = {
+        "strategy": "confirmed_selection_reconciliation",
+        "reason": "按本次教材依据确认结果同步引用 ID 与正式教材依据块。",
+        "bound_evidence_ids": confirmed_ids,
+    }
+    fragment["_meta"] = meta
+    after = json.dumps(
+        {
+            "evidence_ids": fragment.get("evidence_ids", []),
+            "evidence_block": [
+                block
+                for block in fragment.get("blocks", []) or []
+                if isinstance(block, dict) and str(block.get("label") or "") == "教材依据"
+            ],
+            "binding": meta.get("evidence_binding"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return before != after
+
+
 def include_confirmed_evidence_ids(fragment: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
     evidence_ids = [str(x).strip() for x in fragment.get("evidence_ids", []) if str(x).strip()]
     for row in evidence:
@@ -383,13 +626,15 @@ def _normalize_multipart_text_layout(text: str, stem: str) -> str:
 
 
 def _normalize_formula_latex(text: str) -> str:
+    from .expression_normalization import normalize_expression_latex
+
     latex = str(text or "").strip()
     previous = None
     while previous != latex:
         previous = latex
         latex = re.sub(r"\\\\(?=[A-Za-z])", r"\\", latex)
         latex = re.sub(r"\\\\(?=\s*\\[A-Za-z])", r"\\", latex)
-    return latex
+    return normalize_expression_latex(latex)
 
 
 def _draft_formulas(draft: dict[str, Any], qid: str) -> list[dict[str, Any]]:
@@ -413,35 +658,115 @@ def _draft_formulas(draft: dict[str, Any], qid: str) -> list[dict[str, Any]]:
 
 
 def _draft_figure_specs(draft: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_specs = draft.get("figure_specs") or draft.get("diagram_specs") or []
-    if isinstance(raw_specs, dict):
-        raw_specs = [raw_specs]
-    if not isinstance(raw_specs, list):
-        return []
-    return [dict(spec) for spec in raw_specs if isinstance(spec, dict)]
+    """Collect structured figures from the draft and every answer unit.
+
+    A composite question owns the final answer fragment, but each drawing leaf
+    owns its own figure.  Keeping only the draft-level array silently discarded
+    valid figures produced inside ``answer_units`` and forced the runtime into a
+    lower-quality image-model fallback.  The unit number is retained as stable
+    routing metadata; it is not a discipline-specific assumption.
+    """
+
+    collected: list[dict[str, Any]] = []
+
+    def append_specs(value: Any, unit_number: str = "") -> None:
+        raw_specs = value
+        if isinstance(raw_specs, dict):
+            raw_specs = [raw_specs]
+        if not isinstance(raw_specs, list):
+            return
+        for raw in raw_specs:
+            if not isinstance(raw, dict):
+                continue
+            spec = dict(raw)
+            if unit_number:
+                spec.setdefault("answer_unit_number", unit_number)
+            collected.append(spec)
+
+    append_specs(draft.get("figure_specs") or draft.get("diagram_specs") or [])
+    for unit in draft.get("answer_units") or []:
+        if not isinstance(unit, dict):
+            continue
+        append_specs(
+            unit.get("figure_specs") or unit.get("diagram_specs") or [],
+            _normalize_subquestion_number(unit.get("number")),
+        )
+    # One confirmed drawing leaf owns one final figure.  Models often mirror
+    # the same spec at question level and inside its answer unit; keeping both
+    # doubled rendering, visual QA, and Word output.  Select the richer version
+    # per unit/kind and retain genuinely separate figures.
+    deduplicated: list[dict[str, Any]] = []
+    positions: dict[tuple[str, str], int] = {}
+
+    def richness(spec: dict[str, Any]) -> tuple[int, int]:
+        structural = sum(
+            len(spec.get(key) or []) if isinstance(spec.get(key), list) else int(bool(spec.get(key)))
+            for key in ("required_labels", "features", "annotations", "points", "regions")
+        )
+        return structural, len(json.dumps(spec, ensure_ascii=False, sort_keys=True))
+
+    exact_seen: set[str] = set()
+    for spec in collected:
+        unit_number = _normalize_subquestion_number(spec.get("answer_unit_number"))
+        kind = str(spec.get("kind") or "").strip()
+        if unit_number and kind:
+            key = (unit_number, kind)
+            if key in positions:
+                index = positions[key]
+                if richness(spec) > richness(deduplicated[index]):
+                    deduplicated[index] = spec
+                continue
+            positions[key] = len(deduplicated)
+            deduplicated.append(spec)
+            continue
+        signature = json.dumps(
+            {key: value for key, value in spec.items() if key not in {"figure_id", "source"}},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if signature in exact_seen:
+            continue
+        exact_seen.add(signature)
+        deduplicated.append(spec)
+    return deduplicated
 
 
 def _draft_drawing_code_specs(draft: dict[str, Any], qid: str) -> list[dict[str, Any]]:
-    raw_specs = draft.get("drawing_code_specs") or draft.get("drawing_codes") or draft.get("drawing_code") or []
-    if isinstance(raw_specs, str):
-        raw_specs = [{"code": raw_specs}]
-    if isinstance(raw_specs, dict):
-        raw_specs = [raw_specs]
-    if not isinstance(raw_specs, list):
-        return []
+    raw_specs: list[tuple[Any, str]] = [
+        (draft.get("drawing_code_specs") or draft.get("drawing_codes") or draft.get("drawing_code") or [], "")
+    ]
+    for unit in draft.get("answer_units") or []:
+        if not isinstance(unit, dict):
+            continue
+        raw_specs.append(
+            (
+                unit.get("drawing_code_specs") or unit.get("drawing_codes") or unit.get("drawing_code") or [],
+                _normalize_subquestion_number(unit.get("number")),
+            )
+        )
     specs: list[dict[str, Any]] = []
-    for index, raw in enumerate(raw_specs, start=1):
-        if not isinstance(raw, dict):
+    for value, unit_number in raw_specs:
+        if isinstance(value, str):
+            value = [{"code": value}]
+        if isinstance(value, dict):
+            value = [value]
+        if not isinstance(value, list):
             continue
-        code = str(raw.get("code") or "").strip()
-        if not code:
-            continue
-        spec = dict(raw)
-        spec.setdefault("question_id", qid)
-        spec.setdefault("figure_id", f"{qid}_code_fig_{index:02d}")
-        spec.setdefault("kind", "model_drawing_code")
-        spec.setdefault("caption", "题目图示")
-        specs.append(spec)
+        for raw in value:
+            if not isinstance(raw, dict):
+                continue
+            code = str(raw.get("code") or "").strip()
+            if not code:
+                continue
+            spec = dict(raw)
+            if unit_number:
+                spec.setdefault("answer_unit_number", unit_number)
+            index = len(specs) + 1
+            spec.setdefault("question_id", qid)
+            spec.setdefault("figure_id", f"{qid}_code_fig_{index:02d}")
+            spec.setdefault("kind", "model_drawing_code")
+            spec.setdefault("caption", "题目图示")
+            specs.append(spec)
     return specs
 
 
@@ -552,6 +877,83 @@ def _parse_formula_indices(value: Any) -> list[int]:
 
 
 FORMULA_INDEX_KEYS = {"formula_indices", "relation_formula_indices", "substitution_formula_indices", "result_formula_indices"}
+
+
+def _shift_positive_formula_indices(value: Any, offset: int) -> Any:
+    if offset <= 0:
+        return value
+    if isinstance(value, list):
+        return [_shift_positive_formula_indices(item, offset) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in FORMULA_INDEX_KEYS:
+            raw_values = item if isinstance(item, list) else [item]
+            shifted: list[Any] = []
+            for raw in raw_values:
+                try:
+                    index = int(raw)
+                    shifted.append(index + offset if index > 0 else index)
+                except (TypeError, ValueError):
+                    shifted.append(raw)
+            out[key] = shifted if isinstance(item, list) else (shifted[0] if shifted else item)
+        else:
+            out[key] = _shift_positive_formula_indices(item, offset)
+    return out
+
+
+def normalize_nested_calculation_payload(draft: dict[str, Any]) -> dict[str, Any]:
+    """Hoist unit-local formulas/contracts into the canonical draft ledger.
+
+    Models sometimes follow the visual nesting of ``answer_units`` and place a
+    calculation unit's formulas and contract inside that unit.  The renderer and
+    auditors intentionally have one question-level formula table, so normalize
+    the equivalent shape once at the schema boundary and remap local indices.
+    """
+
+    if not isinstance(draft, dict):
+        return draft
+    normalized = copy.deepcopy(draft)
+    global_formulas = [item for item in normalized.get("formulas", []) or [] if isinstance(item, dict)]
+    contract = normalized.get("calculation_contract")
+    merged_contract = copy.deepcopy(contract) if isinstance(contract, dict) else {}
+    for key in ("requested_outputs", "result_quantities", "intermediate_quantities", "partitions", "transitions"):
+        if not isinstance(merged_contract.get(key), list):
+            merged_contract[key] = []
+
+    units = normalized.get("answer_units") if isinstance(normalized.get("answer_units"), list) else []
+    for index, raw_unit in enumerate(units):
+        if not isinstance(raw_unit, dict):
+            continue
+        unit = copy.deepcopy(raw_unit)
+        local_formulas = [item for item in unit.pop("formulas", []) or [] if isinstance(item, dict)]
+        offset = len(global_formulas)
+        if local_formulas:
+            unit = _shift_positive_formula_indices(unit, offset)
+            global_formulas.extend(local_formulas)
+        local_contract = unit.pop("calculation_contract", None)
+        if isinstance(local_contract, dict):
+            local_contract = copy.deepcopy(local_contract)
+            for quantity in local_contract.get("result_quantities", []) or []:
+                if not isinstance(quantity, dict):
+                    continue
+                try:
+                    formula_index = int(quantity.get("formula_index"))
+                except (TypeError, ValueError):
+                    continue
+                if formula_index > 0:
+                    quantity["formula_index"] = formula_index + offset
+            for key in ("requested_outputs", "result_quantities", "intermediate_quantities", "partitions", "transitions"):
+                for item in local_contract.get(key, []) or []:
+                    if isinstance(item, dict) and item not in merged_contract[key]:
+                        merged_contract[key].append(item)
+        units[index] = unit
+
+    normalized["answer_units"] = units
+    normalized["formulas"] = global_formulas
+    normalized["calculation_contract"] = merged_contract
+    return normalized
 
 
 def _collect_formula_reference_indices(value: Any, *, key: str = "") -> list[int]:
@@ -685,7 +1087,7 @@ def _step_items(value: Any) -> list[dict[str, Any]]:
 
 
 def _calculation_subquestion_count(question: dict[str, Any]) -> int:
-    stem = str(question.get("stem") or "")
+    stem = _clean_question_stem(question)
     score_marks = re.findall(r"[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]", stem)
     if len(score_marks) >= 2:
         return len(score_marks)
@@ -723,6 +1125,7 @@ def _question_subquestion_rows(question: dict[str, Any]) -> list[dict[str, str]]
             continue
         requirements = [req for req in raw.get("requirements", []) or [] if isinstance(req, dict)]
         if requirements:
+            flatten = is_synthetic_requirement_parent(question, raw)
             for req_index, req in enumerate(requirements, start=1):
                 req_number = _normalize_subquestion_number(req.get("number") or f"{number}.{req_index}")
                 if not req_number:
@@ -733,10 +1136,12 @@ def _question_subquestion_rows(question: dict[str, Any]) -> list[dict[str, str]]
                         "stem": str(req.get("stem") or "").strip(),
                         "marker": str(req.get("marker") or req_number).strip(),
                         "question_type": infer_question_type(req),
-                        "level": "requirement",
-                        "parent_number": number,
+                        "level": "subquestion" if flatten else "requirement",
+                        "parent_number": "" if flatten else number,
                         "parent_stem": str(raw.get("stem") or "").strip(),
                         "requirement_index": str(req_index),
+                        "display_number": str(req_index) if flatten else "",
+                        "synthetic_flattened": flatten,
                     }
                 )
             continue
@@ -806,6 +1211,8 @@ def _normalized_answer_units(draft: dict[str, Any], question: dict[str, Any]) ->
                     "answer": _replace_formula_placeholders_in_text(str(raw.get("answer") or ""), formulas),
                     "analysis_segments": _analysis_segment_items(raw.get("analysis_segments")),
                     "steps": _step_items(raw.get("steps")),
+                    "figure_specs": _draft_figure_specs(raw),
+                    "drawing_code_specs": _draft_drawing_code_specs(raw, str(question.get("question_id") or "")),
                 }
                 if _answer_unit_has_payload(unit):
                     units.append(unit)
@@ -820,6 +1227,8 @@ def _normalized_answer_units(draft: dict[str, Any], question: dict[str, Any]) ->
             "answer": "",
             "analysis_segments": [],
             "steps": [],
+            "figure_specs": [],
+            "drawing_code_specs": [],
         }
         for row in rows
     }
@@ -831,10 +1240,15 @@ def _normalized_answer_units(draft: dict[str, Any], question: dict[str, Any]) ->
             if number not in by_number:
                 continue
             unit = by_number[number]
-            unit["question_type"] = str(raw.get("question_type") or unit["question_type"]).strip() or unit["question_type"]
+            # The reviewed question structure is authoritative. A model may
+            # not relabel a confirmed calculation leaf as short-answer (or the
+            # reverse), because rendering and coverage rules depend on it.
+            unit["question_type"] = unit["question_type"]
             unit["answer"] = _replace_formula_placeholders_in_text(str(raw.get("answer") or ""), _draft_formulas(draft, str(question.get("question_id") or "")))
             unit["analysis_segments"] = _analysis_segment_items(raw.get("analysis_segments"))
             unit["steps"] = _step_items(raw.get("steps"))
+            unit["figure_specs"] = _draft_figure_specs(raw)
+            unit["drawing_code_specs"] = _draft_drawing_code_specs(raw, str(question.get("question_id") or ""))
         return [by_number[row["number"]] for row in rows]
 
     # Compatibility for drafts created before answer_units existed. This is enough
@@ -846,7 +1260,7 @@ def _normalized_answer_units(draft: dict[str, Any], question: dict[str, Any]) ->
     if len(noncalculation) == 1 and legacy_analysis:
         by_number[noncalculation[0]["number"]]["analysis_segments"] = legacy_analysis
 
-    root_analysis = _normalize_multipart_text_layout(str(draft.get("analysis") or ""), str(question.get("stem") or ""))
+    root_analysis = _normalize_multipart_text_layout(str(draft.get("analysis") or ""), _clean_question_stem(question))
     if root_analysis and len(calculation) == 1:
         by_number[calculation[0]["number"]]["analysis_segments"].append(
             {"text": root_analysis, "formula_indices": []}
@@ -933,7 +1347,7 @@ def _answer_from_answer_units(answer_units: list[dict[str, Any]], rows: list[dic
         if not isinstance(unit, dict):
             continue
         answer = str(unit.get("answer") or "").strip()
-        if not _is_effective_answer_text(answer):
+        if not answer or answer in PENDING_ANSWER_VALUES:
             continue
         number = str(unit.get("number") or "").strip()
         parts.append((number, answer))
@@ -1140,10 +1554,10 @@ def _requirement_label(number: str, fallback_index: str = "") -> str:
 def _subquestion_title(row: dict[str, str]) -> str:
     number = row.get("number") or ""
     stem = str(row.get("stem") or "").strip(" ：:；;。")
-    if row.get("level") == "requirement" or "." in number:
+    if row.get("level") == "requirement" or ("." in number and not row.get("synthetic_flattened")):
         label = _requirement_label(number, row.get("requirement_index", ""))
         return f"{label}、{stem}" if stem else f"{label}、"
-    label = _subquestion_label(number)
+    label = _subquestion_label(row.get("display_number") or number)
     return f"{label}{stem}" if stem else label
 
 
@@ -1155,7 +1569,7 @@ def _parent_subquestion_title(row: dict[str, str]) -> str:
 
 
 def _append_structured_heading_segments(out: list[dict[str, Any]], row: dict[str, str], last_parent: str) -> str:
-    if row.get("level") == "requirement" or "." in str(row.get("number") or ""):
+    if row.get("level") == "requirement" or ("." in str(row.get("number") or "") and not row.get("synthetic_flattened")):
         parent_number = str(row.get("parent_number") or "").strip()
         if parent_number and parent_number != last_parent:
             out.append({"type": "text", "text": _parent_subquestion_title(row) + "\n"})
@@ -1167,7 +1581,7 @@ def _append_structured_heading_segments(out: list[dict[str, Any]], row: dict[str
 
 
 def _append_structured_heading_item(out: list[dict[str, Any]], row: dict[str, str], last_parent: str) -> str:
-    if row.get("level") == "requirement" or "." in str(row.get("number") or ""):
+    if row.get("level") == "requirement" or ("." in str(row.get("number") or "") and not row.get("synthetic_flattened")):
         parent_number = str(row.get("parent_number") or "").strip()
         if parent_number and parent_number != last_parent:
             out.append({"text": _parent_subquestion_title(row), "formula_indices": [], "_subquestion_heading": True})
@@ -1289,7 +1703,10 @@ def _analysis_segment_items(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-FORMULA_PLACEHOLDER_RE = re.compile(r"\{[fF](\d+)\}")
+# Accept the documented numeric placeholder and a common model spelling that
+# appends a harmless mnemonic suffix (``{f5_b}``).  The numeric prefix remains
+# the sole authority for formula selection; arbitrary names are not resolved.
+FORMULA_PLACEHOLDER_RE = re.compile(r"\{[fF](\d+)(?:_[A-Za-z][A-Za-z0-9]*)?\}")
 
 
 def _segments_from_formula_placeholder_text(text: str, formula_ids: list[str], *, inline: bool) -> tuple[list[dict[str, Any]], set[str]]:
@@ -1332,7 +1749,7 @@ NOTATION_FORMULA_ROLES = {
     "phase_label",
     "miller_index",
 }
-NOTATION_FORMULA_MEANING_RE = re.compile(r"(符号|标注|标签|单位|坐标|坐标轴|晶面|晶向|米勒|相区|相名|峰位|图中|作图|示意图)")
+NOTATION_FORMULA_MEANING_RE = re.compile(r"(符号|标注|标签|单位|坐标|坐标轴|图中|作图|示意图)")
 UNIT_LATEX_RE = re.compile(r"\\mathrm\{(?:kg|g|mol|m|s|K|Pa|J|N|C|W|V|A|Hz|eV|cm|mm|nm|MPa|GPa)\}")
 SIMPLE_NOTATION_LATEX_RE = re.compile(
     r"^(?:"
@@ -1357,6 +1774,23 @@ def _is_notation_formula(formula: dict[str, Any], question: dict[str, Any]) -> b
     if role in NOTATION_FORMULA_ROLES:
         return True
     if NOTATION_FORMULA_MEANING_RE.search(meaning):
+        return True
+    policy_text = " ".join(
+        [
+            _clean_question_stem(question),
+            meaning,
+            latex,
+        ]
+    )
+    if any(
+        contribution.get("is_notation") is True
+        for contribution in capability_policy_contributions(
+            "notation_formula_classification",
+            {"question": question, "formula": formula, "meaning": meaning, "text": policy_text},
+            text=policy_text,
+        )
+        if isinstance(contribution, dict)
+    ):
         return True
     if UNIT_LATEX_RE.search(latex):
         return True
@@ -1394,6 +1828,7 @@ def _plain_formula_text(formula: dict[str, Any]) -> str:
     text = text.replace("{", "").replace("}", "")
     text = text.replace("_", "")
     text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"([αβγδθλμπσνΔ])\s+([A-Za-z])", r"\1\2", text)
     return text or str(formula.get("source_note") or "").strip() or latex
 
 
@@ -1423,7 +1858,7 @@ def _replace_formula_placeholders_in_value(value: Any, formulas: list[dict[str, 
 def _noncalculation_analysis_segments(draft: dict[str, Any], formulas: list[dict[str, Any]], question: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str]]:
     formula_ids = [str(formula.get("formula_id", "")) for formula in formulas if formula.get("formula_id")]
     used: set[str] = set()
-    stem = str(question.get("stem") or "")
+    stem = _clean_question_stem(question)
     fallback_text = _strip_program_citation_text(_normalize_multipart_text_layout(str(draft.get("analysis") or ""), stem))
     items = _answer_unit_analysis_items(question, _analysis_segment_items(draft.get("analysis_segments")), fallback_text)
     if not items:
@@ -1540,6 +1975,70 @@ def _has_review_flag(fragment: dict[str, Any], code: str) -> bool:
     return any(isinstance(flag, dict) and str(flag.get("code", "")) == code for flag in fragment.get("_review_flags", []))
 
 
+def _sign_contract_text(value: Any) -> str:
+    """Normalize prose/LaTeX just enough to compare declared quantities."""
+
+    text = str(value or "").replace("−", "-").replace("≤", "<").replace("≥", ">")
+    previous = None
+    wrappers = re.compile(r"\\(?:mathrm|mathit|mathbf|text)\{([^{}]*)\}")
+    while previous != text:
+        previous = text
+        text = wrappers.sub(r"\1", text)
+    text = text.replace(r"\left", "").replace(r"\right", "")
+    text = text.replace(r"\Delta", "Delta").replace("Δ", "Delta").replace("∆", "Delta")
+    text = text.replace(r"\partial", "partial").replace("∂", "partial")
+    return re.sub(r"[\s{}_\\]", "", text)
+
+
+def _difference_sign_consistency_issues(fragment: dict[str, Any]) -> list[str]:
+    """Check the machine-verifiable sign of a declared two-term difference.
+
+    For a relation ``A=B-C``, an explicit ``B<C`` premise determines ``A<0``.
+    A conclusion formula claiming the opposite sign is internally inconsistent,
+    independent of the domain or the names of the quantities.
+    """
+
+    draft = fragment.get("_draft") if isinstance(fragment.get("_draft"), dict) else {}
+    formula_source = draft.get("formulas") if isinstance(draft.get("formulas"), list) else fragment.get("formulas", [])
+    formulas = [item for item in formula_source or [] if isinstance(item, dict)]
+    if not formulas:
+        return []
+    analysis_text = _sign_contract_text(
+        "。".join(
+            str(item.get("text") or "")
+            for unit in fragment.get("answer_units", []) or []
+            if isinstance(unit, dict)
+            for item in _analysis_segment_items(unit.get("analysis_segments"))
+        )
+    )
+    conclusions: dict[str, set[int]] = {}
+    for formula in formulas:
+        normalized = _sign_contract_text(formula.get("latex"))
+        match = re.fullmatch(r"(.+?)([<>])0", normalized)
+        if match:
+            conclusions.setdefault(match.group(1), set()).add(1 if match.group(2) == ">" else -1)
+
+    issues: list[str] = []
+    for formula in formulas:
+        normalized = _sign_contract_text(formula.get("latex"))
+        if "=" not in normalized:
+            continue
+        lhs, rhs = normalized.split("=", 1)
+        if rhs.count("-") != 1 or lhs not in conclusions:
+            continue
+        minuend, subtrahend = rhs.split("-", 1)
+        if not minuend or not subtrahend:
+            continue
+        expected = 0
+        if f"{minuend}<{subtrahend}" in analysis_text or f"{subtrahend}>{minuend}" in analysis_text:
+            expected = -1
+        elif f"{minuend}>{subtrahend}" in analysis_text or f"{subtrahend}<{minuend}" in analysis_text:
+            expected = 1
+        if expected and conclusions[lhs] == {-expected}:
+            issues.append("difference_sign_contradiction:" + lhs[:80])
+    return issues
+
+
 def add_review_flag(fragment: dict[str, Any], code: str, message: str) -> dict[str, Any]:
     flags = [flag for flag in fragment.get("_review_flags", []) if isinstance(flag, dict)]
     if not any(str(flag.get("code", "")) == code for flag in flags):
@@ -1573,12 +2072,82 @@ def semantic_generation_issues(
         ]
         if missing_units:
             issues.append("missing_answer_units:" + ",".join(missing_units))
+        missing_calculation_steps = [
+            row["number"]
+            for row in expected_units
+            if row.get("question_type") == "计算题"
+            and (
+                not isinstance(by_number.get(row["number"]), dict)
+                or not _unit_steps_have_payload(_step_items(by_number[row["number"]].get("steps")))
+            )
+        ]
+        if missing_calculation_steps:
+            issues.append("calculation_missing_subquestion_steps:" + ",".join(missing_calculation_steps))
+        missing_drawing_outputs: list[str] = []
+        for row in expected_units:
+            if row.get("question_type") != "作图题":
+                continue
+            unit = by_number.get(row["number"])
+            if not isinstance(unit, dict):
+                missing_drawing_outputs.append(row["number"])
+                continue
+            expected_key = "drawing_code_specs" if question_drawing_mode(question) == "code" else "figure_specs"
+            if not unit.get(expected_key):
+                missing_drawing_outputs.append(row["number"])
+        if missing_drawing_outputs:
+            issues.append("missing_drawing_answer_units:" + ",".join(missing_drawing_outputs))
+        for number, unit in by_number.items():
+            answer_text = str(unit.get("answer") or "")
+            analysis_text = "。".join(
+                str(item.get("text") or "")
+                for item in _analysis_segment_items(unit.get("analysis_segments"))
+            )
+            answer_polarities = {
+                1 if phrase == "大于零" else -1
+                for phrase in re.findall(r"大于零|小于零", answer_text)
+            }
+            conclusion_polarities = {
+                1 if phrase == "大于零" else -1
+                for phrase in re.findall(
+                    r"(?:故|因此|所以|即)[^。；]{0,48}?(大于零|小于零)",
+                    analysis_text,
+                )
+            }
+            if (
+                len(answer_polarities) == 1
+                and len(conclusion_polarities) == 1
+                and answer_polarities != conclusion_polarities
+            ):
+                issues.append(f"answer_analysis_zero_polarity_contradiction:{number}")
     if (
         is_calculation_question(question)
         and not fragment.get("formulas")
         and not (allow_formula_absence_after_retry and _has_review_flag(fragment, "formula_absence_after_retry"))
     ):
         issues.append("calculation_missing_formula")
+    if is_calculation_question(question):
+        draft = copy.deepcopy(fragment.get("_draft")) if isinstance(fragment.get("_draft"), dict) else {}
+        if not draft:
+            # Durable fragments retain enough calculation state for later
+            # review even after the transient generation draft is removed.
+            draft = {
+                key: copy.deepcopy(fragment.get(key))
+                for key in ("formulas", "answer_units", "calculation_contract")
+                if key in fragment
+            }
+        draft_formula_count = len([item for item in draft.get("formulas", []) or [] if isinstance(item, dict)])
+        referenced_indices = _collect_formula_reference_indices(draft)
+        invalid_indices = sorted({index for index in referenced_indices if index < 1 or index > draft_formula_count})
+        if invalid_indices:
+            issues.append(
+                "formula_reference_out_of_range:"
+                + ",".join(str(index) for index in invalid_indices)
+                + f":formula_count={draft_formula_count}"
+            )
+        issues.extend(calculation_draft_consistency_issues(draft))
+        calculation_units = [row for row in expected_units if row.get("question_type") == "计算题"]
+        issues.extend(calculation_contract_issues(draft, calculation_units))
+    issues.extend(_difference_sign_consistency_issues(fragment))
     return issues
 
 
@@ -1615,6 +2184,17 @@ def _truncate_text(text: Any, limit: int = 240) -> str:
     if len(value) <= limit:
         return value
     return value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _truncate_evidence_excerpt(text: Any, limit: int = 520) -> str:
+    """Keep both the premise and conclusion of a long textbook paragraph."""
+
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= limit:
+        return value
+    head = max(1, int(limit * 0.56))
+    tail = max(1, limit - head - 1)
+    return value[:head].rstrip() + "…" + value[-tail:].lstrip()
 
 
 def _knowledge_points_by_evidence_id(evidence_selection: dict[str, Any] | None) -> dict[str, list[str]]:
@@ -1682,7 +2262,7 @@ def evidence_for_answer_prompt(
         points = "、".join(by_point.get(evidence_id, [])[:3])
         location = _citation_locations([copy])
         section = str(copy.get("chapter_section") or "").strip()
-        original = _truncate_text(copy.get("evidence_text") or "", 260)
+        original = _truncate_evidence_excerpt(copy.get("evidence_text") or "", 520)
         summary_parts = []
         if points:
             summary_parts.append(f"相关考点：{points}")
@@ -1704,6 +2284,9 @@ def fragment_from_analysis_draft(
     evidence: list[dict[str, Any]],
     evidence_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    draft = reconcile_calculation_reference_structure(
+        normalize_nested_calculation_payload(draft)
+    )
     draft, normalized_zero_based_formula_refs = normalize_formula_reference_base(draft)
     qid = str(question.get("question_id") or draft.get("question_id") or "").strip()
     formulas = _draft_formulas(draft, qid)
@@ -1715,14 +2298,38 @@ def fragment_from_analysis_draft(
             formula["display"] = True
     figure_specs = _replace_formula_placeholders_in_value(_draft_figure_specs(draft), formulas)
     drawing_code_specs = _replace_formula_placeholders_in_value(_draft_drawing_code_specs(draft, qid), formulas)
-    stem = str(question.get("stem") or "")
+    stem = _clean_question_stem(question)
     raw_analysis_text = _normalize_multipart_text_layout(str(draft.get("analysis", "")), stem)
     draft_analysis_text = _replace_formula_placeholders_in_text(raw_analysis_text, formulas)
-    draft_answer = _replace_formula_placeholders_in_text(
-        _normalize_multipart_text_layout(str(draft.get("answer") or "待复核"), stem),
-        formulas,
-    )
+    raw_draft_answer = _normalize_multipart_text_layout(str(draft.get("answer") or "待复核"), stem)
+    draft_answer = _replace_formula_placeholders_in_text(raw_draft_answer, formulas)
     top_answer = "见解析" if formulas and looks_like_formula(draft_answer) else draft_answer
+    answer_summary = draft_answer
+    if top_answer == "见解析" and formulas:
+        contract = draft.get("calculation_contract") if isinstance(draft.get("calculation_contract"), dict) else {}
+        result_quantities = [
+            item for item in contract.get("result_quantities", []) or []
+            if isinstance(item, dict) and str(item.get("name") or "").strip() and item.get("value") is not None
+        ]
+        if len(result_quantities) > 1:
+            rendered_results = []
+            for item in result_quantities:
+                try:
+                    rendered_value = f"{float(item['value']):g}"
+                except (TypeError, ValueError):
+                    rendered_value = str(item.get("value") or "").strip()
+                unit = str(item.get("unit") or "").strip()
+                rendered_results.append(
+                    f"{str(item['name']).strip()}={rendered_value}{(' ' + unit) if unit else ''}"
+                )
+            answer_summary = "；".join(rendered_results)
+        else:
+            result_formula = next(
+                (formula for formula in reversed(formulas) if str(formula.get("role") or "") == "result" and str(formula.get("latex") or "").strip()),
+                None,
+            )
+            if result_formula:
+                answer_summary = f"${str(result_formula['latex']).strip()}$"
     fragment = {
         "schema_version": "answer_book.answer_fragment.v4",
         "question_id": qid,
@@ -1731,7 +2338,7 @@ def fragment_from_analysis_draft(
         "subquestions": question.get("subquestions") or [],
         "number": question.get("number", draft.get("number", "")),
         "answer": top_answer,
-        "answer_summary": draft_answer,
+        "answer_summary": answer_summary,
         "evidence_ids": [],
         "blocks": [],
         "formulas": formulas,
@@ -1739,6 +2346,10 @@ def fragment_from_analysis_draft(
         "drawing_code_specs": drawing_code_specs,
         "warnings": _warning_items(draft.get("uncertainties"), formulas),
         "answer_units": _normalized_answer_units(draft, question),
+        # Keep the normalized numerical ledger in the durable fragment.  It is
+        # an internal review artifact; renderers ignore it, while later repair
+        # and correctness gates no longer depend on the transient `_draft`.
+        "calculation_contract": copy.deepcopy(draft.get("calculation_contract", {})),
         "_draft": {
             "schema_version": "answer_book.answer_draft.v1",
             "question_id": qid,
@@ -1753,6 +2364,7 @@ def fragment_from_analysis_draft(
             "drawing_code_specs": drawing_code_specs,
             "mistake_notes": _replace_formula_placeholders_in_value(draft.get("mistake_notes", []), formulas),
             "uncertainties": _replace_formula_placeholders_in_value(draft.get("uncertainties", []), formulas),
+            "calculation_contract": draft.get("calculation_contract", {}),
             "answer_depth_profile": depth_profile,
         },
     }
@@ -1773,8 +2385,8 @@ def fragment_from_analysis_draft(
     if not _is_effective_answer_text(fragment.get("answer")):
         unit_answer = _answer_from_answer_units(answer_units, unit_rows)
         if unit_answer:
-            fragment["answer"] = unit_answer
             fragment["answer_summary"] = unit_answer
+            fragment["answer"] = "见解析" if looks_like_formula(unit_answer) else unit_answer
     if answer_units and len(unit_rows) >= 2:
         analysis_segments, step_segments, used_formula_ids = _answer_unit_blocks(answer_units, unit_rows, formulas)
     elif answer_units and len(answer_units) == 1 and len(unit_rows) < 2:
@@ -1817,13 +2429,15 @@ def fragment_from_analysis_draft(
             step_segments, step_used_formula_ids = _inline_formula_segments_from_text(steps_text, formulas)
             used_formula_ids.update(step_used_formula_ids)
             fragment["blocks"].append({"label": "解题步骤", "segments": step_segments})
-    mistake_text = _strip_program_citation_text(_list_text(draft.get("mistake_notes")))
+    mistake_text = strip_internal_repair_provenance(
+        _strip_program_citation_text(_list_text(draft.get("mistake_notes")))
+    )
     if mistake_text:
         formula_ids = [str(formula.get("formula_id", "")) for formula in formulas if formula.get("formula_id")]
         mistake_segments, _ = _segments_from_inline_formula_text(mistake_text, formula_ids)
         used_formula_ids.update(seg.get("formula_id", "") for seg in mistake_segments if seg.get("type") == "formula_ref")
         fragment["blocks"].append({"label": "易错点及注意事项", "segments": mistake_segments})
-    if kind != "calculation" and formulas:
+    if not has_calculation_part and formulas:
         formula_ids = [str(formula.get("formula_id", "")) for formula in formulas if formula.get("formula_id")]
         unplaced_formula_ids = [formula_id for formula_id in formula_ids if formula_id not in used_formula_ids]
         if unplaced_formula_ids:
@@ -1834,6 +2448,19 @@ def fragment_from_analysis_draft(
                 if _is_notation_formula(formula_by_id.get(formula_id, {}), question)
             ]
             pending_formula_ids = [formula_id for formula_id in unplaced_formula_ids if formula_id not in notation_formula_ids]
+            if is_term_explanation_question(question) and pending_formula_ids:
+                # The established term-explanation document contract renders
+                # only the complete definition answer. Extra model formulas
+                # that were never referenced by that answer are dead content,
+                # not a user-visible review obligation.
+                pending_set = set(pending_formula_ids)
+                formulas[:] = [
+                    formula
+                    for formula in formulas
+                    if str(formula.get("formula_id") or "") not in pending_set
+                ]
+                fragment["formulas"] = formulas
+                pending_formula_ids = []
             if notation_formula_ids:
                 label = "作图依据与符号" if _is_graphic_question_for_formula_policy(question) else "符号与单位说明"
                 intro = (
@@ -1854,6 +2481,11 @@ def fragment_from_analysis_draft(
                 fragment["blocks"].append(
                     {
                         "label": "待复核公式",
+                        "audience": "review",
+                        "delivery_projection": {
+                            "label": "补充公式",
+                            "segment_types": ["formula_ref"],
+                        },
                         "segments": [
                             {"type": "text", "text": "以下公式未能自然融入解析，请复核其必要性与放置位置。"},
                             *[{"type": "formula_ref", "formula_id": formula_id} for formula_id in pending_formula_ids],
@@ -1982,16 +2614,26 @@ def generate_one_fragment(
     evidence_selection: dict[str, Any] | None = None,
     prompt_evidence: list[dict[str, Any]] | None = None,
     attempt_callback: Any | None = None,
-    retries: int = 2,
+    retries: int = 1,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     messages = build_answer_draft_prompt(question, prompt_evidence if prompt_evidence is not None else evidence)
+    understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
+    direct_visual_input = bool(
+        needs_vision_model(question)
+        and not understanding.get("vision_used")
+        and provider_model_supports_vision(provider, model)
+    )
+    if direct_visual_input:
+        messages = attach_question_visuals(messages, question)
     last_issues: list[str] = []
     data: dict[str, Any] | None = None
-    max_tokens = structured_answer_max_tokens(provider)
+    max_tokens = structured_answer_max_tokens(provider, question)
     fallback_model = next((item for item in provider.model_options if item != model), None)
     formula_repair_requested = False
     for attempt in range(retries + 1):
         assistant_content = ""
+        thinking_mode = answer_generation_attempt_thinking_mode(provider, question, attempt)
+        timeout_seconds = answer_generation_timeout_seconds(question, thinking_mode=thinking_mode)
         try:
             data = client.chat_json_object(
                 messages,
@@ -1999,6 +2641,9 @@ def generate_one_fragment(
                 max_tokens=max_tokens,
                 fallback_model=fallback_model,
                 attempt_callback=attempt_callback,
+                attempts=1,
+                thinking=thinking_mode,
+                timeout=timeout_seconds,
             )
             assistant_content = json.dumps(data, ensure_ascii=False)
         except LLMError as exc:
@@ -2025,6 +2670,8 @@ def generate_one_fragment(
             )
             continue
         data = fragment_from_analysis_draft(data, question, evidence, evidence_selection)
+        data = promote_inline_reactions(data)
+        data = promote_inline_mathematical_expressions(data)
         if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
             data["answer"] = "见解析"
         syntax_issues = validate_v4_answer_fragment(data)
@@ -2045,6 +2692,7 @@ def generate_one_fragment(
                 "provider": provider.name,
                 "model": actual_model,
                 "attempt": attempt + 1,
+                "direct_visual_input": direct_visual_input,
                 "llm_retry": retry_report,
             }
             return data, []
@@ -2210,6 +2858,8 @@ def _fragment_from_batch_draft(
     batch_question_ids: list[str],
 ) -> tuple[dict[str, Any] | None, list[str]]:
     data = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
+    data = promote_inline_reactions(data)
+    data = promote_inline_mathematical_expressions(data)
     if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
         data["answer"] = "见解析"
     issues = validate_v4_answer_fragment(data) + semantic_generation_issues(question, data)
@@ -2239,12 +2889,19 @@ def generate_batch_fragments(
 ) -> list[dict[str, Any]]:
     messages = build_answer_batch_prompt(batch_items)
     fallback_model = next((item for item in provider.model_options if item != model), None)
+    thinking_mode = answer_generation_thinking_mode(provider)
     raw = client.chat_json_object(
         messages,
         model=model,
-        max_tokens=structured_answer_max_tokens(provider),
+        max_tokens=min(
+            STRUCTURED_ANSWER_MAX_TOKENS,
+            sum(structured_answer_max_tokens(provider, item["question"]) for item in batch_items),
+        ),
         fallback_model=fallback_model,
         attempt_callback=attempt_callback,
+        attempts=1,
+        timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
+        thinking=thinking_mode,
     )
     drafts = _extract_batch_drafts(raw)
     drafts_by_qid = {str(item.get("question_id") or "").strip(): item for item in drafts if str(item.get("question_id") or "").strip()}
@@ -2281,6 +2938,7 @@ def generate_answer_fragments(
     allow_fallback: bool = False,
     progress_json: Path | None = None,
     evidence_selections: dict[str, dict[str, Any]] | None = None,
+    reusable_fragments: dict[str, dict[str, Any]] | None = None,
 ) -> GenerationResult:
     fragments: list[dict[str, Any]] = []
     answer_drafts: list[dict[str, Any]] = []
@@ -2289,6 +2947,31 @@ def generate_answer_fragments(
     model_token_feedback: list[dict[str, Any]] = []
     fallback_count = 0
     questions = list(structured_exam.get("items", []))
+    question_ids = [str(question.get("question_id") or "") for question in questions]
+    reusable_fragments = {
+        str(qid): copy.deepcopy(fragment)
+        for qid, fragment in (reusable_fragments or {}).items()
+        if str(qid) in question_ids and isinstance(fragment, dict)
+    }
+    prior_drafts_path = output_json.parent / "answer_drafts.json"
+    if reusable_fragments and prior_drafts_path.exists():
+        try:
+            prior_drafts_data = json.loads(prior_drafts_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            prior_drafts_data = {}
+        prior_drafts = prior_drafts_data.get("drafts") if isinstance(prior_drafts_data, dict) else []
+        answer_drafts = [
+            copy.deepcopy(draft)
+            for draft in prior_drafts or []
+            if isinstance(draft, dict)
+            and str(draft.get("question_id") or "") in reusable_fragments
+        ]
+    pending_questions = [
+        question
+        for question in questions
+        if str(question.get("question_id") or "") not in reusable_fragments
+    ]
+    reused_fragment_count = len(reusable_fragments)
     max_workers = answer_generation_worker_count()
     parallel_enabled = max_workers > 1 and len(questions) > 1
     batch_enabled = answer_generation_batch_enabled()
@@ -2319,6 +3002,7 @@ def generate_answer_fragments(
             "batch_size": batch_size,
             "batch_token_budget": batch_token_budget,
             "evidence_target_count": evidence_target_count,
+            "reused_fragment_count": reused_fragment_count,
             "elapsed_seconds": elapsed_seconds,
             "elapsed_text": _format_elapsed(elapsed_seconds),
             "active": dict(active_progress),
@@ -2536,7 +3220,7 @@ def generate_answer_fragments(
             buffer = []
             buffer_key = None
 
-        for item in list(enumerate(questions, start=1)):
+        for item in list(enumerate(pending_questions, start=1)):
             question = item[1]
             if not batch_enabled or not _is_microbatch_candidate(question):
                 flush_buffer()
@@ -2562,7 +3246,8 @@ def generate_answer_fragments(
             "question": results[-1].get("question") if results else None,
         }
 
-    completed_results = 0
+    completed_results = reused_fragment_count
+    completed_counter["value"] = reused_fragment_count
 
     def on_unit_complete(_index: int, _item: dict[str, Any], result: dict[str, Any]) -> None:
         nonlocal completed_results
@@ -2573,7 +3258,7 @@ def generate_answer_fragments(
             all_issues.extend(item_result.get("issues") or [])
         write_progress("running", completed_results, result.get("question") or {})
 
-    write_progress("running", 0)
+    write_progress("running", reused_fragment_count)
     work_units = build_work_units()
     results = run_limited_concurrent(
         work_units,
@@ -2583,16 +3268,27 @@ def generate_answer_fragments(
     )
     all_issues = []
     flat_results = [item_result for unit_result in results for item_result in list(unit_result.get("results") or [])]
+    generated_by_id: dict[str, dict[str, Any]] = {}
     for result in flat_results:
-        fragments.append(result["fragment"])
+        generated_by_id[str(result["fragment"].get("question_id") or "")] = result["fragment"]
         if result.get("draft"):
             answer_drafts.append(result["draft"])
         all_issues.extend(result.get("issues") or [])
         recovery_events.extend(result.get("recovery_events") or [])
         model_token_feedback.extend(result.get("model_token_feedback") or [])
         fallback_count += int(result.get("fallback_count") or 0)
+    fragments = [
+        copy.deepcopy(reusable_fragments[qid]) if qid in reusable_fragments else generated_by_id[qid]
+        for qid in question_ids
+        if qid in reusable_fragments or qid in generated_by_id
+    ]
+    issue_count = sum(len(x.get("issues", [])) for x in all_issues)
+    completion = generation_completion_state(
+        len(questions), len(fragments), issue_count=issue_count, fallback_count=fallback_count
+    )
     output = {
         "schema_version": "answer_book.answer_fragments.v4",
+        "source_contract": answer_source_contract(structured_exam),
         "provider": provider.name,
         "model": model,
         "fragments": fragments,
@@ -2600,6 +3296,8 @@ def generate_answer_fragments(
         "recovery_events": recovery_events,
         "recovered_count": len(recovery_events),
         "fallback_count": fallback_count,
+        "delivery_readiness": completion["delivery_readiness"],
+        "coverage_complete": completion["coverage_complete"],
         "model_token_feedback": model_token_feedback,
         "concurrency": {
             "max_workers": max_workers,
@@ -2609,6 +3307,7 @@ def generate_answer_fragments(
             "batch_token_budget": batch_token_budget,
             "work_unit_count": len(work_units),
             "batch_unit_count": sum(1 for unit in work_units if unit.get("kind") == "batch"),
+            "reused_fragment_count": reused_fragment_count,
         },
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -2622,15 +3321,20 @@ def generate_answer_fragments(
     (output_json.parent / "answer_drafts.json").write_text(json.dumps(drafts_output, ensure_ascii=False, indent=2), encoding="utf-8")
     write_progress("completed" if not all_issues else "completed_with_issues", len(fragments))
     return GenerationResult(
-        ok=len(fragments) == len(questions),
+        # A complete candidate must continue into the local quality-governance
+        # and repair stages. Issues/fallbacks lower its delivery tier; they do
+        # not discard otherwise usable work and force a costly restart.
+        ok=completion["ok"],
         question_count=len(questions),
         fragment_count=len(fragments),
-        issue_count=sum(len(x.get("issues", [])) for x in all_issues),
+        issue_count=issue_count,
         output_json=str(output_json),
         recovered_count=len(recovery_events),
         fallback_count=fallback_count,
         max_workers=max_workers,
         parallel_enabled=parallel_enabled,
+        reused_fragment_count=reused_fragment_count,
+        review_required=completion["review_required"],
     )
 
 
@@ -2642,6 +3346,7 @@ def write_demo_fragments(structured_exam: dict[str, Any], candidates: list[Evide
         fragments.append(attach_program_evidence_block(fallback_fragment(question, evidence, "demo fragment; configure provider API key for real generation"), evidence))
     output = {
         "schema_version": "answer_book.answer_fragments.v4",
+        "source_contract": answer_source_contract(structured_exam),
         "provider": "demo",
         "model": "demo",
         "fragments": fragments,

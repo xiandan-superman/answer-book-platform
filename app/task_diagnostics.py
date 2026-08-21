@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from .pipeline import output_dir, stage_dir
 from .task_store import load_task, task_dir
-
 
 STAGE_LABELS = {
     "environment": "运行环境检查",
@@ -41,7 +41,12 @@ STAGE_FILES = {
     "knowledge_planning": ["knowledge_plans.json", "knowledge_planning_progress.json"],
     "retrieval": ["retrieval_candidates.csv", "retrieval_audit.json"],
     "evidence_selection": ["evidence_selection.json", "confirmed_evidence_candidates.csv", "evidence_selection_progress.json"],
-    "answer_generation": ["answer_fragments.json", "answer_generation_progress.json", "answer_drafts.json"],
+    "answer_generation": [
+        "answer_fragments.json",
+        "answer_generation_progress.json",
+        "answer_drafts.json",
+        "answer_checkpoint_reconciliation.json",
+    ],
     "answer_coverage": ["answer_coverage_audit.json", "answer_review_notes.json"],
     "content_quality": ["content_quality_audit.json", "question_review_docx.json", "figure_generation_audit.json", "figure_visual_qa.json"],
     "docx": ["docx_audit.json"],
@@ -104,8 +109,10 @@ def _compact_issue(raw: Any, *, default_stage: str, severity: str) -> dict[str, 
         raw_severity = str(raw.get("severity") or severity).strip()
     else:
         text = str(raw).strip()
-        qid = text.split(":", 1)[0].strip() if ":" in text else ""
-        code = ""
+        figure_match = re.match(r"figure_visual_qa:\s*([^\s/]+)", text)
+        numbered_match = re.search(r"第\s*([^\s题]+)\s*题", text)
+        qid = figure_match.group(1) if figure_match else (numbered_match.group(1) if numbered_match else "")
+        code = "figure_visual_qa" if figure_match else ("pipeline_failed_stage" if text.startswith("pipeline_status.json") else "")
         message = text
         raw_severity = severity
     return {
@@ -135,6 +142,7 @@ def _collect_file_issues(sdir: Path, stage: str) -> list[dict[str, Any]]:
         "retrieval_audit.json": "retrieval",
         "answer_coverage_audit.json": "answer_coverage",
         "content_quality_audit.json": "content_quality",
+        "answer_checkpoint_reconciliation.json": "answer_generation",
         "docx_audit.json": "docx",
         "render_audit.json": "render",
         "final_acceptance_report.json": "final_acceptance",
@@ -145,6 +153,29 @@ def _collect_file_issues(sdir: Path, stage: str) -> list[dict[str, Any]]:
             continue
         data = _read_json(sdir / filename)
         if not isinstance(data, dict):
+            continue
+        if filename == "answer_checkpoint_reconciliation.json":
+            for raw in data.get("inconsistencies") or []:
+                out.append(_compact_issue(raw, default_stage=default_stage, severity="warning"))
+            for category, code in (
+                ("missing_question_ids", "checkpoint_fragment_missing"),
+                ("invalid_question_ids", "checkpoint_fragment_invalid"),
+                ("duplicate_question_ids", "checkpoint_fragment_duplicate"),
+                ("foreign_question_ids", "checkpoint_fragment_foreign"),
+            ):
+                for qid in data.get(category) or []:
+                    out.append(
+                        _compact_issue(
+                            {
+                                "question_id": qid,
+                                "code": code,
+                                "message": f"断点对账：{qid} 属于 {category}，恢复时不会直接复用。",
+                                "severity": "warning",
+                            },
+                            default_stage=default_stage,
+                            severity="warning",
+                        )
+                    )
             continue
         out.extend(_collect_detail_issues(default_stage, data))
     return out
@@ -196,8 +227,20 @@ def _recommendations(stage: str, error: str, issues: list[dict[str, Any]]) -> li
     elif stage == "content_quality":
         recs.append("优先处理 issue 级别题目；warning 可作为审查提示，不一定阻断生成。")
         recs.append("对 missing_confirmed_evidence 类问题，核对 evidence_selection.json 与 answer_fragments.json 的 evidence_ids 是否一致。")
-    elif stage in {"docx", "render", "final_acceptance"}:
-        recs.append("检查 Word/PDF 输出文件、公式对象和渲染复核图，确认本机 Word 与文档工具链正常。")
+    elif stage == "docx":
+        recs.append("检查 Word 生成审计中的公式对象、图片关系和段落结构，再从文档阶段重跑。")
+    elif stage == "render":
+        recs.append("检查 PDF/PNG 渲染审计与本机文档工具链，确认页面完整且没有空白或截断。")
+    elif stage == "final_acceptance":
+        messages = "\n".join(str(item.get("message") or "") for item in issues)
+        if "figure_visual_qa" in messages or "failed stage: figures" in messages or "图件" in messages:
+            recs.append("先按题号检查缺失图件和专业视觉审查失败项，再从配图阶段重跑；不要直接导出当前文档。")
+        if "docx" in messages.lower() or "Word" in messages or "公式" in messages:
+            recs.append("检查 Word 生成审计、公式对象和图片关系，修复后重新执行文档与最终验收。")
+        if "render" in messages.lower() or "PDF" in messages or "PNG" in messages:
+            recs.append("检查 PDF/PNG 渲染复核结果与本机文档工具链，修复后重新执行渲染与最终验收。")
+        if not recs:
+            recs.append("按最终验收报告中的阻断项回到对应阶段修复，全部通过后再重新验收。")
     elif "API key" in error or "Provider request" in error:
         recs.append("检查模型服务商、API Key、网络连通性和模型名称。")
     if issues and not recs:

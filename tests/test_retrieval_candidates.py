@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -20,6 +19,22 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 class RetrievalCandidateTests(unittest.TestCase):
+    def test_corpus_scorer_uses_bm25s_and_rewards_rare_terms(self) -> None:
+        from app.retrieval import CorpusTextScorer
+        from app.text_utils import tokenize_zh_en
+
+        scorer = CorpusTextScorer(
+            [
+                "材料 性能 材料 性能",
+                "材料 性能 材料 组织",
+                "马氏体相变 形核机制",
+            ]
+        )
+
+        scores = scorer.scores(tokenize_zh_en("马氏体相变"))
+        self.assertEqual("bm25s", scorer.backend)
+        self.assertGreater(scores[2], scores[0])
+
     def test_candidate_evidence_text_uses_the_selected_row_not_last_scanned_row(self) -> None:
         from app.retrieval import build_candidates
 
@@ -88,11 +103,64 @@ class RetrievalCandidateTests(unittest.TestCase):
         self.assertIn("相律 正文", candidates[0].evidence_text)
         self.assertNotIn("如有账号问题", candidates[0].evidence_text)
 
+    def test_selected_text_block_includes_same_page_continuation(self) -> None:
+        from app.retrieval import _adjacent_text_context
+
+        rows = [
+            {"source_type": "text_block", "retrieval_text": "亚共晶合金在共晶温度以下，"},
+            {"source_type": "text_block", "retrieval_text": "初生固相继续析出第二相，最终得到室温组织。"},
+        ]
+
+        evidence, preview = _adjacent_text_context(rows[0], rows)
+
+        self.assertIn("同页后续说明", evidence)
+        self.assertIn("初生固相继续析出第二相", evidence)
+        self.assertIn("最终得到室温组织", preview)
+
+    def test_continuation_can_cross_figure_and_table_blocks(self) -> None:
+        from app.retrieval import _adjacent_text_context
+
+        rows = [
+            {"source_type": "text_block", "retrieval_text": "在2点以下,"},
+            {"source_type": "figure_block", "retrieval_text": "图7.59 室温组织"},
+            {"source_type": "table_block", "retrieval_text": "表格"},
+            {"source_type": "text_block", "retrieval_text": "初生相与共晶相都会继续变化，最终得到珠光体和变态莱氏体。"},
+        ]
+
+        evidence, preview = _adjacent_text_context(rows[0], rows)
+
+        self.assertIn("珠光体和变态莱氏体", evidence)
+        self.assertIn("最终得到", preview)
+
+    def test_truncated_figure_ocr_resolves_to_complete_same_page_text(self) -> None:
+        from app.retrieval import _canonical_semantic_row
+
+        full = (
+            "亚共晶合金在液相线以下析出初生固相，液相成分随温度变化。"
+            "到达共晶温度后剩余液相发生共晶反应，初生固相和共晶中的固相继续转变。"
+            "冷却到室温后，显微组织中可见树枝状初生组成体，其余为共晶转变组成体。"
+            "两类组成体的计算必须使用同一共晶反应基准。"
+        )
+        figure = {
+            "source_type": "figure_block",
+            "retrieval_text": "图7.59 " + full[:300],
+        }
+        text = {"source_type": "text_block", "block_type": "text", "retrieval_text": full}
+
+        assert _canonical_semantic_row(figure, [text, figure]) is text
+
     def test_zone_law_formula_is_normalized_and_reserved_as_candidate(self) -> None:
         from app.retrieval import build_candidates
         from app.text_utils import formulas_equivalent
 
-        self.assertTrue(formulas_equivalent("hu + kv + lw = 0", r"$$ u h + v k + w l = 0\tag{3-71} $$"))
+        self.assertTrue(
+            formulas_equivalent(
+                "hu + kv + lw = 0",
+                r"$$ u h + v k + w l = 0\tag{3-71} $$",
+                context="晶带定律与带轴衍射",
+            )
+        )
+        self.assertFalse(formulas_equivalent("uv=0", "vu=0"))
 
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp = Path(raw_tmp)

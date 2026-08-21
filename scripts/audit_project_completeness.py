@@ -16,8 +16,13 @@ REQUIRED_FILES = [
     "requirements-windows.txt",
     ".env.example",
     "app/server.py",
+    "app/http_errors.py",
+    "app/task_runner.py",
     "app/version.py",
     "app/pipeline.py",
+    "app/pipeline_delivery.py",
+    "app/pipeline_checkpoints.py",
+    "app/pipeline_telemetry.py",
     "app/answer_generation.py",
     "app/v4_schema.py",
     "app/omml.py",
@@ -41,13 +46,18 @@ REQUIRED_FILES = [
     "scripts/audit_final_acceptance.py",
     "scripts/export_question_review.py",
     "scripts/package_task_delivery.py",
-    "scripts/package_release.py",
-    "scripts/verify_release_package.py",
+    "scripts/check_version_consistency.py",
+    "scripts/data_inventory.py",
     "scripts/run_quality_gates.py",
     "scripts/clean_runtime_state.py",
     "web/index.html",
     "web/app.js",
+    "web/platform-api.js",
+    "web/task-contract-ui.js",
+    "web/icon-compat.js",
     "web/styles.css",
+    "web/styles/foundation.css",
+    "web/vendor/mathjax/tex-mml-chtml.js",
     "start_platform.command",
     "start_platform_windows.bat",
     "docs/DELIVERY_CHECKLIST.md",
@@ -69,17 +79,24 @@ REQUIRED_TEXT = {
     ],
     "app/pipeline.py": [
         "answer_coverage",
-        "final_acceptance",
+        "complete_pipeline_delivery",
         "require_preferred_formula_chain",
+    ],
+    "app/pipeline_delivery.py": [
+        "docx_audit.json",
+        "render_audit.json",
+        "quality_shadow",
+        "final_acceptance",
     ],
     "web/index.html": [
         "versionBox",
-        "保存本机 API Key",
+        "API Key 配置",
         "刷新任务列表",
         "查看文件",
         "导出交付包",
         "最终验收",
-        "逐题复核",
+        "质量审查报告",
+        "reviewList",
         "结构化答案编辑",
         "教材页码校准",
     ],
@@ -91,7 +108,7 @@ REQUIRED_TEXT = {
     "README.md": [
         "MIGRATION_README.md",
         "RELEASE_MANIFEST.json",
-        "verify_release_package.py",
+        "平台质量检查",
         "最终验收",
         "passed_with_warnings",
         "结构化答案复核",
@@ -120,9 +137,6 @@ def main() -> int:
         for needle in needles:
             if needle not in text:
                 issues.append(f"{rel}: missing text marker {needle!r}")
-    release = ROOT.parent / "answer_book_platform_v1_release.zip"
-    if not release.exists():
-        issues.append(f"missing release package: {release}")
     result = {
         "ok": not issues,
         "checked_files": len(REQUIRED_FILES),

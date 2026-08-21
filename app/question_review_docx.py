@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from docx.shared import Cm, Pt, RGBColor
 
 from .docx_v4 import build_docx_from_fragments
 from .final_acceptance import model_retry_summary
+from .question_requirements import answer_figure_required
 from .question_types import question_has_type, question_kind
 from .render_word import export_docx_to_pdf, render_pdf_to_png
 from .review_export import build_question_review
@@ -133,22 +135,34 @@ def _add_figure_review_record(
     stage: str,
     status: str = "",
     summary: str = "",
+    role: str = "archive",
 ) -> None:
     qid = str(question_id or "").strip()
     if not qid or path is None or not path.exists():
         return
-    key = str(path.resolve())
+    try:
+        content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        content_hash = str(path.resolve())
+    figure_key = str(figure_id or path.stem).strip() or path.stem
+    key = f"{qid}\0{figure_key}\0{content_hash}"
+    role_priority = {"archive": 10, "candidate": 30, "selected_candidate": 60, "official": 100}
     item = records.setdefault(
         key,
         {
             "question_id": qid,
-            "figure_id": str(figure_id or path.stem).strip() or path.stem,
+            "figure_id": figure_key,
             "path": path,
+            "content_hash": content_hash,
+            "role": role,
             "stages": [],
             "statuses": [],
             "summaries": [],
         },
     )
+    if role_priority.get(role, 0) > role_priority.get(str(item.get("role") or ""), 0):
+        item["role"] = role
+        item["path"] = path
     label = str(stage or "").strip()
     if label and label not in item["stages"]:
         item["stages"].append(label)
@@ -177,7 +191,7 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
     figure_qids = {
         _qid(question)
         for question in structured_exam.get("items", [])
-        if isinstance(question, dict) and _qid(question) and question_has_type(question, "作图题")
+        if isinstance(question, dict) and _qid(question) and answer_figure_required(question)
     }
     records: dict[str, dict[str, Any]] = {}
 
@@ -194,7 +208,15 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
                     continue
                 image_id = str(segment.get("image_id") or "").strip()
                 path = _resolve_image_path(stage_dir, segment.get("path")) or _figure_path_for_id(stage_dir, image_id)
-                _add_figure_review_record(records, question_id=qid, figure_id=image_id, path=path, stage="最终答案引用图")
+                _add_figure_review_record(
+                    records,
+                    question_id=qid,
+                    figure_id=image_id,
+                    path=path,
+                    stage="最终答案引用图",
+                    status="正式采用",
+                    role="official",
+                )
 
     specs_data = _read_json(stage_dir / "figure_specs.json")
     for spec in specs_data.get("figures", []) if isinstance(specs_data, dict) else []:
@@ -206,7 +228,15 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
         path = _figure_path_for_id(stage_dir, figure_id)
         run_result = spec.get("run_result") if isinstance(spec.get("run_result"), dict) else {}
         status = "渲染通过" if run_result.get("ok") is True else ("渲染未通过" if run_result else "")
-        _add_figure_review_record(records, question_id=qid, figure_id=figure_id, path=path, stage=f"图规格/{source}", status=status)
+        _add_figure_review_record(
+            records,
+            question_id=qid,
+            figure_id=figure_id,
+            path=path,
+            stage=f"图规格/{source}",
+            status=status,
+            role="official",
+        )
 
     direct = _read_json(stage_dir / "direct_model_figures.json")
     for item in direct.get("generated", []) if isinstance(direct, dict) else []:
@@ -220,6 +250,7 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
             path=path,
             stage=f"生图模型兜底/{item.get('model') or ''}".rstrip("/"),
             status="生成成功",
+            role="official",
         )
 
     stage_manifest = _read_json(stage_dir / "figure_stage_images.json")
@@ -252,8 +283,13 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
                 stage="视觉QA正式审核",
                 status=status,
                 summary=summary,
+                role="official",
             )
 
+    # A task may retain reports from earlier repair phases.  Only the newest report
+    # for each figure represents the current candidate decision; older reports are
+    # audit evidence, not additional user-facing candidates.
+    latest_targets: dict[tuple[str, str], tuple[float, Path, Any, dict[str, Any]]] = {}
     for repair_path in sorted(stage_dir.glob("figure_visual_qa_repair*.json")):
         report = _read_json(repair_path)
         for round_item in report.get("rounds", []) if isinstance(report, dict) else []:
@@ -265,36 +301,42 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
                     continue
                 qid = str(target.get("question_id") or "").strip()
                 figure_id = str(target.get("figure_id") or "").strip()
-                for candidate in target.get("candidates", []) or []:
-                    if not isinstance(candidate, dict):
-                        continue
-                    strategy = str(candidate.get("strategy") or "candidate").strip()
-                    path = _resolve_image_path(stage_dir, candidate.get("path"))
-                    status = "回修候选通过" if candidate.get("passed") is True else str(candidate.get("status") or "回修候选未通过")
-                    notes = candidate.get("repair_notes") if isinstance(candidate.get("repair_notes"), list) else []
-                    summary = "；".join(str(note) for note in notes[:3] if str(note).strip())
-                    _add_figure_review_record(
-                        records,
-                        question_id=qid,
-                        figure_id=figure_id,
-                        path=path,
-                        stage=f"{repair_path.stem}/第{round_no}轮/{strategy}",
-                        status=status,
-                        summary=summary,
-                    )
+                key = (qid, figure_id)
+                modified = repair_path.stat().st_mtime
+                previous = latest_targets.get(key)
+                if previous is None or modified >= previous[0]:
+                    latest_targets[key] = (modified, repair_path, round_no, target)
 
-    candidate_root = stage_dir / "figure_visual_qa_candidates"
-    if candidate_root.exists():
-        for image in sorted(candidate_root.rglob("*.png")):
-            parts = image.relative_to(candidate_root).parts
-            qid = parts[0] if parts else image.stem
-            strategy = parts[2] if len(parts) > 2 else "candidate"
+    for (qid, figure_id), (_, repair_path, round_no, target) in latest_targets.items():
+        selected_strategy = str(target.get("selected_strategy") or "").strip()
+        target_selected = target.get("selected") is True
+        for candidate in target.get("candidates", []) or []:
+            if not isinstance(candidate, dict):
+                continue
+            strategy = str(candidate.get("strategy") or "candidate").strip()
+            path = _resolve_image_path(stage_dir, candidate.get("path"))
+            selected = target_selected and bool(selected_strategy) and strategy == selected_strategy
+            if selected:
+                status = "已采用（回修候选，视觉QA通过）"
+                role = "selected_candidate"
+            elif candidate.get("passed") is True:
+                status = "未采用（视觉QA通过但未选为最终图）"
+                role = "candidate"
+            else:
+                status = "未采用（视觉QA未通过）"
+                role = "candidate"
+            notes = candidate.get("repair_notes") if isinstance(candidate.get("repair_notes"), list) else []
+            readable_notes = [str(note).strip() for note in notes if str(note).strip()]
+            summary = readable_notes[0][:260] + ("……" if readable_notes and len(readable_notes[0]) > 260 else "") if readable_notes else ""
             _add_figure_review_record(
                 records,
                 question_id=qid,
-                figure_id=image.stem,
-                path=image,
-                stage=f"视觉QA回修候选/{strategy}",
+                figure_id=figure_id,
+                path=path,
+                stage=f"{repair_path.stem}/第{round_no}轮/{strategy}",
+                status=status,
+                summary=summary,
+                role=role,
             )
 
     for image in sorted((stage_dir / "figures").glob("*.png")):
@@ -306,7 +348,52 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
                 break
         if not qid:
             qid = figure_id.rsplit("_", 1)[0] if "_" in figure_id else figure_id
-        _add_figure_review_record(records, question_id=qid, figure_id=figure_id, path=image, stage="正式图目录")
+        _add_figure_review_record(
+            records,
+            question_id=qid,
+            figure_id=figure_id,
+            path=image,
+            stage="正式图目录",
+            status="正式采用",
+            role="official",
+        )
+
+    official_ids = {
+        (str(item.get("question_id") or ""), str(item.get("figure_id") or ""))
+        for item in records.values()
+        if item.get("role") == "official"
+    }
+    official_hashes = {
+        (
+            str(item.get("question_id") or ""),
+            str(item.get("figure_id") or ""),
+            str(item.get("content_hash") or ""),
+        )
+        for item in records.values()
+        if item.get("role") == "official"
+    }
+    for item in records.values():
+        if item.get("role") != "selected_candidate":
+            continue
+        identity = (
+            str(item.get("question_id") or ""),
+            str(item.get("figure_id") or ""),
+            str(item.get("content_hash") or ""),
+        )
+        if identity not in official_hashes:
+            item["role"] = "candidate"
+            item["statuses"] = [
+                "阶段内曾采用，当前已被后续正式图替代"
+                if value == "已采用（回修候选，视觉QA通过）"
+                else value
+                for value in item.get("statuses", [])
+            ]
+    records = {
+        key: item
+        for key, item in records.items()
+        if item.get("role") != "archive"
+        or (str(item.get("question_id") or ""), str(item.get("figure_id") or "")) not in official_ids
+    }
 
     by_qid: dict[str, list[dict[str, Any]]] = {}
     for record in records.values():
@@ -321,7 +408,14 @@ def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]
         figures = by_qid.get(qid, [])
         if not figures:
             continue
-        figures.sort(key=lambda item: (str(item.get("figure_id") or ""), str(item.get("path") or "")))
+        role_order = {"official": 0, "selected_candidate": 1, "candidate": 2, "archive": 3}
+        figures.sort(
+            key=lambda item: (
+                str(item.get("figure_id") or ""),
+                role_order.get(str(item.get("role") or ""), 9),
+                str(item.get("path") or ""),
+            )
+        )
         question = next((item for item in structured_exam.get("items", []) if isinstance(item, dict) and _qid(item) == qid), {})
         result.append(
             {
@@ -490,7 +584,7 @@ def _add_figure_review_section(doc: Document, stage_dir: Path) -> None:
     if not items:
         _paragraph(doc, "本任务未发现作图题图片产物。")
         return
-    _paragraph(doc, "本节汇总作图题在生成、正式引用、视觉审核和回修候选等阶段产生的图片，供交付前横向比对。")
+    _paragraph(doc, "本节按图片内容去重：每张正式图只展示一次，仅保留当前有效回修报告中与正式图有实质差异的候选图，并明确标注是否采用。")
     for index, item in enumerate(items, start=1):
         title_parts = [f"{index}."]
         section = str(item.get("section") or "").strip()
@@ -505,7 +599,14 @@ def _add_figure_review_section(doc: Document, stage_dir: Path) -> None:
         for figure_index, figure in enumerate(item.get("figures", [])[:30], start=1):
             figure_id = str(figure.get("figure_id") or "").strip()
             path = figure.get("path")
-            _paragraph(doc, f"图 {figure_index}：{figure_id or Path(str(path)).stem}", bold=True)
+            role = str(figure.get("role") or "archive")
+            role_label = {
+                "official": "正式采用",
+                "selected_candidate": "已采用的回修候选",
+                "candidate": "未采用的回修候选",
+                "archive": "阶段归档兜底",
+            }.get(role, "阶段图")
+            _paragraph(doc, f"图 {figure_index}：{figure_id or Path(str(path)).stem}（{role_label}）", bold=True)
             stages = "；".join(str(value) for value in figure.get("stages", []) if str(value).strip())
             statuses = "；".join(str(value) for value in figure.get("statuses", []) if str(value).strip())
             summaries = "；".join(str(value) for value in figure.get("summaries", [])[:3] if str(value).strip())

@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from .question_scores import infer_suggested_score
 
 ITEM_RE = re.compile(r"^\s*\d{1,3}[、.．]\s*")
 SECTION_RE = re.compile(r"^\s*[一二三四五六七八九十]+、")
@@ -45,12 +46,22 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
         section = str(item.get("section", ""))
         if "选择题" in section and item.get("image_refs"):
             warnings.append(f"{qid}: choice question has image hint; review if this is false positive")
-        if "回答下列问题" in stem and "问答题" not in section:
+        if "回答下列问题" in stem and not any(label in section for label in ("问答题", "简答题")):
             warnings.append(f"{qid}: stem says 回答下列问题 but section is {section}")
         if EMBEDDED_SECTION_TITLE_RE.search(stem):
             issues.append(f"{qid}: stem contains section title; exam split likely failed")
         if EMBEDDED_SUBJECT_TITLE_RE.search(stem):
             issues.append(f"{qid}: stem contains subject partition title; exam split likely failed")
+        subquestions = [row for row in (item.get("subquestions") or []) if isinstance(row, dict)]
+        if subquestions:
+            parent_score = infer_suggested_score(item)
+            child_scores = [infer_suggested_score(row) for row in subquestions]
+            if parent_score is not None and all(score is not None for score in child_scores):
+                child_total = sum(float(score) for score in child_scores if score is not None)
+                if abs(float(parent_score) - child_total) > 1e-6:
+                    issues.append(
+                        f"{qid}: parent score {parent_score:g} does not equal subquestion total {child_total:g}"
+                    )
     source_paragraphs = [str(x) for x in structured_exam.get("source_paragraphs", []) if str(x).strip()]
     source_coverage = {
         "source_paragraph_count": len(source_paragraphs),

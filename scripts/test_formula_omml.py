@@ -22,7 +22,7 @@ SAMPLES = [
     r"t_{1/2}=\frac{\ln 2}{k}",
     r"\Delta S=nR\ln\frac{V_2}{V_1}",
     r"\Delta S_{\text{系统}} < 0",
-    r"\mathrmH2O + \mathrmH2SO4",
+    r"\ce{H2O + H2SO4}",
     r"K^\ominus=1",
     r"n = 5\,\mathrm{mol}",
     r"\mathrm{N_2 + 3H_2 \rightleftharpoons 2NH_3}",
@@ -42,7 +42,11 @@ def main() -> int:
         for run in node.xpath(".//*[local-name()='r' and ./*[local-name()='t']]"):
             styles = run.xpath("./*[local-name()='rPr']/*[local-name()='sty']/@*[local-name()='val']")
             normal_text = run.xpath("./*[local-name()='rPr']/*[local-name()='nor']")
-            if normal_text or not any(style in {"i", "bi"} for style in styles):
+            # Scientific Word math legitimately mixes italic variables with
+            # upright chemical symbols, units and operators. Every text run
+            # must declare one of those two styles; upright text is not an
+            # error by itself.
+            if not normal_text and not any(style in {"i", "bi", "p"} for style in styles):
                 failed += 1
         if "\\" in text or "{" in text or "}" in text:
             failed += 1

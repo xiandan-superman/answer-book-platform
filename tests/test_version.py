@@ -38,6 +38,22 @@ class VersionTests(unittest.TestCase):
             with patch("app.version.PROJECT_ROOT", project_root):
                 self.assertEqual("abc1234", get_source_revision())
 
+    def test_release_manifest_status_requires_matching_version(self) -> None:
+        from app.version import release_manifest_status
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            project_root = Path(raw_tmp)
+            (project_root / "VERSION").write_text("8.17\n", encoding="utf-8")
+            (project_root / "RELEASE_MANIFEST.json").write_text(
+                json.dumps({"version": "8.17"}),
+                encoding="utf-8",
+            )
+            with patch("app.version.PROJECT_ROOT", project_root):
+                status = release_manifest_status()
+
+        self.assertTrue(status["version_matches"])
+        self.assertEqual([], status["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()

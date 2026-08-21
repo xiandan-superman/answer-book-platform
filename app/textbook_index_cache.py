@@ -13,7 +13,6 @@ from typing import Any
 from .paths import CACHE_DIR, ensure_project_dirs
 from .textbook_index import BLOCK_FIELDS, PAGE_MAP_FIELDS, build_textbook_index_for_files, write_csv
 
-
 TEXTBOOK_INDEX_CACHE_DIR = CACHE_DIR / "textbook_indexes"
 INDEX_CACHE_VERSION = "content-block-assets-v5-source-aware-pages"
 
@@ -169,23 +168,130 @@ def _load_cache_manifest(root: Path) -> dict[str, Any] | None:
     return manifest if isinstance(manifest, dict) else None
 
 
+def _csv_integrity(
+    path: Path,
+    expected_fields: list[str],
+    *,
+    expected_row_count: int | None = None,
+    identity_field: str = "",
+) -> int | None:
+    """Validate a cached CSV as data, not merely as an existing file."""
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            if not reader.fieldnames or not set(expected_fields).issubset(reader.fieldnames):
+                return None
+            count = 0
+            for row in reader:
+                if None in row or any(value is None for value in row.values()):
+                    return None
+                if identity_field and not str(row.get(identity_field) or "").strip():
+                    return None
+                count += 1
+    except (OSError, UnicodeError, csv.Error):
+        return None
+    if expected_row_count is not None and count != expected_row_count:
+        return None
+    return count
+
+
+def validated_textbook_index_cache(
+    root: Path,
+    *,
+    expected_key: str = "",
+    expected_manifest: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Return parsed cache metadata only when the complete cache is coherent.
+
+    A partial write or manually damaged JSON/CSV must become a cache miss.  It
+    must never be copied into a task merely because the four filenames exist.
+    """
+    if not _cache_is_complete(root):
+        return None
+    status = _load_cache_status(root)
+    manifest = _load_cache_manifest(root)
+    if (
+        not isinstance(status, dict)
+        or not {"textbook_count", "block_count", "page_map_ok"}.issubset(status)
+        or manifest is None
+    ):
+        return None
+    manifest_files = manifest.get("files")
+    if not isinstance(manifest_files, list) or not all(isinstance(row, dict) for row in manifest_files):
+        return None
+    if expected_key and str(manifest.get("key") or "") != expected_key:
+        return None
+    if expected_manifest is not None:
+        actual = _manifest_counter(manifest_files, include_mtime=False)
+        expected = _manifest_counter(expected_manifest, include_mtime=False)
+        if not actual or actual != expected:
+            return None
+    expected_blocks: int | None = None
+    if "block_count" in status:
+        try:
+            expected_blocks = int(status["block_count"])
+        except (TypeError, ValueError):
+            return None
+        if expected_blocks < 0:
+            return None
+    if _csv_integrity(
+        root / "textbook_blocks.csv",
+        BLOCK_FIELDS,
+        expected_row_count=expected_blocks,
+        identity_field="block_id",
+    ) is None:
+        return None
+    if _csv_integrity(root / "textbook_page_map.csv", PAGE_MAP_FIELDS) is None:
+        return None
+    return status, manifest
+
+
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f))
 
 
 def _dedupe_package_audits(package_audits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for audit in package_audits:
         if not isinstance(audit, dict):
             continue
-        key = (str(audit.get("package_id") or ""), str(audit.get("source_zip") or ""))
+        source_name = Path(str(audit.get("source_zip") or "")).name
+        key = f"{str(audit.get('package_id') or '')}|{source_name}" or str(audit.get("source_zip") or "")
         if key in seen:
             continue
         seen.add(key)
         unique.append(audit)
     return unique
+
+
+def _rebind_package_audits(
+    package_audits: list[dict[str, Any]],
+    files: list[Path],
+) -> list[dict[str, Any]]:
+    """Bind content-addressed audit metadata to this installation.
+
+    Index caches may be copied between workspaces.  Their scientific content
+    remains reusable, but absolute ``source_zip`` and extracted ``root`` paths
+    are installation-local provenance and must never retain the cache author's
+    workspace path.
+    """
+
+    from . import textbook_package
+
+    by_name = {path.name: path.resolve() for path in files}
+    rebound: list[dict[str, Any]] = []
+    for raw in _dedupe_package_audits(package_audits):
+        audit = dict(raw)
+        current = by_name.get(Path(str(audit.get("source_zip") or "")).name)
+        package_id = str(audit.get("package_id") or "").strip()
+        if current is not None:
+            audit["source_zip"] = str(current)
+        if package_id:
+            audit["root"] = str(textbook_package.PACKAGE_CACHE_DIR / package_id)
+        rebound.append(audit)
+    return rebound
 
 
 def _find_composable_cache_roots(
@@ -201,11 +307,12 @@ def _find_composable_cache_roots(
             return None
         candidates: list[tuple[int, Path, Counter[tuple[Any, ...]]]] = []
         for cache_root in TEXTBOOK_INDEX_CACHE_DIR.iterdir():
-            if not cache_root.is_dir() or not _cache_is_complete(cache_root):
+            if not cache_root.is_dir():
                 continue
-            cache_manifest = _load_cache_manifest(cache_root)
-            if not cache_manifest:
+            validated = validated_textbook_index_cache(cache_root)
+            if validated is None:
                 continue
+            _, cache_manifest = validated
             files = cache_manifest.get("files")
             if not isinstance(files, list):
                 continue
@@ -300,13 +407,17 @@ def textbook_index_cache_status(selected_paths: list[str], citation_names_by_pat
     citation_names = _normalized_citation_names(files, citation_names_by_path)
     key, manifest = textbook_index_key(files, citation_names)
     paths = _cache_paths(key)
-    indexed = paths["blocks"].exists() and paths["page_map"].exists() and paths["status"].exists()
-    status: dict[str, Any] = {}
-    if indexed:
-        status = json.loads(paths["status"].read_text(encoding="utf-8"))
-    else:
+    validated = validated_textbook_index_cache(
+        paths["root"],
+        expected_key=key,
+        expected_manifest=manifest,
+    )
+    indexed = validated is not None
+    status: dict[str, Any] = validated[0] if validated else {}
+    if not indexed:
         status = _ensure_composed_textbook_index_cache(key, manifest, paths, files) or {}
         indexed = bool(status)
+    package_audits = _rebind_package_audits(status.get("textbook_package_audits") or [], files)
     return {
         "ok": True,
         "indexed": indexed,
@@ -319,7 +430,7 @@ def textbook_index_cache_status(selected_paths: list[str], citation_names_by_pat
         "blocks_csv": str(paths["blocks"]) if paths["blocks"].exists() else "",
         "page_map_csv": str(paths["page_map"]) if paths["page_map"].exists() else "",
         "textbook_package_audit": str(paths["package_audit"]) if paths["package_audit"].exists() else "",
-        "textbook_package_audits": status.get("textbook_package_audits") or [],
+        "textbook_package_audits": package_audits,
         "manifest": manifest,
         "message": "所选教材已有可复用索引。" if indexed else "所选教材尚未建立索引，请先在教材管理页建立索引。",
     }
@@ -330,7 +441,12 @@ def prepare_textbook_index_cache(selected_paths: list[str], citation_names_by_pa
     citation_names = _normalized_citation_names(files, citation_names_by_path)
     key, manifest = textbook_index_key(files, citation_names)
     paths = _cache_paths(key)
-    cached = paths["blocks"].exists() and paths["page_map"].exists() and paths["status"].exists()
+    validated = validated_textbook_index_cache(
+        paths["root"],
+        expected_key=key,
+        expected_manifest=manifest,
+    )
+    cached = validated is not None
     if not cached:
         status = _ensure_composed_textbook_index_cache(key, manifest, paths, files)
         if status is None:
@@ -339,7 +455,7 @@ def prepare_textbook_index_cache(selected_paths: list[str], citation_names_by_pa
             status = asdict(result)
             paths["manifest"].write_text(json.dumps({"key": key, "files": manifest}, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
-        status = json.loads(paths["status"].read_text(encoding="utf-8"))
+        status = validated[0]
     return {
         **textbook_index_cache_status(selected_paths, citation_names_by_path),
         "ok": True,
@@ -352,7 +468,7 @@ def prepare_textbook_index_cache(selected_paths: list[str], citation_names_by_pa
         "blocks_csv": str(paths["blocks"]),
         "page_map_csv": str(paths["page_map"]),
         "textbook_package_audit": str(paths["package_audit"]) if paths["package_audit"].exists() else "",
-        "textbook_package_audits": status.get("textbook_package_audits") or [],
+        "textbook_package_audits": _rebind_package_audits(status.get("textbook_package_audits") or [], files),
         "manifest": manifest,
         "message": "已建立索引可复用。" if cached else "教材索引已建立。",
     }
@@ -374,9 +490,12 @@ def install_textbook_index_cache(
     stage_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(prepared["blocks_csv"], stage_dir / "textbook_blocks.csv")
     shutil.copy2(prepared["page_map_csv"], stage_dir / "textbook_page_map.csv")
-    package_audit = Path(prepared["blocks_csv"]).parent / "textbook_package_audit.json"
-    if package_audit.exists():
-        shutil.copy2(package_audit, stage_dir / "textbook_package_audit.json")
+    package_audits = prepared.get("textbook_package_audits") or []
+    if package_audits:
+        (stage_dir / "textbook_package_audit.json").write_text(
+            json.dumps({"packages": package_audits}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     status = {
         "textbook_count": prepared["textbook_count"],
         "block_count": prepared["block_count"],

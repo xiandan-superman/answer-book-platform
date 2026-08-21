@@ -1,17 +1,79 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .formula_audit import audit_text_segments_no_formula, looks_like_formula
-
 
 ALLOWED_SEGMENT_TYPES = {"text", "formula_ref", "image_ref"}
 REQUIRED_TOP_KEYS = {"schema_version", "question_id", "answer", "blocks", "formulas", "evidence_ids"}
 REQUIRED_FORMULA_KEYS = {"formula_id", "latex", "role", "display"}
 
 
+class FormulaV4(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    formula_id: str
+    latex: str
+    role: str
+    display: bool
+
+
+class SegmentV4(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    type: Literal["text", "formula_ref", "image_ref"]
+    text: Optional[str] = None
+    formula_id: Optional[str] = None
+
+
+class BlockV4(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    label: Optional[str] = None
+    segments: list[SegmentV4]
+
+
+class AnswerFragmentV4(BaseModel):
+    """Typed boundary model for model-produced v4 answer fragments."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    schema_version: Literal["answer_book.answer_fragment.v4"]
+    question_id: str
+    answer: str
+    blocks: list[BlockV4]
+    formulas: list[FormulaV4]
+    evidence_ids: list[str]
+
+
+def _pydantic_type_issues(data: dict[str, Any]) -> list[str]:
+    """Report strict nested type errors that the semantic checks do not cover."""
+    try:
+        AnswerFragmentV4.model_validate(data)
+        return []
+    except ValidationError as exc:
+        issues: list[str] = []
+        for error in exc.errors(include_url=False):
+            location = ".".join(str(part) for part in error["loc"]) or "fragment"
+            error_type = str(error.get("type", ""))
+            # The legacy checks below retain their stable, user-facing messages
+            # for missing containers, invalid segment kinds, and absent fields.
+            if error_type == "missing":
+                continue
+            if location == "schema_version":
+                continue
+            if location in {"blocks", "formulas", "evidence_ids"}:
+                continue
+            if error_type in {"model_type", "literal_error"}:
+                continue
+            issues.append(f"schema type error at {location}: {error['msg']}")
+        return issues
+
+
 def validate_v4_answer_fragment(data: dict[str, Any]) -> list[str]:
-    issues: list[str] = []
+    issues: list[str] = _pydantic_type_issues(data)
     missing = REQUIRED_TOP_KEYS - set(data)
     if missing:
         issues.append(f"missing top-level keys: {sorted(missing)}")
@@ -40,7 +102,11 @@ def validate_v4_answer_fragment(data: dict[str, Any]) -> list[str]:
         if fid in formula_ids:
             issues.append(f"duplicate formula_id: {fid}")
         formula_ids.add(fid)
-        if "\\" not in str(formula.get("latex", "")) and len(str(formula.get("latex", ""))) < 3:
+        # Short expressions such as ``pV``, ``RT`` and ``Ka`` are complete
+        # academic symbols.  Length is not a validity signal; only a genuinely
+        # empty payload is malformed.  Rendering preflight remains responsible
+        # for rejecting unsupported non-empty LaTeX.
+        if not str(formula.get("latex", "")).strip():
             issues.append(f"formulas[{idx}].latex looks empty")
 
     referenced_formula_ids: set[str] = set()

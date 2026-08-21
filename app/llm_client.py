@@ -6,9 +6,11 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
+from .concurrency import ModelRequestAborted, model_request_slot
+from .runtime_monitor import record_model_call_usage, track_model_call
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 
 
@@ -32,7 +34,29 @@ class ImageGenerationResult:
     raw: dict[str, Any]
 
 
+class LLMClientProtocol(Protocol):
+    """Stable interface consumed by generation and audit modules."""
+
+    config: ProviderConfig
+
+    def chat_json(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult: ...
+
+    def chat_text(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult: ...
+
+    def chat_json_object(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]: ...
+
+    def generate_image(self, prompt: str, output: Path, **kwargs: Any) -> ImageGenerationResult: ...
+
+
 class OpenAICompatibleClient:
+    def __new__(cls, config: ProviderConfig):
+        protocol = str(getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
+        if cls is OpenAICompatibleClient and protocol in {"responses", "responses_api"}:
+            return super().__new__(ResponsesAPIClient)
+        if cls is OpenAICompatibleClient and protocol not in {"chat_completions", "openai_compatible", ""}:
+            raise ValueError(f"Unsupported API protocol: {protocol}")
+        return super().__new__(cls)
+
     def __init__(self, config: ProviderConfig):
         if config.type != "openai_compatible":
             raise ValueError(f"Unsupported provider type: {config.type}")
@@ -115,6 +139,10 @@ class OpenAICompatibleClient:
             payload["response_format"] = {"type": "json_object"}
         if thinking_mode in {"enabled", "disabled"}:
             payload["thinking"] = {"type": thinking_mode}
+        reasoning_effort = _deepseek_reasoning_effort(self.config, thinking_mode)
+        if reasoning_effort:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = reasoning_effort
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"{self.config.base_url}/chat/completions",
@@ -126,9 +154,17 @@ class OpenAICompatibleClient:
             method="POST",
         )
         try:
-            with self._urlopen(req, timeout=timeout) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
-        except LLMError:
+            with model_request_slot(self.config):
+                with track_model_call(
+                    provider=self.config.name,
+                    model=str(payload["model"]),
+                    purpose="chat_json" if use_response_format else "chat_text",
+                    timeout=timeout,
+                ) as call_record:
+                    with self._urlopen(req, timeout=timeout) as resp:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                    record_model_call_usage(call_record, raw)
+        except (LLMError, ModelRequestAborted):
             raise
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -144,6 +180,7 @@ class OpenAICompatibleClient:
             raw["_request"] = {
                 "response_format": "json_object" if use_response_format else "prompt_only_json",
                 "thinking": thinking_mode,
+                "reasoning_effort": reasoning_effort or "provider_default",
                 "max_tokens": payload["max_tokens"],
             }
         if content is None:
@@ -180,6 +217,7 @@ class OpenAICompatibleClient:
         plans = self._json_retry_plans(messages, model, max_tokens, attempts, fallback_model, compact_messages, thinking)
         for plan in plans:
             current_messages = plan["messages"]
+            result: LLMResult | None = None
             if callable(attempt_callback):
                 attempt_callback("started", self._json_attempt_report(plan))
             try:
@@ -204,7 +242,7 @@ class OpenAICompatibleClient:
                 return value
             except LLMError as exc:
                 last_error = exc
-                report = self._json_attempt_report(plan, error=str(exc))
+                report = self._json_attempt_report(plan, result=result, error=str(exc))
                 self.last_json_retry_report["attempts"].append(report)
                 self.last_json_retry_report["recommendations"] = _token_recommendations(self.last_json_retry_report["attempts"])
                 if callable(attempt_callback):
@@ -358,8 +396,18 @@ class OpenAICompatibleClient:
             method="POST",
         )
         try:
-            with self._urlopen(req, timeout=timeout) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
+            with model_request_slot(self.config):
+                with track_model_call(
+                    provider=self.config.name,
+                    model=str(payload.get("model") or self.config.default_model),
+                    purpose="image_generation" if "/images/" in url or "generateContent" in url else "responses",
+                    timeout=timeout,
+                ) as call_record:
+                    with self._urlopen(req, timeout=timeout) as resp:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                    record_model_call_usage(call_record, raw)
+        except ModelRequestAborted:
+            raise
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
@@ -368,6 +416,51 @@ class OpenAICompatibleClient:
         if not isinstance(raw, dict):
             raise LLMError(f"Unexpected provider response shape: {raw}")
         return raw
+
+    def _post_responses_stream(self, url: str, payload: dict[str, Any], *, timeout: int) -> dict[str, Any]:
+        """Consume an OpenAI Responses SSE stream and return its final response.
+
+        Reading the stream incrementally lets an upstream proxy observe response
+        bytes while a long reasoning request is still running.  A few compatible
+        gateways return a normal JSON response even when ``stream`` is requested;
+        that shape is accepted as a compatibility fallback.
+        """
+        streaming_payload = {**payload, "stream": True}
+        data = json.dumps(streaming_payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        try:
+            with model_request_slot(self.config):
+                with track_model_call(
+                    provider=self.config.name,
+                    model=str(payload.get("model") or self.config.default_model),
+                    purpose="responses_stream",
+                    timeout=timeout,
+                ) as call_record:
+                    with self._urlopen(req, timeout=timeout) as resp:
+                        if not hasattr(resp, "readline"):
+                            raw = json.loads(resp.read().decode("utf-8"))
+                            if not isinstance(raw, dict):
+                                raise LLMError(f"Unexpected provider response shape: {raw}")
+                        else:
+                            raw = _consume_responses_sse(resp)
+                        record_model_call_usage(call_record, raw)
+                        return raw
+        except (LLMError, ModelRequestAborted):
+            raise
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+        except Exception as exc:
+            raise LLMError(f"Provider streaming request failed: {exc}") from exc
 
     def _json_retry_plans(
         self,
@@ -415,35 +508,166 @@ class OpenAICompatibleClient:
 
     def _json_attempt_report(self, plan: dict[str, Any], result: LLMResult | None = None, error: str = "") -> dict[str, Any]:
         raw = result.raw if result else {}
-        choice = (raw.get("choices") or [{}])[0] if isinstance(raw, dict) else {}
-        usage = raw.get("usage") if isinstance(raw, dict) else {}
-        completion_details = usage.get("completion_tokens_details") if isinstance(usage, dict) else {}
+        usage = _normalized_usage(raw)
         content = result.content if result else ""
-        return {
+        request_meta = raw.get("_request") if isinstance(raw, dict) else {}
+        report = {
             "strategy": plan.get("strategy"),
             "model": plan.get("model"),
             "max_tokens": plan.get("max_tokens"),
-            "thinking": (raw.get("_request") or {}).get("thinking") if isinstance(raw.get("_request"), dict) else plan.get("thinking"),
+            "thinking": request_meta.get("thinking") if isinstance(request_meta, dict) else plan.get("thinking"),
             "compact_prompt": plan.get("strategy") == "compact_fallback_disable_thinking",
-            "finish_reason": choice.get("finish_reason"),
+            "finish_reason": _normalized_finish_reason(raw),
             "content_length": len(content or ""),
-            "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, dict) else None,
-            "completion_tokens": usage.get("completion_tokens") if isinstance(usage, dict) else None,
-            "reasoning_tokens": completion_details.get("reasoning_tokens") if isinstance(completion_details, dict) else None,
-            "response_format": (raw.get("_request") or {}).get("response_format") if isinstance(raw.get("_request"), dict) else None,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "reasoning_tokens": usage.get("reasoning_tokens"),
+            "response_format": request_meta.get("response_format") if isinstance(request_meta, dict) else None,
             "error": error,
         }
+        if isinstance(request_meta, dict):
+            for key in ("protocol_requested", "protocol_used", "protocol_fallback_reason"):
+                if request_meta.get(key):
+                    report[key] = request_meta[key]
+        return report
+
+
+class ResponsesAPIClient(OpenAICompatibleClient):
+    """Opt-in Responses API adapter.
+
+    Existing providers remain on ``OpenAICompatibleClient``. This adapter is
+    selected only by ``create_llm_client`` when ``api_protocol`` is explicitly
+    set to ``responses``. It intentionally reuses the existing retry, image,
+    and JSON parsing helpers so the migration surface stays small.
+    """
+
+    def _chat_json_once(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        thinking: str | None = None,
+        timeout: int = 120,
+        use_response_format: bool = True,
+    ) -> LLMResult:
+        thinking_mode = _normalize_thinking_mode(
+            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto")
+        )
+        requested_tokens = self.config.max_tokens if max_tokens is None else max_tokens
+        responses_input = _responses_input_items(messages)
+        if use_response_format and not _value_mentions_json(responses_input):
+            responses_input.insert(0, {"role": "system", "content": "Return one valid JSON object."})
+        payload: dict[str, Any] = {
+            "model": model or self.config.default_model,
+            "input": responses_input,
+            "max_output_tokens": _effective_max_tokens(self.config, requested_tokens, thinking_mode),
+            "store": False,
+        }
+        # Reasoning models may not accept sampling parameters. Preserve an
+        # explicit caller override, but do not forward the Chat Completions
+        # provider default automatically.
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if use_response_format:
+            payload["text"] = {"format": {"type": "json_object"}}
+        reasoning_effort = _responses_reasoning_effort(thinking_mode)
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+
+        try:
+            if bool(getattr(self.config, "responses_streaming", True)):
+                raw = self._post_responses_stream(f"{self.config.base_url}/responses", payload, timeout=timeout)
+            else:
+                raw = self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
+        except LLMError as exc:
+            if bool(getattr(self.config, "responses_fallback_to_chat", True)) and _is_responses_endpoint_unsupported(str(exc)):
+                fallback = super()._chat_json_once(
+                    messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    thinking=thinking,
+                    timeout=timeout,
+                    use_response_format=use_response_format,
+                )
+                request_meta = fallback.raw.setdefault("_request", {})
+                if isinstance(request_meta, dict):
+                    request_meta.update(
+                        {
+                            "protocol_requested": "responses",
+                            "protocol_used": "chat_completions",
+                            "protocol_fallback_reason": _safe_protocol_fallback_reason(str(exc)),
+                        }
+                    )
+                return fallback
+            raise
+        content = _responses_output_text(raw)
+        if isinstance(raw, dict):
+            raw["_request"] = {
+                "endpoint": "/responses",
+                "response_format": "json_object" if use_response_format else "prompt_only_json",
+                "thinking": thinking_mode,
+                "max_output_tokens": payload["max_output_tokens"],
+                "store": False,
+                "stream": bool(getattr(self.config, "responses_streaming", True)),
+                "reasoning_effort": reasoning_effort or "provider_default",
+            }
+        if not content:
+            detail = _responses_response_detail(raw)
+            raise LLMError(f"Model returned empty response content; {detail}" if detail else "Model returned empty response content")
+        return LLMResult(
+            provider=self.config.name,
+            model=str(payload["model"]),
+            content=content,
+            raw=raw,
+        )
+
+
+def create_llm_client(config: ProviderConfig) -> LLMClientProtocol:
+    """Create a client from provider configuration without changing defaults."""
+    protocol = str(getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
+    if protocol in {"responses", "responses_api"}:
+        return ResponsesAPIClient(config)
+    if protocol in {"chat_completions", "openai_compatible", ""}:
+        return OpenAICompatibleClient(config)
+    raise ValueError(f"Unsupported API protocol: {protocol}")
 
 
 def _is_unsupported_response_format_error(error: str) -> bool:
     text = str(error or "").lower()
-    return "response_format" in text and ("not support" in text or "not supported" in text or "not valid" in text or "invalidparameter" in text)
+    format_parameter = "response_format" in text or "text.format" in text or ("text" in text and "format" in text)
+    return format_parameter and (
+        "not support" in text
+        or "not supported" in text
+        or "not valid" in text
+        or "invalidparameter" in text
+        or "unknown parameter" in text
+    )
+
+
+def _is_responses_endpoint_unsupported(error: str) -> bool:
+    text = str(error or "").lower()
+    if "provider http 405" in text or "provider http 501" in text:
+        return True
+    if "provider http 404" not in text:
+        return False
+    # A provider may also use 404 for an unknown model. Do not mask that as
+    # protocol incompatibility.
+    return "model" not in text
+
+
+def _safe_protocol_fallback_reason(error: str) -> str:
+    text = str(error or "")
+    for status in ("404", "405", "501"):
+        if f"HTTP {status}" in text:
+            return f"responses_endpoint_http_{status}"
+    return "responses_endpoint_unsupported"
 
 
 def _is_reasoning_heavy_provider(config: ProviderConfig) -> bool:
-    name = str(getattr(config, "name", "") or "").lower()
     base_url = str(getattr(config, "base_url", "") or "").lower()
-    return name == "zhipu" or "bigmodel.cn" in base_url
+    return "bigmodel.cn" in base_url
 
 
 def _is_dashscope_image_model(config: ProviderConfig, model: str) -> bool:
@@ -546,7 +770,12 @@ def _dashscope_image_size(model: str, *, explicit_size: str | None, configured_s
 
 def _effective_max_tokens(config: ProviderConfig, requested_tokens: Any, thinking_mode: str) -> int:
     tokens = int(requested_tokens or getattr(config, "max_tokens", DEFAULT_MODEL_MAX_TOKENS) or DEFAULT_MODEL_MAX_TOKENS)
-    if _is_reasoning_heavy_provider(config) and thinking_mode in {"auto", "enabled"}:
+    # Explicit reasoning modes consume output tokens before the final answer on
+    # several providers, not only on one vendor-specific endpoint. Respect the
+    # configured full allowance whenever reasoning was deliberately selected.
+    if thinking_mode in {"enabled", "low", "medium", "high", "xhigh"}:
+        return max(tokens, int(getattr(config, "max_tokens", 0) or 0), DEFAULT_MODEL_MAX_TOKENS)
+    if _is_reasoning_heavy_provider(config) and thinking_mode == "auto":
         return max(tokens, int(getattr(config, "max_tokens", 0) or 0), DEFAULT_MODEL_MAX_TOKENS)
     return tokens
 
@@ -558,6 +787,10 @@ def _normalize_thinking_mode(value: Any) -> str:
         "enable": "enabled",
         "enabled": "enabled",
         "true": "enabled",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "xhigh",
         "off": "disabled",
         "disable": "disabled",
         "disabled": "disabled",
@@ -568,6 +801,124 @@ def _normalize_thinking_mode(value: Any) -> str:
         "": "auto",
     }
     return aliases.get(text, "auto")
+
+
+def _deepseek_reasoning_effort(config: ProviderConfig, thinking_mode: str) -> str:
+    """Translate shared effort levels to the provider's supported values."""
+
+    name = str(getattr(config, "name", "") or "").lower()
+    base_url = str(getattr(config, "base_url", "") or "").lower()
+    if name != "deepseek" and "api.deepseek.com" not in base_url:
+        return ""
+    normalized = _normalize_thinking_mode(thinking_mode)
+    if normalized in {"low", "medium", "high", "enabled"}:
+        return "high"
+    if normalized == "xhigh":
+        return "max"
+    return ""
+
+
+def _responses_reasoning_effort(thinking_mode: str) -> str:
+    """Map the UI's thinking choice to the Responses API effort field."""
+    normalized = _normalize_thinking_mode(thinking_mode)
+    if normalized in {"low", "medium", "high", "xhigh"}:
+        return normalized
+    if normalized == "enabled":
+        return "medium"
+    if normalized == "disabled":
+        return "none"
+    return ""
+
+
+def _consume_responses_sse(response: Any) -> dict[str, Any]:
+    """Normalize Responses API server-sent events into one response object."""
+    final_response: dict[str, Any] | None = None
+    text_deltas: list[str] = []
+    terminal_texts: list[str] = []
+    data_lines: list[str] = []
+
+    def consume_event() -> None:
+        nonlocal final_response
+        if not data_lines:
+            return
+        data_text = "\n".join(data_lines).strip()
+        data_lines.clear()
+        if not data_text or data_text == "[DONE]":
+            return
+        try:
+            event = json.loads(data_text)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"Provider returned invalid streaming event: {data_text[:500]}") from exc
+        if not isinstance(event, dict):
+            return
+        event_type = str(event.get("type") or "")
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str):
+                text_deltas.append(delta)
+            return
+        if event_type == "response.output_text.done":
+            text = event.get("text")
+            if isinstance(text, str) and text.strip():
+                terminal_texts.append(text)
+            return
+        if event_type == "response.content_part.done":
+            part = event.get("part")
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    terminal_texts.append(text)
+            return
+        if event_type == "response.output_item.done":
+            item = event.get("item")
+            if isinstance(item, dict):
+                text = _responses_output_text({"output": [item]})
+                if text.strip():
+                    terminal_texts.append(text)
+            return
+        if event_type == "response.completed":
+            candidate = event.get("response")
+            if isinstance(candidate, dict):
+                final_response = candidate
+            return
+        if event_type in {"response.failed", "error"}:
+            detail = event.get("error") or event.get("response") or event
+            raise LLMError(f"Provider streaming response failed: {str(detail)[:800]}")
+        # Compatibility gateways sometimes send the final Response object as a
+        # data event without wrapping it in ``response.completed``.
+        if event.get("object") == "response" or ("output" in event and "status" in event):
+            final_response = event
+
+    while True:
+        line = response.readline()
+        if not line:
+            consume_event()
+            break
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        stripped = str(line).rstrip("\r\n")
+        if not stripped:
+            consume_event()
+        elif stripped.startswith("data:"):
+            data_lines.append(stripped[5:].lstrip())
+
+    if final_response is None:
+        accumulated_text = "".join(text_deltas) if text_deltas else (terminal_texts[-1] if terminal_texts else "")
+        if not accumulated_text:
+            raise LLMError("Provider streaming response ended without a completed response")
+        try:
+            json.loads(accumulated_text)
+        except json.JSONDecodeError as exc:
+            raise LLMError("Provider streaming response ended without a completed response") from exc
+        final_response = {
+            "object": "response",
+            "status": "completed",
+            "output_text": accumulated_text,
+            "_stream_salvaged": True,
+        }
+    elif text_deltas and not _responses_output_text(final_response):
+        final_response["output_text"] = "".join(text_deltas)
+    return final_response
 
 
 def _parse_image_size_pixels(size: str) -> tuple[int, int] | None:
@@ -708,13 +1059,48 @@ def parse_json_content_with_result(result: LLMResult) -> dict[str, Any]:
 
 
 def _finish_reason(result: LLMResult) -> str:
-    raw = result.raw or {}
-    choice = (raw.get("choices") or [{}])[0] if isinstance(raw, dict) else {}
-    return str(choice.get("finish_reason") or "")
+    return _normalized_finish_reason(result.raw or {})
 
 
 def _provider_response_detail(result: LLMResult) -> str:
-    return _raw_provider_response_detail(result.raw or {})
+    raw = result.raw or {}
+    if isinstance(raw, dict) and ("output" in raw or "output_text" in raw):
+        return _responses_response_detail(raw)
+    return _raw_provider_response_detail(raw)
+
+
+def _normalized_finish_reason(raw: dict[str, Any]) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    choices = raw.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else {}
+    if isinstance(choice, dict) and choice.get("finish_reason"):
+        return str(choice["finish_reason"])
+    status = str(raw.get("status") or "")
+    incomplete = raw.get("incomplete_details")
+    reason = str(incomplete.get("reason") or "") if isinstance(incomplete, dict) else ""
+    if status == "incomplete" and reason in {"max_output_tokens", "max_tokens"}:
+        return "length"
+    if status == "completed":
+        return "stop"
+    return reason or status
+
+
+def _normalized_usage(raw: dict[str, Any]) -> dict[str, int | None]:
+    usage = raw.get("usage") if isinstance(raw, dict) else {}
+    if not isinstance(usage, dict):
+        usage = {}
+    completion_details = usage.get("completion_tokens_details")
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+    output_details = usage.get("output_tokens_details")
+    if not isinstance(output_details, dict):
+        output_details = {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+        "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
+        "reasoning_tokens": completion_details.get("reasoning_tokens", output_details.get("reasoning_tokens")),
+    }
 
 
 def _raw_provider_response_detail(raw: dict[str, Any]) -> str:
@@ -736,6 +1122,90 @@ def _raw_provider_response_detail(raw: dict[str, Any]) -> str:
         parts.append(f"reasoning_tokens={completion_details.get('reasoning_tokens')}")
     if isinstance(reasoning_content, str) and reasoning_content:
         parts.append(f"reasoning_content_length={len(reasoning_content)}")
+    return ", ".join(parts)
+
+
+def _responses_output_text(raw: dict[str, Any]) -> str:
+    """Extract text from a Responses output array without exposing reasoning items."""
+    direct = raw.get("output_text") if isinstance(raw, dict) else None
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    output = raw.get("output") if isinstance(raw, dict) else None
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in {"output_text", "text"}:
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "".join(parts)
+
+
+def _responses_input_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate existing Chat Completions messages to Responses input items."""
+    translated: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+        if isinstance(content, str):
+            translated.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            translated.append(dict(message))
+            continue
+        parts: list[dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type == "text":
+                parts.append({"type": "input_text", "text": str(part.get("text") or "")})
+            elif part_type == "image_url":
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+                if url:
+                    parts.append({"type": "input_image", "image_url": str(url)})
+            elif part_type in {"input_text", "input_image"}:
+                parts.append(dict(part))
+        translated.append({"role": role, "content": parts})
+    return translated
+
+
+def _value_mentions_json(value: Any) -> bool:
+    """Return whether textual prompt content explicitly mentions JSON."""
+    if isinstance(value, str):
+        return "json" in value.lower()
+    if isinstance(value, list):
+        return any(_value_mentions_json(item) for item in value)
+    if isinstance(value, dict):
+        return any(_value_mentions_json(item) for key, item in value.items() if key not in {"image_url"})
+    return False
+
+
+def _responses_response_detail(raw: dict[str, Any]) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    parts: list[str] = []
+    status = raw.get("status")
+    if status:
+        parts.append(f"status={status}")
+    incomplete = raw.get("incomplete_details")
+    if isinstance(incomplete, dict) and incomplete.get("reason"):
+        parts.append(f"reason={incomplete['reason']}")
+    usage = raw.get("usage")
+    if isinstance(usage, dict):
+        for key in ("input_tokens", "output_tokens"):
+            if usage.get(key) is not None:
+                parts.append(f"{key}={usage[key]}")
     return ", ".join(parts)
 
 

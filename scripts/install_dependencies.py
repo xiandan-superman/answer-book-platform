@@ -6,8 +6,8 @@ import platform
 import shutil
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,15 +23,19 @@ def main() -> int:
         procs.append(subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(windows_requirements)], cwd=ROOT))
     checks = {
         "python": sys.executable,
+        "huey": bool(find_spec("huey")),
+        "pypdfium2": bool(find_spec("pypdfium2")),
         "pdftoppm": shutil.which("pdftoppm"),
         "soffice": shutil.which("soffice") or shutil.which("libreoffice"),
     }
-    ok = all(proc.returncode == 0 for proc in procs) and bool(checks["pdftoppm"])
+    ok = all(proc.returncode == 0 for proc in procs) and bool(checks["huey"]) and bool(checks["pypdfium2"] or checks["pdftoppm"])
     issues = []
     if any(proc.returncode != 0 for proc in procs):
         issues.append("pip install failed")
-    if not checks["pdftoppm"]:
-        issues.append("pdftoppm not found; install Poppler and add it to PATH")
+    if not checks["huey"]:
+        issues.append("huey not found; durable practice queue is unavailable")
+    if not checks["pypdfium2"] and not checks["pdftoppm"]:
+        issues.append("no PDF page renderer available; install pypdfium2 or Poppler")
     print(json.dumps({"ok": ok, "checks": checks, "issues": issues}, ensure_ascii=False, indent=2))
     return 0 if ok else 1
 

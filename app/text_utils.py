@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from .capabilities.catalog import apply_capability_policy_transforms
+
 
 CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
@@ -40,15 +42,12 @@ def tokenize_zh_en(text: str) -> list[str]:
 
 _FORMULA_FORMAT_COMMAND_RE = re.compile(r"\\(?:mathbf|boldsymbol|mathrm|mathit|text|left|right|displaystyle|textstyle)\b")
 _FORMULA_TAG_RE = re.compile(r"\\(?:tag|label)\s*\{[^}]*\}")
-_ZONE_PRODUCT_RE = re.compile(r"(?<![a-z])([hkluvw]{2})(?![a-z])")
-
-
-def normalize_formula(text: str) -> str:
+def normalize_formula(text: str, *, context: str = "") -> str:
     """Return a conservative canonical form suitable for formula retrieval.
 
     This is deliberately not a symbolic algebra system.  It removes presentation
-    differences and normalizes the two-letter Miller/zone products only, so
-    ``uh`` and ``hu`` compare equal without rewriting unrelated expressions.
+    differences. Discipline-specific equivalence is contributed through a
+    capability hook and activates only when the caller supplies that context.
     """
     value = str(text or "").lower()
     value = _FORMULA_TAG_RE.sub("", value)
@@ -63,14 +62,17 @@ def normalize_formula(text: str) -> str:
     value = re.sub(r"\\[,!;:]", "", value)
     value = re.sub(r"\s+", "", value)
 
-    def normalize_zone_product(match: re.Match[str]) -> str:
-        return "".join(sorted(match.group(1)))
+    transformed = apply_capability_policy_transforms(
+        "formula_retrieval_normalization",
+        value,
+        {"value": value, "text": context},
+        text=context,
+    )
+    return str(transformed)
 
-    return _ZONE_PRODUCT_RE.sub(normalize_zone_product, value)
 
-
-def formulas_equivalent(left: str, right: str) -> bool:
+def formulas_equivalent(left: str, right: str, *, context: str = "") -> bool:
     """Whether two formula strings are equal after conservative normalization."""
-    normalized_left = normalize_formula(left)
-    normalized_right = normalize_formula(right)
+    normalized_left = normalize_formula(left, context=context)
+    normalized_right = normalize_formula(right, context=context)
     return bool(normalized_left and normalized_right and normalized_left == normalized_right)

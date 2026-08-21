@@ -8,10 +8,96 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.exam_extract import question_items, split_sections
+from app.exam_extract import IMAGE_MARKER_PREFIX, _subquestion_entry, question_items, split_sections
 
 
 class ExamExtractTests(unittest.TestCase):
+    def test_unknown_subject_heading_is_detected_by_document_structure(self) -> None:
+        sections = split_sections(
+            [
+                "生命科学基础",
+                "一、选择题",
+                "1、细胞膜的主要作用是（ ）。",
+            ]
+        )
+
+        self.assertEqual("生命科学基础", sections[0]["subject"])
+
+    def test_missing_first_marker_is_recovered_before_explicit_second_part(self) -> None:
+        section = split_sections(
+            [
+                "三、计算题",
+                "1、理想气体由始态绝热膨胀至末态。",
+                "求过程的W、ΔU、ΔH、ΔS；",
+                "(2)ΔH的正负是否表示吸放热？ΔS的正负是否表示自发性？",
+            ]
+        )[0]
+
+        item = question_items(section)[0]
+
+        self.assertEqual(["1", "2"], [row["number"] for row in item["subquestions"]])
+        self.assertTrue(item["subquestions"][0]["inferred_missing_marker"])
+        self.assertIn("求过程", item["subquestions"][0]["stem"])
+        self.assertEqual("计算题", item["subquestions"][0]["question_type"])
+
+    def test_answer_precision_instruction_is_not_a_nested_requirement(self) -> None:
+        entry = _subquestion_entry(
+            "2",
+            "(2)",
+            "所求ΔH的正负是否表示吸放热？ΔS的正负是否表示自发性？(W、ΔU、ΔH、ΔS计算结果取四位有效数字)",
+            "(2)所求ΔH的正负是否表示吸放热？ΔS的正负是否表示自发性？(W、ΔU、ΔH、ΔS计算结果取四位有效数字)",
+        )
+
+        self.assertEqual(["2.1", "2.2"], [row["number"] for row in entry["requirements"]])
+        self.assertEqual(1, len(entry["response_constraints"]))
+        self.assertIn("四位有效数字", entry["response_constraints"][0])
+
+    def test_unnumbered_mixed_answer_actions_become_typed_requirements(self) -> None:
+        section = split_sections(
+            [
+                "六、简答题",
+                "6、根据相图写出三相反应；同时示意画出扩散层成分曲线，并标注各相。",
+            ]
+        )[0]
+
+        item = question_items(section)[0]
+
+        self.assertEqual(1, len(item["subquestions"]))
+        self.assertTrue(item["subquestions"][0]["synthetic_parent"])
+        requirements = item["subquestions"][0]["requirements"]
+        self.assertEqual(["6.1", "6.2"], [row["number"] for row in requirements])
+        self.assertEqual(["简答题", "作图题"], [row["question_type"] for row in requirements])
+        self.assertIn("示意画出扩散层", requirements[1]["stem"])
+
+    def test_composite_section_trailing_figure_is_shared_by_all_subquestions(self) -> None:
+        image = "/tmp/shared_phase_diagram.png"
+        section = split_sections(
+            [
+                "十、综合题(本题共12分)",
+                "1、简述合金2凝固过程，画出室温组织图，并计算相组成。(6分)",
+                "2、比较两种铸态性能。(2分)",
+                "3、分析T1时效曲线。(2分)",
+                "4、比较T1与T2峰值时间。(2分)",
+                f"{IMAGE_MARKER_PREFIX}{image}",
+            ]
+        )[0]
+
+        items = question_items(section)
+
+        self.assertEqual(1, len(items))
+        parent = items[0]
+        self.assertEqual([image], parent["image_refs"])
+        self.assertEqual(["1", "2", "3", "4"], [item["number"] for item in parent["subquestions"]])
+        self.assertEqual(
+            ["作图题", "简答题", "简答题", "简答题"],
+            [item["question_type"] for item in parent["subquestions"]],
+        )
+        self.assertEqual("shared_composite_question", parent["attachment_scope"]["kind"])
+        self.assertEqual(
+            ["简答题", "作图题", "计算题"],
+            [item["question_type"] for item in parent["subquestions"][0]["requirements"]],
+        )
+
     def test_dot_style_chinese_section_title_extracts_choice_items(self) -> None:
         paragraphs = [
             "一.选择题",
@@ -52,6 +138,39 @@ class ExamExtractTests(unittest.TestCase):
         items = question_items(sections[0])
         self.assertEqual(1, len(items))
         self.assertIn("这只是题干中的中文编号", items[0]["stem"])
+
+    def test_unnumbered_single_question_preserves_major_question_number(self) -> None:
+        section = split_sections(
+            [
+                "九、相图分析题（本题共14分）",
+                "题九4图为某合金相图。",
+                "(1)说明恒温转变。",
+                "(2)计算室温组织组成。",
+            ]
+        )[0]
+
+        items = question_items(section)
+
+        self.assertEqual(1, len(items))
+        self.assertEqual("9", items[0]["number"])
+        self.assertEqual(["1", "2"], [row["number"] for row in items[0]["subquestions"]])
+
+    def test_grouped_composite_parent_uses_major_number_not_first_subquestion_number(self) -> None:
+        image = "/tmp/shared_composite.png"
+        section = split_sections(
+            [
+                "十、综合题（本题共12分）",
+                "1、说明过程。",
+                "2、计算组成。",
+                f"{IMAGE_MARKER_PREFIX}{image}",
+            ]
+        )[0]
+
+        items = question_items(section)
+
+        self.assertEqual(1, len(items))
+        self.assertEqual("10", items[0]["number"])
+        self.assertEqual(["1", "2"], [row["number"] for row in items[0]["subquestions"]])
 
 
 if __name__ == "__main__":

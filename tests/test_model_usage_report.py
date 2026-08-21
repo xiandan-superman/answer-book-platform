@@ -92,6 +92,17 @@ class ModelUsageReportTests(unittest.TestCase):
                 json.dumps({"status": "completed", "completed": 2, "total": 2}, ensure_ascii=False),
                 encoding="utf-8",
             )
+            (stage / "final_acceptance_report.json").write_text(
+                json.dumps(
+                    {
+                        "delivery_tier": "review_candidate",
+                        "delivery_tier_label": "可交付待复核候选版",
+                        "formal_acceptance_passed": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             (stage / "drawing_code_generation.json").write_text(
                 json.dumps(
                     {
@@ -133,8 +144,17 @@ class ModelUsageReportTests(unittest.TestCase):
             self.assertIn("总计 token", text)
             self.assertIn("可统计 660", text)
             self.assertIn("未返回 usage：作图/图片", text)
+            self.assertIn("最终交付等级：`review_candidate`", text)
+            self.assertIn("正式验收：`未通过`", text)
             self.assertIn("q1", text)
             self.assertIn("q2", text)
+
+    def test_elapsed_summary_uses_user_readable_units(self) -> None:
+        from app.model_usage_report import _format_elapsed_ms
+
+        self.assertEqual(_format_elapsed_ms(12_500), "12.5秒")
+        self.assertEqual(_format_elapsed_ms(125_000), "2分5秒")
+        self.assertEqual(_format_elapsed_ms(3_725_000), "1小时2分")
 
 
 if __name__ == "__main__":

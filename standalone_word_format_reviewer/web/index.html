@@ -1,0 +1,911 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Word 格式审查与修改</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fc;
+      --ink: #101d3c;
+      --text: #25324c;
+      --muted: #60708a;
+      --subtle: #8794a9;
+      --blue: #2f80ed;
+      --blue-strong: #205fc0;
+      --blue-soft: #eef5ff;
+      --border: rgba(151, 174, 211, .34);
+      --border-strong: rgba(111, 148, 207, .46);
+      --surface: rgba(255, 255, 255, .88);
+      --shadow: 0 18px 46px rgba(43, 72, 121, .09), inset 0 1px 0 rgba(255, 255, 255, .92);
+      --bad: #b42318;
+      --bad-bg: #fff1f0;
+      --warn: #9a6700;
+      --warn-bg: #fff8db;
+      --ok: #067647;
+      --ok-bg: #ecfdf3;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; scroll-behavior: smooth; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background:
+        radial-gradient(circle at 19% 12%, rgba(85, 157, 246, .12), transparent 24rem),
+        radial-gradient(circle at 82% 21%, rgba(117, 92, 232, .08), transparent 28rem),
+        linear-gradient(180deg, #f8faff 0, var(--bg) 42%, #f2f6fb 100%);
+      background-attachment: fixed;
+      color: var(--text);
+      font: 15px/1.6 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body::before {
+      position: fixed;
+      z-index: -1;
+      inset: 0;
+      background: linear-gradient(115deg, rgba(255,255,255,.34), transparent 34%, rgba(255,255,255,.2));
+      content: "";
+      pointer-events: none;
+    }
+    button, input, select { font: inherit; }
+    button { border: 0; cursor: pointer; }
+    h1, h2, h3, p { margin: 0; }
+    .hidden { display: none !important; }
+
+    .app-nav {
+      position: sticky;
+      z-index: 20;
+      top: 14px;
+      width: min(calc(100% - 48px), 1420px);
+      margin: 14px auto 0;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.82);
+      border-radius: 22px;
+      background: linear-gradient(105deg, rgba(255,255,255,.56), rgba(255,255,255,.28) 48%, rgba(242,248,255,.38));
+      box-shadow: 0 13px 36px rgba(42,67,108,.09), inset 0 1.5px 0 rgba(255,255,255,.96), inset 0 -1px 0 rgba(107,143,198,.16);
+      backdrop-filter: blur(19px) saturate(182%);
+    }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; min-height: 74px; padding: 0 25px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark {
+      display: grid;
+      width: 46px;
+      height: 46px;
+      place-items: center;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #176ee8, #345bd2);
+      box-shadow: 0 9px 20px rgba(43,91,185,.22);
+      color: #fff;
+    }
+    .brand-mark svg { width: 23px; height: 23px; }
+    .brand strong { display: block; color: var(--ink); font-size: 19px; font-weight: 800; letter-spacing: -.02em; }
+    .brand small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .nav-actions { display: flex; align-items: center; gap: 9px; }
+    .standalone-badge { padding: 6px 11px; border: 1px solid #d5e4fb; border-radius: 999px; background: rgba(238,245,255,.9); color: #2868c6; font-size: 12px; font-weight: 750; }
+    .nav-standard-button { min-height: 38px; border-radius: 10px; padding: 0 12px; background: rgba(228,236,250,.72); color: #26344f; font-size: 13px; font-weight: 750; }
+    .nav-standard-button:hover { background: #e3edfc; color: var(--blue-strong); }
+
+    main { width: min(1120px, calc(100% - 40px)); margin: 58px auto 76px; }
+    .hero { max-width: 760px; margin: 0 auto 30px; text-align: center; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--blue-strong); font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+    .eyebrow::before { width: 22px; height: 2px; border-radius: 2px; background: var(--blue); content: ""; }
+    .hero h1 { color: var(--ink); font-size: clamp(30px, 4vw, 42px); line-height: 1.2; letter-spacing: -.035em; }
+    .hero p { max-width: 620px; margin: 13px auto 0; color: var(--muted); font-size: 16px; }
+
+    .panel {
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.94);
+      border-radius: 24px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+    .panel-head { display: flex; align-items: center; gap: 13px; padding: 22px 26px; border-bottom: 1px solid rgba(151,174,211,.24); background: rgba(249,251,255,.7); }
+    .panel-step { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #2376e6, #3566d4); box-shadow: 0 7px 15px rgba(43,91,185,.18); color: #fff; font-size: 14px; font-weight: 800; }
+    .panel-head h2 { color: var(--ink); font-size: 19px; }
+    .panel-head p { color: var(--muted); font-size: 13px; }
+    .panel-body { padding: 28px; }
+    .form-grid { display: grid; grid-template-columns: 1.35fr .85fr; gap: 22px; }
+    .field { min-width: 0; }
+    .field + .field-row, .field-row + .field-row { margin-top: 24px; }
+    .field-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; color: var(--ink); font-size: 14px; font-weight: 750; }
+    .optional { color: var(--subtle); font-size: 12px; font-weight: 500; }
+    .field-help { margin-top: 7px; color: var(--muted); font-size: 12px; }
+
+    .file-picker {
+      position: relative;
+      display: flex;
+      min-height: 112px;
+      align-items: center;
+      gap: 15px;
+      padding: 18px;
+      overflow: hidden;
+      border: 1px dashed #a9bfdf;
+      border-radius: 15px;
+      background: linear-gradient(135deg, rgba(244,248,255,.92), rgba(250,252,255,.94));
+      cursor: pointer;
+      transition: border-color .2s, background .2s, transform .2s;
+    }
+    .file-picker:hover { border-color: var(--blue); background: #f3f8ff; transform: translateY(-1px); }
+    .file-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .file-icon { display: grid; flex: 0 0 auto; width: 50px; height: 50px; place-items: center; border-radius: 14px; background: #e8f2ff; color: var(--blue-strong); }
+    .file-icon svg { width: 25px; height: 25px; }
+    .file-copy strong { display: block; overflow: hidden; color: var(--ink); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+    .file-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+
+    .select-wrap { position: relative; }
+    .select-wrap::after {
+      position: absolute;
+      top: 50%;
+      right: 15px;
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid #71829c;
+      border-bottom: 2px solid #71829c;
+      content: "";
+      pointer-events: none;
+      transform: translateY(-70%) rotate(45deg);
+    }
+    select, input[type=text] {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid #cbd7e8;
+      border-radius: 12px;
+      outline: none;
+      background: rgba(255,255,255,.95);
+      color: var(--text);
+      transition: border-color .2s, box-shadow .2s;
+    }
+    select { appearance: none; padding: 0 42px 0 14px; cursor: pointer; }
+    input[type=text] { padding: 0 14px; }
+    select:focus, input[type=text]:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgba(47,128,237,.11); }
+    .standard-note { display: flex; gap: 9px; margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #f6f9fe; color: var(--muted); font-size: 12px; }
+    .info-dot { display: grid; flex: 0 0 auto; width: 17px; height: 17px; place-items: center; border-radius: 50%; background: #dceaff; color: #2568c5; font-size: 11px; font-weight: 800; }
+
+    .standard-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    .standard-card { position: relative; display: block; min-height: 142px; padding: 18px; border: 1px solid var(--border); border-radius: 15px; background: rgba(255,255,255,.72); cursor: pointer; transition: .2s ease; }
+    .standard-card:hover { border-color: #9bb8e2; transform: translateY(-1px); }
+    .standard-card:has(input:checked) { border-color: var(--blue); background: linear-gradient(145deg, #f0f6ff, #f7faff); box-shadow: 0 0 0 1px rgba(47,128,237,.14), 0 9px 20px rgba(47,128,237,.08); }
+    .standard-card input { position: absolute; top: 18px; right: 18px; width: 17px; height: 17px; accent-color: var(--blue); }
+    .standard-card-kicker { color: var(--blue-strong); font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+    .standard-card strong { display: block; margin-top: 5px; color: var(--ink); font-size: 17px; }
+    .standard-card p { margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .standard-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 13px; }
+    .standard-card-footer span { color: #6b7890; font-size: 11px; }
+    .standard-link { padding: 2px 0; background: transparent; color: var(--blue-strong); font-size: 12px; font-weight: 750; }
+
+    .divider { height: 1px; margin: 27px 0; background: linear-gradient(90deg, transparent, rgba(151,174,211,.4), transparent); }
+    .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    .mode-card {
+      position: relative;
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 11px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(255,255,255,.68);
+      cursor: pointer;
+      transition: border-color .2s, background .2s, box-shadow .2s, transform .2s;
+    }
+    .mode-card:hover { transform: translateY(-1px); border-color: #9bb8e2; }
+    .mode-card:has(input:checked) { border-color: var(--blue); background: var(--blue-soft); box-shadow: 0 0 0 1px rgba(47,128,237,.16), 0 8px 18px rgba(47,128,237,.08); }
+    .mode-card input { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--blue); }
+    .mode-card strong { display: block; color: var(--ink); font-size: 14px; }
+    .mode-card span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+
+    .submit-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 28px -28px -28px; padding: 19px 28px; border-top: 1px solid rgba(151,174,211,.24); background: rgba(247,250,255,.72); }
+    .privacy-note { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .privacy-note svg { width: 16px; height: 16px; color: #5480ba; }
+    .primary, .secondary, .download {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 11px;
+      padding: 0 19px;
+      font-weight: 750;
+      text-decoration: none;
+      transition: transform .2s, box-shadow .2s, background .2s;
+    }
+    .primary, .download { background: linear-gradient(145deg, #2376e6, #3566d4); box-shadow: 0 9px 20px rgba(43,91,185,.2); color: #fff; }
+    .primary:hover, .download:hover { transform: translateY(-1px); box-shadow: 0 12px 24px rgba(43,91,185,.25); }
+    .secondary { border: 1px solid #bfd4f2; background: #eff6ff; color: var(--blue-strong); }
+    button:disabled { opacity: .58; cursor: wait; transform: none !important; }
+    #status { margin-left: 10px; color: var(--muted); font-size: 12px; }
+    .error { margin-top: 16px; padding: 11px 13px; border: 1px solid #f5c3bf; border-radius: 10px; background: var(--bad-bg); color: var(--bad); font-size: 13px; }
+
+    .result-panel { margin-top: 24px; }
+    .result-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 23px 26px; border-bottom: 1px solid rgba(151,174,211,.24); }
+    .result-head h2 { color: var(--ink); font-size: 19px; }
+    .result-head p { margin-top: 3px; color: var(--muted); font-size: 13px; }
+    .actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .result-body { padding: 22px 26px 26px; }
+    .summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 17px; }
+    .pill { padding: 5px 10px; border: 1px solid #e0e7f1; border-radius: 999px; background: #f5f7fa; color: #526078; font-size: 12px; }
+    .pill.bad { border-color: #ffd1cc; background: var(--bad-bg); color: var(--bad); }
+    .pill.warn { border-color: #f3dfa5; background: var(--warn-bg); color: var(--warn); }
+    .pill.ok { border-color: #b8ebce; background: var(--ok-bg); color: var(--ok); }
+    .table-wrap { overflow: auto; border: 1px solid #dce4ef; border-radius: 13px; }
+    table { width: 100%; border-collapse: collapse; background: rgba(255,255,255,.76); font-size: 13px; }
+    th { padding: 11px 12px; border-bottom: 1px solid #dce4ef; background: #f5f8fc; color: #506078; text-align: left; white-space: nowrap; }
+    td { max-width: 260px; padding: 12px; border-bottom: 1px solid #edf1f6; color: #334159; vertical-align: top; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #fafcff; }
+    .muted { color: var(--muted); }
+    .tag { display: inline-block; padding: 3px 7px; border-radius: 6px; font-size: 11px; white-space: nowrap; }
+    .tag.fix { background: var(--bad-bg); color: var(--bad); }
+    .tag.manual { background: var(--warn-bg); color: var(--warn); }
+
+    .standards-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 23px; }
+    .standards-hero h1 { color: var(--ink); font-size: 32px; letter-spacing: -.03em; }
+    .standards-hero p { max-width: 680px; margin-top: 7px; color: var(--muted); }
+    .back-button { min-height: 40px; border: 1px solid #d4dfed; border-radius: 10px; padding: 0 13px; background: rgba(255,255,255,.7); color: #40506a; font-weight: 700; }
+    .standard-tabs { display: flex; gap: 7px; padding: 6px; border-bottom: 1px solid rgba(151,174,211,.24); background: #f7faff; }
+    .standard-tab { flex: 1; min-height: 44px; border-radius: 10px; background: transparent; color: var(--muted); font-weight: 750; }
+    .standard-tab.active { background: #fff; box-shadow: 0 3px 12px rgba(43,72,121,.09); color: var(--blue-strong); }
+    .standard-overview { padding: 25px; }
+    .standard-intro { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; padding: 17px 18px; border: 1px solid #d8e6f8; border-radius: 14px; background: linear-gradient(145deg, #f0f6ff, #f9fbff); }
+    .standard-intro h2 { color: var(--ink); font-size: 18px; }
+    .standard-intro p { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .standard-status { flex: 0 0 auto; padding: 5px 9px; border-radius: 8px; background: #e3edff; color: #2868c6; font-size: 11px; font-weight: 750; }
+    .rule-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .rule-card { overflow: hidden; border: 1px solid #dfe6f0; border-radius: 14px; background: rgba(255,255,255,.8); }
+    .rule-card h3 { padding: 13px 15px; border-bottom: 1px solid #e7ecf3; background: #f8fafd; color: var(--ink); font-size: 14px; }
+    .rule-list { margin: 0; padding: 5px 15px 10px; }
+    .rule-row { display: grid; grid-template-columns: minmax(78px,.8fr) 1.35fr; gap: 10px; padding: 9px 0; border-bottom: 1px dashed #e5eaf1; }
+    .rule-row:last-child { border-bottom: 0; }
+    .rule-row dt { color: var(--muted); font-size: 12px; }
+    .rule-row dd { margin: 0; color: #293750; font-size: 12px; font-weight: 650; }
+    .adjustable { display: inline-block; margin-top: 3px; color: #2970c8; font-size: 10px; font-weight: 650; }
+    .compact-button { min-height: 36px; padding: 0 12px; font-size: 12px; }
+    .standard-page-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 23px 26px; border-bottom: 1px solid rgba(151,174,211,.24); background: linear-gradient(145deg, #f6f9ff, #fbfcff); }
+    .standard-page-head h2 { margin-top: 3px; color: var(--ink); font-size: 22px; }
+    .standard-page-head p { margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .standard-page-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+    .standard-config-body { padding: 22px 26px 28px; }
+    .rule-category { margin-top: 18px; overflow: hidden; border: 1px solid #dfe6f0; border-radius: 15px; background: rgba(255,255,255,.78); }
+    .rule-category:first-child { margin-top: 0; }
+    .rule-category-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 17px; border-bottom: 1px solid #e4eaf2; background: #f7f9fc; }
+    .rule-category-head h3 { color: var(--ink); font-size: 15px; }
+    .rule-category-head p { color: var(--muted); font-size: 11px; }
+    .config-rule-row { display: grid; grid-template-columns: minmax(150px,.58fr) minmax(0,2.42fr) auto; gap: 16px; align-items: start; padding: 16px 17px; border-bottom: 1px solid #edf1f6; }
+    .config-rule-row:last-child { border-bottom: 0; }
+    .config-rule-row.is-editing { background: linear-gradient(90deg, rgba(238,245,255,.62), rgba(255,255,255,.7)); box-shadow: inset 3px 0 0 var(--blue); }
+    .rule-name strong { display: block; color: #24334d; font-size: 13px; }
+    .rule-name span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .rule-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px 16px; min-height: 36px; align-items: start; }
+    .rule-value { min-width: 0; }
+    .rule-value-label { display: block; color: #8996aa; font-size: 10px; line-height: 1.35; }
+    .rule-value-text { display: flex; min-height: 21px; align-items: center; gap: 7px; margin-top: 2px; overflow: hidden; color: #34435c; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .color-preview { display: inline-block; width: 15px; height: 15px; border: 1px solid #cbd5e1; border-radius: 4px; }
+    .rule-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 9px; align-items: end; }
+    .rule-control label { display: block; margin-bottom: 4px; color: #687891; font-size: 10px; }
+    .rule-control select, .rule-control input[type=text], .rule-control input[type=number], .rule-control input[type=color] { min-height: 38px; border-radius: 9px; font-size: 12px; }
+    .rule-control input[type=text], .rule-control input[type=number] { width: 100%; padding: 0 10px; }
+    .rule-control input[type=color] { width: 100%; padding: 4px 7px; border: 1px solid #cbd7e8; background: #fff; }
+    .rule-control.wide { grid-column: span 2; }
+    .rule-edit, .rule-save, .rule-cancel { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 6px; border-radius: 9px; padding: 0 11px; font-size: 12px; font-weight: 750; white-space: nowrap; }
+    .rule-edit { border: 1px solid #d6e1ef; background: #fff; color: #50617b; }
+    .rule-edit:hover { border-color: #a9c4e8; background: #f6faff; color: var(--blue-strong); }
+    .rule-save { border: 1px solid #bfd4f2; background: #eaf3ff; color: var(--blue-strong); }
+    .rule-save:hover { background: #dcecff; }
+    .rule-cancel { border: 1px solid #dce3ec; background: #fff; color: #68778d; }
+    .rule-cancel:hover { background: #f5f7fa; color: #34435c; }
+    .rule-edit .lucide, .rule-save .lucide, .rule-cancel .lucide { width: 14px; height: 14px; stroke-width: 2; }
+    .rule-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+    .rule-scope { display: block; margin-top: 5px; color: #7a8aa2; font-size: 10px; text-align: center; }
+    .fixed-rule-value { padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 9px; background: #f8fafc; color: #40506a; font-size: 12px; }
+    .fixed-badge { padding: 4px 8px; border-radius: 7px; background: #f0f2f6; color: #69768a; font-size: 10px; font-weight: 700; white-space: nowrap; }
+    .modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16,29,60,.32); backdrop-filter: blur(8px); }
+    .save-modal { width: min(470px, 100%); padding: 25px; border: 1px solid rgba(255,255,255,.9); border-radius: 20px; background: #fff; box-shadow: 0 28px 70px rgba(23,42,82,.24); text-align: center; }
+    .modal-icon { display: grid; width: 44px; height: 44px; margin: 0 auto 12px; place-items: center; border-radius: 13px; background: #e8f2ff; color: #246cca; font-size: 20px; font-weight: 800; }
+    .save-modal h2 { color: var(--ink); font-size: 20px; }
+    .save-modal > p { margin-top: 5px; color: var(--muted); font-size: 13px; }
+    .save-scope-options { display: grid; gap: 10px; margin-top: 19px; text-align: left; }
+    .save-scope-options button { padding: 13px 14px; border: 1px solid #dbe4ef; border-radius: 12px; background: #f9fbfe; color: var(--text); }
+    .save-scope-options button:hover { border-color: var(--blue); background: #f0f6ff; }
+    .save-scope-options strong, .save-scope-options span { display: block; }
+    .save-scope-options strong { font-size: 13px; }
+    .save-scope-options span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .modal-cancel { margin-top: 14px; padding: 5px 12px; background: transparent; color: var(--muted); font-size: 12px; }
+    .toast { position: fixed; z-index: 110; right: 24px; bottom: 24px; max-width: 360px; padding: 11px 15px; border-radius: 11px; background: #173b72; box-shadow: 0 12px 30px rgba(23,59,114,.25); color: #fff; font-size: 13px; }
+
+    @media (max-width: 760px) {
+      .app-nav { top: 8px; width: calc(100% - 16px); margin-top: 8px; border-radius: 17px; }
+      .nav-inner { min-height: 64px; padding: 0 15px; }
+      .brand-mark { width: 40px; height: 40px; }
+      .brand strong { font-size: 16px; }
+      .brand small, .standalone-badge { display: none; }
+      .nav-standard-button { padding: 0 9px; font-size: 12px; }
+      main { width: calc(100% - 20px); margin: 38px auto 50px; }
+      .hero { margin-bottom: 22px; }
+      .hero h1 { font-size: 29px; }
+      .panel { border-radius: 18px; }
+      .panel-head, .panel-body, .result-head, .result-body { padding-left: 17px; padding-right: 17px; }
+      .form-grid, .mode-grid, .standard-choice-grid, .rule-grid { grid-template-columns: 1fr; }
+      .submit-row { align-items: stretch; flex-direction: column; margin-right: -17px; margin-left: -17px; padding-right: 17px; padding-left: 17px; }
+      .primary { width: 100%; }
+      .result-head { flex-direction: column; }
+      .standards-hero, .standard-intro { align-items: flex-start; flex-direction: column; }
+      .standard-page-head, .config-rule-row { grid-template-columns: 1fr; align-items: stretch; }
+      .standard-page-head { align-items: flex-start; flex-direction: column; padding: 18px; }
+      .standard-config-body { padding: 14px; }
+      .config-rule-row { display: grid; gap: 11px; padding: 14px; }
+      .rule-controls { grid-template-columns: 1fr 1fr; }
+      .rule-values { grid-template-columns: 1fr 1fr; }
+      .rule-control.wide { grid-column: 1 / -1; }
+      .rule-scope { text-align: left; }
+      .rule-actions { justify-content: flex-start; }
+      td { min-width: 150px; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="app-nav" aria-label="应用标题">
+    <div class="nav-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 3.5h9l3 3V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14.5 3.5V7H18M8 11h7M8 15h7"/></svg>
+        </span>
+        <span><strong>Word 格式审查与修改</strong><small>真题答案与讲义格式标准化工具</small></span>
+      </div>
+      <div class="nav-actions">
+        <button class="nav-standard-button" type="button" onclick="showStandards()">查看格式标准</button>
+        <button id="platformTasksButton" class="nav-standard-button hidden" type="button" onclick="window.location.href='/?page=tasks&kind=format'">任务管理</button>
+        <button id="platformHomeButton" class="nav-standard-button hidden" type="button" onclick="window.location.href='/'">返回平台</button>
+        <span id="standaloneBadge" class="standalone-badge">独立试用版</span>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <div id="taskView">
+    <header class="hero">
+      <span class="eyebrow">文档格式工具</span>
+      <h1>上传文档，完成格式审查与修改</h1>
+      <p>按照真题答案或讲义标准检查 Word 版式。您可以先查看问题再决定修改，也可以直接生成修改后的文件。</p>
+    </header>
+
+    <section class="panel" aria-labelledby="taskTitle">
+      <header class="panel-head">
+        <span class="panel-step">1</span>
+        <div><h2 id="taskTitle">设置审查任务</h2><p>选择文件、格式标准与处理方式</p></div>
+      </header>
+      <div class="panel-body">
+        <div class="field">
+          <label class="field-label" for="file">Word 文件</label>
+          <label class="file-picker" for="file">
+            <input id="file" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+            <span class="file-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></span>
+            <span class="file-copy"><strong id="fileName">点击选择 .docx 文件</strong><span id="fileMeta">最大 50 MB，原文件不会被覆盖</span></span>
+          </label>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field">
+          <div class="field-label">格式标准 <span class="optional">选择文档要遵循的规则体系</span></div>
+          <div class="standard-choice-grid">
+            <label class="standard-card">
+              <input type="radio" name="profile" value="answer" checked>
+              <span class="standard-card-kicker">ANSWER BOOK</span><strong>真题答案标准</strong>
+              <p>适用于历年真题答案、逐题解析与复核文档。</p>
+              <span class="standard-card-footer"><span>答案层级 · 大题标题 · 解析正文</span><button class="standard-link" type="button" onclick="showStandards('answer', event)">查看并配置完整规则</button></span>
+            </label>
+            <label class="standard-card">
+              <input type="radio" name="profile" value="lecture">
+              <span class="standard-card-kicker">LECTURE NOTES</span><strong>讲义标准</strong>
+              <p>适用于章节式知识讲解、复习讲义与课程资料。</p>
+              <span class="standard-card-footer"><span>三级标题 · 知识正文 · 注释内容</span><button class="standard-link" type="button" onclick="showStandards('lecture', event)">查看并配置完整规则</button></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field-row">
+          <div class="field-label">处理方式</div>
+          <div class="mode-grid">
+            <label class="mode-card">
+              <input type="radio" name="mode" value="review" checked>
+              <span><strong>先审查，再确认修改</strong><span>先展示发现的问题和修改意见，确认后才生成新文件。</span></span>
+            </label>
+            <label class="mode-card">
+              <input type="radio" name="mode" value="auto">
+              <span><strong>直接审查并修改</strong><span>审查完成后立即生成新文件，同时保留问题清单。</span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="submit-row">
+          <span id="storageNote" class="privacy-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 10V8a5 5 0 0 1 10 0v2"/><rect x="5" y="10" width="14" height="10" rx="2"/></svg>文件仅保存在本机临时目录，24 小时后自动清理</span>
+          <div><button id="submit" class="primary">开始处理</button><span id="status"></span></div>
+        </div>
+        <div id="error" class="error hidden"></div>
+      </div>
+    </section>
+
+    <section id="result" class="panel result-panel hidden">
+      <div class="result-head">
+        <div><h2>审查结果</h2><p id="resultCaption"></p></div>
+        <div id="resultActions" class="actions"></div>
+      </div>
+      <div class="result-body">
+        <div id="summary" class="summary"></div>
+        <div class="table-wrap"><table><thead><tr><th>位置</th><th>检查项</th><th>当前情况</th><th>标准要求</th><th>修改意见</th><th>处理</th></tr></thead><tbody id="issues"></tbody></table></div>
+      </div>
+    </section>
+    </div>
+
+    <section id="standardsView" class="hidden" aria-labelledby="standardsTitle">
+      <header class="standards-hero">
+        <div><span class="eyebrow">标准说明与配置</span><h1 id="standardsTitle">格式标准</h1><p id="standardsDescription">默认展示当前标准规则。需要调整时，点击单项右侧的“修改”。</p></div>
+        <button class="back-button" type="button" onclick="showTask()">返回任务配置</button>
+      </header>
+      <section class="panel">
+        <div class="standard-page-head">
+          <div><span id="standardPageKicker" class="standard-card-kicker"></span><h2 id="standardPageTitle"></h2><p id="standardPageIntro"></p></div>
+          <div class="standard-page-actions"><span id="standardSaveState" class="standard-status">当前标准规则</span><button class="secondary compact-button" type="button" onclick="restoreWholeStandard()">恢复标准值</button></div>
+        </div>
+        <div id="ruleCategories" class="standard-config-body"></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="saveScopeModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="saveScopeTitle">
+    <div class="save-modal">
+      <span class="modal-icon">✓</span>
+      <h2 id="saveScopeTitle">保存这项配置</h2>
+      <p id="saveScopeDescription">请选择这次修改的使用范围。</p>
+      <div class="save-scope-options">
+        <button type="button" onclick="confirmRuleSave('single')"><strong>仅用于本次任务</strong><span>只影响当前上传文档，关闭程序后不保留。</span></button>
+        <button type="button" onclick="confirmRuleSave('permanent')"><strong>设为永久默认</strong><span>以后选择该标准时自动使用，可再次修改。</span></button>
+      </div>
+      <button class="modal-cancel" type="button" onclick="closeSaveModal()">取消</button>
+    </div>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script id="initialSettings" type="application/json">__INITIAL_SETTINGS_JSON__</script>
+  <script id="apiRoutes" type="application/json">__API_ROUTES_JSON__</script>
+  <script id="platformHosted" type="application/json">__PLATFORM_HOSTED_JSON__</script>
+  <script src="/vendor/lucide.min.js"></script>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const API_ROUTES = JSON.parse($('#apiRoutes').textContent);
+    const PLATFORM_HOSTED = JSON.parse($('#platformHosted').textContent);
+    let currentJob = null;
+    let currentStandard = 'answer';
+    let settingsReady = false;
+    let pendingSave = null;
+    let activeEdit = null;
+    let toastTimer = null;
+    const standardDefaults = {};
+    const permanentSettings = {};
+    const taskSettings = {};
+    const savedProfiles = {};
+    const rowScopes = {answer:{}, lecture:{}};
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const FONT_OPTIONS = ['宋体','仿宋','黑体','微软雅黑','华文新魏'];
+    const LATIN_OPTIONS = ['Times New Roman','Arial','Calibri','Cambria'];
+    const ALIGN_OPTIONS = [{value:'left',label:'左对齐'},{value:'center',label:'居中'},{value:'justify',label:'两端对齐'}];
+    const ALIGN_WITH_PRESERVE = [...ALIGN_OPTIONS,{value:'preserve',label:'保持原表结构'}];
+    const LINE_OPTIONS = [1,1.25,1.5,2].map(value => ({value:String(value),label:`${value} 倍`}));
+    const PROFILE_META = {
+      answer:{title:'真题答案标准',kicker:'ANSWER BOOK',intro:'用于统一学校、年份试卷、题型、答案与解析之间的完整格式关系。'},
+      lecture:{title:'讲义标准',kicker:'LECTURE NOTES',intro:'用于统一章、节、知识点正文、注释以及图表公式的完整格式关系。'}
+    };
+
+    const selectControl = (path, label, options) => ({path,label,type:'select',options:options.map(item => typeof item === 'object' ? item : {value:String(item),label:String(item)})});
+    const numberControl = (path, label, min, max, step=.5, suffix='pt') => ({path,label,type:'number',min,max,step,suffix});
+    const textControl = (path, label, placeholder='') => ({path,label,type:'text',placeholder,wide:true});
+    const colorControl = (path, label) => ({path,label,type:'color'});
+    const styleControls = (path, options={}) => {
+      const controls = [
+        selectControl(`${path}.chinese_font`,'中文字体',FONT_OPTIONS),
+        selectControl(`${path}.latin_font`,'英文数字字体',LATIN_OPTIONS),
+        numberControl(`${path}.size_pt`,'字号',8,36,.5),
+        selectControl(`${path}.bold`,'字形',[{value:'null',label:'保留局部加粗'},{value:'true',label:'加粗'},{value:'false',label:'常规'}]),
+        selectControl(`${path}.alignment`,'对齐',options.preserveAlignment ? ALIGN_WITH_PRESERVE : ALIGN_OPTIONS),
+        selectControl(`${path}.line_spacing`,'行距',LINE_OPTIONS),
+      ];
+      if (options.paragraph !== false) controls.push(
+        numberControl(`${path}.first_line_indent_pt`,'首行缩进',0,48,.5),
+        numberControl(`${path}.space_before_pt`,'段前',0,48,.5),
+        numberControl(`${path}.space_after_pt`,'段后',0,48,.5)
+      );
+      if (options.color !== false) controls.push(colorControl(`${path}.color`,'文字颜色'));
+      return controls;
+    };
+    const pageRows = [
+      {id:'page-size',name:'页面尺寸',help:'文档纸张大小与方向',controls:[selectControl('page.size','页面尺寸',[{value:'b5',label:'JIS B5 纵向（标准）'},{value:'a4',label:'A4 纵向'}])]},
+      {id:'page-margin',name:'页边距',help:'上、下、左、右统一设置',controls:[numberControl('page.margin_cm','四边页边距',.8,3.5,.1,'cm')]},
+      {id:'page-distance',name:'页眉页脚距离',help:'文字与页面边缘的距离',controls:[numberControl('page.header_distance_cm','页眉距离',.8,3.5,.1,'cm'),numberControl('page.footer_distance_cm','页脚距离',.8,3.5,.1,'cm')]}
+    ];
+    const commonTail = (profile) => [
+      {title:'公式、图片与表格',description:'控制文档中的非普通正文对象',rows:[
+        {id:'formula',name:'数学公式',help:'避免公式失真或无法编辑',fixed:'必须使用 Word 原生公式对象；公式字体固定为 Cambria Math。程序不会猜测并转换图片公式。'},
+        {id:'formula-layout',name:'公式排版',help:'行内公式与独立公式的位置',fixed:'行内公式跟随正文；独立公式单独成段，不用连续空格或空行定位。'},
+        ...(profile === 'lecture' ? [{id:'formula-number',name:'公式编号',help:'讲义中需要编号的独立公式',fixed:'使用“（章.节.序号）”类层级编号；含多式时可使用 a、b 子编号，与原稿编号逻辑保持一致。'}] : []),
+        {id:'image',name:'独立图片',help:'图片段落与最大显示范围',controls:[selectControl('image.alignment','图片对齐',[{value:'center',label:'居中'},{value:'left',label:'左对齐'}]),numberControl('image.max_width_cm','最大宽度',3,30,.1,'cm'),numberControl('image.max_height_cm','最大高度',3,30,.1,'cm')]},
+        {id:'image-ratio',name:'图片比例',help:'防止图片变形',fixed:'始终保持原始宽高比；只有超过设定范围时才等比缩小，不主动放大。'},
+        ...(profile === 'lecture' ? [{id:'image-number',name:'图号与图名',help:'讲义中图片的标识',fixed:'图号、图名紧随原稿的章节编号逻辑；程序不自行改写图号或图名内容。'}] : []),
+        {id:'table',name:'表格正文',help:'表格内文字与段落格式',controls:styleControls('table',{preserveAlignment:true})},
+        {id:'table-height',name:'表格行高',help:'避免内容被截断',fixed:'固定行高会改为自动适应内容；不会删除表格文字或改变单元格结构。'}
+      ]},
+      {title:'页眉与页脚',description:'控制页眉文字、页脚宣传语和自动页码',rows:[
+        {id:'header',name:'页眉',help:'页眉内容与完整文字格式',controls:[textControl('header.content','页眉内容','允许留空，留空将清除普通页眉文字'),...styleControls('header',{paragraph:false}),selectControl('header.bottom_border','下横线',[{value:'true',label:'保留下横线'},{value:'false',label:'不使用下横线'}])]},
+        {id:'footer',name:'页脚宣传语',help:'保留原文字，仅统一格式',controls:styleControls('footer',{paragraph:false})},
+        {id:'page-number',name:'自动页码',help:'缺失时自动添加 PAGE 页码域',controls:styleControls('page_number',{paragraph:false,color:false})}
+      ]}
+    ];
+
+    const STANDARD_RULES = {
+      answer:[
+        {title:'页面设置',description:'纸张、页边距及页眉页脚位置',rows:pageRows},
+        {title:'正文与前置说明',description:'正文、使用指南总标题与分节标题',rows:[
+          {id:'body',name:'普通题干、答案与解析',help:'正文基础样式',controls:styleControls('styles.Normal')},
+          {id:'front-title',name:'前置说明总标题',help:'例如“复习规划及本书使用指南”',controls:styleControls('special.front_title')},
+          {id:'front-section',name:'前置说明分节标题',help:'例如“一、801材料综合内容简介”',controls:styleControls('special.front_section')}
+        ]},
+        {title:'真题答案标题层级',description:'学校、年份、科目、说明和大题标题分别控制',rows:[
+          {id:'school',name:'学校名称行',help:'例如“北 京 航 空 航 天 大 学”',controls:styleControls('styles.北航')},
+          {id:'exam-year',name:'年份考试标题',help:'例如“1999年硕士学位研究生入学考试答案”',controls:styleControls('styles.Heading 1')},
+          {id:'subject',name:'科目代码与科目名称',help:'科目代码、科目名称所在行',controls:styleControls('styles.911代码')},
+          {id:'notice',name:'考生注意 / 说明',help:'试卷开头的注意事项',controls:styleControls('styles.说明')},
+          {id:'question-title',name:'大题标题',help:'例如“一、填空题”',controls:styleControls('styles.一二三')},
+          {id:'part-title',name:'试卷部分标题',help:'居中的试卷部分名称',controls:styleControls('styles.部分')}
+        ]},
+        ...commonTail('answer')
+      ],
+      lecture:[
+        {title:'页面设置',description:'纸张、页边距及页眉页脚位置',rows:pageRows},
+        {title:'正文与前置说明',description:'知识正文、使用指南与注释内容',rows:[
+          {id:'body',name:'正文知识讲解',help:'讲义普通正文基础样式',controls:styleControls('styles.Normal')},
+          {id:'front-title',name:'前置说明总标题',help:'例如“复习规划及本书使用指南”',controls:styleControls('special.front_title')},
+          {id:'front-section',name:'前置说明分节标题',help:'前置使用说明中的分节标题',controls:styleControls('special.front_section')},
+          {id:'note',name:'注释内容',help:'使用“注”样式的补充说明',controls:styleControls('styles.注')}
+        ]},
+        {title:'讲义知识层级',description:'一级、二级、三级标题分别控制',rows:[
+          {id:'level1',name:'一级标题',help:'考试大纲及章标题',controls:styleControls('styles.一级标题')},
+          {id:'level2',name:'二级标题',help:'章内主要分节标题',controls:styleControls('styles.二级标题')},
+          {id:'level3',name:'三级标题',help:'节内知识点标题',controls:styleControls('styles.三级标题')},
+          {id:'heading-pagination',name:'标题分页规则',help:'避免标题孤立在页尾',fixed:'一级、二级、三级标题与下一段保持同页；不会通过连续空行模拟分页。'}
+        ]},
+        ...commonTail('lecture')
+      ]
+    };
+
+    function selected(name) {
+      const select = document.querySelector(`select[name="${name}"]`);
+      return select ? select.value : document.querySelector(`input[name="${name}"]:checked`).value;
+    }
+    function getPath(root, path) { return path.split('.').reduce((value, key) => value?.[key], root); }
+    function setPath(root, path, value) { const parts=path.split('.'); const last=parts.pop(); const target=parts.reduce((value,key)=>value[key],root); target[last]=value; }
+    function parseControlValue(control) {
+      if (control.dataset.valueType === 'number') return Number(control.value);
+      if (control.dataset.valueType === 'boolean') return control.value === 'true';
+      if (control.dataset.valueType === 'nullable-boolean') return control.value === 'null' ? null : control.value === 'true';
+      return control.value;
+    }
+    function controlHtml(control, settings) {
+      const value = getPath(settings, control.path);
+      const typeHint = control.type === 'number' ? 'number' : (typeof value === 'boolean' ? 'boolean' : (value === null ? 'nullable-boolean' : 'string'));
+      if (control.type === 'select') {
+        const options = control.options.map(option => `<option value="${esc(option.value)}" ${String(value)===option.value?'selected':''}>${esc(option.label)}</option>`).join('');
+        return `<div class="rule-control ${control.wide?'wide':''}"><label>${esc(control.label)}</label><div class="select-wrap"><select data-path="${esc(control.path)}" data-value-type="${typeHint}">${options}</select></div></div>`;
+      }
+      if (control.type === 'color') return `<div class="rule-control"><label>${esc(control.label)}</label><input type="color" value="#${esc(value)}" data-path="${esc(control.path)}" data-value-type="color"></div>`;
+      return `<div class="rule-control ${control.wide?'wide':''}"><label>${esc(control.label)}${control.suffix?`（${esc(control.suffix)}）`:''}</label><input type="${control.type}" value="${esc(value)}" ${control.placeholder?`placeholder="${esc(control.placeholder)}"`:''} ${control.min!==undefined?`min="${control.min}" max="${control.max}" step="${control.step}"`:''} data-path="${esc(control.path)}" data-value-type="${typeHint}"></div>`;
+    }
+    function rowDiffers(row, left, right) { return (row.controls || []).some(control => JSON.stringify(getPath(left,control.path)) !== JSON.stringify(getPath(right,control.path))); }
+    function rowScope(row) {
+      const marked = rowScopes[currentStandard][row.id];
+      if (marked) return marked === 'single' ? '仅本次任务' : '永久默认';
+      if (savedProfiles[currentStandard] && rowDiffers(row, permanentSettings[currentStandard], standardDefaults[currentStandard])) return '永久默认';
+      return '标准值';
+    }
+    function displayValue(control, settings) {
+      const value = getPath(settings, control.path);
+      if (control.type === 'select') return control.options.find(option => String(option.value) === String(value))?.label || String(value ?? '');
+      if (control.type === 'color') return `#${String(value || '000000').toUpperCase()}`;
+      if (control.type === 'text') return String(value || '未填写');
+      return `${value ?? ''}${control.suffix ? ` ${control.suffix}` : ''}`;
+    }
+    function valuesHtml(row, settings) {
+      return `<div class="rule-values">${row.controls.map(control => {
+        const value = displayValue(control, settings);
+        const color = control.type === 'color' ? `<span class="color-preview" style="background:#${esc(getPath(settings,control.path) || '000000')}"></span>` : '';
+        return `<div class="rule-value ${control.wide?'wide':''}"><span class="rule-value-label">${esc(control.label)}</span><span class="rule-value-text" title="${esc(value)}">${color}${esc(value)}</span></div>`;
+      }).join('')}</div>`;
+    }
+    function refreshRuleIcons() {
+      if (window.lucide?.createIcons) window.lucide.createIcons();
+    }
+    function renderStandardPage() {
+      const meta = PROFILE_META[currentStandard];
+      const settings = taskSettings[currentStandard];
+      $('#standardsTitle').textContent = meta.title;
+      $('#standardPageKicker').textContent = meta.kicker;
+      $('#standardPageTitle').textContent = `${meta.title} · 完整规则`;
+      $('#standardPageIntro').textContent = meta.intro;
+      $('#standardSaveState').textContent = savedProfiles[currentStandard] ? '已应用自定义默认' : '当前标准规则';
+      $('#ruleCategories').innerHTML = STANDARD_RULES[currentStandard].map(category => `<section class="rule-category"><header class="rule-category-head"><h3>${esc(category.title)}</h3><p>${esc(category.description)}</p></header>${category.rows.map(row => {
+        if (row.fixed) return `<div class="config-rule-row"><div class="rule-name"><strong>${esc(row.name)}</strong><span>${esc(row.help)}</span></div><div class="fixed-rule-value">${esc(row.fixed)}</div><span class="fixed-badge">固定规则</span></div>`;
+        const editing = activeEdit?.profile === currentStandard && activeEdit?.rowId === row.id;
+        const content = editing ? `<div class="rule-controls">${row.controls.map(control=>controlHtml(control,settings)).join('')}</div>` : valuesHtml(row,settings);
+        const actions = editing
+          ? `<div><div class="rule-actions"><button class="rule-save" type="button" onclick="openSaveModal(this)"><i data-lucide="check"></i><span>保存</span></button><button class="rule-cancel" type="button" onclick="cancelRuleEdit()"><i data-lucide="x"></i><span>取消</span></button></div><span class="rule-scope">${esc(rowScope(row))}</span></div>`
+          : `<div><button class="rule-edit" type="button" onclick="beginRuleEdit(this)" aria-label="修改${esc(row.name)}"><i data-lucide="pencil-line"></i><span>修改</span></button><span class="rule-scope">${esc(rowScope(row))}</span></div>`;
+        return `<div class="config-rule-row ${editing?'is-editing':''}" data-row-id="${esc(row.id)}"><div class="rule-name"><strong>${esc(row.name)}</strong><span>${esc(row.help)}</span></div>${content}${actions}</div>`;
+      }).join('')}</section>`).join('');
+      refreshRuleIcons();
+    }
+    function findRule(profile, rowId) { for (const category of STANDARD_RULES[profile]) { const row=category.rows.find(item=>item.id===rowId); if(row) return row; } return null; }
+    function beginRuleEdit(button) {
+      const rowElement = button.closest('.config-rule-row');
+      const rowId = rowElement.dataset.rowId;
+      if (activeEdit && (activeEdit.profile !== currentStandard || activeEdit.rowId !== rowId)) {
+        showToast('请先保存或取消当前修改');
+        document.querySelector(`[data-row-id="${activeEdit.rowId}"]`)?.scrollIntoView({behavior:'smooth',block:'center'});
+        return;
+      }
+      activeEdit = {profile:currentStandard,rowId};
+      renderStandardPage();
+      requestAnimationFrame(() => {
+        const editingRow = document.querySelector(`[data-row-id="${rowId}"]`);
+        editingRow?.querySelector('select,input')?.focus();
+        editingRow?.scrollIntoView({behavior:'smooth',block:'center'});
+      });
+    }
+    function cancelRuleEdit() {
+      activeEdit = null;
+      renderStandardPage();
+      showToast('已取消修改');
+    }
+    function collectRow(base, rowElement) {
+      const next = clone(base);
+      rowElement.querySelectorAll('[data-path]').forEach(control => {
+        let value = parseControlValue(control);
+        if (control.dataset.valueType === 'color') value = control.value.replace('#','').toUpperCase();
+        setPath(next, control.dataset.path, value);
+      });
+      return next;
+    }
+    function openSaveModal(button) {
+      const rowElement = button.closest('.config-rule-row');
+      const row = findRule(currentStandard,rowElement.dataset.rowId);
+      pendingSave = {profile:currentStandard,row,rowElement,all:false};
+      $('#saveScopeTitle').textContent = `保存“${row.name}”配置`;
+      $('#saveScopeDescription').textContent = '请选择这项修改仅用于当前文档，还是作为以后任务的默认值。';
+      $('#saveScopeModal').classList.remove('hidden');
+    }
+    function restoreWholeStandard() {
+      pendingSave = {profile:currentStandard,all:true};
+      $('#saveScopeTitle').textContent = `恢复${PROFILE_META[currentStandard].title}标准值`;
+      $('#saveScopeDescription').textContent = '整套配置将恢复为最初标准，请选择仅用于本次任务或同时替换永久默认。';
+      $('#saveScopeModal').classList.remove('hidden');
+    }
+    function closeSaveModal() { $('#saveScopeModal').classList.add('hidden'); pendingSave=null; }
+    function showToast(message) { clearTimeout(toastTimer); $('#toast').textContent=message; $('#toast').classList.remove('hidden'); toastTimer=setTimeout(()=>$('#toast').classList.add('hidden'),2600); }
+    async function confirmRuleSave(scope) {
+      if (!pendingSave) return;
+      const {profile,row,rowElement,all} = pendingSave;
+      let taskNext = all ? clone(standardDefaults[profile]) : collectRow(taskSettings[profile],rowElement);
+      if (scope === 'single') {
+        taskSettings[profile] = taskNext;
+        if (all) rowScopes[profile] = {};
+        else rowScopes[profile][row.id] = 'single';
+        activeEdit = null;
+        closeSaveModal(); renderStandardPage(); showToast('已保存，仅用于本次任务');
+        return;
+      }
+      let permanentNext = all ? clone(standardDefaults[profile]) : collectRow(permanentSettings[profile],rowElement);
+      try {
+        const response = await fetch(API_ROUTES.settings,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile,settings:permanentNext})});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '保存失败');
+        permanentSettings[profile] = clone(data.settings);
+        savedProfiles[profile] = clone(data.settings);
+        taskSettings[profile] = taskNext;
+        if (all) rowScopes[profile] = {};
+        else rowScopes[profile][row.id] = 'permanent';
+        activeEdit = null;
+        closeSaveModal(); renderStandardPage(); showToast('已保存为永久默认，并应用于本次任务');
+      } catch (error) { closeSaveModal(); showToast(error.message || '保存失败'); }
+    }
+    function applySettingsPayload(data) {
+      if (!data?.profiles?.answer || !data?.profiles?.lecture) throw new Error('标准配置内容不完整');
+      for (const profile of ['answer','lecture']) {
+        standardDefaults[profile] = clone(data.profiles[profile].defaults);
+        permanentSettings[profile] = clone(data.profiles[profile].effective);
+        taskSettings[profile] = clone(data.profiles[profile].effective);
+        savedProfiles[profile] = data.profiles[profile].saved ? clone(data.profiles[profile].saved) : null;
+      }
+      settingsReady = true;
+    }
+    async function loadSettings() {
+      try {
+        const embedded = JSON.parse($('#initialSettings').textContent);
+        applySettingsPayload(embedded);
+        return;
+      } catch (_) {
+        // 只有旧缓存页面或页面被直接打开时才会走后备请求。
+      }
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        const response = await fetch(API_ROUTES.settings,{signal:controller.signal});
+        clearTimeout(timeout);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取标准配置失败');
+        applySettingsPayload(data);
+      } catch (error) {
+        const message = error.name === 'AbortError' ? '标准配置读取超时，请刷新页面或重启程序。' : (error.message || '读取标准配置失败');
+        showError(message);
+        $('#submit').disabled=true;
+      }
+    }
+    function setBusy(on, text='') { $('#submit').disabled = on; $('#status').textContent = text; }
+    function showError(text='') { $('#error').textContent = text; $('#error').classList.toggle('hidden', !text); }
+    function fileAsBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
+    function formatSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
+    function showStandards(profile, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const target = profile || selected('profile');
+      if (!settingsReady) { showError('标准配置仍在读取，请稍后再试。'); return; }
+      const radio = document.querySelector(`input[name="profile"][value="${target}"]`);
+      if (radio) radio.checked = true;
+      currentStandard = target;
+      activeEdit = null;
+      renderStandardPage();
+      $('#taskView').classList.add('hidden');
+      $('#standardsView').classList.remove('hidden');
+      window.scrollTo({top:0, behavior:'smooth'});
+    }
+    function showTask() {
+      activeEdit = null;
+      $('#standardsView').classList.add('hidden');
+      $('#taskView').classList.remove('hidden');
+      window.scrollTo({top:0, behavior:'smooth'});
+    }
+
+    $('#file').addEventListener('change', event => {
+      const file = event.target.files[0];
+      $('#fileName').textContent = file ? file.name : '点击选择 .docx 文件';
+      $('#fileMeta').textContent = file ? `${formatSize(file.size)} · 点击可重新选择` : '最大 50 MB，原文件不会被覆盖';
+    });
+    function renderReport(report, final=false) {
+      const summary = report.summary;
+      const issues = report.issues;
+      const options = report.task_options || {};
+      const body = options.styles?.Normal || {};
+      $('#result').classList.remove('hidden');
+      $('#resultCaption').textContent = `${report.profile_label}标准 · ${final ? '修改后复查' : '修改前审查'} · ${report.source_name}`;
+      $('#summary').innerHTML = `<span class="pill">正文 ${esc(body.chinese_font || '')} / ${esc(body.latin_font || '')} / ${esc(body.size_pt || '')} pt / ${esc(body.line_spacing || '')}倍行距</span><span class="pill">段落 ${summary.paragraph_count}</span><span class="pill">表格 ${summary.table_count}</span><span class="pill">公式 ${summary.formula_count}</span><span class="pill">图片 ${summary.image_count}</span><span class="pill bad">可修改 ${summary.fixable_count}</span><span class="pill warn">需人工确认 ${summary.warning_count}</span>`;
+      $('#issues').innerHTML = issues.length ? issues.map(issue => `<tr><td>${esc(issue.location)}</td><td>${esc(issue.item)}${issue.affected > 1 ? `<br><span class="muted">影响 ${issue.affected} 处</span>` : ''}</td><td>${esc(issue.current)}</td><td>${esc(issue.expected)}</td><td>${esc(issue.suggestion)}</td><td><span class="tag ${issue.fixable ? 'fix' : 'manual'}">${issue.fixable ? '自动修改' : '人工确认'}</span></td></tr>`).join('') : '<tr><td colspan="6">未发现格式问题。</td></tr>';
+    }
+    function showDownload(url, finalReport) {
+      const actions = $('#resultActions');
+      actions.innerHTML = `<a class="download" href="${esc(url)}">下载修改后的文件</a>`;
+      if (finalReport) {
+        const remaining = finalReport.summary.fixable_count;
+        const note = document.createElement('span');
+        note.className = `pill ${remaining ? 'warn' : 'ok'}`;
+        note.textContent = remaining ? `复查仍有 ${remaining} 项可修改问题` : '可自动处理项已完成';
+        actions.appendChild(note);
+      }
+    }
+    async function applyChanges() {
+      const button = $('#apply');
+      button.disabled = true;
+      button.textContent = '正在生成…';
+      showError();
+      try {
+        const response = await fetch(`${API_ROUTES.taskBase}/${currentJob}/apply`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '修改失败');
+        renderReport(data.final_report, true);
+        showDownload(data.download_url, data.final_report);
+      } catch (error) {
+        showError(error.message);
+        button.disabled = false;
+        button.textContent = '同意并生成修改文件';
+      }
+    }
+    $('#submit').addEventListener('click', async () => {
+      const file = $('#file').files[0];
+      showError();
+      if (!settingsReady) { showError('标准配置仍在读取，请稍后再试。'); return; }
+      if (!file) { showError('请先选择一个 .docx 文件。'); return; }
+      if (!file.name.toLowerCase().endsWith('.docx')) { showError('仅支持 .docx 文件。'); return; }
+      if (file.size > 50 * 1024 * 1024) { showError('文件不能超过 50 MB。'); return; }
+      setBusy(true, '正在读取并审查文件…');
+      $('#result').classList.add('hidden');
+      try {
+        const profile = selected('profile');
+        const payload = {
+          filename:file.name,
+          content_base64:await fileAsBase64(file),
+          profile,
+          mode:selected('mode'),
+          header_text:taskSettings[profile].header.content,
+          task_options:taskSettings[profile]
+        };
+        const response = await fetch(API_ROUTES.audit, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '审查失败');
+        currentJob = data.job_id;
+        renderReport(data.report, false);
+        const actions = $('#resultActions');
+        actions.innerHTML = '';
+        if (data.mode === 'review') {
+          const button = document.createElement('button');
+          button.id = 'apply';
+          button.className = 'secondary';
+          button.textContent = '同意并生成修改文件';
+          button.onclick = applyChanges;
+          actions.appendChild(button);
+        } else {
+          showDownload(data.download_url, data.final_report);
+        }
+        $('#result').scrollIntoView({behavior:'smooth', block:'start'});
+      } catch (error) {
+        showError(error.message || '处理失败');
+      } finally {
+        setBusy(false, '');
+      }
+    });
+    async function openExistingTask(taskId) {
+      if (!taskId) return;
+      setBusy(true, '正在读取已有审查任务…');
+      showError();
+      try {
+        const response = await fetch(`${API_ROUTES.taskBase}/${encodeURIComponent(taskId)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '任务读取失败');
+        currentJob = data.job_id || data.task_id;
+        const visibleReport = data.final_report || data.report;
+        if (!visibleReport) throw new Error('该任务没有可展示的审查结果');
+        renderReport(visibleReport, Boolean(data.final_report));
+        const actions = $('#resultActions');
+        actions.innerHTML = '';
+        if (data.download_url) showDownload(data.download_url, data.final_report);
+        else if (data.status === 'needs_input' || data.mode === 'review') {
+          const button = document.createElement('button');
+          button.id = 'apply';
+          button.className = 'secondary';
+          button.textContent = '同意并生成修改文件';
+          button.onclick = applyChanges;
+          actions.appendChild(button);
+        }
+        $('#result').scrollIntoView({behavior:'smooth', block:'start'});
+      } catch (error) {
+        showError(error.message || '任务读取失败');
+      } finally {
+        setBusy(false, '');
+      }
+    }
+    async function initializePage() {
+      if (PLATFORM_HOSTED) {
+        $('#standaloneBadge').classList.add('hidden');
+        $('#platformTasksButton').classList.remove('hidden');
+        $('#platformHomeButton').classList.remove('hidden');
+        $('#storageNote').lastChild.textContent = '文件保存在本机任务记录中，可在任务管理继续处理';
+      }
+      await loadSettings();
+      const taskId = new URLSearchParams(window.location.search).get('task_id');
+      if (taskId) await openExistingTask(taskId);
+    }
+    initializePage();
+  </script>
+</body>
+</html>

@@ -5,8 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .paths import CONFIG_DIR, LOGS_DIR
+from .question_requirements import delivery_figure_required
 
 MODEL_USAGE_REPORT_NAME = "模型调用汇总.md"
+MODEL_CALL_DETAIL_NAME = "模型调用明细.jsonl"
+MODEL_CALL_LEDGER_NAME = "model_calls.jsonl"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -187,6 +191,111 @@ def _escape_cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _task_ledger_rows(task_id: str) -> list[dict[str, Any]]:
+    rows = _read_jsonl(LOGS_DIR / MODEL_CALL_LEDGER_NAME)
+    return [row for row in rows if str(row.get("task_id") or "") == task_id] if task_id else rows
+
+
+def _pricing() -> tuple[str, dict[str, dict[str, Any]]]:
+    local = _read_json(CONFIG_DIR / "model_pricing.local.json")
+    example = _read_json(CONFIG_DIR / "model_pricing.example.json")
+    data = local or example
+    models = data.get("models") if isinstance(data.get("models"), dict) else {}
+    return str(data.get("currency") or "CNY"), models
+
+
+def _estimated_cost(row: dict[str, Any], prices: dict[str, dict[str, Any]]) -> float | None:
+    direct = row.get("provider_cost")
+    if isinstance(direct, (int, float)):
+        return float(direct)
+    price = prices.get(f"{row.get('provider', '')}/{row.get('model', '')}")
+    if not isinstance(price, dict):
+        return None
+    prompt = _token_int(row.get("prompt_tokens"))
+    completion = _token_int(row.get("completion_tokens"))
+    if prompt is None and completion is None:
+        per_call = price.get("per_call")
+        return float(per_call) if isinstance(per_call, (int, float)) else None
+    input_rate = price.get("input_per_million")
+    output_rate = price.get("output_per_million")
+    if not isinstance(input_rate, (int, float)) or not isinstance(output_rate, (int, float)):
+        return None
+    return (prompt or 0) * float(input_rate) / 1_000_000 + (completion or 0) * float(output_rate) / 1_000_000
+
+
+def _format_elapsed_ms(value: int) -> str:
+    seconds = max(0, int(value)) / 1000
+    if seconds >= 3600:
+        return f"{int(seconds // 3600)}小时{int(seconds % 3600 // 60)}分"
+    if seconds >= 60:
+        return f"{int(seconds // 60)}分{int(seconds % 60)}秒"
+    return f"{seconds:.1f}秒"
+
+
+def _append_call_ledger_summary(lines: list[str], task_id: str, delivered_question_count: int = 0) -> None:
+    rows = _task_ledger_rows(task_id)
+    currency, prices = _pricing()
+    lines.extend(["", "## 逐次调用账本", ""])
+    if not rows:
+        lines.append("- 本任务没有匹配到逐次调用记录（旧任务或调用时未携带 task_id）。")
+        return
+    prompt_total = sum(_token_int(row.get("prompt_tokens")) or 0 for row in rows)
+    completion_total = sum(_token_int(row.get("completion_tokens")) or 0 for row in rows)
+    elapsed_total = sum(max(0, int(row.get("elapsed_ms") or 0)) for row in rows)
+    failed_elapsed_total = sum(
+        max(0, int(row.get("elapsed_ms") or 0)) for row in rows if row.get("outcome") != "succeeded"
+    )
+    known_waste_tokens = sum(
+        (_token_int(row.get("prompt_tokens")) or 0) + (_token_int(row.get("completion_tokens")) or 0)
+        for row in rows
+        if row.get("billable_disposition") == "failed_attempt"
+    )
+    missing_usage = sum(1 for row in rows if _token_int(row.get("prompt_tokens")) is None and _token_int(row.get("completion_tokens")) is None)
+    costs = [_estimated_cost(row, prices) for row in rows]
+    known_costs = [value for value in costs if value is not None]
+    lines.extend([
+        f"- 请求次数：`{len(rows)}`；成功 `{sum(row.get('outcome') == 'succeeded' for row in rows)}`；失败/超时 `{sum(row.get('outcome') != 'succeeded' for row in rows)}`。",
+        f"- 已返回 usage：输入 `{prompt_total:,}`，输出 `{completion_total:,}`；未返回 usage `{missing_usage}` 次。",
+        (
+            f"- 任务账本累计强度：平均 `{len(rows) / delivered_question_count:.1f}` 次请求、"
+            f"`{(prompt_total + completion_total) / delivered_question_count:,.0f}` 个已知 token/题。"
+            if delivered_question_count > 0
+            else "- 任务账本累计强度：没有可用题数，暂不计算。"
+        ),
+        "- 口径提示：该账本按 task_id 累计，包含同一任务的断点恢复、局部修复和历史重跑；不得当作一次全新用户任务的平均成本。",
+        f"- 模型请求累计等待：`{_format_elapsed_ms(elapsed_total)}`；其中失败/超时占用 `{_format_elapsed_ms(failed_elapsed_total)}`。并行请求会重叠，因此该数值不等于用户实际总等待时间。",
+        f"- 成本归因：已知失败尝试 token `{known_waste_tokens:,}`；成功调用在最终产物引用关系落盘前标为“未分类”，不虚报为有效成本。",
+        (f"- 可核算费用：`{sum(known_costs):.6f} {currency}`；另有 `{len(rows) - len(known_costs)}` 次无法折算。" if known_costs else "- 费用尚无法折算：请在 `config/model_pricing.local.json` 填写实际合同单价；token 与调用结果已保留。"),
+        "",
+        "| 时间 | 阶段/用途 | 服务商/模型 | 结果 | 耗时 | 输入/输出 token | 费用 |",
+        "|---|---|---|---|---:|---:|---:|",
+    ])
+    for row, cost in zip(rows, costs):
+        lines.append("| " + " | ".join(_escape_cell(value) for value in (
+            row.get("started_at") or "",
+            f"{row.get('stage') or '-'} / {row.get('purpose') or '-'}",
+            f"{row.get('provider') or '-'}/{row.get('model') or '-'}",
+            row.get("outcome") or "unknown",
+            f"{int(row.get('elapsed_ms') or 0) / 1000:.1f}s",
+            f"{_format_token(row.get('prompt_tokens'))} / {_format_token(row.get('completion_tokens'))}",
+            f"{cost:.6f} {currency}" if cost is not None else "待定",
+        )) + " |")
+
+
 def _drawing_code_models(data: dict[str, Any]) -> dict[str, str]:
     provider = str(data.get("provider") or "").strip()
     default_model = str(data.get("model") or "").strip()
@@ -255,6 +364,7 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
     evidence = _read_json(stage_dir / "evidence_selection.json")
     answers = _read_json(stage_dir / "answer_fragments.json")
     progress = _read_json(stage_dir / "answer_generation_progress.json")
+    final_acceptance = _read_json(stage_dir / "final_acceptance_report.json")
     questions = _questions(structured_exam)
 
     knowledge_models = _stage_final_models(knowledge)
@@ -272,6 +382,13 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
         f"- 任务：`{task_id or structured_exam.get('task_id') or ''}`",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"- 答案生成状态：`{progress.get('status') or '未记录'}`，完成 `{progress.get('completed', '-')}/{progress.get('total', '-')}`",
+        (
+            f"- 最终交付等级：`{final_acceptance.get('delivery_tier') or '未记录'}`"
+            f"（{final_acceptance.get('delivery_tier_label') or '无标签'}）；"
+            f"正式验收：`{'通过' if final_acceptance.get('formal_acceptance_passed') else '未通过'}`"
+            if final_acceptance
+            else "- 最终交付等级：尚未执行最终验收。"
+        ),
         "- token 统计口径：总计按 `prompt_tokens + completion_tokens` 计算；`reasoning_tokens` 单独列出，不重复计入。失败请求如果平台未返回 usage，则标记为“未返回”。",
         "",
         "## 阶段默认配置",
@@ -294,14 +411,15 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
         qtype = str(question.get("confirmed_question_type") or question.get("question_type") or question.get("type") or "").strip()
         score = question.get("confirmed_score", question.get("score", ""))
         type_score = f"{qtype}<br>{score}分" if score != "" and score is not None else qtype
-        figure_text = figure_models.get(qid, "不涉及" if not question.get("needs_figure") else "未记录<br>tokens：未记录")
+        figure_required = delivery_figure_required(question)
+        figure_text = figure_models.get(qid, "不涉及" if not figure_required else "未记录<br>tokens：未记录")
         total_text = _question_token_total(
             [
                 ("知识点识别", knowledge_models.get(qid)),
                 ("教材证据确认", evidence_models.get(qid)),
                 ("答案生成", answer_models.get(qid)),
             ],
-            figure_token_missing=qid in figure_models or bool(question.get("needs_figure")),
+            figure_token_missing=qid in figure_models or figure_required,
         )
         lines.append(
             "| "
@@ -333,6 +451,14 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
                 f"- `{qid}` 最终使用 `{_format_model(info).split('<br>', 1)[0]}`，"
                 f"策略 `{info.get('strategy') or '未记录'}`，共 `{info.get('attempt_count')}` 次尝试。"
             )
+
+    effective_task_id = task_id or str(structured_exam.get("task_id") or "")
+    _append_call_ledger_summary(lines, effective_task_id, len(questions))
+    detail_path = output_dir / MODEL_CALL_DETAIL_NAME
+    detail_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in _task_ledger_rows(effective_task_id)),
+        encoding="utf-8",
+    )
 
     report_path = output_dir / MODEL_USAGE_REPORT_NAME
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

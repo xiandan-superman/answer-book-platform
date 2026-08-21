@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ast
+import base64
 import importlib.util
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -12,9 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .capabilities.catalog import capability_policy_contributions
 from .llm_client import OpenAICompatibleClient, parse_json_content
+from .question_types import explicit_question_type, iter_leaf_question_parts
 from .settings import DRAWING_CODE_MAX_TOKENS
-
 
 ALLOWED_IMPORT_ROOTS = {"math", "numpy", "matplotlib", "textwrap"}
 AUTO_INSTALLABLE_IMPORTS = {"numpy": "numpy", "matplotlib": "matplotlib"}
@@ -176,7 +179,6 @@ MATH_TEXT_COMMANDS = {
     "mathit",
     "mathbf",
     "mathsf",
-    "mathrm",
     "pm",
     "mp",
     "times",
@@ -366,36 +368,16 @@ def drawing_domain_quality_rules(question: dict[str, Any], caption: str = "") ->
             "Do not add explanatory arrows, axes, legends, or equations unless they are needed to answer the drawing question.",
         ]
     )
-    if any(token in text for token in ("晶面", "晶向", "miller", "米勒", "hkl", "uvw", "衍射", "带轴", "zone")):
-        rules.append(
-            "For crystallographic plane indices, direction indices, plane families, and direction families, every negative index must use LaTeX overbar notation, for example {10\\bar{1}0} and <11\\bar{2}0>; never use hyphen forms such as {10-10}, <11-20>, (1-10), or [11-2 0]."
-        )
-    if ("[110]" in text or "110" in text) and ("衍射" in text or "diffraction" in text or "带轴" in text or "zone" in text):
-        rules.extend(
-            [
-                "For a [110] zone-axis electron diffraction pattern, draw a reciprocal-lattice spot array, not only a few isolated spots.",
-                "For BCC [110], spots in the zero-layer plane must satisfy h+k=0 and the BCC extinction rule h+k+l even.",
-                "Use visible black spots; the central transmitted spot (000) and at least two non-central diffraction spots must be clearly labeled.",
-                "Show the rectangular reciprocal-lattice geometry with a symmetric 5 by 5 or comparable spot array so the periodic pattern is recognizable.",
-                "Do not draw reciprocal-vector arrows through the spot array unless the question explicitly asks for basis vectors; arrows often create clutter and label overlap.",
-                "Use only valid [110] zero-layer labels: examples include (000), (1\\bar{1}0), (\\bar{1}10), (002), (00\\bar{2}), (1\\bar{1}2), (\\bar{1}1\\bar{2}), (2\\bar{2}0). Do not label (110), (220), or other h+k != 0 spots.",
-                "Use standard index notation such as (000), (1\\bar{1}0), (002), (1\\bar{1}2); avoid malformed overbar glyphs or unexplained labels.",
-            ]
-        )
-    if ("x射线" in text or "xrd" in text or "粉末衍射" in text) and ("体心" in text or "bcc" in text or "有序" in text or "cscl" in text):
-        rules.extend(
-            [
-                "For BCC powder XRD relative peak positions, use relative N=h^2+k^2+l^2 or sin^2θ proportional to N unless the question explicitly gives lattice constant and wavelength.",
-                "Do not invent lattice constants, wavelengths, or absolute 2θ values when the question asks only for relative positions.",
-                "For disordered BCC, show the fundamental peaks with h+k+l even, such as (110), (200), (211), (220), (310), (222).",
-                "For CsCl-type ordering, show newly appearing superlattice peaks with h+k+l odd, such as (100), (111), (210), (221)/(300), and distinguish them by dashed lines or another black-and-white-safe style.",
-                "If the question has two parts, use two panels or clearly separated rows: before ordering and after ordering. Both panels must contain multiple labeled peaks.",
-                "Do not use color as the key distinction; use solid versus dashed lines, direct labels, vertical offsets, or subplots.",
-            ]
-        )
+    for contribution in capability_policy_contributions(
+        "drawing_quality",
+        {"question": question, "caption": caption, "text": text},
+        text=text,
+    ):
+        if isinstance(contribution, dict):
+            rules.extend(str(rule) for rule in contribution.get("rules", []) if str(rule).strip())
     if question.get("subquestions"):
         rules.append("If the question has multiple drawing subquestions, the figure must cover every drawing subquestion with separate panels, rows, or clearly separated regions.")
-    return rules
+    return list(dict.fromkeys(rules))
 
 
 def _short_drawing_text(value: Any, limit: int = 900) -> str:
@@ -427,6 +409,63 @@ def _compact_drawing_answer_context(fragment: dict[str, Any]) -> dict[str, Any]:
         "answer_summary": _short_drawing_text(fragment.get("answer_summary") or fragment.get("answer") or "", 1200),
         "drawing_relevant_blocks": useful_blocks,
     }
+
+
+def _compact_question_understanding(question: dict[str, Any]) -> dict[str, Any]:
+    understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
+    return {
+        "question_requirements": understanding.get("question_requirements") or [],
+        "tables": understanding.get("tables") or [],
+        "images": [
+            {
+                "image_id": item.get("image_id"),
+                "ocr_text": _short_drawing_text(item.get("ocr_text"), 600),
+                "visual_description": _short_drawing_text(item.get("visual_description"), 1000),
+                "detected_labels": item.get("detected_labels") or [],
+                "axes": item.get("axes") or {},
+                "curves": item.get("curves") or [],
+                "data_points": item.get("data_points") or [],
+                "answer_relevant_observations": item.get("answer_relevant_observations") or [],
+                "uncertainties": item.get("uncertainties") or [],
+            }
+            for item in (understanding.get("images") or [])[:4]
+            if isinstance(item, dict)
+        ],
+        "uncertainties": understanding.get("uncertainties") or [],
+    }
+
+
+def _drawing_prompt_question(question: dict[str, Any]) -> dict[str, Any]:
+    """Remove non-drawing siblings before requesting independent drawing code."""
+
+    drawing_parts = [
+        part
+        for part in iter_leaf_question_parts(question)
+        if explicit_question_type(part) == "作图题"
+    ]
+    if not drawing_parts:
+        return question
+    scoped = dict(question)
+    scoped["stem"] = "\n".join(
+        f"{str(part.get('marker') or part.get('number') or '').strip()} {str(part.get('stem') or '').strip()}".strip()
+        for part in drawing_parts
+        if str(part.get("stem") or "").strip()
+    )
+    scoped["subquestions"] = drawing_parts
+    scoped.pop("requirements", None)
+    return scoped
+
+
+def _drawing_image_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    for raw in (question.get("image_refs") or [])[:4]:
+        path = Path(str(raw))
+        if not path.exists() or not path.is_file():
+            continue
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        parts.append({"type": "image_url", "image_url": {"url": data_url}})
+    return parts
 
 
 RUNNER_TEMPLATE = r'''
@@ -728,6 +767,13 @@ def normalize_drawing_mode(value: Any) -> str:
 
 
 def question_drawing_mode(question: dict[str, Any]) -> str:
+    plan = question.get("figure_schema_plan") if isinstance(question.get("figure_schema_plan"), dict) else {}
+    decision = plan.get("render_decision") if isinstance(plan.get("render_decision"), dict) else {}
+    strategy = str(decision.get("strategy") or "").strip()
+    if strategy in {"programmatic_renderer", "source_image_overlay"}:
+        return "figure_specs"
+    if strategy == "model_code_renderer":
+        return "code"
     return normalize_drawing_mode(question.get("drawing_generation_mode") or question.get("drawing_mode") or question.get("figure_generation_mode") or "code")
 
 
@@ -843,6 +889,18 @@ def _is_standard_mathtext_notation(value: str) -> bool:
 def _text_requires_chinese(value: str) -> bool:
     text = str(value or "").strip()
     if not text or _has_cjk(text) or _is_standard_mathtext_notation(text):
+        return False
+    # Compact point/phase/axis labels are conventional scientific notation, not
+    # English prose. Requiring them to contain CJK rejects valid node, vector,
+    # variable, and symbolic labels. Keep the exemption deliberately short so
+    # actual English labels still go through the prose policy below.
+    compact = re.sub(r"[\s_{}()\[\]+\-*/^=,.:'′″]", "", text)
+    if (
+        compact
+        and not re.search(r"\s", text)
+        and len(text) <= 16
+        and re.fullmatch(r"[A-Za-z0-9α-ωΑ-Ωθλμσγδ₀-₉Ⅰ-Ⅻ]+", compact)
+    ):
         return False
     if re.fullmatch(r"[\s\d\W_+\-*/^=()[\]{}.,;:°θλμÅ]+", text):
         return False
@@ -1068,7 +1126,14 @@ def parse_drawing_code_model_response(content: str) -> tuple[dict[str, Any], lis
     return spec, notes
 
 
-def build_drawing_code_prompt(question: dict[str, Any], fragment: dict[str, Any], *, previous_issues: list[str] | None = None) -> list[dict[str, Any]]:
+def build_drawing_code_prompt(
+    question: dict[str, Any],
+    fragment: dict[str, Any],
+    *,
+    previous_issues: list[str] | None = None,
+    include_images: bool = False,
+) -> list[dict[str, Any]]:
+    question = _drawing_prompt_question(question)
     domain_rules = drawing_domain_quality_rules(question)
     payload = {
         "task": "generate_python_matplotlib_drawing_code",
@@ -1077,6 +1142,8 @@ def build_drawing_code_prompt(question: dict[str, Any], fragment: dict[str, Any]
             "number": question.get("number", ""),
             "stem": question.get("stem", ""),
             "subquestions": question.get("subquestions", []),
+            "question_understanding": _compact_question_understanding(question),
+            "figure_schema_plan": question.get("figure_schema_plan") or {},
         },
         "answer_context": _compact_drawing_answer_context(fragment),
         "previous_issues": previous_issues or [],
@@ -1100,24 +1167,36 @@ def build_drawing_code_prompt(question: dict[str, Any], fragment: dict[str, Any]
             "Use matplotlib Agg backend compatible code. You may import matplotlib.pyplot, numpy, math, textwrap.",
             "Do not read files, use network, shell, subprocess, OS APIs, eval, exec, or open.",
             "Use Chinese for explanatory figure text: titles, axis names, legends, and annotations.",
-            "Keep standard scientific notation in conventional form: XRD, BCC, FCC, HCP, CsCl, hkl, 2θ, d/Å, a.u., MPa, nm, °C, [110], (110).",
+            "Keep variables, units, indices, and other standard scientific notation in their conventional form; do not translate established symbols into prose.",
             "Do not use color as an information channel. The figure must be readable after black-and-white printing.",
             "Use black, white, and gray only; distinguish categories with line styles, markers, hatch patterns, direct labels, vertical offsets, or subplots.",
             "Use the monochrome_code_template pattern: define BLACK/GRAY and pass color=BLACK or color=GRAY explicitly to every plot, scatter, vlines, hlines, bar, errorbar, and annotation arrow. Do not rely on matplotlib default colors.",
             "Legend labels must describe line style or marker meaning in Chinese, not color names.",
             "The drawing must answer the question directly; no decorative background, watermark, JSON text, or code text in the image.",
             "Prefer complete, exam-answer-quality diagrams over minimum viable sketches.",
+            "Treat figure_schema_plan.figure_semantic_contract as mandatory: include every required element, label, and relationship, and do not invent forbidden assumptions.",
+            "Use question_understanding as the authoritative description of labels, axes, curves, and visible relationships from the original question.",
+            "If source_image_policy is preserve_and_overlay, reproduce the original base geometry and add only the requested answer marks; do not replace it with an unrelated generic diagram.",
             *domain_rules,
         ],
     }
+    user_content: Any = json.dumps(payload, ensure_ascii=False)
+    image_parts = _drawing_image_parts(question) if include_images else []
+    if image_parts:
+        user_content = [{"type": "text", "text": user_content}, *image_parts]
     return [
         {"role": "system", "content": "你是专业考试作图代码生成器，按 <JSON> 元数据 + <FILE> 源码块协议输出。"},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "user", "content": user_content},
     ]
 
 
 def generate_drawing_code_spec(client: OpenAICompatibleClient, question: dict[str, Any], fragment: dict[str, Any], *, model: str, previous_issues: list[str] | None = None) -> dict[str, Any]:
-    messages = build_drawing_code_prompt(question, fragment, previous_issues=previous_issues)
+    messages = build_drawing_code_prompt(
+        question,
+        fragment,
+        previous_issues=previous_issues,
+        include_images=bool(getattr(getattr(client, "config", None), "supports_vision", False)),
+    )
     if hasattr(client, "chat_text"):
         result = client.chat_text(
             messages,

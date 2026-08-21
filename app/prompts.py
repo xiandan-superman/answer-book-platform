@@ -8,11 +8,17 @@ from pathlib import Path
 from typing import Any
 
 from .answer_quality_requirements import ANSWER_CONTENT_QUALITY_REQUIREMENTS
-from .figure_schema_registry import get_schema, schema_prompt_catalog
+from .capabilities.catalog import (
+    capability_ids_for_text,
+    capability_policy_contributions,
+    get_schema,
+    schema_prompt_catalog,
+)
+from .drawing_code import question_drawing_mode
+from .omml_input import strip_structured_math_metadata
+from .question_requirements import answer_figure_required
 from .question_scores import confirmed_score_from_question, normalize_score
 from .question_types import has_calculation_answer_unit, question_has_type, question_kind
-from .drawing_code import question_drawing_mode
-
 
 SYSTEM_PROMPT = """你是专业考研真题解析教师，你输出的答案要倾向专业考研真题解析，要平衡学生理解和解析深度。
 你只负责根据输入的真题和教材内容完成解析，并输出一个合法 JSON object。
@@ -129,7 +135,17 @@ _question_image_parts = question_image_parts
 
 
 def _prompt_question_record(question: dict[str, Any]) -> dict[str, Any]:
-    drawing_mode = question_drawing_mode(question) if question_has_type(question, "作图题") else ""
+    def clean_source_markup(value: Any) -> Any:
+        if isinstance(value, str):
+            return strip_structured_math_metadata(value)
+        if isinstance(value, list):
+            return [clean_source_markup(item) for item in value]
+        if isinstance(value, dict):
+            return {key: clean_source_markup(item) for key, item in value.items()}
+        return value
+
+    drawing_required = answer_figure_required(question)
+    drawing_mode = question_drawing_mode(question) if drawing_required else ""
     return {
         "question_id": question.get("question_id", ""),
         "subject_index": question.get("subject_index", ""),
@@ -142,25 +158,45 @@ def _prompt_question_record(question: dict[str, Any]) -> dict[str, Any]:
         "score": normalize_score(question.get("confirmed_score") if question.get("score_reviewed") else question.get("score")),
         "confirmed_score": normalize_score(question.get("confirmed_score")) if question.get("score_reviewed") else None,
         "score_reviewed": bool(question.get("score_reviewed")),
-        "stem": question.get("stem", ""),
-        "subquestions": question.get("subquestions", []),
-        "needs_figure": question_has_type(question, "作图题"),
+        "stem": clean_source_markup(question.get("stem", "")),
+        "subquestions": clean_source_markup(question.get("subquestions", [])),
+        "needs_figure": drawing_required,
         "drawing_generation_mode": drawing_mode,
-        "figure_schema_plan": question.get("figure_schema_plan", {}) if question_has_type(question, "作图题") else {},
+        "figure_schema_plan": question.get("figure_schema_plan", {}) if drawing_required else {},
     }
 
 
 def _figure_schema_registry_for_prompt(question: dict[str, Any]) -> list[dict[str, Any]]:
-    if not question_has_type(question, "作图题"):
+    if not answer_figure_required(question):
         return []
     if question_drawing_mode(question) == "code":
         return []
-    plan = question.get("figure_schema_plan") if isinstance(question.get("figure_schema_plan"), dict) else {}
-    resolution = plan.get("schema_resolution") if isinstance(plan.get("schema_resolution"), dict) else {}
-    kind = str(resolution.get("kind") or "").strip()
+    raw_plan = question.get("figure_schema_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_decision = plan.get("render_decision")
+    decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
+    raw_resolution = plan.get("schema_resolution")
+    resolution: dict[str, Any] = raw_resolution if isinstance(raw_resolution, dict) else {}
+    kind = (
+        "source_image_overlay"
+        if str(decision.get("strategy") or "") == "source_image_overlay"
+        else str(resolution.get("kind") or "").strip()
+    )
     schema = get_schema(kind) if kind else None
     if not schema:
-        return schema_prompt_catalog()
+        chunks = [
+            str(question.get("stem") or ""),
+            str(question.get("section") or ""),
+            str(question.get("section_raw") or ""),
+        ]
+        for subquestion in question.get("subquestions") or []:
+            if not isinstance(subquestion, dict):
+                continue
+            chunks.append(str(subquestion.get("stem") or ""))
+            for requirement in subquestion.get("requirements") or []:
+                if isinstance(requirement, dict):
+                    chunks.append(str(requirement.get("stem") or ""))
+        return schema_prompt_catalog(capability_ids_for_text("\n".join(chunks)))
     return [
         {
             "schema_id": schema.get("schema_id"),
@@ -171,6 +207,22 @@ def _figure_schema_registry_for_prompt(question: dict[str, Any]) -> list[dict[st
             "optional_fields": schema.get("optional_fields", []),
         }
     ]
+
+
+def _question_capability_text(question: dict[str, Any]) -> str:
+    chunks = [
+        str(question.get("stem") or ""),
+        str(question.get("section") or ""),
+        str(question.get("section_raw") or ""),
+    ]
+    for subquestion in question.get("subquestions") or []:
+        if not isinstance(subquestion, dict):
+            continue
+        chunks.append(str(subquestion.get("stem") or ""))
+        for requirement in subquestion.get("requirements") or []:
+            if isinstance(requirement, dict):
+                chunks.append(str(requirement.get("stem") or ""))
+    return "\n".join(chunks)
 
 
 def _textbook_content_record(row: dict[str, Any]) -> dict[str, Any]:
@@ -207,6 +259,24 @@ def _textbook_content_record(row: dict[str, Any]) -> dict[str, Any]:
 
 def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str, Any]], question_understanding: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     depth_profile = build_answer_depth_profile(question)
+    capability_text = _question_capability_text(question)
+    answer_policy_contributions = capability_policy_contributions(
+        "answer_generation",
+        {"question": question, "text": capability_text},
+        text=capability_text,
+    )
+    domain_answer_rules = [
+        str(rule)
+        for contribution in answer_policy_contributions
+        if isinstance(contribution, dict)
+        for rule in contribution.get("hard_rules", [])
+        if str(rule).strip()
+    ]
+    domain_symbolic_guidance = [
+        str(contribution.get("symbolic_notations_guidance") or "").strip()
+        for contribution in answer_policy_contributions
+        if isinstance(contribution, dict) and str(contribution.get("symbolic_notations_guidance") or "").strip()
+    ]
     understanding = question_understanding if isinstance(question_understanding, dict) else question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
     has_calc_unit = has_calculation_answer_unit(question)
     schema_hint = {
@@ -236,7 +306,9 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
                         "result_formula_indices": [3],
                         "result_text": "本步结论。"
                     }
-                ]
+                ],
+                "figure_specs": [{"kind": "figure_specs 模式下该小问自己的注册 schema kind", "caption": "该小问图题"}],
+                "drawing_code_specs": [{"figure_id": "code 模式可选", "caption": "该小问图题", "code": "def draw(output_path: str) -> None: ..."}]
             }
         ],
         "option_analysis": {"A": "选择题填写；非选择题为空对象"},
@@ -258,8 +330,58 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
                 "role": "relation"
             }
         ],
+        "calculation_contract": {
+            "requested_outputs": [
+                {
+                    "answer_unit_number": "计算作答单元编号",
+                    "request_text": "原题要求的量；只能来自题干，不得根据教材内容扩展题意",
+                    "basis": "温度、时刻、总体、边界或其他共同计算基准"
+                }
+            ],
+            "result_quantities": [
+                {
+                    "quantity_id": "q1",
+                    "answer_unit_number": "所属作答单元",
+                    "name": "结果量名称",
+                    "value": 0.5,
+                    "unit": "单位或 fraction",
+                    "basis": "与同一组结果共享的计算基准",
+                    "formula_index": 3
+                }
+            ],
+            "intermediate_quantities": [
+                {
+                    "quantity_id": "i1",
+                    "answer_unit_number": "所属作答单元",
+                    "name": "转变或分配前的父项量",
+                    "value": 0.6,
+                    "unit": "单位或 fraction",
+                    "basis": "必须与子项相同的全局基准"
+                }
+            ],
+            "partitions": [
+                {
+                    "answer_unit_number": "所属作答单元",
+                    "basis": "共同计算基准",
+                    "component_quantity_ids": ["q1", "q2"],
+                    "expected_total": 1.0
+                }
+            ],
+            "transitions": [
+                {
+                    "transition_id": "t1",
+                    "answer_unit_number": "所属作答单元",
+                    "basis": "父项和子项共同的全局基准",
+                    "parent_quantity_id": "i1",
+                    "product_quantity_ids": ["q1", "q2"],
+                    "derived_quantity_id": "q2",
+                    "local_fraction": 0.2
+                }
+            ]
+        },
         "symbolic_notations": [
-            "可选。只放专业符号、图示标签、晶面指数、晶向指数、晶面族、晶向族、相区名、坐标轴标签或单位说明；不要把完整关系式、判据式、反应式放在这里。涉及负指数时必须用 LaTeX 上横线，例如 {10\\bar{1}0}、<11\\bar{2}0>。"
+            "可选。只放专业符号、图示标签、坐标轴标签或单位说明；不要把完整关系式、判据式或反应式放在这里。"
+            + (f" 当前学科补充：{' '.join(domain_symbolic_guidance)}" if domain_symbolic_guidance else "")
         ],
         "drawing_code_specs": [
             {
@@ -274,6 +396,7 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
                 "kind": "custom_diagram 或 figure_schema_plan.schema_resolution.kind 中指定的专业 schema kind",
                 "caption": "图题或图注",
                 "required_labels": ["必须出现在图中的文字或对象标签"],
+                "features": [{"label": "注册 schema 要求的结构化特征", "xy": [0.5, 0.5]}],
                 "elements": [
                     {"type": "circle", "center": [0, 0], "radius": 0.8, "label": "对象标签"},
                     {"type": "arrow", "start": [0, 0.9], "end": [0, 0.1], "label": "箭头含义", "color": "#dc2626"},
@@ -299,6 +422,9 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
             "For choice questions, explain why the selected option is correct and why valuable distractors are wrong.",
             "For calculation questions, analysis is only a short setup. Put the actual solution process in steps.",
             "For calculation questions, steps must be answer-book style: each step must follow step goal -> relation formula -> substitution formula -> result formula/result text, with unit where applicable.",
+            "For calculation questions, solve the governing equations before writing the JSON. Recompute every substitution numerically, verify the sign against the stated process direction, and make every equality chain arithmetically true.",
+            "For calculation questions, return exactly one internally consistent solution. Never include an abandoned trial calculation, a conflicting alternative result, phrases such as 'standard answer disagrees', or a knowingly incorrect value followed by a correction note.",
+            "For calculation questions, synchronize the same final value and unit across answer, answer_units[].answer, result formulas, steps[].result_text, and calculation_contract. Do not merely copy a value if it contradicts the displayed substitution formula.",
             "For calculation questions, step.text must only describe what is being calculated and why, e.g. '由气液平衡关系计算80摄氏度下气化焓。'; do not put {f1}, {f2}, formula text, substitution text, or result formula in step.text.",
             "For calculation questions, the final document will render every step as: step.text, original relation formula, '带入数值：' plus substitution formula, '求得：' plus result formula, then result_text.",
             "For calculation questions, use relation_formula_indices, substitution_formula_indices, and result_formula_indices to attach formulas to the exact step; formula_indices is only a backward-compatible fallback.",
@@ -312,13 +438,17 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
             "Do not merge multiple requirements into one crowded paragraph. Use the original requirement number and stem as the answer organization.",
             "For drawing requirements, provide the textual answer context and precise drawing requirements; do not attempt to generate or embed final image pixels.",
             "For 作图题 with question.drawing_generation_mode=code, the dedicated drawing-code generator is the primary figure path. The answer model may output drawing_code_specs only as an optional fallback; do not spend excessive tokens on code when clear drawing requirements and analysis are enough.",
-            "For 作图题 with question.drawing_generation_mode=code, if you do output drawing_code_specs, each code item must define exactly one function draw(output_path: str) -> None and save a PNG to output_path using Matplotlib. Use Chinese explanatory text, keep standard terms such as XRD/BCC/FCC/CsCl/hkl/2θ/a.u./[110]/(110), and make the figure black-and-white printable by using line styles, markers, hatch, direct labels, offsets, or subplots instead of color.",
+            "For 作图题 with question.drawing_generation_mode=code, if you do output drawing_code_specs, each code item must define exactly one function draw(output_path: str) -> None and save a PNG to output_path using Matplotlib. Use Chinese explanatory text, preserve the standard technical terms and notation required by the question, and make the figure black-and-white printable by using line styles, markers, hatch, direct labels, offsets, or subplots instead of color.",
             "For multi-part calculation questions, each calculation-type answer unit should have at least one calculation/judgment step unless the unit itself clearly does not require a calculation answer.",
             "Never insert a newline inside Chinese ordinal labels such as 第(2)问, 第2小问, or 第3步; keep the whole label on one line.",
             "For calculation questions, use Arabic numerals and standard units/symbols in text, e.g. 55.56 mol, 1.043×10^-3 m^3, -2261 kJ; do not write numbers as Chinese words.",
             "For calculation questions, every important relation, substitution expression, and result expression must appear in formulas; steps should reference those formulas by 1-based indices.",
+            "Keep formulas and calculation_contract only at the question-draft top level. answer_units may reference top-level formulas by index but must not contain their own formulas or calculation_contract fields.",
+            "For calculation questions, calculation_contract is mandatory. Copy every requested numerical output from the question into requested_outputs, record every final numerical quantity once in result_quantities, set formula_index to the 1-based index of the matching result formula, and declare each exhaustive composition/fraction/probability distribution as a partition whose components share one basis and sum to expected_total (normally 1 or 100). This ledger is machine-checked and is not rendered to users.",
+            "For any multi-stage split, reaction, transfer, precipitation, loss, or transformation, put the pre-change parent amount in intermediate_quantities and add a transitions item. The transition products must include both the derived amount and the retained/remainder amount on the same global basis and must sum to the parent. If local_fraction is given, derived_quantity_id must equal parent_quantity_id multiplied by that local fraction. Do not multiply by a different coexisting quantity. Composite groups remain intact unless the requested final partition explicitly decomposes that group.",
+            "The scope of requested_outputs is controlled only by the question stem and confirmed answer units. Textbook evidence may support an answer but must never introduce an additional requested output. In particular, never treat a textbook discussion of a related quantity as if the question had asked for it.",
             "For term explanation, short-answer, essay, proof, derivation, fill-in, judgment, graphic, and comprehensive questions, follow the matching requirements in answer_content_quality_requirements.",
-            "Strictly follow the confirmed question_type fields. Do not infer 作图题 from words such as 画出、绘制、作图、示意图、图示、标出、衍射花样、晶胞 when the confirmed question_type is not 作图题.",
+            "Strictly follow the confirmed question_type fields. Do not infer 作图题 from drawing-related words in the stem when the confirmed question_type is not 作图题.",
             "If a judgment, fill-in, short-answer, proof, or essay question uses a criterion, definition, inequality, proportional relation, or named equation, put that relation in formulas instead of translating it into long Chinese prose.",
             "Do not write formula paraphrases such as 'Gibbs free energy is less than zero', 'equals enthalpy minus temperature times entropy', or similar Chinese wording in analysis; use formulas and explain only the conclusion and variable meaning.",
             "For non-calculation questions, write analysis as a step-by-step reasoning chain; do not start analysis with a formula list or grouped formula dump. Include each formula only where the corresponding criterion, relation, or definition is used.",
@@ -326,11 +456,14 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
             "Formula placeholders and formula_indices are one-based: the first formula is {f1} / index 1. Never output {f0} or formula_indices containing 0.",
             "For non-calculation questions, formula_indices is only a backup declaration; the visible answer-book style depends on inline {fN} placeholders inside analysis_segments.text.",
             "For non-calculation questions, do not leave useful formulas detached from the reasoning. If a formula is necessary, reference it in the relevant analysis_segments item; if it is not necessary, omit it from formulas.",
-            "Do not put simple professional labels into formulas only to satisfy formula rules. Miller indices such as (111), zone axes such as [110], phase labels such as α/γ/δ/Fe3C/L, axis labels such as w(C) or T, peak labels, and unit strings should stay in normal Chinese text, symbolic_notations, figure_specs.required_labels, or drawing_code_specs labels unless they are part of an actual relation or criterion.",
-            "For crystallographic plane indices, direction indices, plane families, and direction families, every negative index must use LaTeX overbar notation. Write {10\\bar{1}0} and <11\\bar{2}0>; never write hyphen forms such as {10-10}, <11-20>, (1-10), or [11-2 0].",
+            "Do not put simple professional labels, axis labels, peak labels, or unit strings into formulas only to satisfy formula rules. Keep them in normal text, symbolic_notations, figure_specs.required_labels, or drawing-code labels unless they are part of an actual relation or criterion.",
             "For 作图题, formulas should only contain relations that explain drawing logic. Pure labels, coordinates, phase names, crystal-plane labels, and axis labels belong to figure labels or symbolic_notations, not detached formulas.",
             "Only when the confirmed question_type or requirement question_type is 作图题, output drawing_code_specs or figure_specs according to drawing_generation_mode; do not output drawing outputs for non-作图题 even if the stem contains drawing-related words.",
-            "For 作图题 with question.drawing_generation_mode=figure_specs, if question.figure_schema_plan.schema_resolution.status is schema_found, figure_specs.kind must use that planned registry kind and fill only its professional parameters; do not invent another kind.",
+            "For 作图题 with question.drawing_generation_mode=figure_specs, if question.figure_schema_plan.schema_resolution.status is schema_found, figure_specs.kind must use that planned registry kind unless render_decision.strategy is source_image_overlay; do not invent another kind.",
+            "For a multipart question, each drawing answer unit must follow that unit's own figure_schema_plan and emit its own figure_specs item; never merge two independent drawing units into one crowded image.",
+            "For a registered schema, populate the schema's required_fields exactly. Use generic elements only for custom_diagram; for microstructure_schematic use features, for generic_axis_curve use points, and for multi_curve_axis_plot use series.",
+            *domain_answer_rules,
+            "If question.figure_schema_plan.render_decision.strategy is source_image_overlay, output exactly one figure_spec with kind=source_image_overlay, source_image_index, caption, and annotations. Use normalized [0,1] image coordinates for line/arrow/rectangle/ellipse/point/text annotations. Never return a replacement base image or a local source_image path.",
             "For 作图题 with question.drawing_generation_mode=figure_specs, if no registry schema is available, use custom_diagram only when the required figure can be expressed with line/arrow/circle/ellipse/arc/text/point primitives; otherwise leave figure_specs empty and put the reason in uncertainties so the image-model fallback can be audited.",
             "If question_understanding contains images or tables, use it as the authoritative normalized question surface. Do not ignore image OCR, visual labels, axes, legends, table_rows, or table visual notes.",
             "Textbook evidence may include asset_available=true for a textbook figure/table/equation image. If no actual image is attached to this prompt, do not claim to have read the original textbook image; use only content, caption, ocr_text, table_html, table_rows, visual_summary, and surrounding_text_preview.",
@@ -363,7 +496,12 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
             )
         ]
     user_text = json.dumps(user_payload, ensure_ascii=False)
-    image_parts = [] if understanding else question_image_parts(question)
+    raw_plan = question.get("figure_schema_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_decision = plan.get("render_decision")
+    decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
+    overlay_requires_pixels = str(decision.get("strategy") or "") == "source_image_overlay"
+    image_parts = question_image_parts(question) if overlay_requires_pixels or not understanding else []
     user_content: str | list[dict[str, Any]]
     if image_parts:
         user_content = [{"type": "text", "text": user_text}, *image_parts]

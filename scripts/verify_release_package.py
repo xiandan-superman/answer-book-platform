@@ -16,6 +16,7 @@ DEFAULT_ZIP = ROOT.parent / "answer_book_platform_v1_release.zip"
 FORBIDDEN_MARKERS = [
     ".env",
     "config/providers.local.json",
+    "config/api_keys.json",
     "tasks/",
     "outputs/",
     "logs/",
@@ -27,6 +28,14 @@ FORBIDDEN_MARKERS = [
     "final_acceptance_report.json",
     "quality_gates_report.json",
     "_delivery.zip",
+    "textbooks/",
+    "exams/",
+    "practice_history/",
+    "practice_jobs/",
+    "validation/",
+    "validation_artifacts/",
+    "validation_runs/",
+    "tests/",
 ]
 
 
@@ -56,10 +65,13 @@ def verify(zip_path: Path) -> dict:
             issues.append("forbidden entries in zip: " + ", ".join(bad[:30]))
         required = [
             "README.md",
+            "APP_VERSION",
             "VERSION",
+            "INTERNAL_EVALUATION_LICENSE.md",
             "RELEASE_MANIFEST.json",
             "requirements.txt",
             "app/server.py",
+            "standalone_word_format_reviewer/format_engine.py",
             "scripts/run_platform.py",
             "web/index.html",
         ]
@@ -98,6 +110,15 @@ def verify(zip_path: Path) -> dict:
                     issues.append(f"{folder}/ should be empty or absent in release")
             if (extracted / ".env").exists():
                 issues.append(".env exists after extraction")
+            import_proc = subprocess.run(
+                [sys.executable, "-c", "import app.server; import app.exercise_generation"],
+                cwd=extracted,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if import_proc.returncode != 0:
+                issues.append("runtime import smoke test failed: " + (import_proc.stderr or import_proc.stdout)[:2000])
             if shutil.which("python3") is None and shutil.which("python") is None:
                 issues.append("python executable not found on verifier machine")
     return {"ok": not issues, "zip": str(zip_path), "issue_count": len(issues), "issues": issues}

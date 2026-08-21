@@ -12,8 +12,54 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT.parent / "answer_book_platform_v1_release.zip"
 
-EXCLUDED_DIRS = {"tasks", "outputs", "logs", "cache", "tmp", "output", "backups", "dist", "generated", "pyinstaller-work", ".git", ".playwright-cli", "__pycache__", ".pytest_cache"}
-EXCLUDED_FILES = {".env", "config/providers.local.json", "textbooks/textbook_page_map.manual.csv", "quality_gates_report.json", ".DS_Store"}
+EXCLUDED_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".playwright-cli",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".venv-app",
+    "__pycache__",
+    "backups",
+    "cache",
+    "dist",
+    "exams",
+    "logs",
+    "output",
+    "outputs",
+    "practice_history",
+    "practice_jobs",
+    "tasks",
+    "tests",
+    "textbooks",
+    "tmp",
+    "tools",
+    "truth-exam-redesign",
+    "validation",
+    "validation_artifacts",
+    "validation_runs",
+}
+EXCLUDED_FILES = {
+    ".coverage",
+    ".DS_Store",
+    ".env",
+    "AGENTS.md",
+    "RELEASE_MANIFEST.json",
+    "config/api_keys.json",
+    "config/providers.local.json",
+    "quality_gates_report.json",
+}
+EXCLUDED_PREFIXES = {
+    "assets/fonts/dolbydu-font/Sans/",
+    "assets/fonts/dolbydu-font/Serif/",
+    "assets/fonts/dolbydu-font/art/",
+    "assets/fonts/dolbydu-font/elegant/",
+    "assets/fonts/dolbydu-font/mono/",
+    "assets/fonts/dolbydu-font/unicode/",
+    "build/generated/",
+    "build/pyinstaller-work/",
+}
 EXCLUDED_SUFFIXES = {".pyc"}
 RELEASE_MANIFEST_NAME = "RELEASE_MANIFEST.json"
 
@@ -25,6 +71,8 @@ def should_include(path: Path) -> bool:
         return False
     rel_posix = rel.as_posix()
     if rel_posix in EXCLUDED_FILES or path.name in EXCLUDED_FILES:
+        return False
+    if any(rel_posix.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
         return False
     if path.suffix in EXCLUDED_SUFFIXES:
         return False
@@ -55,26 +103,31 @@ def build_release(output: Path) -> dict:
         for p in files:
             zf.write(p, p.relative_to(ROOT).as_posix())
         release_manifest = {
-            "package_name": "answer_book_platform_v1",
-            "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip() if (ROOT / "VERSION").exists() else "0.0.0",
+            "package_name": "answer_book_platform_internal_beta",
+            "product_name": "真题解析与生题平台",
+            "version": (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip(),
+            "platform_version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "file_count": len(files) + 1,
             "included_files": included_files + [RELEASE_MANIFEST_NAME],
             "excluded_dirs": sorted(EXCLUDED_DIRS),
             "excluded_files": sorted(EXCLUDED_FILES),
             "excluded_suffixes": sorted(EXCLUDED_SUFFIXES),
-            "notes": "Runtime tasks, outputs, logs, local API keys, manual page maps, caches, temporary files, and local browser artifacts are intentionally excluded.",
+            "excluded_prefixes": sorted(EXCLUDED_PREFIXES),
+            "notes": "Runtime data, uploaded materials, task history, outputs, API keys, validation artifacts and development-only files are intentionally excluded.",
         }
         zf.writestr(RELEASE_MANIFEST_NAME, json.dumps(release_manifest, ensure_ascii=False, indent=2))
     manifest = {
         "output": str(output),
-        "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip() if (ROOT / "VERSION").exists() else "0.0.0",
+        "version": (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip(),
+        "platform_version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
         "file_count": len(files) + 1,
         "size_bytes": output.stat().st_size,
         "sha256": sha256_file(output),
         "release_manifest": RELEASE_MANIFEST_NAME,
         "excluded_dirs": sorted(EXCLUDED_DIRS),
         "excluded_files": sorted(EXCLUDED_FILES),
+        "excluded_prefixes": sorted(EXCLUDED_PREFIXES),
     }
     return manifest
 

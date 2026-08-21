@@ -1,19 +1,22 @@
-# Answer Book Platform v1
+# 真题解析与生题平台
 
-本项目是脱离 Codex 执行环境的本地真题解析生产平台第一版。
+本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`VERSION` 是平台版本号的唯一来源；当前版本为 8.23。
 
 核心原则：
 
 - 程序主控任务流程，模型只作为局部判断器。
 - 第一版内置 OpenAI 与 DeepSeek，均通过 OpenAI-compatible Chat Completions 接口调用。
-- API Key 只保存在本地配置或环境变量中，不写入任务产物和日志。
+- API Key 通过独立的“API 配置”页面统一管理，底层保存在程序数据目录的 `config/api_keys.json`，不写入任务产物和日志，更新程序不会覆盖。
 - v4 公式链路强制要求：公式不得混入普通正文，必须进入公式对象字段。
 - 生成、审计、渲染由平台程序控制，执行任务时不得临时修改工具链。
+- 当前本地平台采用单服务进程、多线程工作器架构。正式启动入口和命令行解析入口共享进程锁；重复启动会在恢复队列或调用模型前停止，避免重复任务和额外费用。异常退出后操作系统会自动释放锁，可直接重新启动。
+- 多模态模型直接接收原题图片；文本模型才使用单独的视觉备用模型。模型能力来自本地配置并按“服务商 + 模型 + 能力声明”缓存，不会为了识别能力重复调用或试探模型。
+- 桌面版可在顶部点击“检查更新”，只接受 GitHub Release 中通过 SHA256 校验的对应平台安装包；更新不会覆盖用户数据和 API Key。
 
 ## 快速启动
 
 ```bash
-cd /Users/ljj/Documents/真题解析/answer_book_platform_v1
+cd <项目目录>
 python3 scripts/install_dependencies.py
 python3 scripts/check_environment.py
 python3 scripts/start_platform.py
@@ -37,25 +40,25 @@ Windows 可运行：
 start_platform_windows.bat
 ```
 
-## 桌面 App 与局域网监控
-
-项目已提供 macOS `.app` 和 Windows 桌面版构建配置。桌面版会将 Python 和运行依赖一起打包，并在独立窗口中打开平台。
-
-App 默认允许局域网监控。在“运行监控”页面可以复制本机访问地址、监控账号和随机密码；同一局域网中的管理电脑输入该地址后即可查看这台电脑的任务状态、运行日志和任务事件。
-
-详细构建、数据目录、防火墙和访问认证说明见：
-
-[桌面 App 与局域网监控](docs/DESKTOP_APP.md)
-
 ## 配置模型
 
-复制示例配置：
+首次启动会自动创建内部配置文件 `config/api_keys.json`。普通用户不需要打开文件：
+在首页或顶部导航进入“API 配置”，选择已接入的平台，填写 Key，测试成功后保存。
+同一个页面可替换或删除已保存的 Key，所有需要模型的模块统一读取这份配置。
+专项练习可以单独选择正式生题的服务商和模型，API Key 仍统一从“API 配置”页面读取。用户选择的主模型固定负责蓝图设计、正式生题、单题重生和题图修复；视觉备用模型只在尚未解析的图片需要识别时使用，图片识别完成后不会因为原附件仍存在而静默替换正式生题模型。
 
-```bash
-cp config/providers.example.json config/providers.local.json
-```
+专项练习题图采用可同时渲染到网页和 Word 的结构化图形数据。题目正文生成后，题图会独立完成元素、曲线采样、状态点坐标和可证明几何关系检查；不合格时只修复当前题图，不重写题目或同批其它题。P-V 等坐标图中的节点与曲线使用同一数据坐标，程序会补齐可确定的坐标轴、状态点和终压辅助线。
 
-填入 API Key，或使用环境变量：
+正式生题按小批次调用模型；如果模型只返回批次中的部分题目，平台会保留序号唯一且结构有效的题目，并对缺失或重复序号逐题独立补生两次。仍未补齐时只标记对应题目失败，页面会展示安全的结构诊断，不再让同批已成功题目一起作废。
+
+蓝图审查页可选“每个蓝图生成多道题”。关闭时保持一项蓝图对应一题；开启时每项生成 2～3 道变式，可选择基础到挑战的递进训练或保持同难度。平台为每道变式分配独立身份，并按父蓝图分组显示，因此单题编辑、重新生成、勾选和 Word 导出互不覆盖。最终题量只做耗时、费用和配图处理量提示，不设置强制总数上限。
+
+“知识点出题”是独立于真题专项练习的入口。可以只填写知识点名称，也可以粘贴教材原文或混合上传图片、PDF、Word、TXT、Markdown；生成前可选择题目数量、题型、难度方向和补充要求。平台会先生成可审查的出题蓝图，确认后再生成具体模拟题，并复用现有编辑、重新生成、复制和 Word 导出能力。
+
+- macOS：`~/Library/Application Support/Answer Book Platform/config/api_keys.json`
+- Windows：`%LOCALAPPDATA%\Answer Book Platform\config\api_keys.json`
+
+也可以使用环境变量覆盖文件中的值：
 
 ```bash
 export OPENAI_API_KEY="..."
@@ -67,23 +70,12 @@ export BAILIAN_IMAGE_MODEL="qwen-image-2.0-pro"
 export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 ```
 
-`providers.local.json` 不应提交或打包给他人。
+旧版 `.env` 和 `config/providers.local.json` 中已有的 Key 会在首次启动时自动迁移。
+这两个旧文件仍兼容，但新版本以独立 Key 文件为主要配置入口。
 
-也可以直接创建 `.env`：
+“API 配置”页面集中管理 OpenAI、DeepSeek、火山方舟、智谱、阿里云百炼和云雾等已接入平台。新 Key 必须先通过连接测试才能保存；模型配置页面只负责选择具体模型，不再重复输入 Key。页面和接口只返回 `api_key_set`，不会回显已保存密钥；发布包脚本会排除真实 Key 文件。
 
-```bash
-OPENAI_API_KEY=...
-DEEPSEEK_API_KEY=...
-ARK_API_KEY=...
-DASHSCOPE_API_KEY=...
-ARK_IMAGE_MODEL=doubao-seedream-5-0-260128
-BAILIAN_IMAGE_MODEL=qwen-image-2.0-pro
-ANSWER_BOOK_IMAGE_SIZE=2048x2048
-```
-
-平台会自动读取 `.env`。`.env` 已被 `.gitignore` 排除。
-
-Web 控制台也可以在“模型配置”中保存 OpenAI / DeepSeek / 火山方舟 / 阿里云百炼 API Key。保存动作只写入本机 `.env`，页面和接口只返回 `api_key_set`，不会回显密钥；发布包脚本会排除 `.env`。
+真题模型配置中可单独选择“高风险正确性复核”模型。它仅用于计算/作图综合题的证据复核，以及硬校验失败题的单题纠错；不配置时自动复用结构化解析模型，不会额外引入另一条隐式模型路线。命令行可用 `--correctness-provider` 和 `--correctness-model` 显式指定。
 
 火山方舟使用 OpenAI 兼容接口，默认地址为 `https://ark.cn-beijing.volces.com/api/v3`。模型选择处可以直接填写方舟控制台里的模型 ID 或推理接入点 ID，例如 `doubao-seed-1-6-250615` 或 `ep-...`。
 
@@ -109,6 +101,8 @@ python3 scripts/create_task.py \
   --textbooks "/absolute/path/to/textbooks" \
   --provider deepseek
 ```
+
+命令行入口会在创建任务前发现该目录中的受支持教材文件、建立或复用教材索引，并把精确文件清单绑定到任务。目录为空、教材包无效或页码映射失败时会立即报错，不会先进入模型流水线。
 
 3. 执行任务：
 
@@ -163,45 +157,49 @@ tasks/<task_id>/stage_outputs/acceptance_report.json
 ```bash
 python3 scripts/create_demo_inputs.py
 python3 scripts/create_task.py \
-  --exam "/Users/ljj/Documents/真题解析/answer_book_platform_v1/exams/demo_物理化学真题.docx" \
-  --textbooks "/Users/ljj/Documents/真题解析/answer_book_platform_v1/textbooks" \
+  --exam "exams/demo_物理化学真题.docx" \
+  --textbooks "textbooks" \
   --provider deepseek
 python3 scripts/run_task.py "<task_id>" --render
 ```
 
-## 生成移植包
+## 平台质量检查
 
-统一使用脚本打包，避免夹带 API key、任务历史、输出结果或缓存：
+日常开发先运行平台质量门禁：
 
 ```bash
-python3 scripts/package_release.py
-python3 scripts/verify_release_package.py
-python3 scripts/audit_project_completeness.py
 python3 scripts/run_quality_gates.py
 ```
 
-默认输出：
+安装 `requirements-dev.txt` 后可运行包含 lint、类型检查和覆盖率的完整门禁：
 
-```text
-/Users/ljj/Documents/真题解析/answer_book_platform_v1_release.zip
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 scripts/run_quality_gates.py --full
 ```
 
-发布包内包含：
+跨任务查看 Shadow 质量规则的样本量、影响范围和无人值守动作上限：
 
-```text
-VERSION
-RELEASE_MANIFEST.json
+```bash
+python3 scripts/audit_quality_metrics.py --output cache/quality_metrics_report.json
 ```
 
-`RELEASE_MANIFEST.json` 记录版本、文件清单和排除项；`verify_release_package.py` 会反向校验清单和 zip 内容。
+真题流程还会生成 `academic_expression_audit.json`，把公式、单位、向量、矩阵、反应式和学科符号统一记录为跨学科表达节点。该审计完全本地运行，不调用额外模型，也不改写原答案。
 
-跨设备迁移说明见：
+只有本地审计无法判定的少量高风险表达才会进入 `selective_quality_review.json`。默认上限是单任务 8 个候选、1 个批次、1 次真实请求，并使用内容指纹缓存；请求失败会降级为风险告警，不默认触发紧凑重试或备用模型。默认只在出图前做这一次复核；内容质量阶段结束后的同类检查仅写入 Shadow 报告。
 
-[MIGRATION_README.md](/Users/ljj/Documents/真题解析/answer_book_platform_v1/MIGRATION_README.md)
+版本一致性和本地数据只读盘点可单独运行：
+
+```bash
+python3 scripts/check_version_consistency.py
+python3 scripts/data_inventory.py
+```
+
+跨设备迁移见 [MIGRATION_README.md](MIGRATION_README.md)，工程门禁见 [docs/operations/QUALITY.md](docs/operations/QUALITY.md)，数据保留规则见 [docs/operations/DATA_RETENTION.md](docs/operations/DATA_RETENTION.md)。
 
 ## 当前版本范围
 
-v1 已实现：
+当前平台已实现：
 
 - 本地平台目录结构。
 - 本地 Web 控制台。
@@ -213,7 +211,7 @@ v1 已实现：
 - 依赖安装脚本。
 - Windows 专用依赖文件 `requirements-windows.txt`，用于 Word COM 自动化。
 - OpenAI / DeepSeek / 火山方舟 / 阿里云百炼 provider 配置。
-- Web 本机 API Key 保存，写入 `.env` 且不回显密钥。
+- 独立 API 配置页面，按平台测试并保存到程序数据目录的 `config/api_keys.json`，所有模型模块统一读取且不回显密钥。
 - `/api/version` 版本接口与 Web 顶部版本显示。
 - API Key 脱敏读取。
 - 发布包内置 `VERSION` 与 `RELEASE_MANIFEST.json`。
@@ -224,6 +222,7 @@ v1 已实现：
 - v4 结构化答案 schema 文档。
 - v4 公式泄漏审计。
 - 任务创建与任务状态文件。
+- Huey + SQLite 持久出题队列；支持服务重启后安全恢复，队列数据库不复制上传正文。
 - 环境检查。
 - Provider 配置自检。
 - DOCX 真题结构抽取。
@@ -250,14 +249,13 @@ v1 已实现：
 - 公式优先使用 `latex2mathml -> mathml2omml.xsl -> Word OMML` 专业链路；缺少依赖时降级为内置最小转换器。
 - 内置最小 OMML 转换支持分式、上下标、上下标组合。
 
-v1 尚未完成：
+当前持续改进范围：
 
 - 页码校准的批量预览、教材原文对照和冲突提示。
-- 大规模题库任务队列。
-- 桌面软件壳打包。
-- 极复杂 LaTeX 的公式语义修正与人工复核界面。
+- 更大规模题库的队列容量压测，以及需要多机部署时从 SQLite 切换到 Redis/PostgreSQL 后端。
+- 极复杂 LaTeX 的公式语义自动修正、独立模型复检与可机器验证的降级策略。
 
-当前 v1 已经能完成一条平台主控流水线；后续会继续增强图形、页码校准和复杂公式排版能力。不复用 v3 中有问题的空 OMML 绕过逻辑。
+当前平台已经能完成程序主控的生产流水线；后续会继续增强图形、页码校准和复杂公式排版能力。不复用旧版空 OMML 绕过逻辑。
 
 ## 质量约束
 
@@ -408,7 +406,10 @@ tasks/<task_id>/stage_outputs/final_acceptance_report.json
 
 - `passed`：硬门禁通过且无警告。
 - `passed_with_warnings`：硬门禁通过，但存在需要人工确认的警告。
+- `completed_with_issues`：确定性交付门禁已通过，但最终引用的图片被发现科学性或语义风险；可下载附带风险报告的交付包，但不视为最终验收通过。
 - `failed`：存在硬错误，不能交付。
+
+报告中 `delivery_ready` 表示机器可证明的文件交付门禁，`formal_acceptance_passed` 表示是否可对用户声称“最终验收通过”；两者不得再由同一个布尔值混用。
 
 ## 文件下载
 
@@ -443,7 +444,7 @@ outputs/<task_id>/delivery/<task_id>_delivery.zip
 - 逐题复核 CSV
 - 关键审计 JSON
 
-如果最终验收为 `failed`，默认拒绝生成交付包。`passed_with_warnings` 可以生成，但警告必须人工确认。
+如果最终验收为 `failed`，默认拒绝生成交付包。`passed_with_warnings` 可以生成，但警告必须人工确认。`completed_with_issues` 也可生成交付包，但界面和清单必须明确标记“待复核”，不得显示为验收通过。
 
 ## 图形重绘
 
@@ -455,4 +456,4 @@ tasks/<task_id>/stage_outputs/figure_specs.json
 
 支持 `phase_diagram`、`line_chart`、`diffraction_pattern`。示例见：
 
-[figure_specs.example.json](/Users/ljj/Documents/真题解析/answer_book_platform_v1/config/figure_specs.example.json)
+[figure_specs.example.json](config/figure_specs.example.json)

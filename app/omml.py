@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import platform
 import re
+import threading
+from functools import lru_cache
 from pathlib import Path
 
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 
+from .expression_normalization import normalize_expression_latex
 
 LATEX_REPL = {
     r"\Delta": "Δ",
@@ -51,11 +54,30 @@ LATEX_REPL = {
     r"\ ": " ",
 }
 
+MATH_FONT = "Cambria Math"
+_XSLT_LOCK = threading.RLock()
+
+
+class FormulaConversionError(RuntimeError):
+    """Raised when the production TeX-to-OMML chain cannot preserve a formula."""
+
 
 def normalize_latex(src: str) -> str:
-    text = str(src or "").strip()
+    text = normalize_expression_latex(str(src or "").replace(r"\ominus", r"\theta"))
+    # Word's linear-math parser treats the domain label ``Le`` as the relation
+    # keyword ``le`` (≤). In mass-fraction notation it is an identifier, so
+    # make the token boundary and upright typography explicit.
+    text = re.sub(r"(?<=w\()Le(?=\))", r"\\mathrm{Le}", text)
     text = re.sub(r"\\ce\{([^{}]+)\}", r"\1", text)
     text = re.sub(r"\\ce(?=[A-Za-z0-9])", "", text)
+    # TeX command names consume following letters. Model-produced compact
+    # reactions such as ``L\tobcc`` otherwise become the unknown command
+    # ``\tobcc`` instead of an arrow followed by the phase label ``bcc``.
+    text = re.sub(
+        r"\\(to|rightarrow|rightleftharpoons|leftrightharpoons|leftharpoons|rightharpoons)(?=[A-Za-z])",
+        r"\\\1 ",
+        text,
+    )
     text = re.sub(r"\\left\s*\\\|", r"\\Vert ", text)
     text = re.sub(r"\\right\s*\\\|", r"\\Vert ", text)
     text = re.sub(r"\\left\s*\|", r"\\vert ", text)
@@ -73,7 +95,9 @@ def normalize_latex(src: str) -> str:
     text = text.replace("->", r"\rightarrow")
     text = text.replace(r"\,", " ")
     text = text.replace(r"\!", "")
-    text = re.sub(r"\\(?:left|right)(?=[\\{}\[\]().|])", "", text)
+    # Keep paired scalable delimiters for the MathML renderer.  Stripping
+    # ``\left(...\right)`` before conversion can create a one-sided Word
+    # delimiter when the closing parenthesis carries a script.
     text = text.replace("|", r"\vert")
     text = text.replace(r"\mathrmH", "H")
     text = text.replace(r"\mathrmC", "C")
@@ -81,52 +105,121 @@ def normalize_latex(src: str) -> str:
     text = text.replace(r"\mathrmO", "O")
     text = text.replace(r"\mathrmK", "K")
     text = text.replace(r"\mathrmPa", r"\mathrm{Pa}")
-    text = text.replace(r"\ominus", r"\theta")
     return text
 
 
-def find_mathml2omml_xsl() -> Path | None:
-    env_path = os.environ.get("MATHML2OMML_XSL")
+@lru_cache(maxsize=16)
+def _find_mathml2omml_xsl_cached(
+    system: str,
+    env_path: str,
+    program_files: str,
+    program_files_x86: str,
+    local_app_data: str,
+) -> Path | None:
     if env_path and Path(env_path).exists():
         return Path(env_path)
-    candidates = [
-        Path("/Applications/Microsoft Word.app/Contents/Resources/mathml2omml.xsl"),
-        Path("/Applications/Microsoft Word.app/Contents/Resources/MML2OMML.XSL"),
-    ]
-    if platform.system() == "Windows":
-        roots = [
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramFiles(x86)"),
-            os.environ.get("LOCALAPPDATA"),
+    candidates = []
+    if system == "Darwin":
+        candidates.extend(
+            (
+                Path("/Applications/Microsoft Word.app/Contents/Resources/mathml2omml.xsl"),
+                Path("/Applications/Microsoft Word.app/Contents/Resources/MML2OMML.XSL"),
+            )
+        )
+    if system == "Windows":
+        # Office normally installs the stylesheet below Microsoft Office.
+        # Searching all of Program Files and LOCALAPPDATA for every formula made
+        # one export perform hundreds of full directory walks on Windows.
+        office_roots = [
+            Path(root) / "Microsoft Office"
+            for root in (program_files, program_files_x86)
+            if root
         ]
-        for root in roots:
-            if root:
-                base = Path(root)
-                candidates.extend(base.glob("**/mathml2omml.xsl"))
-                candidates.extend(base.glob("**/MML2OMML.XSL"))
+        if local_app_data:
+            office_roots.append(Path(local_app_data) / "Microsoft" / "Office")
+        for office_root in office_roots:
+            for office_version in ("Office16", "Office15", "Office14", "Office12"):
+                candidates.extend(
+                    (
+                        office_root / "root" / office_version / "MML2OMML.XSL",
+                        office_root / "root" / office_version / "mathml2omml.xsl",
+                        office_root / office_version / "MML2OMML.XSL",
+                        office_root / office_version / "mathml2omml.xsl",
+                    )
+                )
     for path in candidates:
         if path.exists():
-            return path
+            return path.resolve()
+    # Keep a bounded fallback for non-standard Office layouts.  This is cached
+    # and deliberately never walks the whole user profile.
+    if system == "Windows":
+        for office_root in office_roots:
+            if not office_root.is_dir():
+                continue
+            for filename in ("MML2OMML.XSL", "mathml2omml.xsl"):
+                match = next((path for path in office_root.rglob(filename) if path.is_file()), None)
+                if match is not None:
+                    return match.resolve()
     return None
+
+
+def find_mathml2omml_xsl() -> Path | None:
+    return _find_mathml2omml_xsl_cached(
+        platform.system(),
+        str(os.environ.get("MATHML2OMML_XSL") or "").strip(),
+        str(os.environ.get("ProgramFiles") or "").strip(),
+        str(os.environ.get("ProgramFiles(x86)") or "").strip(),
+        str(os.environ.get("LOCALAPPDATA") or "").strip(),
+    )
+
+
+def _xsl_signature(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    return str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size)
+
+
+@lru_cache(maxsize=8)
+def _compiled_mathml2omml_transform(path: str, _mtime_ns: int, _size: int):
+    from lxml import etree
+
+    return etree.XSLT(etree.parse(path))
+
+
+@lru_cache(maxsize=4096)
+def _mathml2omml_xml(latex: str, xsl_path: str, xsl_mtime_ns: int, xsl_size: int) -> str:
+    from latex2mathml.converter import convert
+    from lxml import etree
+
+    mathml = convert(latex)
+    transform = _compiled_mathml2omml_transform(xsl_path, xsl_mtime_ns, xsl_size)
+    # lxml transformations are fast after compilation.  A lock keeps the
+    # shared compiled stylesheet safe when two HTTP export threads overlap.
+    with _XSLT_LOCK:
+        result = transform(etree.fromstring(mathml.encode("utf-8")))
+    root = result.getroot()
+    if root is None:
+        raise ValueError("mathml2omml produced empty result")
+    return etree.tostring(root, encoding="unicode")
+
+
+def clear_omml_caches() -> None:
+    """Clear process caches after an Office/XSL installation changes."""
+    _find_mathml2omml_xsl_cached.cache_clear()
+    _compiled_mathml2omml_transform.cache_clear()
+    _mathml2omml_xml.cache_clear()
 
 
 def omml_from_latex_via_mathml(src: str):
     try:
-        from latex2mathml.converter import convert
-        from lxml import etree
+        import latex2mathml  # noqa: F401
+        import lxml  # noqa: F401
     except Exception as exc:
         raise RuntimeError("latex2mathml/lxml not available") from exc
     xsl_path = find_mathml2omml_xsl()
     if not xsl_path:
         raise RuntimeError("mathml2omml.xsl not found")
     latex = normalize_latex(src)
-    mathml = convert(latex)
-    transform = etree.XSLT(etree.parse(str(xsl_path)))
-    result = transform(etree.fromstring(mathml.encode("utf-8")))
-    root = result.getroot()
-    if root is None:
-        raise ValueError("mathml2omml produced empty result")
-    xml = etree.tostring(root, encoding="unicode")
+    xml = _mathml2omml_xml(latex, *_xsl_signature(xsl_path))
     omath = parse_xml(xml)
     if omath.tag.endswith("}oMathPara"):
         children = [child for child in list(omath) if child.tag.endswith("}oMath")]
@@ -136,6 +229,20 @@ def omml_from_latex_via_mathml(src: str):
         raise ValueError(f"mathml2omml produced unsupported root: {omath.tag}")
     if not list(omath):
         raise ValueError("Refusing to create empty OMML formula")
+    # A TeX ``cases`` environment is represented in MathML/OMML as a
+    # left-hand brace with an intentionally invisible right delimiter.  Word's
+    # XSLT serializes that valid one-sided delimiter as an empty ``endChr``.
+    # Continue rejecting every accidental empty opening delimiter and empty
+    # closing delimiters outside this explicit one-sided construct.
+    allows_invisible_end_delimiter = r"\begin{cases}" in latex or r"\right." in latex
+    for node in omath.iter():
+        if not str(node.tag).endswith(("}begChr", "}endChr")):
+            continue
+        value = node.get(qn("m:val"))
+        if value is not None and not str(value).strip():
+            if str(node.tag).endswith("}endChr") and allows_invisible_end_delimiter:
+                continue
+            raise ValueError("mathml2omml produced an empty delimiter character")
     return omath
 
 
@@ -146,7 +253,8 @@ def m_el(name: str, text: str | None = None):
     return el
 
 
-def apply_italic_math_style(omath):
+def apply_expression_math_style(omath, *, expression_kind: str = "formula"):
+    force_upright = expression_kind in {"chemical_notation", "reaction"}
     for node in omath.iter():
         if not str(node.tag).endswith("}r"):
             continue
@@ -154,13 +262,46 @@ def apply_italic_math_style(omath):
         if r_pr is None:
             r_pr = m_el("rPr")
             node.insert(0, r_pr)
-        for child in list(r_pr):
-            if str(child.tag).endswith("}sty") or str(child.tag).endswith("}nor"):
-                r_pr.remove(child)
-        sty = m_el("sty")
-        sty.set(qn("m:val"), "i")
-        r_pr.insert(0, sty)
+        existing_style = next(
+            (child for child in list(r_pr) if str(child.tag).endswith("}sty")),
+            None,
+        )
+        existing_normal = next(
+            (child for child in list(r_pr) if str(child.tag).endswith("}nor")),
+            None,
+        )
+        if force_upright:
+            for child in list(r_pr):
+                if str(child.tag).endswith("}sty") or str(child.tag).endswith("}nor"):
+                    r_pr.remove(child)
+            # ``m:nor`` switches a run to Word's normal-text layout.  That is
+            # unsuitable for mixed chemical runs such as ``(s)∣`` because it
+            # distorts math operators and their spacing.  Plain math style keeps
+            # letters upright while preserving operator geometry.
+            style = m_el("sty")
+            style.set(qn("m:val"), "p")
+            r_pr.insert(0, style)
+        elif existing_style is None and existing_normal is None:
+            sty = m_el("sty")
+            sty.set(qn("m:val"), "i")
+            r_pr.insert(0, sty)
+        word_r_pr = next((child for child in list(node) if str(child.tag).endswith("}rPr") and str(child.tag).startswith("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}")), None)
+        if word_r_pr is None:
+            word_r_pr = OxmlElement("w:rPr")
+            node.insert(1, word_r_pr)
+        fonts = word_r_pr.find(qn("w:rFonts"))
+        if fonts is None:
+            fonts = OxmlElement("w:rFonts")
+            word_r_pr.insert(0, fonts)
+        for attribute in ("ascii", "hAnsi", "eastAsia", "cs"):
+            fonts.set(qn(f"w:{attribute}"), MATH_FONT)
     return omath
+
+
+def apply_italic_math_style(omath):
+    """Backward-compatible alias for callers expecting general math styling."""
+
+    return apply_expression_math_style(omath)
 
 
 def math_run(text: str):
@@ -347,7 +488,6 @@ def parse_into(omath, src: str) -> None:
                 base = ""
             script_text, i = read_script(text, i + 1)
             if i < len(text) and text[i] in "_^" and text[i] != kind:
-                second_kind = text[i]
                 second_text, i = read_script(text, i + 1)
                 if kind == "_":
                     append_subsup(omath, base, script_text, second_text)
@@ -361,14 +501,31 @@ def parse_into(omath, src: str) -> None:
     append_text(omath, buffer)
 
 
-def omml_from_latex(src: str):
-    if os.environ.get("ANSWER_BOOK_DISABLE_MATHML_OMML") != "1":
+def omml_from_latex(src: str, *, expression_kind: str = "formula"):
+    degraded_fallback_enabled = os.environ.get("ANSWER_BOOK_ALLOW_DEGRADED_OMML_FALLBACK") == "1"
+    mathml_disabled = os.environ.get("ANSWER_BOOK_DISABLE_MATHML_OMML") == "1"
+    if not mathml_disabled:
         try:
-            return apply_italic_math_style(omml_from_latex_via_mathml(src))
-        except Exception:
-            pass
+            return apply_expression_math_style(
+                omml_from_latex_via_mathml(src),
+                expression_kind=expression_kind,
+            )
+        except Exception as exc:
+            if not degraded_fallback_enabled:
+                raise FormulaConversionError(
+                    "Formula conversion failed in the production MathML-to-OMML chain; "
+                    "refusing an untracked partial-OMML fallback"
+                ) from exc
+    elif not degraded_fallback_enabled:
+        raise FormulaConversionError(
+            "MathML-to-OMML conversion is disabled and degraded fallback was not explicitly enabled"
+        )
+
+    # This parser is intentionally available only behind an explicit emergency
+    # switch.  It supports a small TeX subset and must never masquerade as the
+    # production conversion path after an unexpected dependency/XSLT failure.
     omath = m_el("oMath")
     parse_into(omath, src)
     if not list(omath):
         raise ValueError("Refusing to create empty OMML formula")
-    return apply_italic_math_style(omath)
+    return apply_expression_math_style(omath, expression_kind=expression_kind)

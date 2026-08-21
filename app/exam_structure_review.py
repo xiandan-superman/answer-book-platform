@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from .question_types import QUESTION_TYPES, infer_question_type, normalize_question_type
-from .question_scores import format_score, infer_suggested_score, normalize_score, parse_score
 from .drawing_code import normalize_drawing_mode
+from .question_scores import format_score, infer_suggested_score, normalize_score, parse_score
+from .question_types import QUESTION_TYPES, infer_question_type, normalize_question_type
 from .task_control import TaskCancelled, read_task_control
 from .task_store import append_event, task_dir, update_task
 from .text_utils import cn_to_int
@@ -174,8 +174,9 @@ def validate_exam_structure_review_updates(updates: list[dict[str, Any]]) -> lis
 
 
 def _apply_subquestion_updates(item: dict[str, Any], update: dict[str, Any], parent_type: str) -> list[dict[str, Any]]:
-    has_authoritative_rows = isinstance(update, dict) and "subquestions" in update and isinstance(update.get("subquestions"), list)
-    update_rows = update.get("subquestions") if has_authoritative_rows else []
+    raw_update_rows = update.get("subquestions")
+    has_authoritative_rows = "subquestions" in update and isinstance(raw_update_rows, list)
+    update_rows: list[Any] = raw_update_rows if isinstance(raw_update_rows, list) else []
     by_number = {str(row.get("number") or "").strip(): row for row in update_rows if isinstance(row, dict)}
     if has_authoritative_rows:
         existing_by_number = {
@@ -183,7 +184,7 @@ def _apply_subquestion_updates(item: dict[str, Any], update: dict[str, Any], par
             for index, raw in enumerate(item.get("subquestions") or [], start=1)
             if isinstance(raw, dict)
         }
-        out: list[dict[str, Any]] = []
+        authoritative_out: list[dict[str, Any]] = []
         for index, row in enumerate(update_rows, start=1):
             if not isinstance(row, dict) or row.get("deleted") or row.get("_delete"):
                 continue
@@ -205,8 +206,8 @@ def _apply_subquestion_updates(item: dict[str, Any], update: dict[str, Any], par
                 }
             )
             _apply_confirmed_score(sub, row)
-            out.append(sub)
-        return out
+            authoritative_out.append(sub)
+        return authoritative_out
 
     out: list[dict[str, Any]] = []
     for index, raw in enumerate(item.get("subquestions") or [], start=1):
@@ -232,15 +233,16 @@ def _apply_subquestion_updates(item: dict[str, Any], update: dict[str, Any], par
 
 
 def _apply_requirement_updates(item: dict[str, Any], update: dict[str, Any], parent_number: str, parent_type: str) -> list[dict[str, Any]]:
-    has_authoritative_rows = isinstance(update, dict) and "requirements" in update and isinstance(update.get("requirements"), list)
-    update_rows = update.get("requirements") if has_authoritative_rows else []
+    raw_update_rows = update.get("requirements")
+    has_authoritative_rows = "requirements" in update and isinstance(raw_update_rows, list)
+    update_rows: list[Any] = raw_update_rows if isinstance(raw_update_rows, list) else []
     if has_authoritative_rows:
         existing_by_number = {
             str(raw.get("number") or f"{parent_number}.{index}").strip(): dict(raw)
             for index, raw in enumerate(item.get("requirements") or [], start=1)
             if isinstance(raw, dict)
         }
-        out: list[dict[str, Any]] = []
+        authoritative_out: list[dict[str, Any]] = []
         for index, row in enumerate(update_rows, start=1):
             if not isinstance(row, dict) or row.get("deleted") or row.get("_delete"):
                 continue
@@ -261,8 +263,8 @@ def _apply_requirement_updates(item: dict[str, Any], update: dict[str, Any], par
                 }
             )
             _apply_confirmed_score(req, row)
-            out.append(req)
-        return out
+            authoritative_out.append(req)
+        return authoritative_out
     out: list[dict[str, Any]] = []
     by_number = {str(row.get("number") or "").strip(): row for row in update_rows if isinstance(row, dict)}
     for index, raw in enumerate(item.get("requirements") or [], start=1):
@@ -396,6 +398,72 @@ def submit_exam_structure_review(task_id: str, updates: list[dict[str, Any]], de
     exam_structure_response_path(task_id).write_text(json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8")
     append_event(task_id, f"exam_structure_review_{decision}", {"request_id": request_id, "updated_count": len(updates), "note": note})
     return {"ok": True, "response": response}
+
+
+def _automatic_review_row(row: dict[str, Any]) -> dict[str, Any]:
+    update: dict[str, Any] = {
+        key: row[key]
+        for key in ("question_id", "number", "stem", "question_type", "drawing_generation_mode")
+        if key in row
+    }
+    suggested_score = str(row.get("suggested_score") or row.get("score") or "").strip()
+    if suggested_score:
+        update["confirmed_score"] = suggested_score
+    for child_key in ("subquestions", "requirements"):
+        children = row.get(child_key)
+        if isinstance(children, list):
+            update[child_key] = [
+                _automatic_review_row(child)
+                for child in children
+                if isinstance(child, dict)
+            ]
+    return update
+
+
+def auto_confirm_exam_structure(
+    task_id: str,
+    structured_exam: dict[str, Any],
+    output_json: Path,
+) -> dict[str, Any]:
+    """Persist an unattended, rule-derived structure decision without pausing."""
+
+    request = build_exam_structure_review_request(task_id, structured_exam)
+    request["status"] = "auto_confirmed"
+    request["mode"] = "unattended"
+    request["human_review_required"] = False
+    request["message"] = "结构审计通过后，系统已自动确认题干、题型与可确定的分值。"
+    updates = [_automatic_review_row(row) for row in request.get("items", []) if isinstance(row, dict)]
+    reviewed = apply_exam_structure_review_updates(structured_exam, updates)
+    reviewed["exam_structure_review_mode"] = "unattended"
+    reviewed["human_review_required"] = False
+    decided_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    response = {
+        "request_id": request["request_id"],
+        "decision": "auto_confirm",
+        "mode": "unattended",
+        "updates": updates,
+        "updated_at": decided_at,
+    }
+    request["confirmed_at"] = decided_at
+    exam_structure_request_path(task_id).write_text(
+        json.dumps(request, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    exam_structure_response_path(task_id).write_text(
+        json.dumps(response, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    output_json.write_text(json.dumps(reviewed, ensure_ascii=False, indent=2), encoding="utf-8")
+    append_event(
+        task_id,
+        "exam_structure_review_auto_confirmed",
+        {
+            "question_count": len(reviewed.get("items", [])),
+            "request_id": request["request_id"],
+            "human_review_required": False,
+        },
+    )
+    return reviewed
 
 
 def wait_for_exam_structure_review(task_id: str, structured_exam: dict[str, Any], stage_dir: Path, output_json: Path) -> dict[str, Any]:
