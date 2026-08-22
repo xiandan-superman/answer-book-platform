@@ -790,6 +790,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     "version": get_version(),
                     "app_version": get_app_version(),
                     "source_revision": get_source_revision(),
+                    "desktop_launch_id": str(os.environ.get("ANSWER_BOOK_DESKTOP_LAUNCH_ID") or ""),
                     "release_manifest": "RELEASE_MANIFEST.json",
                     "release_manifest_exists": manifest_status["exists"],
                     "release_manifest_status": manifest_status,
