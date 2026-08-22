@@ -1547,62 +1547,6 @@ async function submitTaskSupportFeedback(task, button = null) {
   return result;
 }
 
-function newSupportReportGroupId() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `feedback-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-}
-
-async function submitFailedTaskFeedback(button = null) {
-  const failedTasks = sortedTasks(latestTasks.filter(
-    (task) => taskDisplayStatus(task) === "failed" && !failedTaskFeedbackReported(task)
-  ));
-  if (!failedTasks.length) {
-    await platformAlert("当前失败任务都已经反馈。", { title: "无需重复反馈" });
-    return;
-  }
-  const original = button?.innerHTML || "";
-  if (button) {
-    button.disabled = true;
-    button.innerHTML = `<i class="fas fa-spinner fa-spin"></i><span>正在反馈 0/${failedTasks.length}</span>`;
-  }
-  const groupId = newSupportReportGroupId();
-  const submitted = [];
-  const queued = [];
-  const failed = [];
-  for (const [index, task] of failedTasks.entries()) {
-    if (button) button.innerHTML = `<i class="fas fa-spinner fa-spin"></i><span>正在反馈 ${index + 1}/${failedTasks.length}</span>`;
-    try {
-      const result = await sendSupportFeedback("task", taskSupportContext(task, groupId));
-      if (result.status === "queued") queued.push(result.report_id || task.task_id);
-      else submitted.push(result.report_id || task.task_id);
-      rememberFailedTaskFeedback(task, result.report_id);
-      // 本机离线队列最多保留 5 份；到达上限后停止，避免挤掉刚保存的报告。
-      if (queued.length >= 5 && index < failedTasks.length - 1) {
-        failed.push(...failedTasks.slice(index + 1).map((item) => `${item.task_id}（离线队列已满）`));
-        break;
-      }
-    } catch (error) {
-      failed.push(`${task.task_id}（${String(error).replace(/^Error:\s*/, "")}）`);
-    }
-  }
-  const lines = [
-    submitted.length ? `已提交：${submitted.length} 个` : "",
-    queued.length ? `已在本机安全保存：${queued.length} 个，连接恢复后自动发送` : "",
-    failed.length ? `未保存：${failed.length} 个` : "",
-  ].filter(Boolean);
-  const ids = [...submitted, ...queued].slice(0, 5);
-  if (ids.length) lines.push(`问题编号：${ids.join("、")}`);
-  renderTaskManager();
-  await platformAlert(lines.join("\n"), {
-    title: failed.length ? "反馈部分完成" : "失败任务已反馈",
-    tone: failed.length ? "warning" : "success"
-  });
-  if (button) {
-    button.disabled = false;
-    button.innerHTML = original;
-  }
-}
-
 function rememberPracticeJob(jobId) {
   activePracticeJobId = String(jobId || "");
   try {
@@ -8006,7 +7950,6 @@ function renderAnswerProgressDetails(progress) {
 
 function updateTaskManagerStats(tasks) {
   const failedTasks = tasks.filter((task) => taskDisplayStatus(task) === "failed");
-  const unreportedFailedTasks = failedTasks.filter((task) => !failedTaskFeedbackReported(task));
   const counts = {
     total: tasks.length,
     running: tasks.filter((task) => taskDisplayStatus(task) === "running").length,
@@ -8030,12 +7973,8 @@ function updateTaskManagerStats(tasks) {
     dismissedSignature = localStorage.getItem(FAILED_TASK_FEEDBACK_DISMISS_KEY) || "";
   } catch (_error) {}
   const dismissed = Boolean(failedTasks.length && dismissedSignature === failedTaskSetSignature(failedTasks));
-  $("taskFailedFeedbackBar")?.classList.toggle("hidden", unreportedFailedTasks.length === 0 || dismissed);
-  setText("taskFailedFeedbackTitle", `发现 ${unreportedFailedTasks.length} 个尚未反馈的失败任务`);
-  const feedbackButton = $("taskFeedbackFailedBtn");
-  if (feedbackButton && !feedbackButton.disabled) {
-    feedbackButton.innerHTML = `<i class="fas fa-bug"></i><span>一键反馈这 ${unreportedFailedTasks.length} 个失败任务</span>`;
-  }
+  $("taskFailedFeedbackBar")?.classList.toggle("hidden", failedTasks.length === 0 || dismissed);
+  setText("taskFailedFeedbackTitle", `${failedTasks.length} 个失败任务的诊断已自动处理`);
 }
 
 function formatTaskTimestamp(value) {
@@ -10883,7 +10822,6 @@ $("taskSortSelect")?.addEventListener("change", (event) => {
   renderTaskManager();
 });
 $("taskBulkModeBtn")?.addEventListener("click", () => setTaskBulkMode(true));
-$("taskFeedbackFailedBtn")?.addEventListener("click", (event) => submitFailedTaskFeedback(event.currentTarget));
 $("taskDismissFailedFeedbackBtn")?.addEventListener("click", dismissFailedTaskFeedback);
 $("taskBulkCancelBtn")?.addEventListener("click", () => setTaskBulkMode(false));
 $("taskBulkDeleteBtn")?.addEventListener("click", deleteSelectedTasks);

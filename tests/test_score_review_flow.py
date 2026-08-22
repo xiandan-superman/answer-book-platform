@@ -33,6 +33,35 @@ def test_grouped_major_question_uses_section_total_before_first_child_score():
     assert infer_suggested_score(question) == 14
 
 
+def test_single_parent_uses_bare_parenthesized_section_total():
+    question = {
+        "number": "1",
+        "major_number": "2",
+        "section_item_count": 1,
+        "section_raw": "二、简答题（20分）",
+        "stem": "(1)说明结构。（10分）\n(2)计算距离。（10分）",
+        "subquestions": [
+            {"number": "1", "stem": "说明结构。（10分）"},
+            {"number": "2", "stem": "计算距离。（10分）"},
+        ],
+    }
+
+    assert infer_suggested_score(question) == 20
+
+
+def test_bare_section_total_is_not_assigned_to_each_of_multiple_items():
+    question = {
+        "number": "1",
+        "major_number": "1",
+        "section_item_count": 2,
+        "section_raw": "一、简答题（20分）",
+        "stem": "说明概念。（10分）",
+        "subquestions": [{"number": "1", "stem": "说明概念。（10分）", "synthetic_parent": True}],
+    }
+
+    assert infer_suggested_score(question) == 10
+
+
 def test_exam_structure_audit_blocks_parent_child_score_mismatch(tmp_path):
     issues = audit_exam_structure(
         {

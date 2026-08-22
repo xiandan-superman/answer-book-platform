@@ -26,6 +26,34 @@ class ExamExtractTests(unittest.TestCase):
         self.assertEqual(["1", "2", "3", "4", "5", "6"], [item["number"] for item in items])
         self.assertEqual("临界分切应力", items[-1]["stem"])
 
+    def test_parenthesized_inline_term_explanations_are_split_into_individual_items(self) -> None:
+        section = split_sections(
+            [
+                "一、名词解释（每小题2分，共10分）",
+                "(1) 扩散；(2) 位错；(3) 再结晶；(4) 相平衡；(5) 过冷度",
+            ]
+        )[0]
+
+        items = question_items(section)
+
+        self.assertEqual(["1", "2", "3", "4", "5"], [item["number"] for item in items])
+        self.assertEqual("扩散", items[0]["stem"])
+        self.assertEqual("过冷度", items[-1]["stem"])
+        self.assertTrue(all(item["section_item_count"] == 5 for item in items))
+
+    def test_parenthesized_numbers_are_not_split_outside_term_sections(self) -> None:
+        section = split_sections(
+            [
+                "二、计算题（20分）",
+                "1、已知表达式 (1) 与边界条件 (2)，计算结果。",
+            ]
+        )[0]
+
+        items = question_items(section)
+
+        self.assertEqual(1, len(items))
+        self.assertIn("表达式 (1)", items[0]["stem"])
+
     def test_unknown_subject_heading_is_detected_by_document_structure(self) -> None:
         sections = split_sections(
             [

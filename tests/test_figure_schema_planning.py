@@ -97,9 +97,152 @@ class FigureSchemaPlanningTests(unittest.TestCase):
         self.assertEqual([], program_check_figure_spec(spec))
 
     def test_negative_diffraction_index_uses_crystallographic_overbar(self) -> None:
-        from app.figures import _format_hkl_plot_label
+        from app.figures import _format_hkl_plot_label, _zone_axis_plot_title
 
         self.assertEqual(r"$(1\ \overline{1}\ 0)$", _format_hkl_plot_label(1, -1, 0))
+        self.assertEqual(
+            "体心立方点阵 [1 1 0] 带轴电子衍射花样",
+            _zone_axis_plot_title({"lattice": "bcc", "title": r"标注(\bar{1}10)"}, 1, 1, 0),
+        )
+
+    def test_complete_collapsed_xrd_composite_does_not_report_schema_mismatch(self) -> None:
+        from app.figures import _bind_composite_plan_coverage, _semantic_route_issues
+
+        question = {
+            "figure_schema_plan": {
+                "figure_semantic_contract": {
+                    "contract_id": "ignored-and-recomputed",
+                    "figure_role": "answer_required",
+                    "source_image_policy": "none",
+                    "required_elements": ["无序态", "有序态"],
+                    "required_labels": [],
+                    "relationship_constraints": [],
+                    "forbidden_assumptions": [],
+                    "original_image_available": False,
+                },
+                "render_decision": {
+                    "strategy": "programmatic_renderer",
+                    "reason": "aggregate",
+                    "semantic_contract_id": "",
+                    "schema_kind": "multi_figure",
+                    "renderer": "",
+                    "fallback_allowed": True,
+                },
+                "schema_resolution": {"kind": "multi_figure"},
+                "figure_units": [
+                    {"answer_unit_number": "1", "schema_resolution": {"kind": "xrd_pattern"}},
+                    {"answer_unit_number": "2", "schema_resolution": {"kind": "xrd_pattern"}},
+                ],
+            }
+        }
+        spec = {
+            "kind": "xrd_pattern",
+            "peaks": [
+                {"two_theta": 2, "pattern_label": "无序态"},
+                {"two_theta": 2, "pattern_label": "有序态"},
+            ],
+        }
+        from app.figures import _planned_figure_metadata
+        spec.update(_planned_figure_metadata(question))
+        # Bind the aggregate contract to the normalized semantic ID used by the audit.
+        from app.capabilities.figure_semantics import semantic_contract_from_mapping
+        contract = semantic_contract_from_mapping(spec["figure_semantic_contract"])
+        spec["semantic_contract_id"] = contract.contract_id
+        spec["figure_render_decision"]["semantic_contract_id"] = contract.contract_id
+
+        _bind_composite_plan_coverage(question, spec)
+
+        self.assertEqual(["1", "2"], spec["covered_answer_unit_numbers"])
+        self.assertEqual([], _semantic_route_issues(spec, generation_method="programmatic_renderer"))
+
+    def test_incomplete_collapsed_xrd_composite_still_reports_schema_mismatch(self) -> None:
+        from app.figures import _bind_composite_plan_coverage
+
+        question = {
+            "figure_schema_plan": {
+                "figure_units": [
+                    {"answer_unit_number": "1", "schema_resolution": {"kind": "xrd_pattern"}},
+                    {"answer_unit_number": "2", "schema_resolution": {"kind": "xrd_pattern"}},
+                ]
+            }
+        }
+        spec = {"kind": "xrd_pattern", "peaks": [{"two_theta": 2, "pattern_label": "无序态"}]}
+
+        _bind_composite_plan_coverage(question, spec)
+
+        self.assertEqual([], spec["covered_answer_unit_numbers"])
+
+    def test_composite_xrd_coverage_is_written_to_generation_audit(self) -> None:
+        from app.capabilities.figure_semantics import build_figure_semantic_contract
+        from app.figures import prepare_figures_for_fragments
+
+        contract = build_figure_semantic_contract(
+            source_image_policy="none",
+            required_elements=["无序态", "有序态"],
+            original_image_available=False,
+        )
+        units = [
+            {
+                "answer_unit_number": str(index),
+                "schema_resolution": {"kind": "xrd_pattern"},
+                "render_decision": {"schema_kind": "xrd_pattern"},
+            }
+            for index in (1, 2)
+        ]
+        question = {
+            "question_id": "q-composite-xrd",
+            "question_type": "作图题",
+            "drawing_generation_mode": "figure_specs",
+            "stem": "分别画出无序态和有序态的 XRD 峰。",
+            "figure_schema_plan": {
+                "figure_semantic_contract": contract.to_dict(),
+                "render_decision": {
+                    "strategy": "programmatic_renderer",
+                    "reason": "aggregate",
+                    "semantic_contract_id": contract.contract_id,
+                    "schema_kind": "multi_figure",
+                    "renderer": "",
+                    "fallback_allowed": True,
+                },
+                "schema_resolution": {"kind": "multi_figure"},
+                "figure_units": units,
+            },
+        }
+        fragments = {
+            "fragments": [{
+                "question_id": question["question_id"],
+                "answer": "见图",
+                "blocks": [{"label": "解析", "segments": [{"type": "text", "text": "比较两种状态。"}]}],
+                "_draft": {"figure_specs": [{
+                    "kind": "xrd_pattern",
+                    "caption": "无序态与有序态 XRD 峰",
+                    "x_label": "相对峰位",
+                    "y_label": "状态",
+                    "peaks": [
+                        {"two_theta": 2, "intensity": 1, "label": "(110)", "pattern_label": "无序态"},
+                        {"two_theta": 2, "intensity": 1, "label": "(110)", "pattern_label": "有序态"},
+                        {"two_theta": 1, "intensity": 0.5, "label": "(100)", "pattern_label": "有序态", "style": "--"},
+                    ],
+                }]},
+            }]
+        }
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            fragments_json = root / "answer_fragments.json"
+            fragments_json.write_text(json.dumps(fragments, ensure_ascii=False), encoding="utf-8")
+            prepare_figures_for_fragments(
+                {"items": [question]},
+                fragments_json,
+                root / "figure_specs.json",
+                root / "figures",
+            )
+            audit = json.loads((root / "figure_generation_audit.json").read_text(encoding="utf-8"))
+
+        item = audit["items"][0]
+        self.assertFalse(item["needs_manual_review"])
+        self.assertEqual(["1", "2"], item["covered_answer_unit_numbers"])
+        self.assertEqual("complete", item["composite_plan_coverage"]["status"])
+        self.assertNotIn("actual_schema_kind_differs_from_plan", item["program_check_issues"])
 
     def test_explicit_figure_specs_collapse_legacy_question_mirror(self) -> None:
         from app.figures import _explicit_figure_specs

@@ -693,6 +693,8 @@ def _normalize_standard_state_latex(value: str) -> str:
 def has_unrenderable_practice_markup(value: Any) -> bool:
     """Allow markup handled by the DOCX renderer; reject only leftovers."""
     text = _text(value, 12000)
+    if any((ord(char) < 32 and char != "\n") or ord(char) == 127 for char in text):
+        return True
     without_math = _INLINE_MATH_RE.sub("", text)
     if "$" in without_math or "\\(" in without_math or "\\)" in without_math:
         return True

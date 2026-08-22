@@ -124,6 +124,24 @@ def run_exam_task(
             "error",
             {"task_id": task_id, "error_type": exc.__class__.__name__},
         )
+        failed = load_task(task_id)
+        if failed.status == "failed":
+            try:
+                from .support_reporting import queue_automatic_failure_report
+
+                queue_automatic_failure_report({
+                    "task_id": task_id,
+                    "task_kind": "exam",
+                    "task_status": failed.status,
+                    "task_stage": failed.current_stage,
+                    "task_run_started_at": failed.run_started_at or failed.created_at,
+                    "task_title": os.path.basename(failed.exam_path),
+                    "task_model": failed.answer_model or failed.model,
+                    "error": failed.error or str(exc),
+                })
+            except Exception:
+                # Reporting must never replace or delay the original task failure.
+                pass
 
 
 def _release_active_run(task_id: str, future: Future[None]) -> None:

@@ -512,7 +512,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
                 except Exception:
                     pinned_model_traces = 0
-                update_practice_job(
+                failed_record = update_practice_job(
                     job_id,
                     expected_status="running",
                     last_heartbeat_at=_now(),
@@ -528,6 +528,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     completed_at=_now(),
                     elapsed_seconds=elapsed,
                 )
+                _queue_automatic_failure_report(failed_record)
                 return
             update_practice_job(
                 job_id,
@@ -585,7 +586,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             failure_context = getattr(exc, "failure_context", {})
             if not isinstance(failure_context, dict):
                 failure_context = {}
-            update_practice_job(
+            failed_record = update_practice_job(
                 job_id,
                 expected_status="running",
                 status="failed",
@@ -606,6 +607,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 completed_at=_now(),
                 elapsed_seconds=max(0, int(time.monotonic() - started)),
             )
+            _queue_automatic_failure_report(failed_record)
     finally:
         finished.set()
 
@@ -632,7 +634,7 @@ def recover_practice_jobs(*, fail_interrupted: bool = True) -> list[dict[str, An
                 pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
             except Exception:
                 pinned_model_traces = 0
-            update_practice_job(
+            failed_record = update_practice_job(
                 job_id,
                 expected_status=str(record.get("status") or ""),
                 status="failed",
@@ -645,4 +647,29 @@ def recover_practice_jobs(*, fail_interrupted: bool = True) -> list[dict[str, An
                 warning_reason="服务重启导致任务中断。",
                 suggested_action="可重新运行任务。",
             )
+            _queue_automatic_failure_report(failed_record)
     return recovered
+
+
+def _queue_automatic_failure_report(record: dict[str, Any]) -> None:
+    try:
+        from .support_reporting import queue_automatic_failure_report
+
+        raw_payload = record.get("payload")
+        payload: dict[str, Any] = {}
+        if isinstance(raw_payload, dict):
+            payload = raw_payload
+        queue_automatic_failure_report({
+            "task_id": str(record.get("job_id") or ""),
+            "task_kind": str(record.get("task_kind") or "practice"),
+            "task_status": "failed",
+            "task_stage": str(record.get("current_stage") or "failed"),
+            "task_run_started_at": str(record.get("started_at") or record.get("created_at") or ""),
+            "task_title": str(record.get("title") or ""),
+            "task_model": str(record.get("model") or payload.get("model") or ""),
+            "practice_batch_id": str(record.get("practice_batch_id") or ""),
+            "operation": str(record.get("operation") or ""),
+            "error": str(record.get("error") or ""),
+        })
+    except Exception:
+        pass

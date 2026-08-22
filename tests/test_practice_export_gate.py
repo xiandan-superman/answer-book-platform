@@ -85,6 +85,11 @@ class PracticeExportGateTests(unittest.TestCase):
         self.assertFalse(has_unrenderable_practice_markup(normalized))
         self.assertEqual(audit_practice_export_data({"exercises": [{"stem": normalized}]}), [])
 
+    def test_control_characters_inside_math_are_not_exportable(self):
+        self.assertTrue(has_unrenderable_practice_markup("$\beta$"))
+        self.assertTrue(has_unrenderable_practice_markup("$\frac{1}{2}$"))
+        self.assertFalse(has_unrenderable_practice_markup("$\\beta$\n第二段"))
+
     def test_blocks_missing_figure_image(self):
         issues = audit_practice_export_data({"exercises": [{"stem": "画图", "figures": [{"location": "stem", "title": "相图"}]}]})
         self.assertEqual(issues, [])

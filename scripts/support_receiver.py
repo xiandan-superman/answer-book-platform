@@ -470,7 +470,7 @@ def validate_bundle(path: Path, expected_report_id: str, expected_fingerprint: s
             manifest = json.loads(zf.read(info).decode("utf-8"))
     except (zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
         raise ValueError("invalid_support_bundle") from exc
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+    if not isinstance(manifest, dict) or manifest.get("schema_version") not in {1, 2}:
         raise ValueError("unsupported_schema")
     if str(manifest.get("report_id") or "") != expected_report_id:
         raise ValueError("report_id_mismatch")

@@ -26,6 +26,7 @@ from .version import get_app_version, get_source_revision
 SUPPORT_ROOT = DATA_ROOT / "support_reports"
 PENDING_DIR = SUPPORT_ROOT / "pending"
 RECEIPTS_PATH = SUPPORT_ROOT / "receipts.jsonl"
+AUTO_FAILURE_STATE_PATH = SUPPORT_ROOT / "automatic_failures.json"
 LOCAL_CONFIG_PATH = LOCAL_CONFIG_DIR / "support_reporting.json"
 BUNDLED_CONFIG_PATH = PROJECT_ROOT / "config" / "support_reporting.json"
 MAX_COMPRESSED_BYTES = 12 * 1024 * 1024
@@ -33,10 +34,14 @@ PENDING_TOTAL_LIMIT = 25 * 1024 * 1024
 PENDING_FILE_LIMIT = 5
 MAX_FRONTEND_EVENTS = 240
 RETRY_SECONDS = 60
+RECEIPT_LINE_LIMIT = 500
+AUTO_FAILURE_STATE_LIMIT = 500
+AUTO_FAILURE_RETENTION_DAYS = 30
 
 _LOCK = threading.RLock()
 _STOP = threading.Event()
 _WORKER: threading.Thread | None = None
+_AUTO_FAILURE_ACTIVE: set[str] = set()
 _ALLOWED_EVENT_FIELDS = {
     "time", "kind", "page", "action", "target", "method", "path", "request_id",
     "status", "duration_ms", "error_code", "support_id", "message", "task_id",
@@ -208,6 +213,8 @@ def _task_lifecycle(task_id: str) -> list[dict[str, Any]]:
         return _practice_job_lifecycle(task_id)
     if task_id.startswith("word_format_"):
         return _word_format_task_lifecycle(task_id)
+    if task_id.startswith("practice_word_"):
+        return _practice_export_task_lifecycle(task_id)
     try:
         event_path = task_dir(task_id) / "events.jsonl"
     except (ValueError, OSError):
@@ -228,6 +235,25 @@ def _task_lifecycle(task_id: str) -> list[dict[str, Any]]:
         result.append(row)
         previous_signature = signature
     return result
+
+
+def _practice_export_task_lifecycle(task_id: str) -> list[dict[str, Any]]:
+    try:
+        from .practice_export_jobs import _load_job_record
+
+        record = _load_job_record(task_id)
+    except Exception:
+        return []
+    return [{
+        "time": _sanitize(record.get("updated_at") or record.get("created_at")),
+        "event": "practice_word_export",
+        "payload": _sanitize({
+            "status": record.get("status"),
+            "operation": "practice_word_export",
+            "current_stage": record.get("current_operation"),
+            "error": record.get("error"),
+        }),
+    }]
 
 
 def _word_format_task_lifecycle(task_id: str) -> list[dict[str, Any]]:
@@ -488,6 +514,27 @@ def _format_task_content(task_id: str) -> dict[str, Any]:
     })
 
 
+def _practice_export_content(task_id: str) -> dict[str, Any]:
+    try:
+        from .practice_export_jobs import _load_job_record
+
+        record = _load_job_record(task_id)
+    except Exception:
+        return {"job_id": task_id, "unavailable": True}
+    return _sanitize({
+        "job_id": task_id,
+        "task_kind": "practice_export",
+        "status": record.get("status"),
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+        "current_operation": record.get("current_operation"),
+        "filename": record.get("filename"),
+        "error": record.get("error"),
+        "diagnostic_context": record.get("diagnostic_context") or {},
+        "request_payload": record.get("payload") or {},
+    })
+
+
 def _related_runtime(task_id: str, request_ids: set[str], support_ids: set[str]) -> list[dict[str, Any]]:
     rows = _jsonl_rows(RUNTIME_LOG, 2000)
     result: list[dict[str, Any]] = []
@@ -577,8 +624,6 @@ def _fingerprint(context: dict[str, Any], events: list[dict[str, Any]], lifecycl
         "question_id": context.get("question_id"),
         "exercise_index": context.get("exercise_index"),
         "task_run_started_at": context.get("task_run_started_at"),
-        "feedback_kind": context.get("feedback_kind"),
-        "feedback_note": context.get("feedback_note"),
         "last_event": {key: latest_failure.get(key) for key in ("kind", "action", "path", "status", "error_code")},
         "last_lifecycle": {
             "event": latest_lifecycle.get("event"),
@@ -652,6 +697,9 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     elif task_id.startswith("word_format_") or str(context.get("task_kind") or "") == "format":
         content = _format_task_content(task_id)
         primary_content_kind = "word_format_task"
+    elif task_id.startswith("practice_word_") or str(context.get("task_kind") or "") == "practice_export":
+        content = _practice_export_content(task_id)
+        primary_content_kind = "practice_export_task"
     elif history_id:
         content = _practice_content(history_id, context.get("exercise_index"))
         primary_content_kind = "practice_history"
@@ -671,7 +719,7 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     user_feedback = {"kind": feedback_kind, "note": feedback_note} if feedback_kind or feedback_note else {}
     task_failed = str(content.get("status") or context.get("task_status") or "") == "failed" if isinstance(content, dict) else False
     missing_expected_evidence: list[str] = []
-    if task_id and primary_content_kind in {"practice_job", "exam_task", "word_format_task"} and not lifecycle:
+    if task_id and primary_content_kind in {"practice_job", "exam_task", "word_format_task", "practice_export_task"} and not lifecycle:
         missing_expected_evidence.append("task_lifecycle")
     pipeline_error = content.get("pipeline_error.json") if isinstance(content.get("pipeline_error.json"), dict) else {}
     task_error = str(content.get("error") or pipeline_error.get("error") or "")
@@ -740,6 +788,7 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             "practice_batch_id": _redact(context.get("practice_batch_id"), 160),
             "report_group_id": _redact(context.get("report_group_id"), 120),
             "task_run_started_at": _redact(context.get("task_run_started_at"), 80),
+            "submission_mode": _redact(context.get("submission_mode") or "user", 40),
             "feedback_kind": feedback_kind,
             "feedback_note": feedback_note,
         },
@@ -867,9 +916,116 @@ def _upload(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _append_receipt(value: dict[str, Any]) -> None:
+    with _LOCK:
+        SUPPORT_ROOT.mkdir(parents=True, exist_ok=True)
+        with RECEIPTS_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_sanitize(value), ensure_ascii=False) + "\n")
+        _compact_receipts()
+
+
+def _compact_receipts() -> None:
+    try:
+        lines = RECEIPTS_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    if len(lines) <= RECEIPT_LINE_LIMIT:
+        return
+    temporary = RECEIPTS_PATH.with_suffix(".jsonl.tmp")
+    temporary.write_text("\n".join(lines[-RECEIPT_LINE_LIMIT:]) + "\n", encoding="utf-8")
+    os.replace(temporary, RECEIPTS_PATH)
+
+
+def _automatic_failure_key(context: dict[str, Any]) -> str:
+    signature = {
+        "task_id": str(context.get("task_id") or ""),
+        "task_kind": str(context.get("task_kind") or ""),
+        "task_run_started_at": str(context.get("task_run_started_at") or ""),
+        "task_stage": str(context.get("task_stage") or ""),
+        "error": str(context.get("error") or "")[:1000],
+    }
+    raw = json.dumps(signature, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _automatic_failure_state() -> dict[str, dict[str, Any]]:
+    value = _read_json(AUTO_FAILURE_STATE_PATH)
+    return value if isinstance(value, dict) else {}
+
+
+def _write_automatic_failure_state(value: dict[str, dict[str, Any]]) -> None:
     SUPPORT_ROOT.mkdir(parents=True, exist_ok=True)
-    with RECEIPTS_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(_sanitize(value), ensure_ascii=False) + "\n")
+    temporary = AUTO_FAILURE_STATE_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, AUTO_FAILURE_STATE_PATH)
+
+
+def _trim_automatic_failure_state(value: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    cutoff = time.time() - AUTO_FAILURE_RETENTION_DAYS * 86400
+    retained = [
+        (key, item)
+        for key, item in value.items()
+        if isinstance(item, dict) and float(item.get("created_epoch") or 0) >= cutoff
+    ]
+    retained.sort(key=lambda pair: float(pair[1].get("created_epoch") or 0), reverse=True)
+    return dict(retained[:AUTO_FAILURE_STATE_LIMIT])
+
+
+def _automatic_failure_worker(key: str, context: dict[str, Any]) -> None:
+    try:
+        result = submit_support_report({
+            **context,
+            "scope": "task",
+            "page": str(context.get("page") or "tasks"),
+            "task_status": "failed",
+            "submission_mode": "automatic_failure",
+            "events": [],
+        })
+        if result.get("ok"):
+            with _LOCK:
+                state = _trim_automatic_failure_state(_automatic_failure_state())
+                state[key] = {
+                    "created_epoch": time.time(),
+                    "task_id": _redact(context.get("task_id"), 160),
+                    "report_id": _redact(result.get("report_id"), 80),
+                    "status": _redact(result.get("status"), 40),
+                }
+                _write_automatic_failure_state(_trim_automatic_failure_state(state))
+    finally:
+        with _LOCK:
+            _AUTO_FAILURE_ACTIVE.discard(key)
+
+
+def queue_automatic_failure_report(context: dict[str, Any]) -> dict[str, Any]:
+    """Queue one non-blocking, de-duplicated report for a terminal task failure."""
+    value = context if isinstance(context, dict) else {}
+    task_id = str(value.get("task_id") or "").strip()
+    if not task_id:
+        return {"scheduled": False, "reason": "missing_task_id"}
+    if not _config().get("receiver_url"):
+        return {"scheduled": False, "reason": "receiver_not_configured"}
+    key = _automatic_failure_key(value)
+    with _LOCK:
+        state = _trim_automatic_failure_state(_automatic_failure_state())
+        if key in state or key in _AUTO_FAILURE_ACTIVE:
+            return {"scheduled": False, "reason": "already_reported", "key": key}
+        _AUTO_FAILURE_ACTIVE.add(key)
+    worker = threading.Thread(
+        target=_automatic_failure_worker,
+        args=(key, dict(value)),
+        name=f"automatic-support-{key[:8]}",
+        daemon=True,
+    )
+    worker.start()
+    return {"scheduled": True, "key": key}
+
+
+def _cleanup_local_support_state() -> None:
+    with _LOCK:
+        _enforce_pending_limits()
+        _compact_receipts()
+        state = _trim_automatic_failure_state(_automatic_failure_state())
+        if state or AUTO_FAILURE_STATE_PATH.exists():
+            _write_automatic_failure_state(state)
 
 
 def submit_support_report(context: dict[str, Any]) -> dict[str, Any]:
@@ -922,6 +1078,7 @@ def start_support_retry_worker() -> None:
     if _WORKER and _WORKER.is_alive():
         return
     SUPPORT_ROOT.mkdir(parents=True, exist_ok=True)
+    _cleanup_local_support_state()
     for path in SUPPORT_ROOT.rglob("*.part"):
         try:
             if time.time() - path.stat().st_mtime > 3600:

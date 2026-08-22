@@ -435,6 +435,171 @@ def test_blueprint_audit_blocks_cross_source_design_leakage():
     }]
 
 
+def test_blueprint_audit_accepts_bound_scope_expressed_with_synonyms_and_constraints():
+    source_quality_law = {
+        "source_question_id": "source_07",
+        "title": "质量作用定律与反应级数",
+        "knowledge_points": ["质量作用定律", "反应级数", "基元反应与复合反应"],
+        "required_constraints": {
+            "essential_definitions": ["质量作用定律只适用于基元反应"],
+            "essential_formulas": [],
+            "applicable_boundaries": ["复合反应速率方程不遵循质量作用定律"],
+        },
+    }
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {
+                "source_question_id": "source_01",
+                "title": "概念辨析",
+                "knowledge_points": ["质量作用定律适用范围"],
+            },
+            source_quality_law,
+        ],
+        "blueprint": {
+            "generation_strategy": "knowledge_item_wise",
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_07",
+                "source_refs": ["source_07"],
+                "question_type": "单选题",
+                "difficulty": "进阶",
+                "target_skill": "辨析基元反应与复合反应中的速率方程",
+                "variation_type": "概念判断",
+                "design_intent": "考查质量作用定律适用范围",
+                "difficulty_levers": ["条件识别或转换要求"],
+                "difficulty_rationale": "需要判断定律的适用边界。",
+                "required_knowledge_points": source_quality_law["knowledge_points"],
+                "required_constraints": source_quality_law["required_constraints"],
+            }, {
+                "number": 2,
+                "plan_item_id": "p2",
+                "source_question_id": "source_01",
+                "source_refs": ["source_01"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "说明适用条件",
+                "variation_type": "直接说明",
+                "design_intent": "考查定律边界。",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "需要准确说明条件。",
+                "required_knowledge_points": ["质量作用定律适用范围"],
+            }],
+        },
+    }
+
+    audit = exercise_generation.audit_practice_blueprint(plan)
+
+    assert audit["status"] != "blocked", audit
+    assert not any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
+
+
+def test_blueprint_audit_warns_for_future_bridge_without_expanding_assessed_scope():
+    plan = {
+        "selected_source_questions": [
+            {"source_question_id": "source_01", "title": "半衰期", "knowledge_points": ["半衰期定义"]},
+            {"source_question_id": "source_02", "title": "反应级数", "knowledge_points": ["反应级数的确定"]},
+            {"source_question_id": "source_03", "title": "活化能", "knowledge_points": ["活化能计算"]},
+        ],
+        "blueprint": {
+            "generation_strategy": "targeted_set",
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_01",
+                "source_refs": ["source_01", "source_02"],
+                "coverage_role": "综合",
+                "question_type": "计算题",
+                "difficulty": "进阶",
+                "target_skill": "根据半衰期判断反应级数",
+                "variation_type": "数据比较",
+                "design_intent": "比较一级与二级反应，为后续活化能计算奠定基础。",
+                "difficulty_levers": ["知识综合与迁移程度"],
+                "difficulty_rationale": "需要选择正确的半衰期关系。",
+                "required_knowledge_points": ["半衰期定义", "反应级数的确定"],
+            }],
+        },
+    }
+
+    audit = exercise_generation.audit_practice_blueprint(plan)
+
+    assert audit["status"] == "warning"
+    assert not audit["errors"]
+    assert any(finding.get("code") == "cross_source_context_reference" for finding in audit["findings"])
+
+
+def test_blueprint_refinement_context_contains_only_bound_knowledge_points():
+    plan = {
+        "source_analysis": {"subject": "化学", "knowledge_points": ["半衰期", "活化能计算"]},
+        "selected_source_questions": [
+            {"source_question_id": "source_01", "knowledge_points": ["半衰期"]},
+            {"source_question_id": "source_02", "knowledge_points": ["活化能计算"]},
+        ],
+    }
+
+    context = exercise_generation._blueprint_refinement_context(
+        plan,
+        [{"source_question_id": "source_01", "source_refs": ["source_01"]}],
+    )
+
+    assert context["bound_knowledge_points"] == ["半衰期"]
+    assert "task_knowledge_points" not in context
+
+
+def test_blueprint_audit_cross_source_leak_gets_one_item_local_repair(monkeypatch):
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {"source_question_id": "source_a", "title": "精馏", "knowledge_points": ["精馏原理"]},
+            {"source_question_id": "source_b", "title": "晶体", "knowledge_points": ["晶面指数标定步骤"]},
+        ],
+        "blueprint": {
+            "generation_strategy": "knowledge_item_wise",
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_a",
+                "source_refs": ["source_a"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "精馏原理",
+                "variation_type": "直接辨析",
+                "design_intent": "考查精馏原理",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "学生容易混淆晶面指数。",
+                "required_knowledge_points": ["精馏原理"],
+            }, {
+                "number": 2,
+                "plan_item_id": "p2",
+                "source_question_id": "source_b",
+                "source_refs": ["source_b"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "标定晶面指数",
+                "variation_type": "步骤说明",
+                "design_intent": "考查晶面指数标定步骤",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "需要按顺序说明标定步骤。",
+                "required_knowledge_points": ["晶面指数标定步骤"],
+            }],
+        },
+    }
+    initial = exercise_generation.audit_practice_blueprint(plan)
+
+    def fake_refine(_plan, batch, **_kwargs):
+        return [{**batch[0], "difficulty_rationale": "学生需要准确说明精馏原理。"}]
+
+    monkeypatch.setattr(exercise_generation, "_refine_blueprint_batch", fake_refine)
+    repair = exercise_generation.repair_blueprint_audit_findings(plan, {}, initial)
+    final = exercise_generation.audit_practice_blueprint(plan)
+
+    assert repair["attempted_item_ids"] == ["p1"]
+    assert repair["repaired_item_ids"] == ["p1"]
+    assert repair["call_count"] == 1
+    assert final["status"] != "blocked", final
+
+
 def test_mode_contract_blocks_wrong_per_source_question_counts():
     plan = {
         "selected_source_questions": [

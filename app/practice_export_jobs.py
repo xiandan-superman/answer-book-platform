@@ -120,6 +120,24 @@ def _update_job(job_id: str, **changes: Any) -> dict[str, Any]:
         return dict(record)
 
 
+def _queue_automatic_failure_report(record: dict[str, Any]) -> None:
+    try:
+        from .support_reporting import queue_automatic_failure_report
+
+        queue_automatic_failure_report({
+            "task_id": str(record.get("job_id") or ""),
+            "task_kind": "practice_export",
+            "task_status": "failed",
+            "task_stage": "practice_word_export",
+            "task_run_started_at": str(record.get("created_at") or ""),
+            "task_title": str(record.get("filename") or "练习题 Word"),
+            "operation": "practice_word_export",
+            "error": str(record.get("error") or ""),
+        })
+    except Exception:
+        pass
+
+
 def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
     started = time.perf_counter()
     with _LOCK:
@@ -172,7 +190,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
         )
     except Exception as exc:
         elapsed = time.perf_counter() - started
-        _update_job(
+        failed_record = _update_job(
             job_id,
             status="failed",
             current_operation="Word 生成失败",
@@ -189,6 +207,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             "error",
             {"job_id": job_id, "elapsed_seconds": round(elapsed, 3)},
         )
+        _queue_automatic_failure_report(failed_record)
     finally:
         with _LOCK:
             _ACTIVE.discard(job_id)
@@ -354,6 +373,7 @@ def recover_practice_export_jobs() -> dict[str, int]:
                     updated_at=_now(),
                 )
                 _persist_job(record)
+                _queue_automatic_failure_report(record)
                 counts["failed"] += 1
                 continue
             record.update(

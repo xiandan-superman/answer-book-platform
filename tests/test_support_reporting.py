@@ -22,9 +22,10 @@ def _write_bundle(
     *,
     payload: str = "ok",
     diagnostic_coverage: dict | None = None,
+    schema_version: int = 1,
 ) -> dict:
     manifest = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "report_id": report_id,
         "fingerprint": fingerprint,
         "created_at": "2026-08-21T12:00:00+00:00",
@@ -426,6 +427,103 @@ def test_support_fingerprint_keeps_different_failed_tasks_separate() -> None:
     assert first_run != second_run
 
 
+def test_manual_followup_and_automatic_failure_share_one_issue_fingerprint() -> None:
+    base = {
+        "scope": "task",
+        "page": "tasks",
+        "task_id": "generation_same",
+        "task_run_started_at": "2026-08-22T13:00:00+08:00",
+    }
+    lifecycle = [{"event": "task_updated", "payload": {"status": "failed", "error": "timeout"}}]
+
+    automatic = support_reporting._fingerprint(
+        {**base, "submission_mode": "automatic_failure"}, [], lifecycle, []
+    )
+    manual = support_reporting._fingerprint(
+        {**base, "feedback_kind": "failed", "feedback_note": "用户补充说明"}, [], lifecycle, []
+    )
+
+    assert automatic == manual
+
+
+def test_automatic_failure_report_is_nonblocking_deduplicated_and_bounded() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        state_path = root / "automatic_failures.json"
+        receipts = root / "receipts.jsonl"
+        submitted: list[dict] = []
+        completed = threading.Event()
+
+        def fake_submit(context: dict) -> dict:
+            submitted.append(context)
+            completed.set()
+            return {"ok": True, "status": "submitted", "report_id": "AB-AUTO-1"}
+
+        context = {
+            "task_id": "generation_auto",
+            "task_kind": "practice",
+            "task_run_started_at": "2026-08-22T13:00:00+08:00",
+            "task_stage": "failed",
+            "error": "model timeout",
+        }
+        support_reporting._AUTO_FAILURE_ACTIVE.clear()
+        with (
+            patch.object(support_reporting, "SUPPORT_ROOT", root),
+            patch.object(support_reporting, "AUTO_FAILURE_STATE_PATH", state_path),
+            patch.object(support_reporting, "RECEIPTS_PATH", receipts),
+            patch.object(support_reporting, "_config", return_value={"receiver_url": "http://127.0.0.1", "receiver_token": "test"}),
+            patch.object(support_reporting, "submit_support_report", side_effect=fake_submit),
+        ):
+            first = support_reporting.queue_automatic_failure_report(context)
+            second = support_reporting.queue_automatic_failure_report(context)
+            assert first["scheduled"] is True
+            assert second["scheduled"] is False
+            assert completed.wait(2)
+            deadline = time.time() + 2
+            while time.time() < deadline and not state_path.exists():
+                time.sleep(0.01)
+            third = support_reporting.queue_automatic_failure_report(context)
+
+        assert third["scheduled"] is False
+        assert len(submitted) == 1
+        assert submitted[0]["submission_mode"] == "automatic_failure"
+        assert submitted[0]["events"] == []
+        assert len(json.loads(state_path.read_text(encoding="utf-8"))) == 1
+
+
+def test_local_support_receipts_are_compacted() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        receipts = root / "receipts.jsonl"
+        with (
+            patch.object(support_reporting, "SUPPORT_ROOT", root),
+            patch.object(support_reporting, "RECEIPTS_PATH", receipts),
+            patch.object(support_reporting, "RECEIPT_LINE_LIMIT", 5),
+        ):
+            for index in range(8):
+                support_reporting._append_receipt({"report_id": f"AB-{index}"})
+        lines = receipts.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 5
+        assert json.loads(lines[0])["report_id"] == "AB-3"
+
+
+def test_automatic_failure_markers_expire_and_keep_only_recent_entries() -> None:
+    now = time.time()
+    state = {
+        "expired": {"created_epoch": now - 3 * 86400},
+        "older": {"created_epoch": now - 30},
+        "newer": {"created_epoch": now - 10},
+        "newest": {"created_epoch": now},
+    }
+    with (
+        patch.object(support_reporting, "AUTO_FAILURE_RETENTION_DAYS", 1),
+        patch.object(support_reporting, "AUTO_FAILURE_STATE_LIMIT", 2),
+    ):
+        trimmed = support_reporting._trim_automatic_failure_state(state)
+
+    assert list(trimmed) == ["newest", "newer"]
+
+
 def test_receiver_groups_duplicate_issue_and_keeps_one_latest_bundle() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         root = Path(raw_tmp)
@@ -613,6 +711,23 @@ def test_receiver_rejects_zip_path_traversal() -> None:
             raise AssertionError("unsafe ZIP path was accepted")
 
 
+def test_receiver_accepts_current_v2_support_bundle() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        path = Path(raw_tmp) / "v2.zip"
+        _write_bundle(path, "AB-V2", "fp-v2", schema_version=2)
+
+        manifest = support_receiver.validate_bundle(path, "AB-V2", "fp-v2")
+
+        assert manifest["schema_version"] == 2
+
+
+def test_terminal_task_workers_schedule_automatic_failure_reports() -> None:
+    root = Path(__file__).resolve().parents[1] / "app"
+    for name in ("task_runner.py", "practice_jobs.py", "practice_export_jobs.py", "word_format_tasks.py"):
+        source = (root / name).read_text(encoding="utf-8")
+        assert "queue_automatic_failure_report" in source
+
+
 def test_client_stream_upload_reaches_receiver_and_returns_canonical_id() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         root = Path(raw_tmp)
@@ -702,8 +817,11 @@ def test_frontend_support_is_contextual_and_api_requests_have_correlation_ids() 
     assert "任务显示成功也可以反馈" in app_js
     assert 'feedback_kind: feedbackKind' in app_js
     assert 'feedback_note: feedbackNote' in app_js
-    assert "submitFailedTaskFeedback" in app_js
-    assert 'id="taskFeedbackFailedBtn"' in html_text
+    assert "submitFailedTaskFeedback" not in app_js
+    assert 'id="taskFeedbackFailedBtn"' not in html_text
+    assert "失败诊断已自动处理" in html_text
+    assert "断网时仅在本机限量保存并重试" in html_text
+    assert "个失败任务的诊断已自动处理" in app_js
     assert "report_group_id" in app_js
     assert "failedTaskFeedbackReported" in app_js
     assert "rememberFailedTaskFeedback" in app_js

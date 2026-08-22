@@ -881,6 +881,22 @@ def _format_hkl_plot_label(h: int, k: int, l_index: int) -> str:
     return r"$(" + r"\ ".join(parts) + r")$"
 
 
+def _zone_axis_plot_title(spec: dict[str, Any], u: int, v: int, w: int) -> str:
+    """Return a safe plot title instead of treating a prose caption as math text."""
+
+    explicit = str(spec.get("title") or "").strip()
+    if explicit and "\\" not in explicit:
+        return explicit
+    lattice = _normalize_lattice_name(spec.get("lattice") or "generic_cubic")
+    lattice_label = {
+        "bcc": "体心立方点阵",
+        "body_centered_cubic": "体心立方点阵",
+        "fcc": "面心立方点阵",
+        "face_centered_cubic": "面心立方点阵",
+    }.get(lattice, "立方点阵")
+    return f"{lattice_label} [{u} {v} {w}] 带轴电子衍射花样"
+
+
 def _normalized_peak_position(peak: dict[str, Any]) -> float | None:
     for key in ("two_theta", "2theta", "2θ", "angle", "position", "x", "relative_position", "n"):
         if key not in peak:
@@ -1217,27 +1233,40 @@ def draw_zone_axis_diffraction(spec: dict[str, Any], output: Path) -> None:
         basis_labels = ("g1*", "g2*")
     fig, ax = plt.subplots(figsize=(5.2, 4.8), dpi=200)
     projected_points = [(h, k, l_index, *project(h, k, l_index)) for h, k, l_index in points]
+    xs = [item[3] for item in projected_points] or [-1, 1]
+    ys = [item[4] for item in projected_points] or [-1, 1]
+    x_center = (min(xs) + max(xs)) / 2
+    y_center = (min(ys) + max(ys)) / 2
     for h, k, l_index in points:
         x, y = project(h, k, l_index)
         base_size = float(spec.get("spot_size") or 42)
         size = base_size * 1.45 if (h, k, l_index) == (0, 0, 0) else base_size
         ax.scatter([x], [y], s=size, c="#111")
         if (h, k, l_index) in labels or (h, k, l_index) == (0, 0, 0):
-            ax.text(x + 0.08, y + 0.08, _format_hkl_plot_label(h, k, l_index), fontsize=8)
-    xs = [item[3] for item in projected_points] or [-1, 1]
-    ys = [item[4] for item in projected_points] or [-1, 1]
+            x_offset = -0.10 if x > x_center else 0.10
+            y_offset = -0.10 if y > y_center else 0.10
+            ax.text(
+                x + x_offset,
+                y + y_offset,
+                _format_hkl_plot_label(h, k, l_index),
+                fontsize=8,
+                ha="right" if x_offset < 0 else "left",
+                va="top" if y_offset < 0 else "bottom",
+                clip_on=True,
+            )
     xpad = max(0.8, (max(xs) - min(xs)) * 0.12)
     ypad = max(0.8, (max(ys) - min(ys)) * 0.12)
     xmin, xmax = min(xs) - xpad, max(xs) + xpad
     ymin, ymax = min(ys) - ypad, max(ys) + ypad
-    ax.axhline(0, color="#ddd", lw=0.8)
-    ax.axvline(0, color="#ddd", lw=0.8)
-    ax.annotate("", xy=(xmax - 0.15, 0), xytext=(xmax - 1.0, 0), arrowprops={"arrowstyle": "->", "lw": 1.0, "color": "#666"})
-    ax.annotate("", xy=(0, ymax - 0.15), xytext=(0, ymax - 1.0), arrowprops={"arrowstyle": "->", "lw": 1.0, "color": "#666"})
-    if basis_labels[0]:
-        ax.text(xmax - 0.95, 0.16, basis_labels[0], fontsize=8, color="#555")
-    if basis_labels[1]:
-        ax.text(0.16, ymax - 0.85, basis_labels[1], fontsize=8, color="#555")
+    if bool(spec.get("show_basis_axes", False)):
+        ax.axhline(0, color="#ddd", lw=0.8)
+        ax.axvline(0, color="#ddd", lw=0.8)
+        ax.annotate("", xy=(xmax - 0.15, 0), xytext=(xmax - 1.0, 0), arrowprops={"arrowstyle": "->", "lw": 1.0, "color": "#666"})
+        ax.annotate("", xy=(0, ymax - 0.15), xytext=(0, ymax - 1.0), arrowprops={"arrowstyle": "->", "lw": 1.0, "color": "#666"})
+        if basis_labels[0]:
+            ax.text(xmax - 0.95, 0.16, basis_labels[0], fontsize=8, color="#555")
+        if basis_labels[1]:
+            ax.text(0.16, ymax - 0.85, basis_labels[1], fontsize=8, color="#555")
     ax.text(
         xmin + 0.12,
         ymax - 0.38,
@@ -1251,7 +1280,7 @@ def draw_zone_axis_diffraction(spec: dict[str, Any], output: Path) -> None:
     ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
-    title = spec.get("title") or spec.get("caption") or f"[{u} {v} {w}] 带轴电子衍射花样"
+    title = _zone_axis_plot_title(spec, u, v, w)
     ax.set_title(_wrap_plot_title(title, width=28), fontsize=11)
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -2354,6 +2383,16 @@ def _planned_figure_metadata(question: dict[str, Any]) -> dict[str, Any]:
     decision: dict[str, Any] = raw_decision if isinstance(raw_decision, dict) else {}
     raw_resolution = plan.get("schema_resolution")
     resolution: dict[str, Any] = raw_resolution if isinstance(raw_resolution, dict) else {}
+    planned_units: list[dict[str, str]] = []
+    for unit in plan.get("figure_units", []) or []:
+        if not isinstance(unit, dict):
+            continue
+        unit_resolution = unit.get("schema_resolution") if isinstance(unit.get("schema_resolution"), dict) else {}
+        unit_decision = unit.get("render_decision") if isinstance(unit.get("render_decision"), dict) else {}
+        unit_kind = str(unit_decision.get("schema_kind") or unit_resolution.get("kind") or "").strip()
+        unit_number = str(unit.get("answer_unit_number") or "").strip()
+        if unit_kind and unit_number:
+            planned_units.append({"answer_unit_number": unit_number, "schema_kind": unit_kind})
     return {
         "semantic_contract_id": str(contract.get("contract_id") or decision.get("semantic_contract_id") or "").strip(),
         "planned_render_strategy": str(decision.get("strategy") or "").strip(),
@@ -2362,7 +2401,78 @@ def _planned_figure_metadata(question: dict[str, Any]) -> dict[str, Any]:
         ).strip(),
         "figure_semantic_contract": contract,
         "figure_render_decision": decision,
+        "planned_figure_units": planned_units,
     }
+
+
+def _bind_composite_plan_coverage(question: dict[str, Any], spec: dict[str, Any]) -> None:
+    """Record when one deterministic figure completely realizes a composite plan.
+
+    A multi-unit XRD answer is often clearer as one plot containing several
+    labelled states.  It is compatible only when every planned unit has the
+    same XRD schema and the rendered spec contains at least one distinct state
+    for every unit.
+    """
+
+    raw_plan = question.get("figure_schema_plan")
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    units: list[dict[str, str]] = []
+    for unit in plan.get("figure_units", []) or []:
+        if not isinstance(unit, dict):
+            continue
+        resolution = unit.get("schema_resolution") if isinstance(unit.get("schema_resolution"), dict) else {}
+        decision = unit.get("render_decision") if isinstance(unit.get("render_decision"), dict) else {}
+        number = str(unit.get("answer_unit_number") or "").strip()
+        kind = str(decision.get("schema_kind") or resolution.get("kind") or "").strip()
+        if number and kind:
+            units.append({"answer_unit_number": number, "schema_kind": kind})
+    if len(units) < 2:
+        return
+
+    actual_kind = str(spec.get("kind") or "").strip()
+    coverage = {
+        "status": "incomplete",
+        "actual_schema_kind": actual_kind,
+        "planned_unit_count": len(units),
+        "covered_unit_count": 0,
+        "planned_units": units,
+        "evidence": "",
+    }
+    spec["covered_answer_unit_numbers"] = []
+    spec["composite_plan_coverage"] = coverage
+    if actual_kind != "xrd_pattern" or any(unit["schema_kind"] != actual_kind for unit in units):
+        coverage["evidence"] = "composite child schemas are not all represented by the actual schema"
+        return
+
+    peaks = spec.get("peaks") if isinstance(spec.get("peaks"), list) else []
+    state_labels = list(
+        dict.fromkeys(
+            str(peak.get("pattern_label") or peak.get("pattern") or "").strip()
+            for peak in peaks
+            if isinstance(peak, dict) and str(peak.get("pattern_label") or peak.get("pattern") or "").strip()
+        )
+    )
+    if len(state_labels) < len(units):
+        coverage["evidence"] = f"xrd state count {len(state_labels)} is below planned unit count {len(units)}"
+        return
+
+    covered = [unit["answer_unit_number"] for unit in units]
+    spec["covered_answer_unit_numbers"] = covered
+    coverage.update(
+        {
+            "status": "complete",
+            "covered_unit_count": len(covered),
+            "evidence": "distinct_xrd_pattern_labels",
+            "state_labels": state_labels,
+        }
+    )
+
+
+def _composite_plan_coverage_complete(spec: dict[str, Any]) -> bool:
+    coverage = spec.get("composite_plan_coverage")
+    if not isinstance(coverage, dict) or coverage.get("status") != "complete":
+        return False
+    return int(coverage.get("covered_unit_count") or 0) == int(coverage.get("planned_unit_count") or -1)
 
 
 def _question_context_for_figure_spec(question: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
@@ -2417,7 +2527,7 @@ def _semantic_route_issues(spec: dict[str, Any], *, generation_method: str) -> l
         renderer=str(raw_decision.get("renderer") or ""),
         fallback_allowed=bool(raw_decision.get("fallback_allowed", True)),
     )
-    return [
+    route_issues = [
         *issues,
         *audit_figure_render_outcome(
             contract,
@@ -2426,6 +2536,9 @@ def _semantic_route_issues(spec: dict[str, Any], *, generation_method: str) -> l
             generation_method=generation_method,
         ),
     ]
+    if _composite_plan_coverage_complete(spec):
+        route_issues = [issue for issue in route_issues if issue != "actual_schema_kind_differs_from_plan"]
+    return route_issues
 
 
 def _block_plain_text(fragment: dict[str, Any], labels: set[str] | None = None, max_chars: int = 1200) -> str:
@@ -3005,6 +3118,7 @@ def prepare_figures_for_fragments(
             figure_question = _question_context_for_figure_spec(question, spec)
             spec["drawing_generation_mode"] = mode
             spec.update({key: value for key, value in _planned_figure_metadata(figure_question).items() if value})
+            _bind_composite_plan_coverage(figure_question, spec)
             specs.append(spec)
             fragments_by_figure_id[str(spec.get("figure_id", ""))] = fragment
     specs_json.parent.mkdir(parents=True, exist_ok=True)
@@ -3056,6 +3170,7 @@ def prepare_figures_for_fragments(
                     previous_issues=previous_issues,
                 )
             retry_spec.update({key: value for key, value in _planned_figure_metadata(question).items() if value})
+            _bind_composite_plan_coverage(question, retry_spec)
             return qid, retry_spec, ""
         except Exception as exc:
             return qid, None, str(exc)
@@ -3137,6 +3252,7 @@ def prepare_figures_for_fragments(
         reused_spec = dict(previous)
         reused_spec["path"] = str(output)
         reused_spec.update(_planned_figure_metadata(question))
+        _bind_composite_plan_coverage(question, reused_spec)
         reusable_fallback_specs.append(reused_spec)
         fragments_by_figure_id[figure_id] = fragment
         generated.append(output)
@@ -3338,6 +3454,9 @@ def prepare_figures_for_fragments(
                 "semantic_contract_id": semantic_contract_id,
                 "planned_render_strategy": planned_render_strategy,
                 "planned_schema_kind": planned_schema_kind,
+                "planned_figure_units": spec.get("planned_figure_units") or [],
+                "covered_answer_unit_numbers": spec.get("covered_answer_unit_numbers") or [],
+                "composite_plan_coverage": spec.get("composite_plan_coverage") or {},
                 "needs_manual_review": bool(risk_notes),
                 "program_check_issues": program_issues,
                 "risk_notes": risk_notes,

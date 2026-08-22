@@ -180,6 +180,24 @@ def _save_record(record: dict) -> None:
     _write_json(_task_dir(str(record["task_id"])) / "format_task.json", record)
 
 
+def _queue_automatic_failure_report(record: dict) -> None:
+    try:
+        from .support_reporting import queue_automatic_failure_report
+
+        queue_automatic_failure_report({
+            "task_id": str(record.get("task_id") or ""),
+            "task_kind": "format",
+            "task_status": "failed",
+            "task_stage": "format_review",
+            "task_run_started_at": str(record.get("created_at") or ""),
+            "task_title": str(record.get("filename") or "Word 文档"),
+            "operation": "word_format_review",
+            "error": str(record.get("error") or ""),
+        })
+    except Exception:
+        pass
+
+
 def create_word_format_task(payload: dict) -> dict:
     profile = str(payload.get("profile") or "")
     if profile not in PROFILE_LABELS:
@@ -249,6 +267,7 @@ def create_word_format_task(payload: dict) -> dict:
         record["updated_at"] = _now_text()
         record["updated_epoch"] = time.time()
         _save_record(record)
+        _queue_automatic_failure_report(record)
         raise ValueError(record["error"]) from exc
     record["updated_at"] = _now_text()
     record["updated_epoch"] = time.time()
@@ -283,6 +302,7 @@ def apply_word_format_task(task_id: str) -> dict:
         record["updated_at"] = _now_text()
         record["updated_epoch"] = time.time()
         _save_record(record)
+        _queue_automatic_failure_report(record)
         raise ValueError(record["error"]) from exc
     _write_json(directory / "final_audit.json", final_report)
     record["final_report"] = final_report

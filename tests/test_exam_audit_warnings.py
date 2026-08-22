@@ -45,3 +45,23 @@ def test_per_item_total_score_blocks_silent_item_merging(tmp_path) -> None:
     )
 
     assert any("implies 6 items" in issue and "extracted 2" in issue for issue in issues)
+
+
+def test_source_coverage_audits_inline_numbered_terms_individually(tmp_path) -> None:
+    output = tmp_path / "audit.json"
+    issues = audit_exam_structure(
+        {
+            "source_paragraphs": ["一、名词解释（每小题2分）", "1、扩散第一定律 2、位错 3、二次再结晶"],
+            "items": [
+                {"question_id": "term_1", "section": "一、名词解释", "stem": "扩散第一定律"},
+                {"question_id": "term_2", "section": "一、名词解释", "stem": "位错"},
+                {"question_id": "term_3", "section": "一、名词解释", "stem": "二次再结晶"},
+            ],
+        },
+        output,
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+
+    assert not any("source paragraph not covered" in issue for issue in issues)
+    assert report["source_coverage"]["item_like_count"] == 3
+    assert report["source_coverage"]["covered_item_like_count"] == 3

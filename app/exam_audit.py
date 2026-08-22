@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from .exam_extract import _split_inline_numbered_items
 from .question_scores import infer_suggested_score
 
 ITEM_RE = re.compile(r"^\s*\d{1,3}[、.．]\s*")
@@ -26,11 +27,11 @@ def _norm_source_item(text: str) -> str:
     return _norm(ITEM_RE.sub("", text))
 
 
-def _is_item_like_source(text: str) -> bool:
+def _is_item_like_source(text: str, *, allow_short: bool = False) -> bool:
     clean = str(text or "").strip()
     if not ITEM_RE.match(clean):
         return False
-    return len(_norm_source_item(clean)) >= 4
+    return len(_norm_source_item(clean)) >= (1 if allow_short else 4)
 
 
 def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
@@ -92,17 +93,22 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
     if source_paragraphs and items:
         normalized_stems = [_norm(str(item.get("stem", ""))) for item in items]
         missing_item_like: list[str] = []
+        current_section = ""
         for para in source_paragraphs:
             if SECTION_RE.match(para):
+                current_section = para
                 continue
-            if not _is_item_like_source(para):
-                continue
-            source_coverage["item_like_count"] += 1
-            normalized = _norm_source_item(para)
-            if any(normalized and normalized in stem for stem in normalized_stems):
-                source_coverage["covered_item_like_count"] += 1
-            else:
-                missing_item_like.append(para)
+            term_section = "名词解释" in current_section or "名解" in current_section
+            source_items = _split_inline_numbered_items(para) if term_section else [para]
+            for source_item in source_items:
+                if not _is_item_like_source(source_item, allow_short=len(source_items) > 1):
+                    continue
+                source_coverage["item_like_count"] += 1
+                normalized = _norm_source_item(source_item)
+                if any(normalized and normalized in stem for stem in normalized_stems):
+                    source_coverage["covered_item_like_count"] += 1
+                else:
+                    missing_item_like.append(source_item)
         source_coverage["missing_item_like"] = missing_item_like[:30]
         source_coverage["missing_item_like_count"] = len(missing_item_like)
         for para in missing_item_like[:10]:

@@ -7,6 +7,7 @@ import os
 import random
 import re
 import time
+from dataclasses import replace
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
@@ -918,6 +919,68 @@ def validate_practice_mode_contract(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _scope_evidence_text(source: dict[str, Any]) -> str:
+    """Return all server-confirmed scope evidence for one source."""
+    constraints = source.get("required_constraints") if isinstance(source.get("required_constraints"), dict) else {}
+    return " ".join([
+        *(
+            _clean(source.get(field), 18000)
+            for field in ("title", "stem_excerpt", "source_content", "knowledge_points")
+        ),
+        *(
+            " ".join(_string_list(constraints.get(field), limit=60))
+            for field in ("essential_definitions", "essential_formulas", "applicable_boundaries")
+        ),
+    ])
+
+
+def _canonical_scope_text(value: Any) -> str:
+    text = _clean(value, 40000).lower()
+    text = text.replace("复杂反应", "复合反应")
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
+
+
+def _source_evidence_covers_anchor(anchor: str, evidence: str) -> bool:
+    """Treat aliases and compound labels as covered by the bound source evidence."""
+    canonical_evidence = _canonical_scope_text(evidence)
+    canonical_anchor = _canonical_scope_text(anchor)
+    if not canonical_anchor:
+        return True
+    if canonical_anchor in canonical_evidence:
+        return True
+    base = re.sub(
+        r"(?:的)?(?:定义|确定步骤|标定步骤|表示方法|计算方法|基本原理|原理|结果|适用范围)$",
+        "",
+        _clean(anchor, 100),
+    )
+    canonical_base = _canonical_scope_text(base)
+    if len(canonical_base) >= 4 and canonical_base in canonical_evidence:
+        return True
+    terms = [
+        _canonical_scope_text(term)
+        for term in re.split(r"(?:与|和|及|、|/)", base)
+        if len(_canonical_scope_text(term)) >= 4
+    ]
+    return len(terms) >= 2 and all(term in canonical_evidence for term in terms)
+
+
+def _is_non_assessment_bridge(field: str, value: str, anchor: str) -> bool:
+    """Recognise a progression note that mentions, but does not assess, another topic."""
+    if field != "design_intent":
+        return False
+    for sentence in re.split(r"[。！？;；\n]", value):
+        if anchor not in sentence:
+            continue
+        if (
+            ("为后续" in sentence and "基础" in sentence)
+            or "作为后续" in sentence
+            or "用于衔接" in sentence
+            or "形成呼应" in sentence
+        ):
+            return True
+    return False
+
+
 def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     """Run deterministic confirmation-time checks on a user-edited blueprint."""
     blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
@@ -1010,6 +1073,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     image_dependent_source_ids: set[str] = set()
     boundary_review_items: list[str] = []
     cross_source_leak_items: list[str] = []
+    cross_source_reference_items: list[str] = []
     findings: list[dict[str, Any]] = []
     planned_points_by_source: dict[str, list[str]] = {}
     for index, item in enumerate(items, start=1):
@@ -1049,11 +1113,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             ),
         }
         design_text = " ".join(design_fields.values())
-        own_source_text = " ".join(
-            _clean(source_by_id.get(ref, {}).get(field), 18000)
-            for ref in refs
-            for field in ("title", "stem_excerpt", "source_content", "knowledge_points")
-        )
+        own_source_text = " ".join(_scope_evidence_text(source_by_id.get(ref, {})) for ref in refs)
         foreign_anchors: dict[str, list[dict[str, str]]] = {}
         for source_id, other_source in source_by_id.items():
             if source_id in refs:
@@ -1062,19 +1122,35 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 anchor = re.sub(r"[（(].*?[）)]", "", point)
                 anchor = re.sub(r"(?:的)?(?:定义|确定步骤|标定步骤|表示方法|计算方法|基本原理|原理|结果)$", "", anchor)
                 anchor = _clean(anchor, 100)
-                if len(anchor) >= 4 and anchor not in own_source_text:
+                if len(anchor) >= 4 and not _source_evidence_covers_anchor(anchor, own_source_text):
                     foreign_anchors.setdefault(anchor, []).append({
                         "source_id": source_id,
                         "source_title": _clean(other_source.get("title"), 200),
                         "knowledge_point": _clean(point, 500),
                     })
         anchor_matches = []
+        bridge_matches = []
         for anchor, foreign_sources in foreign_anchors.items():
-            matched_fields = [name for name, value in design_fields.items() if anchor in value]
+            matched_fields = [
+                name
+                for name, value in design_fields.items()
+                if anchor in value and not _is_non_assessment_bridge(name, value, anchor)
+            ]
+            contextual_fields = [
+                name
+                for name, value in design_fields.items()
+                if anchor in value and _is_non_assessment_bridge(name, value, anchor)
+            ]
             if matched_fields:
                 anchor_matches.append({
                     "anchor": anchor,
                     "matched_fields": matched_fields,
+                    "foreign_sources": foreign_sources,
+                })
+            if contextual_fields:
+                bridge_matches.append({
+                    "anchor": anchor,
+                    "matched_fields": contextual_fields,
                     "foreign_sources": foreign_sources,
                 })
         if anchor_matches:
@@ -1087,6 +1163,17 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 "bound_source_refs": refs,
                 "design_fields": design_fields,
                 "matches": anchor_matches,
+            })
+        if bridge_matches:
+            item_number = str(item.get("number") or index)
+            cross_source_reference_items.append(item_number)
+            findings.append({
+                "code": "cross_source_context_reference",
+                "severity": "warning",
+                "item_number": item_number,
+                "plan_item_id": _clean(item.get("plan_item_id"), 120),
+                "bound_source_refs": refs,
+                "matches": bridge_matches,
             })
         compact_boundaries = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", "".join(boundaries))
         boundary_phrases = {
@@ -1122,6 +1209,11 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     if cross_source_leak_items:
         errors.append(
             f"第 {','.join(dict.fromkeys(cross_source_leak_items))} 项的目标、设计意图或难度说明混入了未绑定来源的子主题。"
+        )
+    if cross_source_reference_items:
+        warnings.append(
+            f"第 {','.join(dict.fromkeys(cross_source_reference_items))} 项仅在教学衔接说明中提到其它主题；"
+            "该说明不扩大本题必考范围，本次不阻断蓝图。"
         )
     missing_scope_points = [point for point in expected_scope_points if point not in planned_scope_points]
     if missing_scope_points:
@@ -1202,6 +1294,7 @@ def _raise_plan_gate_error(message: str, plan: dict[str, Any], failure_type: str
         "source_analysis": plan.get("source_analysis") or {},
         "blueprint": plan.get("blueprint") or {},
         "blueprint_audit": plan.get("blueprint_audit") or {},
+        "blueprint_audit_repair": plan.get("blueprint_audit_repair") or {},
         "mode_contract": plan.get("mode_contract") or {},
         "scope_cover": plan.get("scope_cover") or {},
         "blueprint_refinement": plan.get("blueprint_refinement") or {},
@@ -2909,7 +3002,7 @@ def _repair_exercise_figures(
 {json.dumps({"figures": [figure_contract]}, ensure_ascii=False, indent=2)}
 """
     raw = _call_practice_json(
-        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
         [
             {"role": "system", "content": "你是专业科学制图数据修复器。只修复题图 JSON，不修改题目。"},
             {"role": "user", "content": task},
@@ -3057,6 +3150,42 @@ def _parse_practice_json(content: str) -> dict[str, Any]:
     raise LLMError(f"专项练习 JSON 解析失败：{last_error}；内容预览：{preview}")
 
 
+def _practice_control_character_issues(value: Any, path: str = "$") -> list[dict[str, Any]]:
+    r"""Find JSON-valid control characters that can corrupt generated LaTeX."""
+    issues: list[dict[str, Any]] = []
+    if isinstance(value, str):
+        for index, char in enumerate(value):
+            code = ord(char)
+            if (code < 32 and char != "\n") or code == 127:
+                issues.append({"path": path, "index": index, "code": f"U+{code:04X}"})
+                if len(issues) >= 20:
+                    break
+        return issues
+    if isinstance(value, dict):
+        for key, item in value.items():
+            issues.extend(_practice_control_character_issues(item, f"{path}.{key}"))
+            if len(issues) >= 20:
+                break
+        return issues[:20]
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            issues.extend(_practice_control_character_issues(item, f"{path}[{index}]"))
+            if len(issues) >= 20:
+                break
+    return issues[:20]
+
+
+def _parse_safe_practice_json(content: str) -> dict[str, Any]:
+    raw = _parse_practice_json(content)
+    issues = _practice_control_character_issues(raw)
+    if issues:
+        raise LLMError(
+            "专项练习模型输出包含非法控制字符，已拒绝保存："
+            + json.dumps(issues[:8], ensure_ascii=False)
+        )
+    return raw
+
+
 def normalize_practice_set(
     raw: dict[str, Any],
     *,
@@ -3069,6 +3198,12 @@ def normalize_practice_set(
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("模型输出必须是 JSON 对象。")
+    control_issues = _practice_control_character_issues(raw)
+    if control_issues:
+        raise ValueError(
+            "专项练习数据包含非法控制字符，不能进入规范化或保存："
+            + json.dumps(control_issues[:8], ensure_ascii=False)
+        )
     source = raw.get("source_analysis") if isinstance(raw.get("source_analysis"), dict) else {}
     blueprint = raw.get("blueprint") if isinstance(raw.get("blueprint"), dict) else {}
     exercises_raw = raw.get("exercises")
@@ -3813,6 +3948,42 @@ def _primary_model_runtime(payload: dict[str, Any]):
     return primary, resolve_provider_model(primary, _clean(payload.get("model"), 200) or None)
 
 
+def _chat_protocol_provider(provider):
+    """Clone a provider onto Chat Completions without mutating shared config."""
+    if str(getattr(provider, "api_protocol", "") or "").strip().lower() in {
+        "chat_completions",
+        "openai_compatible",
+        "",
+    }:
+        return provider
+    return replace(provider, api_protocol="chat_completions", responses_streaming=False)
+
+
+def _is_lingsuan_gpt(provider, model: str) -> bool:
+    provider_name = str(getattr(provider, "name", "") or "").strip().lower()
+    base_url = str(getattr(provider, "base_url", "") or "").strip().lower()
+    model_name = str(model or "").strip().lower()
+    return (
+        ("lingsuan" in provider_name or "lingsuan.top" in base_url)
+        and model_name.startswith("gpt-")
+    )
+
+
+def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:
+    """Keep only Lingsuan GPT practice generation off the Responses API."""
+    routed_provider = _chat_protocol_provider(provider) if _is_lingsuan_gpt(provider, model) else provider
+    return OpenAICompatibleClient(routed_provider)
+
+
+def _chat_fallback_client(client: OpenAICompatibleClient) -> OpenAICompatibleClient:
+    """Move a failed Responses result to Chat and discard the unsafe result."""
+    config = getattr(client, "config", None)
+    protocol = str(getattr(config, "api_protocol", "") or "").strip().lower()
+    if config is None or protocol not in {"responses", "responses_api"}:
+        return client
+    return OpenAICompatibleClient(_chat_protocol_provider(config))
+
+
 def _model_route(payload: dict[str, Any], has_images: bool, provider, model: str) -> str:
     if not has_images:
         return "text_only"
@@ -3854,24 +4025,26 @@ def _call_practice_json(
             timeout=timeout_seconds,
         )
     try:
-        raw = _parse_practice_json(result.content)
+        raw = _parse_safe_practice_json(result.content)
     except LLMError as first_error:
+        repair_client = _chat_fallback_client(client)
         repair_messages = [
             *messages,
             {"role": "assistant", "content": result.content},
             {
                 "role": "user",
                 "content": (
-                    "只修复上一个回答的 JSON 语法，不改变题目内容。"
-                    "所有字符串中的真实换行、制表符和反斜杠必须正确转义。"
+                    "只修复上一个回答的 JSON 语法和字符串转义，不改变题目内容。"
+                    "LaTeX 命令的反斜杠必须在 JSON 字符串中正确双写；"
+                    "不得将 \\beta、\\frac、\\theta、\\rm 等命令转成退格、换页、制表或回车字符。"
                     "只输出一个合法 JSON 对象，不要 Markdown 代码围栏。"
                 ),
             },
         ]
         if ensure_active is not None:
             ensure_active()
-        with model_request_slot(getattr(client, "config", None)):
-            repaired = client.chat_json(
+        with model_request_slot(getattr(repair_client, "config", None)):
+            repaired = repair_client.chat_json(
                 repair_messages,
                 model=model,
                 temperature=0,
@@ -3880,9 +4053,9 @@ def _call_practice_json(
                 timeout=timeout_seconds,
             )
         try:
-            raw = _parse_practice_json(repaired.content)
+            raw = _parse_safe_practice_json(repaired.content)
         except LLMError as repair_error:
-            raise LLMError(f"{first_error}；自动修复后仍失败：{repair_error}") from repair_error
+            raise LLMError(f"{first_error}；Chat 修复后仍失败：{repair_error}") from repair_error
     return raw
 
 
@@ -4032,7 +4205,7 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
 """
     provider, model = _primary_model_runtime(payload)
     raw = _call_practice_json(
-        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
         [
             {"role": "system", "content": "你只做题目语义质量审查，只输出合法 JSON。"},
             {"role": "user", "content": task},
@@ -4576,10 +4749,15 @@ def _blueprint_refinement_context(plan: dict[str, Any], batch: list[dict[str, An
             "knowledge_points": _string_list(row.get("knowledge_points"), limit=20),
             "required_constraints": _required_constraints_for_refs([], [], row),
         })
+    bound_knowledge_points: list[str] = []
+    for source in sources:
+        for point in _string_list(source.get("knowledge_points"), limit=20):
+            if point not in bound_knowledge_points:
+                bound_knowledge_points.append(point)
     analysis = plan.get("source_analysis") if isinstance(plan.get("source_analysis"), dict) else {}
     return {
         "subject": _clean(analysis.get("subject"), 100),
-        "task_knowledge_points": _string_list(analysis.get("knowledge_points"), limit=30),
+        "bound_knowledge_points": bound_knowledge_points,
         "sources": sources,
     }
 
@@ -4651,6 +4829,7 @@ def _refine_blueprint_batch(
 - 必须恰好返回 {len(batch)} 项，且 plan_item_id 与预留槽位一一对应
 - target_skill 与 variation_type 的组合不得与已占用摘要或本批其它项完全相同
 - 设计意图必须体现本项的题型、难度与必考知识点；不得只写“换数字”
+- 每项只能使用其 sources、required_knowledge_points 与 required_constraints 已确认的知识范围；科目名称、全局训练目标和其它槽位只用于保持整套连贯，不能为本项增加知识点
 - difficulty_levers 是方向而非检查表；自主选择一种最合适的主要方向，最多再加一种辅助方向，不得全部堆叠或用固定步数说明难度
 - {retry_reason or "这是首次细化，请优先保证整套蓝图的差异性。"}
 - 只输出合法 JSON
@@ -4660,7 +4839,7 @@ def _refine_blueprint_batch(
 {json.dumps(output_contract, ensure_ascii=False, indent=2)}
 """
     raw = _call_practice_json(
-        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
         [{"role": "system", "content": "你是研究生教研专家。只细化预留蓝图槽位并输出合法 JSON。"}, {"role": "user", "content": task}],
         model=model,
         temperature=0.25,
@@ -4850,6 +5029,78 @@ def refine_blueprint_units(plan: dict[str, Any], payload: dict[str, Any]) -> dic
         "failures": failures,
         "fallback_item_count": sum(len(row.get("plan_item_ids") or []) for row in failures if row.get("batch_id", "").startswith("unit_")),
         "duplicate_repair_attempted": len(collision_ids),
+    }
+
+
+def repair_blueprint_audit_findings(
+    plan: dict[str, Any],
+    payload: dict[str, Any],
+    audit: dict[str, Any],
+    *,
+    max_items: int = 6,
+) -> dict[str, Any]:
+    """Repair only blueprint items proven to contain a foreign assessed topic."""
+    blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
+    items = [item for item in (blueprint.get("exercise_plan") or []) if isinstance(item, dict)]
+    by_id = {_clean(item.get("plan_item_id"), 80): item for item in items}
+    findings = [
+        finding
+        for finding in (audit.get("findings") or [])
+        if isinstance(finding, dict) and finding.get("code") == "cross_source_design_leak"
+    ]
+    finding_by_id = {
+        _clean(finding.get("plan_item_id"), 80): finding
+        for finding in findings
+        if _clean(finding.get("plan_item_id"), 80)
+    }
+    target_ids = list(finding_by_id)[: max(0, int(max_items))]
+    repaired: list[str] = []
+    failures: list[dict[str, Any]] = []
+    call_count = 0
+    for item_id in target_ids:
+        ensure_practice_generation_active(payload)
+        item = by_id.get(item_id)
+        finding = finding_by_id[item_id]
+        if not item:
+            continue
+        forbidden = [
+            _clean(match.get("anchor"), 100)
+            for match in (finding.get("matches") or [])
+            if isinstance(match, dict) and _clean(match.get("anchor"), 100)
+        ]
+        call_count += 1
+        try:
+            occupied = [row for pid, row in by_id.items() if pid != item_id]
+            by_id[item_id] = _refine_blueprint_batch(
+                plan,
+                [item],
+                payload=payload,
+                occupied=occupied,
+                retry_reason=(
+                    "确认门禁发现本项实际考查了未绑定主题："
+                    + "、".join(forbidden[:6])
+                    + "。保持所有锁定字段不变，只重写目标、变式、设计意图和难度说明，"
+                    "并严格限制在本项绑定来源、必考知识点与约束内；不要用未绑定主题作考查要求。"
+                ),
+            )[0]
+            repaired.append(item_id)
+        except PracticeGenerationStopped:
+            raise
+        except Exception as exc:
+            failures.append({
+                "plan_item_id": item_id,
+                "error": _clean(exc, 600),
+                "retryable": False,
+            })
+    blueprint["exercise_plan"] = [by_id.get(_clean(item.get("plan_item_id"), 80), item) for item in items]
+    plan["blueprint"] = blueprint
+    return {
+        "enabled": bool(target_ids),
+        "attempted_item_ids": target_ids,
+        "repaired_item_ids": repaired,
+        "unattempted_item_ids": list(finding_by_id)[len(target_ids):],
+        "call_count": call_count,
+        "failures": failures,
     }
 
 
@@ -5250,7 +5501,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
     raw_responses: list[dict[str, Any]] = []
     for chunk_index, (chunk_text, chunk_images) in enumerate(chunks, start=1):
         raw_responses.append(_call_practice_json(
-            OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
             [
                 {"role": "system", "content": "你是研究生教育内容分析专家。只做材料结构与范围识别，只输出合法 JSON 对象。"},
                 {"role": "user", "content": _user_content(build_task(chunk_text, chunk_index), chunk_images)},
@@ -5381,7 +5632,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             repair_provider, repair_model = _model_runtime(payload, False)
             repaired_raw = _call_practice_json(
-                OpenAICompatibleClient(repair_provider),
+                _practice_generation_client(repair_provider, repair_model),
                 [
                     {"role": "system", "content": "你是研究生教育内容约束审查专家。只补逐题约束，只输出合法 JSON。"},
                     {"role": "user", "content": repair_task},
@@ -5785,7 +6036,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         {"role": "user", "content": _user_content(task, planning_images)},
     ]
     raw = _call_practice_json(
-        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
         messages,
         model=model,
         temperature=0.2,
@@ -5865,6 +6116,27 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "mode_contract",
         )
     plan["blueprint_audit"] = audit_practice_blueprint(plan)
+    blueprint_audit_repair = None
+    has_repairable_findings = any(
+        isinstance(finding, dict) and finding.get("code") == "cross_source_design_leak"
+        for finding in (plan["blueprint_audit"].get("findings") or [])
+    )
+    if plan["blueprint_audit"]["status"] == "blocked" and adaptive_blueprint and has_repairable_findings:
+        blueprint_audit_repair = repair_blueprint_audit_findings(
+            plan,
+            payload,
+            plan["blueprint_audit"],
+        )
+        plan = ensure_practice_blueprint_defaults(plan)
+        plan["blueprint_audit_repair"] = blueprint_audit_repair
+        if blueprint_refinement is not None:
+            blueprint_refinement["audit_repair"] = blueprint_audit_repair
+            blueprint_refinement["call_count"] = (
+                int(blueprint_refinement.get("call_count") or 0)
+                + int(blueprint_audit_repair.get("call_count") or 0)
+            )
+            plan["blueprint_refinement"] = blueprint_refinement
+        plan["blueprint_audit"] = audit_practice_blueprint(plan)
     if plan["blueprint_audit"]["status"] == "blocked":
         _raise_plan_gate_error(
             "生成蓝图未通过确认门禁：" + "；".join(plan["blueprint_audit"]["errors"]),
@@ -5877,6 +6149,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         "adaptive_blueprint": adaptive_blueprint,
         "blueprint_unit_count": int((blueprint_refinement or {}).get("unit_count") or 0),
         "blueprint_refinement_failures": (blueprint_refinement or {}).get("failures") or [],
+        "blueprint_audit_repair": blueprint_audit_repair or {},
         "optional_json_repair_only_on_invalid_output": True,
         "prompt_char_count": len(task),
         "material_char_count": len(compact_material),
@@ -6309,7 +6582,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 batch_diagnostic["recovery_attempt_count"] += 1
                 try:
                     recovered_raw = _call_practice_json(
-                        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
                         [
                             *messages,
                             {"role": "assistant", "content": json.dumps(prior_raw, ensure_ascii=False)},
@@ -6380,7 +6653,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             ensure_practice_generation_active(payload)
             raw_batch = _call_practice_json_with_transport_retry(
-                OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
                 messages,
                 model=model,
                 temperature=0.35,
@@ -6511,7 +6784,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 try:
                     ensure_practice_generation_active(payload)
                     repaired_raw = _call_practice_json_with_transport_retry(
-                        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
                         [
                             *messages,
                             {"role": "assistant", "content": json.dumps(raw_batch, ensure_ascii=False)},
@@ -7092,7 +7365,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             {"role": "user", "content": _user_content(task, generation_reference_images if include_source_content and _batch_needs_visual_reference(semantic_sources, [item_for_generation]) else [])},
     ]
     raw = _call_practice_json(
-        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
         messages,
         model=model,
         temperature=0.45,
@@ -7114,7 +7387,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             },
         ]
         raw = _call_practice_json(
-            OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
             retry_messages,
             model=model,
             temperature=0.5,
@@ -7375,7 +7648,8 @@ def regenerate_plan_item(payload: dict[str, Any]) -> dict[str, Any]:
     # Use the prompt-only path deliberately: unlike chat_json(), chat_text()
     # never performs a response_format compatibility retry, so this action is
     # exactly one provider request even on providers without JSON mode.
-    result = OpenAICompatibleClient(provider).chat_text(
+    revision_client = _practice_generation_client(provider, model)
+    result = revision_client.chat_text(
         messages,
         model=model,
         temperature=0.25,
@@ -7383,7 +7657,7 @@ def regenerate_plan_item(payload: dict[str, Any]) -> dict[str, Any]:
         thinking=_clean(payload.get("thinking"), 20) or None,
         timeout=_practice_stage_timeout("blueprint_revision", 300),
     )
-    raw = _parse_practice_json(result.content)
+    raw = _parse_safe_practice_json(result.content)
     redesigned = raw.get("plan_item") if isinstance(raw.get("plan_item"), dict) else {}
     if not _clean(redesigned.get("target_skill"), 500):
         raise ValueError("模型未返回可用的蓝图候选项。")
@@ -7581,7 +7855,7 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
         {"role": "user", "content": _user_content(task, generation_images if include_source_content and _batch_needs_visual_reference(semantic_sources, [item]) else [])},
     ]
     raw = _call_practice_json(
-        OpenAICompatibleClient(provider),
+        _practice_generation_client(provider, model),
         messages,
         model=model,
         temperature=0.45,

@@ -114,12 +114,20 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
     # explicit section total must win; otherwise the first child score is
     # incorrectly confirmed as the parent score.
     section_total = re.search(r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分", section_text)
-    represents_whole_section = (
-        bool(question.get("subquestions"))
-        and str(question.get("number") or "").strip() == str(question.get("major_number") or "").strip()
+    bare_parenthesized_total = re.search(
+        r"[（(]\s*(\d+(?:\.\d+)?)\s*分\s*[）)]",
+        section_text,
+    )
+    section_item_count = int(question.get("section_item_count") or 0)
+    represents_whole_section = bool(question.get("subquestions")) and (
+        section_item_count == 1
+        if section_item_count
+        else str(question.get("number") or "").strip() == str(question.get("major_number") or "").strip()
     )
     if section_total and represents_whole_section:
         return float(section_total.group(1))
+    if bare_parenthesized_total and represents_whole_section:
+        return float(bare_parenthesized_total.group(1))
     section_match = re.search(r"每小题\s*(\d+(?:\.\d+)?)\s*分", section_text)
     if section_match:
         return float(section_match.group(1))

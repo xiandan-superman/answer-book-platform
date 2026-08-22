@@ -21,7 +21,9 @@ SECTION_RE = re.compile(
     rf"^([一二三四五六七八九十]+)(?:\s*、\s*|\s*[.．]\s*(?={SECTION_TITLE_PREFIX})|\s+(?={SECTION_TITLE_PREFIX}))(.*)"
 )
 ITEM_RE = re.compile(r"^(\d{1,2})([、.．])\s*(.*)")
-INLINE_ITEM_MARKER_RE = re.compile(r"(?<!\d)(\d{1,2})([、．]|\.(?!\d))\s*")
+INLINE_ITEM_MARKER_RE = re.compile(
+    r"(?<!\d)(?:[（(]\s*(?P<paren_number>\d{1,2})\s*[）)]|(?P<plain_number>\d{1,2})(?:[、．]|\.(?!\d)))\s*"
+)
 MULTIPART_CUE_RE = re.compile(
     r"(回答下列|回答以下|完成下列|完成以下|按要求|分别|逐项|各小问|小问|问题|如下|试求|计算下列|求下列|试述下列|说明下列|分析下列|作图|画出|绘制)"
 )
@@ -683,7 +685,7 @@ def _looks_like_subquestion(current: dict, number: int, delimiter: str, text: st
 
 
 def _split_inline_numbered_items(line: str) -> list[str]:
-    """Split compact enumerations such as ``1、术语 2、术语``.
+    """Split compact enumerations such as ``1、术语`` and ``(1) 术语``.
 
     This is intentionally used only in term-explanation sections; applying it
     to arbitrary calculation stems would confuse decimal values with item
@@ -694,12 +696,16 @@ def _split_inline_numbered_items(line: str) -> list[str]:
     matches = list(INLINE_ITEM_MARKER_RE.finditer(value))
     if len(matches) < 2 or matches[0].start() != 0:
         return [value]
+    numbers = [int(match.group("paren_number") or match.group("plain_number")) for match in matches]
+    if any(current != previous + 1 for previous, current in zip(numbers, numbers[1:])):
+        return [value]
     rows: list[str] = []
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
-        stem = clean_text(value[match.end() : end])
+        stem = clean_text(value[match.end() : end]).strip("；;，,。 ")
         if stem:
-            rows.append(f"{match.group(1)}{match.group(2)} {stem}")
+            number = match.group("paren_number") or match.group("plain_number")
+            rows.append(f"{number}、 {stem}")
     return rows or [value]
 
 
@@ -842,7 +848,10 @@ def question_items(section: dict) -> list[dict]:
         item["status"] = "registered"
         for key in ("_subquestion_started", "_last_subquestion_number", "_subquestion_lines"):
             item.pop(key, None)
-    return _combine_shared_composite_section(section, items)
+    combined = _combine_shared_composite_section(section, items)
+    for item in combined:
+        item["section_item_count"] = len(combined)
+    return combined
 
 
 def _combine_shared_composite_section(section: dict, items: list[dict]) -> list[dict]:
