@@ -29,6 +29,14 @@
     analyzing: "解析材料范围",
     generating: "生成练习题",
     recovering: "从检查点恢复",
+    hybrid_preprocess: "本机预处理题面",
+    hybrid_upload: "上传云端计算资料",
+    cloud_queue: "等待云端处理",
+    cloud_pipeline: "云端模型计算",
+    recovered_after_restart: "云端重启后恢复",
+    awaiting_download: "云端结果待下载",
+    hybrid_download: "下载云端结果",
+    local_delivery: "本机生成并检查 Word",
     failed: "执行失败",
     completed: "已完成"
   };

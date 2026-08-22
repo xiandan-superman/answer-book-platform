@@ -251,7 +251,24 @@ def _recommendations(stage: str, error: str, issues: list[dict[str, Any]]) -> li
 
 
 def _related_files(sdir: Path, odir: Path, stage: str) -> list[dict[str, Any]]:
-    files = ["pipeline_status.json", "pipeline_error.json", "events.jsonl"]
+    files = [
+        "pipeline_status.json",
+        "pipeline_error.json",
+        "events.jsonl",
+        "hybrid_preprocess.json",
+        "hybrid_preprocess_error.json",
+        "hybrid_local_environment.json",
+        "hybrid_client_events.jsonl",
+        "hybrid_handoff.json",
+        "cloud_pipeline_status.json",
+        "hybrid_import_receipt.json",
+        "hybrid_cloud_worker.json",
+        "hybrid_cloud_failure.json",
+        "hybrid_client_error.json",
+        "hybrid_local_delivery_error.json",
+        "academic_expression_audit.local_delivery.json",
+        "hybrid_cloud_preflight.json",
+    ]
     files.extend(STAGE_FILES.get(stage, []))
     out: list[dict[str, Any]] = []
     seen = set()

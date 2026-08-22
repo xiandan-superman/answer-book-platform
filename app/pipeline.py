@@ -146,6 +146,8 @@ class PipelineOptions:
     render_with_word: bool = False
     reuse_fragments: bool = False
     require_preferred_formula_chain: bool = True
+    preprocessed_input: bool = False
+    defer_local_delivery: bool = False
 
 
 def stage_dir(task_id: str) -> Path:
@@ -885,10 +887,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         exam_path = Path(record.exam_path).expanduser()
         textbooks_dir = Path(record.textbooks_dir).expanduser()
-        if not exam_path.exists():
-            raise FileNotFoundError(f"Exam file not found: {exam_path}")
-        if not textbooks_dir.exists():
-            raise FileNotFoundError(f"Textbooks dir not found: {textbooks_dir}")
+        if not options.preprocessed_input:
+            if not exam_path.exists():
+                raise FileNotFoundError(f"Exam file not found: {exam_path}")
+            if not textbooks_dir.exists():
+                raise FileNotFoundError(f"Textbooks dir not found: {textbooks_dir}")
         thinking_mode = getattr(record, "model_thinking", "auto") or "auto"
         provider = replace(get_provider(record.provider), thinking_mode=thinking_mode)
         reasoning_provider_name = getattr(record, "reasoning_provider", "") or record.provider
@@ -941,7 +944,24 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         reusable_upstream = _upstream_checkpoint_reusable(sdir, requested=options.reuse_fragments)
         checkpoint(task_id)
         update_task(task_id, current_stage="extract_exam")
-        if reusable_upstream:
+        if options.preprocessed_input:
+            structured_exam_path = sdir / "structured_exam.json"
+            if not structured_exam_path.is_file():
+                raise RuntimeError("Hybrid input is missing structured_exam.json")
+            structured_exam = json.loads(structured_exam_path.read_text(encoding="utf-8"))
+            exam_issues = audit_exam_structure(structured_exam, sdir / "exam_structure_audit.json")
+            if exam_issues:
+                mark("extract_exam", "failed", {"issues": exam_issues[:30], "preprocessed_input": True})
+                raise RuntimeError("Preprocessed exam structure audit failed")
+            mark(
+                "extract_exam",
+                "reused",
+                {
+                    "question_count": len(structured_exam.get("items", [])),
+                    "preprocessed_input": True,
+                },
+            )
+        elif reusable_upstream:
             structured_exam = json.loads((sdir / "structured_exam.json").read_text(encoding="utf-8"))
             # Reuse the expensive extraction result, but always rerun the
             # deterministic audit so policy fixes do not leave stale warnings
@@ -969,8 +989,9 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         checkpoint(task_id)
         update_task(task_id, current_stage="exam_structure_review")
-        mark("exam_structure_review", "reused" if reusable_upstream else "started", {"question_count": len(structured_exam.get("items", []))})
-        if not reusable_upstream:
+        structure_review_reused = reusable_upstream or options.preprocessed_input
+        mark("exam_structure_review", "reused" if structure_review_reused else "started", {"question_count": len(structured_exam.get("items", []))})
+        if not structure_review_reused:
             structured_exam = auto_confirm_exam_structure(task_id, structured_exam, sdir / "structured_exam.json")
         mark(
             "exam_structure_review",
@@ -980,7 +1001,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 "reviewed": True,
                 "review_mode": "unattended",
                 "human_review_required": False,
-                "checkpoint_reused": reusable_upstream,
+                "checkpoint_reused": structure_review_reused,
+                "preprocessed_input": options.preprocessed_input,
             },
         )
 
@@ -1086,13 +1108,25 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         checkpoint(task_id)
         update_task(task_id, current_stage="textbook_index")
-        if not record.selected_textbooks:
-            raise RuntimeError("当前任务没有绑定已索引教材。请先在教材管理页选择教材并建立索引，再创建解析任务。")
-        index_detail = install_textbook_index_cache(
-            record.selected_textbooks,
-            sdir,
-            record.textbook_display_names or {},
-        )
+        if options.preprocessed_input:
+            required_index_files = (
+                sdir / "textbook_blocks.csv",
+                sdir / "textbook_page_map.csv",
+                sdir / "textbook_index_status.json",
+            )
+            missing_index_files = [path.name for path in required_index_files if not path.is_file()]
+            if missing_index_files:
+                raise RuntimeError("Hybrid input is missing textbook index files: " + ", ".join(missing_index_files))
+            index_detail = json.loads((sdir / "textbook_index_status.json").read_text(encoding="utf-8"))
+            index_detail = {**index_detail, "preprocessed_input": True, "installed": True}
+        else:
+            if not record.selected_textbooks:
+                raise RuntimeError("当前任务没有绑定已索引教材。请先在教材管理页选择教材并建立索引，再创建解析任务。")
+            index_detail = install_textbook_index_cache(
+                record.selected_textbooks,
+                sdir,
+                record.textbook_display_names or {},
+            )
         mark("textbook_index", "passed" if index_detail.get("page_map_ok", True) else "failed", index_detail)
         if not index_detail.get("page_map_ok", True):
             issues = index_detail.get("page_map_issues") or []
@@ -2514,6 +2548,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             fragments_data,
             structured_exam=structured_exam,
             output_json=sdir / "academic_expression_audit.json",
+            render_preflight=not options.defer_local_delivery,
         )
         mark(
             "academic_expressions",
@@ -2585,6 +2620,32 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         if final_source_image_delivery.get("missing"):
             raise RuntimeError("Required source question image is missing before document delivery")
 
+        if options.defer_local_delivery:
+            handoff = {
+                "schema_version": "answer_book.hybrid_handoff.v1",
+                "task_id": task_id,
+                "status": "awaiting_local_delivery",
+                "cloud_pipeline_complete": True,
+                "local_delivery_required": True,
+                "content_quality_review_required": not content_quality.get("ok", False),
+                "required_local_inputs": [
+                    "structured_exam.json",
+                    "answer_fragments.json",
+                    "confirmed_evidence_candidates.csv",
+                    "evidence_selection.json",
+                    "content_quality_audit.json",
+                ],
+            }
+            write_json(sdir / "hybrid_handoff.json", handoff)
+            mark("cloud_handoff", "passed", handoff)
+            update_task(
+                task_id,
+                status="awaiting_local_delivery",
+                current_stage="awaiting_local_delivery",
+                error="",
+            )
+            return handoff
+
         return complete_pipeline_delivery(
             task_id=task_id,
             fragments_json=fragments_json,
@@ -2634,6 +2695,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         raise
     finally:
         telemetry.stop()
+        if options.defer_local_delivery:
+            pipeline_status = sdir / "pipeline_status.json"
+            cloud_pipeline_status = sdir / "cloud_pipeline_status.json"
+            if pipeline_status.is_file():
+                cloud_pipeline_status.write_bytes(pipeline_status.read_bytes())
         if schema_executor is not None:
             schema_executor.shutdown(wait=False, cancel_futures=True)
 

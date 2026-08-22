@@ -31,3 +31,16 @@ def test_desktop_release_requires_and_embeds_support_receiver_secrets() -> None:
     assert WORKFLOW.count("SUPPORT_RECEIVER_URL") >= 4
     assert WORKFLOW.count("SUPPORT_RECEIVER_TOKEN") >= 4
     assert WORKFLOW.count("Require support receiver configuration") == 2
+
+
+def test_desktop_release_requires_and_embeds_hybrid_cloud_secrets() -> None:
+    assert WORKFLOW.count("HYBRID_CLOUD_URL") >= 4
+    assert WORKFLOW.count("HYBRID_CLOUD_TOKEN") >= 4
+    assert WORKFLOW.count("Require hybrid cloud configuration") == 2
+
+
+def test_desktop_bundle_generates_hybrid_configuration_at_build_time() -> None:
+    spec = (ROOT / "build" / "answer_book_platform.spec").read_text(encoding="utf-8")
+    assert 'os.environ.get("ANSWER_BOOK_HYBRID_URL"' in spec
+    assert 'os.environ.get("ANSWER_BOOK_HYBRID_TOKEN"' in spec
+    assert '(str(hybrid_config_build), "config")' in spec

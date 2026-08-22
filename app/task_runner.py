@@ -103,15 +103,20 @@ def run_exam_task(
         return
     try:
         with model_call_context(task_id=task_id, operation="解析任务"):
-            run_pipeline(
-                task_id,
-                PipelineOptions(
-                    use_model=use_model,
-                    allow_demo_without_key=not use_model,
-                    render_with_word=render,
-                    reuse_fragments=reuse_fragments,
-                ),
-            )
+            from .hybrid_client import hybrid_enabled, run_hybrid_task
+
+            if use_model and hybrid_enabled():
+                run_hybrid_task(task_id, render_with_word=render)
+            else:
+                run_pipeline(
+                    task_id,
+                    PipelineOptions(
+                        use_model=use_model,
+                        allow_demo_without_key=not use_model,
+                        render_with_word=render,
+                        reuse_fragments=reuse_fragments,
+                    ),
+                )
     except Exception as exc:  # Worker boundary: preserve the durable task error and log the crash.
         append_runtime_log(
             "pipeline",

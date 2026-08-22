@@ -537,6 +537,43 @@ def test_codex_triage_extracts_report_by_public_id_without_browser() -> None:
         assert "浏览器" not in result["instruction"]
 
 
+def test_codex_triage_fetches_cloud_report_into_local_diagnostic_files() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        destination = Path(raw_tmp) / "triage"
+        remote_case = "/tmp/answer-book-support-triage/fp-cloud"
+        remote_result = {
+            "ok": True,
+            "report": {"report_id": "AB-CLOUD-1234", "fingerprint": "fp-cloud"},
+            "case_directory": remote_case,
+            "diagnostic_files": [f"{remote_case}/manifest.json"],
+        }
+
+        def fake_run(arguments, **_kwargs):
+            if arguments[0] == "ssh":
+                return inspect_support_report.subprocess.CompletedProcess(
+                    arguments, 0, stdout=json.dumps(remote_result), stderr=""
+                )
+            assert arguments[0] == "scp"
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "manifest.json").write_text('{"schema_version": 1}', encoding="utf-8")
+            return inspect_support_report.subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        config = {
+            "ssh_host": "root@support.example",
+            "ssh_key": "/tmp/test-key",
+            "remote_root": "/var/lib/answer-book-support",
+            "remote_script": "/opt/answer-book-support/inspect_support_report.py",
+        }
+        with patch.object(inspect_support_report, "_cloud_config", return_value=config), patch.object(
+            inspect_support_report.subprocess, "run", side_effect=fake_run
+        ):
+            result = inspect_support_report.inspect_cloud_report("AB-CLOUD-1234", destination=destination)
+
+        assert result["source"] == "cloud"
+        assert result["case_directory"] == str(destination.resolve())
+        assert result["diagnostic_files"] == [str(destination.resolve() / "manifest.json")]
+
+
 def test_receiver_exposes_copyable_codex_triage_command() -> None:
     prompt = support_receiver.codex_triage_prompt("AB-20260822-AFEB35CF")
     assert "python3 scripts/inspect_support_report.py AB-20260822-AFEB35CF" in prompt
@@ -671,6 +708,10 @@ def test_frontend_support_is_contextual_and_api_requests_have_correlation_ids() 
     assert "failedTaskFeedbackReported" in app_js
     assert "rememberFailedTaskFeedback" in app_js
     assert "dismissFailedTaskFeedback" in app_js
+    assert 'reported ? "再次反馈"' in app_js
+    assert "之前反馈不影响再次提交" in app_js
+    assert "support-task-reported" not in app_js
+    assert "lockReportedFailure" not in app_js
     assert 'id="taskDismissFailedFeedbackBtn"' in html_text
     assert '<i class="fas fa-paper-plane"></i><span>一键反馈' not in app_js
 

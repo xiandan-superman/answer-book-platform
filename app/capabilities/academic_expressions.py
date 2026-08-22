@@ -206,6 +206,7 @@ def audit_academic_expressions(
     structured_exam: dict[str, Any] | None = None,
     output_json: Path | None = None,
     registry: CapabilityRegistry = DEFAULT_CAPABILITY_REGISTRY,
+    render_preflight: bool = True,
 ) -> dict[str, Any]:
     questions = {
         str(question.get("question_id") or "").strip(): question
@@ -272,9 +273,13 @@ def audit_academic_expressions(
                     role=str(formula.get("role") or "relation"),
                     display=bool(formula.get("display", True)),
                 )
-                preflight_error = preflight_expression_render(plan)
-                plan_data = {**plan.to_dict(), "preflight_ok": not preflight_error}
-                if preflight_error:
+                preflight_error = preflight_expression_render(plan) if render_preflight else ""
+                plan_data = {
+                    **plan.to_dict(),
+                    "preflight_ok": not preflight_error if render_preflight else None,
+                    "preflight_deferred": not render_preflight,
+                }
+                if render_preflight and preflight_error:
                     plan_data["preflight_error"] = preflight_error
                     issues.append(
                         {
@@ -318,7 +323,7 @@ def audit_academic_expressions(
         capability_counts[expression.capability_id] = capability_counts.get(expression.capability_id, 0) + 1
     report = {
         "schema_version": ACADEMIC_EXPRESSION_REPORT_VERSION,
-        "mode": "local_only",
+        "mode": "local_only" if render_preflight else "cloud_structure_only",
         "remote_model_calls": 0,
         "mutates_source_content": False,
         "ok": not issues,
@@ -332,7 +337,9 @@ def audit_academic_expressions(
         "review_candidate_count": len(review_candidates),
         "review_candidates": review_candidates,
         "render_plan_count": len(render_plans),
-        "render_preflight_failure_count": sum(1 for plan in render_plans if not plan["preflight_ok"]),
+        "render_preflight_enabled": render_preflight,
+        "render_preflight_deferred": not render_preflight,
+        "render_preflight_failure_count": sum(1 for plan in render_plans if plan["preflight_ok"] is False),
         "render_plans": render_plans,
         "expressions": [expression.to_dict() for expression in expressions],
         "registered_expression_rules": registry.expression_rule_snapshot(),

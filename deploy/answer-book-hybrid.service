@@ -1,0 +1,34 @@
+[Unit]
+Description=Answer Book private hybrid cloud worker
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=answerbook-hybrid
+Group=answerbook-hybrid
+WorkingDirectory=/opt/answer-book-platform
+EnvironmentFile=/etc/answer-book-hybrid.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/answer-book-platform/.venv/bin/python scripts/hybrid_cloud_server.py --root /var/lib/answer-book-hybrid --host ${ANSWER_BOOK_HYBRID_HOST} --port ${ANSWER_BOOK_HYBRID_PORT} --tokens /etc/answer-book-hybrid-tokens.json --quota-gb 24 --max-runtime-seconds 21600
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=3G
+TasksMax=512
+ReadWritePaths=/var/lib/answer-book-hybrid
+
+[Install]
+WantedBy=multi-user.target

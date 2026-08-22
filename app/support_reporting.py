@@ -20,7 +20,7 @@ from uuid import uuid4
 from .model_diagnostics import diagnostic_attachments, relevant_model_diagnostics
 from .paths import DATA_ROOT, LOCAL_CONFIG_DIR, PROJECT_ROOT
 from .runtime_monitor import ERROR_TRACE_LOG, MODEL_CALL_LEDGER, RUNTIME_LOG
-from .task_store import task_dir
+from .task_store import load_task, task_dir
 from .version import get_app_version, get_source_revision
 
 SUPPORT_ROOT = DATA_ROOT / "support_reports"
@@ -70,6 +70,18 @@ _RELATED_STAGE_FILES = (
     "acceptance_report.json",
     "pipeline_error.json",
     "final_acceptance_report.json",
+    "hybrid_preprocess.json",
+    "hybrid_preprocess_error.json",
+    "hybrid_local_environment.json",
+    "hybrid_handoff.json",
+    "cloud_pipeline_status.json",
+    "hybrid_import_receipt.json",
+    "hybrid_cloud_worker.json",
+    "hybrid_cloud_failure.json",
+    "hybrid_client_error.json",
+    "hybrid_local_delivery_error.json",
+    "academic_expression_audit.local_delivery.json",
+    "hybrid_cloud_preflight.json",
 )
 
 _GLOBAL_DELIVERY_REPORTS = {
@@ -81,6 +93,18 @@ _GLOBAL_DELIVERY_REPORTS = {
     "figure_review_docx.json",
     "acceptance_report.json",
     "final_acceptance_report.json",
+    "hybrid_preprocess.json",
+    "hybrid_preprocess_error.json",
+    "hybrid_local_environment.json",
+    "hybrid_handoff.json",
+    "cloud_pipeline_status.json",
+    "hybrid_import_receipt.json",
+    "hybrid_cloud_worker.json",
+    "hybrid_cloud_failure.json",
+    "hybrid_client_error.json",
+    "hybrid_local_delivery_error.json",
+    "academic_expression_audit.local_delivery.json",
+    "hybrid_cloud_preflight.json",
 }
 
 
@@ -311,6 +335,19 @@ def _exam_content(task_id: str, question_id: str) -> dict[str, Any]:
     except (ValueError, OSError):
         return {"task_id": task_id, "unavailable": True}
     content: dict[str, Any] = {}
+    try:
+        record = load_task(task_id)
+        if getattr(record, "execution_mode", "local") != "local":
+            content["hybrid_context"] = _sanitize({
+                "execution_mode": record.execution_mode,
+                "hybrid_phase": record.hybrid_phase,
+                "cloud_job_id": record.cloud_job_id,
+                "cloud_status": record.cloud_status,
+                "cloud_last_sync_at": record.cloud_last_sync_at,
+                "cloud_error": record.cloud_error,
+            })
+    except Exception:
+        pass
     legacy_missing: list[str] = []
     for name in _RELATED_STAGE_FILES:
         path = stage_root / name
@@ -327,6 +364,9 @@ def _exam_content(task_id: str, question_id: str) -> dict[str, Any]:
             content[name] = _sanitize(value)
         elif name in {"answer_fragments.json", "structured_exam.json"}:
             legacy_missing.append(name)
+    hybrid_events = _jsonl_rows(stage_root / "hybrid_client_events.jsonl", limit=300)
+    if hybrid_events:
+        content["hybrid_client_events"] = _sanitize(hybrid_events)
     if legacy_missing:
         content["selection_notice"] = {
             "message": "未定位到具体题目，未发送整份题目或答案文件。",
@@ -642,6 +682,16 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         missing_expected_evidence.append("rejected_plan_and_gate_findings")
     if model_call_count and not traces:
         missing_expected_evidence.append("model_diagnostics")
+    hybrid_context = content.get("hybrid_context") if isinstance(content.get("hybrid_context"), dict) else {}
+    if hybrid_context:
+        hybrid_phase = str(hybrid_context.get("hybrid_phase") or "")
+        if not hybrid_context.get("cloud_job_id") and hybrid_phase not in {"local_preprocess", "local_preprocess_failed"}:
+            missing_expected_evidence.append("cloud_job_id")
+        if hybrid_context.get("cloud_status") == "completed":
+            if not content.get("cloud_pipeline_status.json"):
+                missing_expected_evidence.append("cloud_pipeline_status")
+            if not content.get("hybrid_import_receipt.json"):
+                missing_expected_evidence.append("hybrid_import_receipt")
     diagnostic_coverage = {
         "schema_version": 1,
         "primary_content_kind": primary_content_kind,
@@ -655,6 +705,10 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
             "failure_context": bool(failure_context),
             "failure_diagnostic": bool(failure_diagnostic),
             "user_feedback": bool(user_feedback),
+            "hybrid_context": bool(hybrid_context),
+            "cloud_pipeline_status": bool(content.get("cloud_pipeline_status.json")),
+            "hybrid_import_receipt": bool(content.get("hybrid_import_receipt.json")),
+            "hybrid_client_events": bool(content.get("hybrid_client_events")),
         },
         "counts": {
             "frontend_events": len(events),

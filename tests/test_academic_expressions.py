@@ -289,6 +289,26 @@ class AcademicExpressionTests(unittest.TestCase):
         self.assertEqual("deterministic", governance.evidence_class.value)
         self.assertEqual("block", governance.action_ceiling.value)
 
+    def test_cloud_structure_audit_defers_word_render_preflight(self) -> None:
+        from unittest.mock import patch
+
+        from app.capabilities.academic_expressions import audit_academic_expressions
+
+        with patch(
+            "app.capabilities.expression_rendering.preflight_expression_render",
+            return_value="Word renderer is unavailable",
+        ) as preflight:
+            report = audit_academic_expressions(
+                {"fragments": [_fragment(formulas=[r"E=mc^2"])]},
+                render_preflight=False,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual("cloud_structure_only", report["mode"])
+        self.assertTrue(report["render_preflight_deferred"])
+        self.assertIsNone(report["render_plans"][0]["preflight_ok"])
+        preflight.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

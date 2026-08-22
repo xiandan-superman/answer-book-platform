@@ -56,6 +56,12 @@ class TaskRecord:
     interrupted_stage: str = ""
     run_started_at: str = ""
     last_run_duration_seconds: int = 0
+    execution_mode: str = "local"
+    hybrid_phase: str = ""
+    cloud_job_id: str = ""
+    cloud_status: str = ""
+    cloud_last_sync_at: str = ""
+    cloud_error: str = ""
 
 
 INTERRUPTED_ON_STARTUP_STATUSES = {"running", "queued"}
@@ -184,6 +190,12 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("interrupted_stage", "")
     data.setdefault("run_started_at", "")
     data.setdefault("last_run_duration_seconds", 0)
+    data.setdefault("execution_mode", "local")
+    data.setdefault("hybrid_phase", "")
+    data.setdefault("cloud_job_id", "")
+    data.setdefault("cloud_status", "")
+    data.setdefault("cloud_last_sync_at", "")
+    data.setdefault("cloud_error", "")
     return TaskRecord(**data)
 
 
@@ -255,6 +267,47 @@ def remember_task_run_options(
         record.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
         save_task(record)
         return record
+
+
+def update_task_hybrid(
+    task_id: str,
+    *,
+    execution_mode: str | None = None,
+    hybrid_phase: str | None = None,
+    cloud_job_id: str | None = None,
+    cloud_status: str | None = None,
+    cloud_error: str | None = None,
+) -> TaskRecord:
+    """Persist cloud correlation data independently from ordinary stage updates."""
+
+    with _STORE_LOCK:
+        record = load_task(task_id)
+        if execution_mode is not None:
+            record.execution_mode = execution_mode
+        if hybrid_phase is not None:
+            record.hybrid_phase = hybrid_phase
+        if cloud_job_id is not None:
+            record.cloud_job_id = cloud_job_id
+        if cloud_status is not None:
+            record.cloud_status = cloud_status
+        if cloud_error is not None:
+            record.cloud_error = cloud_error
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        record.cloud_last_sync_at = now
+        record.updated_at = now
+        save_task(record)
+    append_event(
+        task_id,
+        "hybrid_updated",
+        {
+            "execution_mode": record.execution_mode,
+            "hybrid_phase": record.hybrid_phase,
+            "cloud_job_id": record.cloud_job_id,
+            "cloud_status": record.cloud_status,
+            "cloud_error": record.cloud_error,
+        },
+    )
+    return record
 
 
 def update_task_health(

@@ -1,0 +1,6 @@
+{
+  "ssh_host": "root@your-support-server",
+  "ssh_key": "~/.ssh/answer_book_ecs_ed25519",
+  "remote_root": "/var/lib/answer-book-support",
+  "remote_script": "/opt/answer-book-support/inspect_support_report.py"
+}

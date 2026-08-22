@@ -1,0 +1,23 @@
+[Unit]
+Description=Answer Book Support Receiver
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=answerbook-support
+Group=answerbook-support
+WorkingDirectory=/opt/answer-book-support
+ExecStart=/usr/bin/python3 /opt/answer-book-support/support_receiver.py --root /var/lib/answer-book-support --upload-port 8777 --admin-host 127.0.0.1 --admin-port 8778 --quota-mib 512
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/answer-book-support
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

@@ -129,18 +129,20 @@ const examModelPresets = {
 const pageOrder = ["home", "keys", "knowledge", "knowledge-models", "practice", "practice-models", "env", "textbook", "exam", "task", "result", "tasks", "monitor"];
 const workflowStepPages = ["env", "exam", "task", "result"];
 const taskStageGroups = [
-  { key: "prepare", title: "准备真题", summary: "读取题目并确认题型和分值", stages: ["environment", "extract_exam", "exam_structure_review", "question_understanding", "figure_schema_planning"] },
-  { key: "evidence", title: "检索教材依据", summary: "判断考点并核对教材依据", stages: ["textbook_index", "knowledge_planning", "retrieval", "evidence_selection"] },
+  { key: "prepare", title: "准备真题", summary: "读取题目并确认题型和分值", stages: ["hybrid_preprocess", "environment", "extract_exam", "exam_structure_review", "question_understanding", "figure_schema_planning"] },
+  { key: "evidence", title: "检索教材依据", summary: "判断考点并核对教材依据", stages: ["hybrid_upload", "cloud_queue", "recovered_after_restart", "cloud_pipeline", "textbook_index", "knowledge_planning", "retrieval", "evidence_selection"] },
   { key: "answer", title: "生成解析", summary: "组织答案并检查覆盖范围", stages: ["answer_generation", "answer_coverage"] },
   { key: "figures", title: "生成图件", summary: "绘制、审查和必要时回修图件", stages: ["figures"] },
   { key: "quality", title: "质量审查", summary: "检查内容完整性与专业表达", stages: ["content_quality", "content_quality_model_repair", "figures_after_content_quality_model_repair", "content_quality_local_repair"] },
-  { key: "delivery", title: "生成交付物", summary: "生成 Word、渲染复核并最终验收", stages: ["docx", "docx_model_repair", "docx_repair", "question_review", "render", "acceptance", "final_acceptance", "completed"] }
+  { key: "delivery", title: "生成交付物", summary: "生成 Word、渲染复核并最终验收", stages: ["awaiting_download", "hybrid_download", "local_delivery", "docx", "docx_model_repair", "docx_repair", "question_review", "render", "acceptance", "final_acceptance", "completed"] }
 ];
 const stageProgressMilestones = {
+  hybrid_preprocess: 2, hybrid_upload: 18, cloud_queue: 19, recovered_after_restart: 19, cloud_pipeline: 20,
   environment: 3, extract_exam: 6, exam_structure_review: 10, question_understanding: 13, figure_schema_planning: 16,
   textbook_index: 19, knowledge_planning: 25, retrieval: 31, evidence_selection: 40, answer_generation: 55,
   answer_coverage: 59, figures: 73, content_quality: 81, content_quality_model_repair: 83,
-  figures_after_content_quality_model_repair: 85, content_quality_local_repair: 86, docx: 91,
+  figures_after_content_quality_model_repair: 85, content_quality_local_repair: 86, awaiting_download: 87,
+  hybrid_download: 88, local_delivery: 90, docx: 91,
   docx_model_repair: 92, docx_repair: 93,
   question_review: 95, render: 97, acceptance: 98, final_acceptance: 99, completed: 100
 };
@@ -1511,17 +1513,22 @@ function dismissFailedTaskFeedback() {
 async function submitTaskSupportFeedback(task, button = null) {
   const status = taskDisplayStatus(task);
   const failed = status === "failed";
+  const reported = failedTaskFeedbackReported(task);
   let feedbackNote = "";
-  if (!failed) {
+  if (!failed || reported) {
     feedbackNote = await platformPrompt({
-      eyebrow: task.is_format_task ? "Word 与格式反馈" : "任务质量反馈",
-      title: task.is_format_task ? "说明 Word 或排版问题" : "说明结果哪里需要改进",
-      message: task.is_format_task
-        ? "任务显示成功也可以反馈。请说明下载、排版、公式、图片、分页或格式上的问题。"
-        : "任务显示成功也可以反馈。可说明题目质量、答案内容、模型表现、Word 导出或使用体验问题。",
-      inputLabel: "问题描述（选填）",
-      placeholder: "例如：Word 中第 3 题图片缺失；题目难度与选择不一致；答案解释不充分",
-      confirmText: "提交反馈"
+      eyebrow: reported ? "再次反馈" : (task.is_format_task ? "Word 与格式反馈" : "任务质量反馈"),
+      title: reported ? "补充说明或重新发送" : (task.is_format_task ? "说明 Word 或排版问题" : "说明结果哪里需要改进"),
+      message: reported
+        ? "之前反馈不影响再次提交。可以补充新的情况；如果只是重新发送，问题描述可留空。"
+        : (task.is_format_task
+          ? "任务显示成功也可以反馈。请说明下载、排版、公式、图片、分页或格式上的问题。"
+          : "任务显示成功也可以反馈。可说明题目质量、答案内容、模型表现、Word 导出或使用体验问题。"),
+      inputLabel: reported ? "补充说明（选填）" : "问题描述（选填）",
+      placeholder: reported
+        ? "例如：刚才显示为待发送；还需要补充第 3 题导出后图片缺失"
+        : "例如：Word 中第 3 题图片缺失；题目难度与选择不一致；答案解释不充分",
+      confirmText: reported ? "再次提交反馈" : "提交反馈"
     });
     if (feedbackNote === null) return null;
   }
@@ -8560,13 +8567,11 @@ function taskManagerActions(task = {}, reviewPending = false) {
   const feedbackStatus = taskDisplayStatus(task);
   if (["failed", "completed", "completed_with_issues"].includes(feedbackStatus)) {
     const reported = failedTaskFeedbackReported(task);
-    const lockReportedFailure = feedbackStatus === "failed" && reported;
     actions.splice(Math.min(1, actions.length), 0, [
-      lockReportedFailure ? "support-task-reported" : "support-task",
-      lockReportedFailure ? "gray-action" : "blue-action",
-      lockReportedFailure ? "fas fa-check" : "fas fa-comment-dots",
-      lockReportedFailure ? "已反馈" : (reported ? "再次反馈" : (feedbackStatus === "failed" ? "反馈此任务" : "反馈质量")),
-      lockReportedFailure,
+      "support-task",
+      "blue-action",
+      "fas fa-comment-dots",
+      reported ? "再次反馈" : (feedbackStatus === "failed" ? "反馈此任务" : "反馈质量"),
     ]);
   }
   return actions
@@ -10018,6 +10023,24 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
   } else if (task.status === "failed") {
     detail.title = "任务在该阶段停止";
     detail.text = task.error || "请查看问题排查区域中的失败原因。";
+  } else if (current === "hybrid_preprocess") {
+    detail.title = "正在本机读取题面";
+    detail.text = "先在本机完成公式、图片和题目结构提取，再把不依赖 Microsoft Word 的计算交给云端。";
+  } else if (current === "hybrid_upload") {
+    detail.title = "正在安全上传计算资料";
+    detail.text = "上传已预处理题面和教材索引；API Key、Word 文件和本机配置不会放进任务包。";
+  } else if (["cloud_queue", "recovered_after_restart"].includes(current)) {
+    detail.title = current === "recovered_after_restart" ? "云端正在恢复任务" : "正在等待云端处理";
+    detail.text = "任务编号和队列状态已经保存；短暂断网或服务器重启不会丢失任务。";
+  } else if (current === "cloud_pipeline") {
+    detail.title = "云端正在生成并审查解析";
+    detail.text = "模型调用、答案生成、教材依据、图件和内容质量检查正在云端执行。";
+  } else if (["awaiting_download", "hybrid_download"].includes(current)) {
+    detail.title = "正在取回云端结果";
+    detail.text = "下载完整中间结果和诊断证据，校验无误后才会进入本机 Word 阶段。";
+  } else if (current === "local_delivery") {
+    detail.title = "正在本机生成并检查 Word";
+    detail.text = "最终 DOCX、Microsoft Word 渲染、PDF/PNG 和正式验收都在本机完成。";
   } else if (current === "environment") {
     detail.title = "正在检查运行环境";
     detail.text = "检查文档转换、公式写入和渲染工具是否可用。";

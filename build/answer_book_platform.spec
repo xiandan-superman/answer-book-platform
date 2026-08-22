@@ -52,6 +52,21 @@ else:
     }
 support_config_build.write_text(json.dumps(support_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+hybrid_config = json.loads((ROOT / "config" / "hybrid_cloud.example.json").read_text(encoding="utf-8"))
+hybrid_url = os.environ.get("ANSWER_BOOK_HYBRID_URL", "").strip()
+hybrid_token = os.environ.get("ANSWER_BOOK_HYBRID_TOKEN", "").strip()
+hybrid_config.update(
+    {
+        "enabled": bool(hybrid_url and hybrid_token),
+        "base_url": hybrid_url,
+        "tenant_id": os.environ.get("ANSWER_BOOK_HYBRID_TENANT", "default").strip() or "default",
+        "client_id": "",
+        "token": hybrid_token,
+    }
+)
+hybrid_config_build = GENERATED_ROOT / "hybrid_cloud.json"
+hybrid_config_build.write_text(json.dumps(hybrid_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
 datas = [
     (str(ROOT / "web"), "web"),
     (str(ROOT / "config" / "providers.example.json"), "config"),
@@ -59,6 +74,8 @@ datas = [
     (str(ROOT / "config" / "task_defaults.json"), "config"),
     (str(ROOT / "config" / "update.json"), "config"),
     (str(support_config_build), "config"),
+    (str(ROOT / "config" / "hybrid_cloud.example.json"), "config"),
+    (str(hybrid_config_build), "config"),
     (str(ROOT / "APP_VERSION"), "."),
     (str(ROOT / "VERSION"), "."),
     (str(ROOT / "SOFTWARE_LICENSE.md"), "."),
