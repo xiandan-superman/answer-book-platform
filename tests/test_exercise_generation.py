@@ -381,7 +381,7 @@ def test_regeneration_surface_gate_rejects_same_question_and_accepts_real_change
     assert exercise_generation._regenerated_exercise_substantively_changed(current, changed) is True
 
 
-def test_blueprint_audit_blocks_cross_source_design_leakage():
+def test_blueprint_audit_isolates_cross_source_design_leakage_as_review_warning():
     plan = {
         "source_mode": "knowledge",
         "selected_source_questions": [
@@ -390,6 +390,8 @@ def test_blueprint_audit_blocks_cross_source_design_leakage():
         ],
         "blueprint": {
             "generation_strategy": "knowledge_item_wise",
+            "training_goal": "分别训练精馏与晶面指数",
+            "progression": ["概念辨析", "步骤说明"],
             "exercise_plan": [{
                 "number": 1,
                 "plan_item_id": "p1",
@@ -403,16 +405,34 @@ def test_blueprint_audit_blocks_cross_source_design_leakage():
                 "difficulty_levers": ["条件直接程度"],
                 "difficulty_rationale": "学生容易混淆晶面指数。",
                 "required_knowledge_points": ["精馏原理"],
+            }, {
+                "number": 2,
+                "plan_item_id": "p2",
+                "source_question_id": "crystal",
+                "source_refs": ["crystal"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "晶面指数标定",
+                "variation_type": "步骤说明",
+                "design_intent": "考查晶面指数标定步骤",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "需要按顺序说明标定步骤。",
+                "required_knowledge_points": ["晶面指数标定步骤"],
             }],
         },
     }
 
     audit = exercise_generation.audit_practice_blueprint(plan)
 
-    assert audit["status"] == "blocked"
-    assert any("未绑定来源" in error for error in audit["errors"])
+    assert audit["status"] == "warning"
+    assert audit["errors"] == []
+    assert audit["blocking_scope"] == "none"
+    assert audit["review_item_ids"] == ["p1"]
+    assert any("继续处理整批" in warning for warning in audit["warnings"])
     assert audit["findings"] == [{
         "code": "cross_source_design_leak",
+        "severity": "warning",
+        "requires_review": True,
         "item_number": "1",
         "plan_item_id": "p1",
         "bound_source_refs": ["distillation"],
@@ -433,6 +453,56 @@ def test_blueprint_audit_blocks_cross_source_design_leakage():
             }],
         }],
     }]
+
+
+def test_blueprint_audit_does_not_treat_negated_foreign_topic_as_assessed_scope():
+    plan = {
+        "source_mode": "exam",
+        "selected_source_questions": [
+            {
+                "source_question_id": "source_01",
+                "title": "玻璃板间水膜分离",
+                "knowledge_points": ["润湿现象"],
+            },
+            {
+                "source_question_id": "source_03",
+                "title": "毛细凝结",
+                "knowledge_points": ["毛细凝结", "润湿性与接触角"],
+            },
+            {
+                "source_question_id": "source_07",
+                "title": "纸张吸湿",
+                "knowledge_points": ["纸张纤维孔隙", "润湿与吸附"],
+            },
+        ],
+        "blueprint": {
+            "generation_strategy": "targeted_set",
+            "training_goal": "训练毛细凝结判断",
+            "progression": ["条件判断"],
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "plan_item_20",
+                "source_question_id": "source_03",
+                "source_refs": ["source_03", "source_07"],
+                "coverage_role": "综合",
+                "question_type": "填空题",
+                "difficulty": "挑战",
+                "target_skill": "根据局部平衡条件判断毛细凝结",
+                "variation_type": "逆向判断",
+                "design_intent": "本题不要求泛化讨论润湿现象，只限定接触角与孔壁条件。",
+                "difficulty_levers": ["隐含关系识别"],
+                "difficulty_rationale": "需要区分平面饱和与孔内局部平衡。",
+                "required_knowledge_points": ["毛细凝结", "润湿性与接触角", "纸张纤维孔隙", "润湿与吸附"],
+            }],
+        },
+    }
+
+    audit = exercise_generation.audit_practice_blueprint(plan)
+
+    assert audit["status"] != "blocked", audit
+    assert audit["review_item_ids"] == []
+    assert not any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
+    assert any(finding.get("code") == "cross_source_context_reference" for finding in audit["findings"])
 
 
 def test_blueprint_audit_accepts_bound_scope_expressed_with_synonyms_and_constraints():

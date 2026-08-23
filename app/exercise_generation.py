@@ -1055,17 +1055,32 @@ def _source_evidence_covers_anchor(anchor: str, evidence: str) -> bool:
 
 
 def _is_non_assessment_bridge(field: str, value: str, anchor: str) -> bool:
-    """Recognise a progression note that mentions, but does not assess, another topic."""
+    """Recognise wording that mentions, but explicitly does not assess, another topic."""
     if field != "design_intent":
         return False
     for sentence in re.split(r"[。！？;；\n]", value):
         if anchor not in sentence:
             continue
+        anchor_index = sentence.find(anchor)
+        prefix = sentence[max(0, anchor_index - 12) : anchor_index]
         if (
             ("为后续" in sentence and "基础" in sentence)
             or "作为后续" in sentence
             or "用于衔接" in sentence
             or "形成呼应" in sentence
+            or any(
+                marker in prefix
+                for marker in (
+                    "不要求",
+                    "不考查",
+                    "不涉及",
+                    "不讨论",
+                    "无需",
+                    "不得",
+                    "避免",
+                    "排除",
+                )
+            )
         ):
             return True
     return False
@@ -1291,6 +1306,8 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             cross_source_leak_items.append(item_number)
             findings.append({
                 "code": "cross_source_design_leak",
+                "severity": "warning",
+                "requires_review": True,
                 "item_number": item_number,
                 "plan_item_id": _clean(item.get("plan_item_id"), 120),
                 "bound_source_refs": refs,
@@ -1338,12 +1355,13 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         if incomplete_sources:
             errors.append("逐知识单元多题分配未在整组覆盖全部确认知识点：" + "；".join(incomplete_sources) + "。")
     if cross_source_leak_items:
-        errors.append(
-            f"第 {','.join(dict.fromkeys(cross_source_leak_items))} 项的目标、设计意图或难度说明混入了未绑定来源的子主题。"
+        warnings.append(
+            f"第 {','.join(dict.fromkeys(cross_source_leak_items))} 项的目标、设计意图或难度说明可能混入未绑定来源的子主题；"
+            "系统会继续处理整批，并在正式生成时仅提供该项绑定来源，完成后请复核这些题目。"
         )
     if cross_source_reference_items:
         warnings.append(
-            f"第 {','.join(dict.fromkeys(cross_source_reference_items))} 项仅在教学衔接说明中提到其它主题；"
+            f"第 {','.join(dict.fromkeys(cross_source_reference_items))} 项仅在排除范围或教学衔接说明中提到其它主题；"
             "该说明不扩大本题必考范围，本次不阻断蓝图。"
         )
     missing_scope_points = [point for point in expected_scope_points if point not in planned_scope_points]
@@ -1406,6 +1424,12 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         "errors": list(dict.fromkeys(errors)),
         "warnings": list(dict.fromkeys(warnings)),
         "findings": findings,
+        "review_item_ids": list(dict.fromkeys(
+            _clean(finding.get("plan_item_id"), 120)
+            for finding in findings
+            if finding.get("requires_review") is True and _clean(finding.get("plan_item_id"), 120)
+        )),
+        "blocking_scope": "global" if errors else "none",
         "metrics": {
             "plan_count": len(items),
             "unique_plan_item_count": len(set(ids)),
@@ -6436,7 +6460,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         isinstance(finding, dict) and finding.get("code") == "cross_source_design_leak"
         for finding in (plan["blueprint_audit"].get("findings") or [])
     )
-    if plan["blueprint_audit"]["status"] == "blocked" and adaptive_blueprint and has_repairable_findings:
+    if adaptive_blueprint and has_repairable_findings:
         blueprint_audit_repair = repair_blueprint_audit_findings(
             plan,
             payload,

@@ -4366,6 +4366,7 @@ function renderPracticePlan(plan) {
   const analysis = plan.source_analysis || {};
   const modeContract = plan.mode_contract || {};
   const blueprintAudit = plan.blueprint_audit || {};
+  const auditReviewPlanItemIds = new Set(blueprintAudit.review_item_ids || []);
   const blueprintAuditMessages = (blueprintAudit.errors || []).length
     ? blueprintAudit.errors
     : (blueprintAudit.warnings || []);
@@ -4393,7 +4394,7 @@ function renderPracticePlan(plan) {
     <details class="practice-plan-edit-row" data-plan-index="${index}"${index < 2 ? " open" : ""}>
       <summary>
         <b>${item.number}</b>
-        <div><strong data-plan-summary="target_skill">${escapeHtml(item.target_skill || "核心能力")}</strong><span><em data-plan-summary="question_type">${escapeHtml(item.question_type || "自动题型")}</em><em data-plan-summary="difficulty">${escapeHtml(item.difficulty || "进阶")}</em><em>${escapeHtml(item.coverage_role || (comprehensiveMode ? "连接" : "变式"))} · ${(item.source_refs || [item.source_question_id]).filter(Boolean).length} 来源</em>${fallbackPlanItemIds.has(item.plan_item_id) ? '<em class="practice-plan-fallback">细化失败，已保留全局方案</em>' : ""}</span></div>
+        <div><strong data-plan-summary="target_skill">${escapeHtml(item.target_skill || "核心能力")}</strong><span><em data-plan-summary="question_type">${escapeHtml(item.question_type || "自动题型")}</em><em data-plan-summary="difficulty">${escapeHtml(item.difficulty || "进阶")}</em><em>${escapeHtml(item.coverage_role || (comprehensiveMode ? "连接" : "变式"))} · ${(item.source_refs || [item.source_question_id]).filter(Boolean).length} 来源</em>${fallbackPlanItemIds.has(item.plan_item_id) ? '<em class="practice-plan-fallback">细化失败，已保留全局方案</em>' : ""}${auditReviewPlanItemIds.has(item.plan_item_id) ? '<em class="practice-plan-fallback">本项待复核，整批可继续</em>' : ""}</span></div>
         <i class="fas fa-chevron-down"></i>
       </summary>
       <div class="practice-plan-edit-body"><div class="practice-plan-edit-grid">
