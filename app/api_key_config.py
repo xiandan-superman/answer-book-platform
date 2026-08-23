@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import stat
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,11 @@ LEGACY_API_KEY_ALIASES = {
 
 API_KEY_FILE = LOCAL_CONFIG_DIR / "api_keys.json"
 _API_KEY_FILE_LOCK = threading.RLock()
+_LOADED_LOCAL_KEY_NAMES: set[str] = set()
+
+
+class ApiKeyConfigDamaged(ValueError):
+    pass
 
 
 class ApiKeyConfigUnavailable(RuntimeError):
@@ -37,14 +45,64 @@ class ApiKeyConfigUnavailable(RuntimeError):
     public_message = "API 配置暂时无法加载，请重试。"
     suggested_action = "请在 API 配置页面就地重试；若仍失败，请根据诊断编号检查运行日志。"
 
+    def __init__(self, message: str, *, recovery_allowed: bool = False) -> None:
+        super().__init__(message)
+        self.recovery_allowed = recovery_allowed
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise ValueError(f"{path.name} 顶层必须是 JSON 对象")
+        raise ApiKeyConfigDamaged("API 配置结构不受支持")
+    if "keys" in value and not isinstance(value["keys"], dict):
+        raise ApiKeyConfigDamaged("API 配置 keys 结构不受支持")
     return value
+
+
+def _safe_recovery_source(path: Path) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message)
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc
+    if not stat.S_ISREG(mode):
+        raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message)
+
+
+def _copy_private_backup(source: Path) -> Path:
+    timestamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S")
+    backup = source.parent / f".{source.name}.damaged-{timestamp}-{secrets.token_hex(4)}.bak"
+    source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    target_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(source, source_flags)
+    target_fd = -1
+    try:
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message)
+        target_fd = os.open(backup, target_flags, 0o600)
+        os.fchmod(target_fd, 0o600)
+        while True:
+            chunk = os.read(source_fd, 64 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(target_fd, view)
+                view = view[written:]
+        os.fsync(target_fd)
+        os.close(target_fd)
+        target_fd = -1
+        return backup
+    except Exception:
+        if target_fd >= 0:
+            os.close(target_fd)
+        backup.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(source_fd)
 
 
 def _clean_keys(value: Any) -> dict[str, str]:
@@ -165,7 +223,9 @@ def ensure_api_key_file() -> Path:
             return API_KEY_FILE
         except ApiKeyConfigUnavailable:
             raise
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+        except (json.JSONDecodeError, ApiKeyConfigDamaged) as exc:
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message, recovery_allowed=True) from exc
+        except (OSError, ValueError) as exc:
             raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc
 
 
@@ -173,11 +233,14 @@ def read_api_keys() -> dict[str, str]:
     with _API_KEY_FILE_LOCK:
         try:
             path = ensure_api_key_file()
+            _safe_recovery_source(path)
             raw = _read_json(path)
             return _clean_keys(raw.get("keys", raw))
         except ApiKeyConfigUnavailable:
             raise
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+        except (json.JSONDecodeError, ApiKeyConfigDamaged) as exc:
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message, recovery_allowed=True) from exc
+        except (OSError, ValueError) as exc:
             raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc
 
 
@@ -185,7 +248,9 @@ def load_api_keys() -> dict[str, str]:
     with _API_KEY_FILE_LOCK:
         values = read_api_keys()
         for key, value in values.items():
-            os.environ.setdefault(key, value)
+            if key not in os.environ:
+                os.environ[key] = value
+                _LOADED_LOCAL_KEY_NAMES.add(key)
         return values
 
 
@@ -215,8 +280,10 @@ def update_api_key_values(values: dict[str, str]) -> dict[str, Any]:
             for name, secret in environment_updates.items():
                 if secret:
                     os.environ[name] = secret
+                    _LOADED_LOCAL_KEY_NAMES.add(name)
                 else:
                     os.environ.pop(name, None)
+                    _LOADED_LOCAL_KEY_NAMES.discard(name)
             return {
                 "updated": changed,
                 "config_exists": API_KEY_FILE.exists(),
@@ -238,3 +305,35 @@ def api_key_file_info() -> dict[str, Any]:
             "configured_keys": sorted(values),
             "configured_count": len(values),
         }
+
+
+def recover_damaged_api_key_file() -> dict[str, Any]:
+    with _API_KEY_FILE_LOCK:
+        try:
+            _safe_recovery_source(API_KEY_FILE)
+            try:
+                _read_json(API_KEY_FILE)
+            except (json.JSONDecodeError, ApiKeyConfigDamaged):
+                pass
+            else:
+                return {"recovered": False, "already_recovered": True, "backup_created": False}
+            backup = _copy_private_backup(API_KEY_FILE)
+            try:
+                _write_payload(API_KEY_FILE, {})
+            except Exception:
+                # The backup is intentionally retained, while atomic replacement
+                # guarantees the damaged original remains at its fixed path.
+                raise
+            for name in tuple(_LOADED_LOCAL_KEY_NAMES):
+                os.environ.pop(name, None)
+                _LOADED_LOCAL_KEY_NAMES.discard(name)
+            return {
+                "recovered": True,
+                "already_recovered": False,
+                "backup_created": backup.is_file(),
+                "configured_count": 0,
+            }
+        except ApiKeyConfigUnavailable:
+            raise
+        except (OSError, ValueError) as exc:
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc

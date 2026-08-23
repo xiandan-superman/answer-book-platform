@@ -8,7 +8,7 @@ let taskBulkMode = false;
 const selectedTaskIds = new Set();
 let providerConfigs = {};
 let apiKeyFileInfo = {};
-let apiKeyConfigLoadState = { providers: "loading", keyFile: "loading" };
+let apiKeyConfigLoadState = { providers: "loading", keyFile: "loading", recoveryAvailable: false };
 let hybridExecutionSettings = {};
 const keyConfigTests = {};
 let libraryFiles = { exams: [], textbooks: [], exams_root: "", textbooks_root: "" };
@@ -2028,7 +2028,7 @@ function syncProviderControls(providers) {
 
 async function loadApiConfiguration({ showLoading = true } = {}) {
   if (showLoading) {
-    apiKeyConfigLoadState = { providers: "loading", keyFile: "loading" };
+    apiKeyConfigLoadState = { providers: "loading", keyFile: "loading", recoveryAvailable: false };
     renderKeyProviderCards();
   }
   const [providersResult, keyFileResult] = await Promise.allSettled([
@@ -2037,7 +2037,11 @@ async function loadApiConfiguration({ showLoading = true } = {}) {
   ]);
   apiKeyConfigLoadState = {
     providers: providersResult.status === "fulfilled" ? "ready" : "error",
-    keyFile: keyFileResult.status === "fulfilled" ? "ready" : "error"
+    keyFile: keyFileResult.status === "fulfilled" ? "ready" : "error",
+    recoveryAvailable: [providersResult, keyFileResult].some((result) => (
+      result.status === "rejected"
+      && result.reason?.recoveryAction === "backup_and_reset_api_configuration"
+    ))
   };
   if (providersResult.status === "fulfilled") {
     providerConfigs = providersResult.value || {};
@@ -8027,13 +8031,17 @@ function renderKeyProviderCards() {
     return;
   }
   if (apiKeyConfigLoadState.providers === "error") {
+    const recoverAction = apiKeyConfigLoadState.recoveryAvailable ? `
+        <button type="button" class="outline-button danger-text" data-key-config-recover><i class="fas fa-shield-halved"></i>备份损坏配置并重建</button>` : "";
     grid.innerHTML = `
       <div class="key-config-load-error" role="alert">
         <strong>API 配置加载失败，请重试</strong>
-        <p>平台列表暂时不可用，其他工作区仍可继续使用。</p>
+        <p>${apiKeyConfigLoadState.recoveryAvailable ? "检测到配置文件损坏。可先安全备份原文件，再重建空白配置。" : "平台列表暂时不可用，其他工作区仍可继续使用。"}</p>
         <button type="button" class="outline-button" data-key-config-retry><i class="fas fa-rotate"></i>重试加载</button>
+        ${recoverAction}
       </div>`;
     grid.querySelector("[data-key-config-retry]")?.addEventListener("click", () => loadApiConfiguration());
+    grid.querySelector("[data-key-config-recover]")?.addEventListener("click", recoverDamagedApiConfiguration);
     return;
   }
   const entries = Object.entries(providerConfigs || {});
@@ -8046,6 +8054,7 @@ function renderKeyProviderCards() {
       <strong>API 配置保存状态加载失败，请重试</strong>
       <p>平台列表已加载，但暂时无法确认本地保存状态。</p>
       <button type="button" class="outline-button" data-key-config-retry><i class="fas fa-rotate"></i>重试加载</button>
+      ${apiKeyConfigLoadState.recoveryAvailable ? '<button type="button" class="outline-button danger-text" data-key-config-recover><i class="fas fa-shield-halved"></i>备份损坏配置并重建</button>' : ""}
     </div>` : "";
   grid.innerHTML = keyFileWarning + entries.map(([name, cfg]) => `
     <form class="key-provider-card" data-key-provider="${escapeHtml(name)}" autocomplete="off">
@@ -8075,6 +8084,7 @@ function renderKeyProviderCards() {
     </form>
   `).join("");
   grid.querySelector("[data-key-config-retry]")?.addEventListener("click", () => loadApiConfiguration());
+  grid.querySelector("[data-key-config-recover]")?.addEventListener("click", recoverDamagedApiConfiguration);
   grid.querySelectorAll("form[data-key-provider]").forEach((form) => {
     form.addEventListener("submit", (event) => event.preventDefault());
   });
@@ -8106,6 +8116,35 @@ function renderKeyProviderCards() {
   grid.querySelectorAll("[data-key-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteKeyProvider(button.dataset.keyDelete));
   });
+}
+
+async function recoverDamagedApiConfiguration(event) {
+  const button = event?.currentTarget;
+  const confirmed = await platformConfirm({
+    eyebrow: "API 配置恢复",
+    title: "备份损坏配置并重建？",
+    message: "平台会在当前电脑安全备份原文件，并创建空白配置。原有 Key 不会显示，但重建后需要重新配置。",
+    confirmText: "确认备份并重建",
+    tone: "danger"
+  });
+  if (!confirmed) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await api("/api/providers/recover-local-keys", {
+      method: "POST",
+      body: JSON.stringify({ confirm: true })
+    });
+    await loadApiConfiguration();
+    setVisual(
+      "keyConfigNotice",
+      result.already_recovered ? "API 配置已恢复" : "损坏配置已安全备份并重建",
+      "请重新配置需要使用的平台 API Key。",
+      "ok"
+    );
+  } catch (error) {
+    setVisual("keyConfigNotice", "API 配置恢复失败", error?.userMessage || "请检查文件权限或磁盘状态后重试。", "error");
+    if (button?.isConnected) button.disabled = false;
+  }
 }
 
 async function testKeyProvider(providerName) {

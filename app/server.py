@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .answer_coverage_audit import audit_answer_coverage
-from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info
+from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info, recover_damaged_api_key_file
 from .audit_review_gate import get_pending_review_decision, submit_review_decision
 from .capabilities.quality_metrics import build_quality_metrics_report
 from .delivery_package import build_task_delivery_package
@@ -751,6 +751,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self._do_GET()
         except ApiKeyConfigUnavailable as exc:
             payload = public_error_payload(exc, status=503, path=parsed.path)
+            if exc.recovery_allowed:
+                payload["recovery_action"] = "backup_and_reset_api_configuration"
             append_runtime_log(
                 "server",
                 f"API 配置暂时不可用 [{payload['support_id']}]",
@@ -1706,6 +1708,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            if parsed.path == "/api/providers/recover-local-keys":
+                if not self.is_local_client():
+                    self.send_json({"ok": False, "error": "只能在运行程序的本机恢复 API 配置。"}, status=403)
+                    return
+                body = self.read_json()
+                if set(body) != {"confirm"} or body.get("confirm") is not True:
+                    raise ValueError("必须明确确认后才能备份并重建 API 配置。")
+                self.send_json({"ok": True, **recover_damaged_api_key_file()})
+                return
             parts = [unquote(x) for x in parsed.path.strip("/").split("/") if x]
             if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "run":
                 task_id = parts[2]
@@ -1891,6 +1902,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, status=404)
         except ApiKeyConfigUnavailable as exc:
             payload = public_error_payload(exc, status=503, path=parsed.path)
+            if exc.recovery_allowed:
+                payload["recovery_action"] = "backup_and_reset_api_configuration"
             append_runtime_log(
                 "server",
                 f"API 配置暂时不可用 [{payload['support_id']}]",

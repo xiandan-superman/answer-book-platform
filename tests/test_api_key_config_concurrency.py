@@ -43,6 +43,17 @@ def _request(httpd: ThreadingHTTPServer, path: str) -> tuple[int, dict]:
     return response.status, payload
 
 
+def _post(httpd: ThreadingHTTPServer, path: str, body: dict) -> tuple[int, dict]:
+    host = str(httpd.server_address[0])
+    port = int(httpd.server_address[1])
+    connection = http.client.HTTPConnection(host, port, timeout=5)
+    connection.request("POST", path, body=json.dumps(body), headers={"Content-Type": "application/json"})
+    response = connection.getresponse()
+    payload = json.loads(response.read().decode("utf-8"))
+    connection.close()
+    return response.status, payload
+
+
 def test_first_start_is_safe_across_128_threaded_rounds(tmp_path: Path) -> None:
     key_file, *contexts = _isolated_config(tmp_path)
     errors: list[BaseException] = []
@@ -192,6 +203,149 @@ def test_key_file_endpoint_reports_initialization_failure_as_503_not_404() -> No
         assert payload["error_code"] == "api_configuration_unavailable"
         assert payload["error"] == "API 配置暂时无法加载，请重试。"
         assert payload["support_id"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        serving.join(2)
+
+
+def test_damaged_configuration_is_backed_up_privately_and_rebuilt(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text('{"keys": {', encoding="utf-8")
+    original_digest = hashlib.sha256(key_file.read_bytes()).digest()
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4]:
+        with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as error:
+            api_key_config.read_api_keys()
+        assert error.value.recovery_allowed is True
+        result = api_key_config.recover_damaged_api_key_file()
+
+    backups = list(key_file.parent.glob(f".{key_file.name}.damaged-*.bak"))
+    assert result == {"recovered": True, "already_recovered": False, "backup_created": True, "configured_count": 0}
+    assert len(backups) == 1
+    assert hashlib.sha256(backups[0].read_bytes()).digest() == original_digest
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+    assert json.loads(key_file.read_text(encoding="utf-8"))["keys"] == {
+        name: "" for name in sorted(api_key_config.ALLOWED_API_KEY_NAMES)
+    }
+
+
+def test_concurrent_and_repeated_recovery_create_only_one_backup(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text("[]", encoding="utf-8")
+    barrier = threading.Barrier(2)
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4]:
+        def recover() -> dict:
+            barrier.wait(timeout=2)
+            return api_key_config.recover_damaged_api_key_file()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _index: recover(), range(2)))
+        repeated = api_key_config.recover_damaged_api_key_file()
+
+    assert sum(bool(result["recovered"]) for result in results) == 1
+    assert sum(bool(result["already_recovered"]) for result in results) == 1
+    assert repeated["already_recovered"] is True
+    assert len(list(key_file.parent.glob(f".{key_file.name}.damaged-*.bak"))) == 1
+
+
+def test_recovery_write_failure_preserves_original_and_private_backup(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text('{"keys":', encoding="utf-8")
+    original_digest = hashlib.sha256(key_file.read_bytes()).digest()
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], patch.object(
+        api_key_config, "_write_payload", side_effect=OSError("simulated disk failure")
+    ):
+        with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as error:
+            api_key_config.recover_damaged_api_key_file()
+
+    backups = list(key_file.parent.glob(f".{key_file.name}.damaged-*.bak"))
+    assert error.value.recovery_allowed is False
+    assert hashlib.sha256(key_file.read_bytes()).digest() == original_digest
+    assert len(backups) == 1
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+
+
+def test_recovery_backup_failure_preserves_original_without_partial_backup(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text('{"keys":', encoding="utf-8")
+    original_digest = hashlib.sha256(key_file.read_bytes()).digest()
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], patch.object(
+        api_key_config, "_copy_private_backup", side_effect=PermissionError("simulated backup failure")
+    ):
+        with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as error:
+            api_key_config.recover_damaged_api_key_file()
+
+    assert error.value.recovery_allowed is False
+    assert hashlib.sha256(key_file.read_bytes()).digest() == original_digest
+    assert not list(key_file.parent.glob(f".{key_file.name}.damaged-*.bak"))
+
+
+def test_permission_and_symlink_failures_never_offer_or_perform_recovery(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    real_file = key_file.parent / "outside.json"
+    real_file.write_text("[]", encoding="utf-8")
+    key_file.symlink_to(real_file)
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4]:
+        with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as symlink_read_error:
+            api_key_config.read_api_keys()
+        assert symlink_read_error.value.recovery_allowed is False
+        with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as symlink_error:
+            api_key_config.recover_damaged_api_key_file()
+        assert symlink_error.value.recovery_allowed is False
+        key_file.unlink()
+        key_file.write_text("[]", encoding="utf-8")
+        with patch.object(api_key_config.os, "open", side_effect=PermissionError("simulated permission failure")):
+            with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as permission_error:
+                api_key_config.recover_damaged_api_key_file()
+
+    assert permission_error.value.recovery_allowed is False
+    assert real_file.read_text(encoding="utf-8") == "[]"
+
+
+def test_recovery_endpoint_rejects_path_fields_without_touching_file(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text("[]", encoding="utf-8")
+    original_digest = hashlib.sha256(key_file.read_bytes()).digest()
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_module.PlatformHandler)
+    serving = threading.Thread(target=httpd.serve_forever, daemon=True)
+    serving.start()
+    try:
+        with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4]:
+            status, payload = _post(
+                httpd,
+                "/api/providers/recover-local-keys",
+                {"confirm": True, "path": "../../outside"},
+            )
+        assert status == 400
+        assert payload["error_code"] == "invalid_request"
+        assert hashlib.sha256(key_file.read_bytes()).digest() == original_digest
+        assert not list(key_file.parent.glob(f".{key_file.name}.damaged-*.bak"))
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        serving.join(2)
+
+
+def test_damaged_key_file_endpoint_offers_only_the_fixed_recovery_action(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text(json.dumps({"keys": []}), encoding="utf-8")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_module.PlatformHandler)
+    serving = threading.Thread(target=httpd.serve_forever, daemon=True)
+    serving.start()
+    try:
+        with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4]:
+            status, payload = _request(httpd, "/api/providers/key-file")
+        assert status == 503
+        assert payload["recovery_action"] == "backup_and_reset_api_configuration"
+        assert "path" not in payload or payload["path"] == "/api/providers/key-file"
+        assert "keys" not in payload
     finally:
         httpd.shutdown()
         httpd.server_close()

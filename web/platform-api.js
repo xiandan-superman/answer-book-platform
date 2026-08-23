@@ -75,6 +75,7 @@
       error.code = data.error_code || "request_failed";
       error.suggestedAction = data.suggested_action || "";
       error.supportId = data.support_id || "";
+      error.recoveryAction = data.recovery_action || "";
       error.status = response.status;
       error.issues = Array.isArray(data.issues) ? data.issues.map((item) => String(item)).filter(Boolean) : [];
       const issueDetail = error.issues.length ? `：${error.issues.slice(0, 3).join("；")}` : "";

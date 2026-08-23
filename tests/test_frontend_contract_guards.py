@@ -132,6 +132,11 @@ def test_api_key_configuration_failure_is_local_retryable_and_partial() -> None:
     assert 'data-key-config-retry' in APP_JS
     assert 'apiKeyConfigLoadState.providers === "ready"' in APP_JS
     assert 'apiKeyConfigLoadState.keyFile === "ready"' in APP_JS
+    assert "async function recoverDamagedApiConfiguration" in APP_JS
+    assert "备份损坏配置并重建" in APP_JS
+    assert 'body: JSON.stringify({ confirm: true })' in APP_JS
+    platform_api = (ROOT / "web" / "platform-api.js").read_text(encoding="utf-8")
+    assert "error.recoveryAction = data.recovery_action" in platform_api
 
 
 def test_practice_status_banner_tracks_blueprint_confirmation_stage() -> None:
