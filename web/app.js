@@ -4702,6 +4702,8 @@ function applyPracticeEditorValues(values) {
   PRACTICE_EDITOR_FIELD_IDS.forEach((id) => {
     if ($(id) && Object.prototype.hasOwnProperty.call(values || {}, id)) $(id).value = String(values[id] ?? "");
   });
+  syncPlatformSelectElement($("practiceEditType"));
+  syncPlatformSelectElement($("practiceEditDifficulty"));
 }
 
 function setPracticeEditorDraftAvailable(available) {
@@ -4795,7 +4797,10 @@ function populatePracticeEditor(item) {
   const typeSelect = $("practiceEditType");
   typeSelect.innerHTML = ["单选题", "多选题", "判断题", "填空题", "简答题", "计算题", "作图题", "综合题"]
     .map((type) => `<option${type === item.question_type ? " selected" : ""}>${type}</option>`).join("");
-  $("practiceEditDifficulty").value = item.difficulty || "进阶";
+  const difficultySelect = $("practiceEditDifficulty");
+  difficultySelect.value = item.difficulty || "进阶";
+  syncPlatformSelectElement(typeSelect);
+  syncPlatformSelectElement(difficultySelect);
   $("practiceEditSkill").value = item.target_skill || "";
   $("practiceEditStem").value = item.stem || "";
   $("practiceEditOptions").value = (item.options || []).map((option) => option.text || "").join("\n");
@@ -8980,6 +8985,8 @@ async function openGenerationTaskResult(task) {
     latestPracticeRequest = record.request || {};
     restorePracticePreferenceOrders(latestPracticeRequest);
     syncPracticeSourceContentPreference(latestPracticeRequest.include_source_content_in_generation !== false);
+    currentPracticeHistoryId = String(record.history_id || record.data?.history_id || task.task_id || "");
+    currentPracticeRevisionCount = Number(record.revision_count || record.revisions?.length || 0);
     latestPracticeSet = record.data || {};
     setPracticeWorkspaceMode(task.task_kind === "knowledge" ? "knowledge" : "exam");
     goToPage("practice");
