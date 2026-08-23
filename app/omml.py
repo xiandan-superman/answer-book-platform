@@ -55,7 +55,9 @@ LATEX_REPL = {
 }
 
 MATH_FONT = "Cambria Math"
+CJK_MATH_FONT = "宋体"
 _XSLT_LOCK = threading.RLock()
+_MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 
 
 class FormulaConversionError(RuntimeError):
@@ -202,33 +204,63 @@ def _mathml2omml_xml(latex: str, xsl_path: str, xsl_mtime_ns: int, xsl_size: int
     return etree.tostring(root, encoding="unicode")
 
 
+@lru_cache(maxsize=4096)
+def _pure_python_mathml2omml_xml(latex: str) -> str:
+    """Convert through the packaged cross-platform MathML-to-OMML backend."""
+    from latex2mathml.converter import convert as latex_to_mathml
+    import math_ml2omml
+
+    mathml = latex_to_mathml(latex)
+    xml = str(math_ml2omml.convert(mathml) or "").strip()
+    if not xml:
+        raise ValueError("pure-Python MathML-to-OMML converter produced empty result")
+    # The library emits namespace-prefixed OOXML fragments without declaring
+    # the standard Office Math namespace.  Add it to the root before parsing.
+    if xml.startswith("<m:oMath>"):
+        xml = xml.replace("<m:oMath>", f'<m:oMath xmlns:m="{_MATH_NS}">', 1)
+    return xml
+
+
 def clear_omml_caches() -> None:
     """Clear process caches after an Office/XSL installation changes."""
     _find_mathml2omml_xsl_cached.cache_clear()
     _compiled_mathml2omml_transform.cache_clear()
     _mathml2omml_xml.cache_clear()
+    _pure_python_mathml2omml_xml.cache_clear()
 
 
-def omml_from_latex_via_mathml(src: str):
-    try:
-        import latex2mathml  # noqa: F401
-        import lxml  # noqa: F401
-    except Exception as exc:
-        raise RuntimeError("latex2mathml/lxml not available") from exc
-    xsl_path = find_mathml2omml_xsl()
-    if not xsl_path:
-        raise RuntimeError("mathml2omml.xsl not found")
-    latex = normalize_latex(src)
-    xml = _mathml2omml_xml(latex, *_xsl_signature(xsl_path))
+def _validated_omml_from_xml(xml: str, latex: str):
     omath = parse_xml(xml)
     if omath.tag.endswith("}oMathPara"):
         children = [child for child in list(omath) if child.tag.endswith("}oMath")]
         if children:
-            return children[0]
+            omath = children[0]
     if not omath.tag.endswith("}oMath"):
         raise ValueError(f"mathml2omml produced unsupported root: {omath.tag}")
     if not list(omath):
         raise ValueError("Refusing to create empty OMML formula")
+    # Some pure-Python converters omit the explicit hidden degree slot for a
+    # square root.  Word tolerates that shape, but LibreOffice renders empty
+    # boxes.  Materialize the standard radPr/deg structure for portability.
+    for radical in [node for node in omath.iter() if str(node.tag).endswith("}rad")]:
+        children = list(radical)
+        if not any(str(child.tag).endswith("}deg") for child in children):
+            radical_properties = next(
+                (child for child in children if str(child.tag).endswith("}radPr")),
+                None,
+            )
+            if radical_properties is None:
+                radical_properties = m_el("radPr")
+                radical.insert(0, radical_properties)
+            degree_hidden = next(
+                (child for child in list(radical_properties) if str(child.tag).endswith("}degHide")),
+                None,
+            )
+            if degree_hidden is None:
+                degree_hidden = m_el("degHide")
+                radical_properties.append(degree_hidden)
+            degree_hidden.set(qn("m:val"), "1")
+            radical.insert(list(radical).index(radical_properties) + 1, m_el("deg"))
     # A TeX ``cases`` environment is represented in MathML/OMML as a
     # left-hand brace with an intentionally invisible right delimiter.  Word's
     # XSLT serializes that valid one-sided delimiter as an empty ``endChr``.
@@ -244,6 +276,30 @@ def omml_from_latex_via_mathml(src: str):
                 continue
             raise ValueError("mathml2omml produced an empty delimiter character")
     return omath
+
+
+def omml_from_latex_via_mathml(src: str):
+    try:
+        import latex2mathml  # noqa: F401
+        import lxml  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError("latex2mathml/lxml not available") from exc
+    latex = normalize_latex(src)
+    conversion_errors: list[str] = []
+    xsl_path = find_mathml2omml_xsl()
+    if xsl_path:
+        try:
+            return _validated_omml_from_xml(
+                _mathml2omml_xml(latex, *_xsl_signature(xsl_path)),
+                latex,
+            )
+        except Exception as exc:
+            conversion_errors.append(f"Microsoft XSLT backend: {exc}")
+    try:
+        return _validated_omml_from_xml(_pure_python_mathml2omml_xml(latex), latex)
+    except Exception as exc:
+        conversion_errors.append(f"packaged pure-Python backend: {exc}")
+        raise RuntimeError("; ".join(conversion_errors)) from exc
 
 
 def m_el(name: str, text: str | None = None):
@@ -293,8 +349,11 @@ def apply_expression_math_style(omath, *, expression_kind: str = "formula"):
         if fonts is None:
             fonts = OxmlElement("w:rFonts")
             word_r_pr.insert(0, fonts)
-        for attribute in ("ascii", "hAnsi", "eastAsia", "cs"):
-            fonts.set(qn(f"w:{attribute}"), MATH_FONT)
+        run_text = "".join(node.itertext())
+        fonts.set(qn("w:ascii"), MATH_FONT)
+        fonts.set(qn("w:hAnsi"), MATH_FONT)
+        fonts.set(qn("w:cs"), MATH_FONT)
+        fonts.set(qn("w:eastAsia"), CJK_MATH_FONT if re.search(r"[\u3400-\u9fff]", run_text) else MATH_FONT)
     return omath
 
 
@@ -514,7 +573,7 @@ def omml_from_latex(src: str, *, expression_kind: str = "formula"):
             if not degraded_fallback_enabled:
                 raise FormulaConversionError(
                     "Formula conversion failed in the production MathML-to-OMML chain; "
-                    "refusing an untracked partial-OMML fallback"
+                    f"refusing an untracked partial-OMML fallback ({exc})"
                 ) from exc
     elif not degraded_fallback_enabled:
         raise FormulaConversionError(

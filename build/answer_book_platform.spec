@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 
 ROOT = Path(SPECPATH).parent
 FONT_ROOT = ROOT / "assets" / "fonts"
@@ -86,11 +88,15 @@ datas = [
         "assets/fonts/dolbydu-font/matplotlib-compatible",
     ),
 ]
+# latex2mathml imports its Unicode symbol table at runtime.  PyInstaller sees
+# the Python modules but does not discover this text resource automatically.
+datas += collect_data_files("latex2mathml")
 
 hiddenimports = [
     "docx",
     "lxml",
     "latex2mathml",
+    "math_ml2omml",
     "PIL",
     "matplotlib",
     "matplotlib.backends.backend_agg",

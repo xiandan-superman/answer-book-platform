@@ -5300,11 +5300,16 @@ function practiceExportRequestPayload(data) {
   const selectedScope = data?.export_scope === "selected"
     || requestedIds.length !== allIds.length
     || requestedIds.some((value, index) => value !== allIds[index]);
-  return {
-    ...data,
+  const historyId = String(data?.history_id || latestPracticeSet?.history_id || currentPracticeHistoryId || "").trim();
+  const selection = {
+    history_id: historyId,
     export_scope: selectedScope ? "selected" : "all",
     selected_exercise_ids: selectedScope ? requestedIds : []
   };
+  // Saved histories are the source of truth. Sending only their identity and
+  // selection avoids reposting embedded/base64 figures, which can exceed the
+  // normal JSON request limit for image-heavy question sets.
+  return historyId ? selection : { ...data, ...selection };
 }
 
 function practiceWordLabel(generating = false, label = "下载题目 Word") {
@@ -5372,9 +5377,7 @@ async function waitForPracticeWordExportJob(initialJob, exportKey) {
       "loading"
     );
     await new Promise((resolve) => window.setTimeout(resolve, 500));
-    const response = await fetch(`/api/practice/export-jobs/${encodeURIComponent(job.job_id)}`, { cache: "no-store" });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "无法读取 Word 生成进度");
+    const payload = await api(`/api/practice/export-jobs/${encodeURIComponent(job.job_id)}`, { cache: "no-store" });
     job = payload.job || {};
   }
   if (job.status === "failed") throw new Error(job.error || "Word 生成失败");
@@ -5394,18 +5397,10 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
   syncPracticeWordExportButton(button, exportKey, true, label);
   syncPracticeWordExportUi();
   try {
-    const requestExport = () => fetch("/api/practice/export/prepare?kind=questions", {
+    const prepared = await api("/api/practice/export/prepare?kind=questions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(practiceExportRequestPayload(data))
     });
-    const response = await requestExport();
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const detail = Array.isArray(errorData.issues) && errorData.issues.length ? `：${errorData.issues.slice(0, 3).join("；")}` : "";
-      throw new Error(`${errorData.error || "Word 生成失败"}${detail}`);
-    }
-    const prepared = await response.json().catch(() => ({}));
     const job = await waitForPracticeWordExportJob(prepared.job, exportKey);
     if (!job) {
       setPracticeStatusBanner("已返回处理，未下载 Word。", "info");

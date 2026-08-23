@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from lxml import etree
+
 from app import omml
 
 MINIMAL_MATHML_TO_OMML_XSL = """<?xml version="1.0" encoding="UTF-8"?>
@@ -65,6 +67,31 @@ class OmmlPerformanceTests(unittest.TestCase):
             self.assertEqual(1, omml._compiled_mathml2omml_transform.cache_info().misses)
             self.assertEqual(1, omml._mathml2omml_xml.cache_info().misses)
             self.assertEqual(1, omml._mathml2omml_xml.cache_info().hits)
+
+    def test_packaged_converter_keeps_word_export_available_without_office_xsl(self) -> None:
+        omml.clear_omml_caches()
+        with patch("app.omml.find_mathml2omml_xsl", return_value=None):
+            formula = omml.omml_from_latex_via_mathml(r"E=E^\theta-\frac{RT}{nF}\ln Q")
+
+        self.assertTrue(list(formula))
+        self.assertEqual(1, omml._pure_python_mathml2omml_xml.cache_info().misses)
+
+    def test_packaged_converter_materializes_portable_square_root_slots(self) -> None:
+        with patch("app.omml.find_mathml2omml_xsl", return_value=None):
+            formula = omml.omml_from_latex_via_mathml(r"\sqrt{a^2+b^2}")
+
+        xml = etree.tostring(formula, encoding="unicode")
+        self.assertIn("<m:radPr>", xml)
+        self.assertIn('<m:degHide m:val="1"/>', xml)
+        self.assertIn("<m:deg/>", xml)
+
+    def test_formula_chinese_runs_use_a_cjk_font(self) -> None:
+        with patch("app.omml.find_mathml2omml_xsl", return_value=None):
+            formula = omml.omml_from_latex_via_mathml(r"x\text{为偶数}")
+            formula = omml.apply_expression_math_style(formula)
+
+        xml = etree.tostring(formula, encoding="unicode")
+        self.assertIn('w:eastAsia="宋体"', xml)
 
 
 if __name__ == "__main__":

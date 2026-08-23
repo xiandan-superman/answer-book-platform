@@ -269,6 +269,16 @@ def test_selected_word_export_reads_checked_dom_and_sends_stable_question_ids() 
     assert 'export_scope: "selected"' in export_selection
 
 
+def test_saved_word_export_posts_only_history_identity_and_selection() -> None:
+    start = APP_JS.index("function practiceExportRequestPayload")
+    end = APP_JS.index("function practiceWordLabel", start)
+    payload_builder = APP_JS[start:end]
+
+    assert "return historyId ? selection : { ...data, ...selection };" in payload_builder
+    assert "history_id: historyId" in payload_builder
+    assert "selected_exercise_ids: selectedScope ? requestedIds : []" in payload_builder
+
+
 def test_practice_question_save_sends_edit_version_and_handles_conflicts() -> None:
     editor_start = APP_JS.index("async function applyPracticeEditor")
     start = APP_JS.index("async function saveRegeneratedPracticeExercise")

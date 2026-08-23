@@ -3,6 +3,7 @@ config/api_keys.json
 config/support_reporting.json
 config/support_cloud.json
 config/hybrid_cloud.json
+config/remote_monitor.local.json
 .env
 textbooks/textbook_page_map.manual.csv
 textbooks/*.zip

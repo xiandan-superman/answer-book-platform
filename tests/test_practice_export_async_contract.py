@@ -11,6 +11,7 @@ def test_frontend_prepares_polls_and_downloads_background_word_job() -> None:
     export_flow = APP_JS[start:end]
 
     assert "/api/practice/export/prepare?kind=questions" in export_flow
+    assert 'await api("/api/practice/export/prepare?kind=questions"' in export_flow
     assert "waitForPracticeWordExportJob" in export_flow
     assert "/api/practice/export-jobs/${encodeURIComponent(job.job_id)}/download" in export_flow
 

@@ -76,8 +76,10 @@
       error.suggestedAction = data.suggested_action || "";
       error.supportId = data.support_id || "";
       error.status = response.status;
+      error.issues = Array.isArray(data.issues) ? data.issues.map((item) => String(item)).filter(Boolean) : [];
+      const issueDetail = error.issues.length ? `：${error.issues.slice(0, 3).join("；")}` : "";
       error.userMessage = [
-        data.error || response.statusText,
+        `${data.error || response.statusText}${issueDetail}`,
         data.suggested_action,
         data.support_id ? `诊断编号：${data.support_id}` : ""
       ].filter(Boolean).join("\n");
@@ -85,7 +87,8 @@
       window.SupportTelemetry?.record("request_failed", {
         method, path: String(path).split("?", 1)[0], request_id: correlationId,
         status: response.status, duration_ms: Math.round(performance.now() - startedAt),
-        error_code: error.code, support_id: error.supportId, message: data.error || response.statusText
+        error_code: error.code, support_id: error.supportId,
+        message: `${data.error || response.statusText}${issueDetail}`
       });
       throw error;
     }

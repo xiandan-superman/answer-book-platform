@@ -38,15 +38,32 @@ Mac Apple 芯片与 Windows 64 位安装包、生成 SHA256 更新清单，并�
 正式发布使用私有源码仓库 `xiandan-superman/answer-book-platform` 和公共二进制更新仓库
 `xiandan-superman/answer-book-platform-releases`。公共仓库只放安装包、校验清单和更新说明，用户无需 GitHub Token。
 
-## 局域网监控
+## 局域网与 Tailscale 监控
 
-桌面版默认监听 `0.0.0.0:8766`。启动后在“运行监控”页面查看并复制：
+桌面版默认从 `18766` 开始选择可用端口，最多检查到 `18795`；旧的源码启动方式仍可使用 `8766`。启动后在“运行监控”页面查看并复制：
 
-- 局域网访问地址。
+- 局域网或 Tailscale 访问地址（安装 Tailscale 时优先显示 `100.x` 地址）。
 - 监控账号。
 - 本机随机生成的监控密码。
 
-同一局域网内的管理电脑通过该地址访问。远程请求使用 HTTP Basic Authentication；本机访问不要求输入密码。首次运行时，系统防火墙可能要求允许局域网连接。
+同一局域网内的管理电脑可直接访问；跨网络测试建议只通过 Tailscale 私网连接。远程请求使用 HTTP Basic Authentication；本机访问不要求输入密码。首次运行时，Windows 防火墙可能要求允许连接。
+
+### 供 Codex 直接排查用户任务
+
+在开发电脑将示例配置复制为不进入 Git 的本机配置：
+
+```bash
+cp config/remote_monitor.example.json config/remote_monitor.local.json
+```
+
+填入用户电脑的 Tailscale IP，以及“运行监控”页显示的账号和密码。随后 Codex 可以自动发现当前桌面端口，并读取脱敏的系统状态、最近日志和异常任务诊断：
+
+```bash
+python3 scripts/monitor_remote_platform.py
+python3 scripts/monitor_remote_platform.py --task-id 用户告知的任务ID
+```
+
+密码也可只通过开发电脑的 `ANSWER_BOOK_MONITOR_PASSWORD` 环境变量提供。脚本默认仅保留 12 份最近快照和一份 `latest.json`，不下载用户的教材、真题、生成结果或整个任务目录。
 
 如需固定密码，在启动 App 前设置：
 

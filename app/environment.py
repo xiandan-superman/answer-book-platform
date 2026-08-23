@@ -20,6 +20,20 @@ from .render_fonts import project_font_diagnostics
 from .settings import list_providers
 
 
+def _package_data_file_exists(package: str, relative_path: str) -> bool:
+    try:
+        spec = find_spec(package)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+    if spec is None:
+        return False
+    roots = [Path(str(path)) for path in (getattr(spec, "submodule_search_locations", None) or [])]
+    origin = getattr(spec, "origin", None)
+    if origin:
+        roots.append(Path(str(origin)).parent)
+    return any((root / relative_path).is_file() for root in roots)
+
+
 def _run_command(cmd: list[str], timeout: int = 300) -> dict[str, Any]:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return {
@@ -266,10 +280,12 @@ def check_environment() -> dict[str, Any]:
     word_windows = _check_word_windows()
     drawing_runtime = _check_drawing_runtime()
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    latex2mathml_data_available = _package_data_file_exists("latex2mathml", "unimathsymbols.txt")
     python_packages = {
         "python-docx": bool(find_spec("docx")),
         "lxml": bool(find_spec("lxml")),
         "latex2mathml": bool(find_spec("latex2mathml")),
+        "math_ml2omml": bool(find_spec("math_ml2omml")),
         "Pillow": bool(find_spec("PIL")),
         "matplotlib": bool(find_spec("matplotlib")),
         "pydantic": bool(find_spec("pydantic")),
@@ -288,11 +304,19 @@ def check_environment() -> dict[str, Any]:
         },
         "python_packages": python_packages,
         "formula_conversion": {
-            "preferred_chain": "latex2mathml -> mathml2omml.xsl -> Word OMML",
+            "preferred_chain": "latex2mathml -> Microsoft XSLT or packaged MathML-to-OMML -> Word OMML",
             "latex2mathml_available": python_packages["latex2mathml"],
+            "latex2mathml_data_available": latex2mathml_data_available,
+            "packaged_mathml2omml_available": python_packages["math_ml2omml"],
             "mathml2omml_xsl": str(xsl) if xsl else None,
+            "microsoft_xslt_available": bool(xsl),
             "degraded_fallback": "disabled unless ANSWER_BOOK_ALLOW_DEGRADED_OMML_FALLBACK=1",
-            "preferred_chain_ready": bool(python_packages["latex2mathml"] and python_packages["lxml"] and xsl),
+            "preferred_chain_ready": bool(
+                python_packages["latex2mathml"]
+                and latex2mathml_data_available
+                and python_packages["lxml"]
+                and (python_packages["math_ml2omml"] or xsl)
+            ),
         },
         "formula_input_conversion": {
             "preferred_chain": "Word OMML -> omml2mathml.xsl -> MathML",

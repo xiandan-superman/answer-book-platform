@@ -1330,6 +1330,17 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 export_validation = validate_practice_export(export_data)
                 if not export_validation.get("ok"):
                     issues = export_validation.get("blocking_issues") or []
+                    append_runtime_log(
+                        "practice_export",
+                        f"题目 Word 导出前门禁未通过：{len(issues)} 项阻断",
+                        "warning",
+                        {
+                            "history_id": history_id,
+                            "export_scope": str(body.get("export_scope") or "all"),
+                            "selected_count": len(body.get("selected_exercise_ids") or []),
+                            "issues": [str(issue) for issue in issues[:8]],
+                        },
+                    )
                     self.send_json(
                         {
                             "ok": False,

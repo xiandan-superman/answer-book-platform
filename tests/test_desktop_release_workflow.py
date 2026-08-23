@@ -44,3 +44,11 @@ def test_desktop_bundle_generates_hybrid_configuration_at_build_time() -> None:
     assert 'os.environ.get("ANSWER_BOOK_HYBRID_URL"' in spec
     assert 'os.environ.get("ANSWER_BOOK_HYBRID_TOKEN"' in spec
     assert '(str(hybrid_config_build), "config")' in spec
+
+
+def test_desktop_bundle_collects_and_verifies_latex2mathml_runtime_data() -> None:
+    spec = (ROOT / "build" / "answer_book_platform.spec").read_text(encoding="utf-8")
+    windows_builder = (ROOT / "scripts" / "build_windows_app.py").read_text(encoding="utf-8")
+
+    assert 'collect_data_files("latex2mathml")' in spec
+    assert '"latex2mathml" / "unimathsymbols.txt"' in windows_builder

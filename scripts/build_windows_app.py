@@ -35,6 +35,15 @@ def main() -> int:
     result = subprocess.run(command, cwd=ROOT, check=False)
     if result.returncode:
         return result.returncode
+    required_runtime_files = [
+        app_dir / "_internal" / "latex2mathml" / "unimathsymbols.txt",
+    ]
+    missing_runtime_files = [path for path in required_runtime_files if not path.is_file()]
+    if missing_runtime_files:
+        print("Windows application is missing required runtime data:")
+        for path in missing_runtime_files:
+            print(f"- {path.relative_to(app_dir)}")
+        return 1
     version = (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip()
     archive_base = DIST / f"answer-book-platform-{version}-windows-x86_64"
     archive_path = Path(shutil.make_archive(str(archive_base), "zip", root_dir=app_dir))

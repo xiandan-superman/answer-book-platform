@@ -39,6 +39,18 @@ class LanAccessConfigTests(unittest.TestCase):
         self.assertEqual([], info["urls"])
         self.assertNotIn("password", info)
 
+    def test_tailscale_address_is_advertised_first(self) -> None:
+        with (
+            patch.object(lan_access, "lan_credentials", return_value=("monitor", "secret")),
+            patch.object(lan_access, "lan_access_enabled", return_value=True),
+            patch.object(lan_access, "lan_ipv4_addresses", return_value=["100.101.102.103", "192.168.1.20"]),
+        ):
+            info = lan_access.lan_access_info(18766, include_secret=True, bind_host="0.0.0.0")
+
+        self.assertEqual(["http://100.101.102.103:18766"], info["tailscale_urls"])
+        self.assertEqual("http://100.101.102.103:18766", info["urls"][0])
+        self.assertEqual("secret", info["password"])
+
 
 class LanAuthenticationTests(unittest.TestCase):
     def _handler(self, address: str, authorization: str = "") -> PlatformHandler:

@@ -26,6 +26,36 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(font_report, result["document_tools"]["project_fonts"])
 
+    def test_packaged_formula_backend_is_preferred_chain_ready_without_office(self) -> None:
+        from app.environment import check_environment
+
+        def package_spec(name: str):
+            return object() if name in {"latex2mathml", "lxml", "math_ml2omml"} else None
+
+        with patch("app.environment.ensure_project_dirs"), patch(
+            "app.environment.list_providers", return_value={}
+        ), patch("app.environment.find_mathml2omml_xsl", return_value=None), patch(
+            "app.environment.find_omml2mathml_xsl", return_value=None
+        ), patch(
+            "app.environment._package_data_file_exists", return_value=True
+        ), patch("app.environment._check_word_mac", return_value={"applicable": False}), patch(
+            "app.environment._check_word_windows", return_value={"applicable": True}
+        ), patch("app.environment._check_drawing_runtime", return_value={"ok": True}), patch(
+            "app.environment._check_network", return_value={"ok": False}
+        ), patch("app.environment.project_font_diagnostics", return_value={}), patch(
+            "app.environment.find_spec", side_effect=package_spec
+        ), patch("app.environment.shutil.which", return_value=None):
+            result = check_environment()
+
+        self.assertTrue(result["formula_conversion"]["preferred_chain_ready"])
+        self.assertTrue(result["formula_conversion"]["packaged_mathml2omml_available"])
+        self.assertTrue(result["formula_conversion"]["latex2mathml_data_available"])
+
+    def test_latex2mathml_runtime_data_probe_checks_symbol_table(self) -> None:
+        from app.environment import _package_data_file_exists
+
+        self.assertTrue(_package_data_file_exists("latex2mathml", "unimathsymbols.txt"))
+
     def test_drawing_runtime_probe_reports_renderer_result(self) -> None:
         from app.environment import _check_drawing_runtime
 

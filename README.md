@@ -1,6 +1,6 @@
 # 真题解析与生题平台
 
-本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.8。
+本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.9。
 
 核心原则：
 
@@ -246,7 +246,7 @@ python3 scripts/data_inventory.py
 - `textbook_page_map.manual.csv` 手工页码覆盖。
 - 基础图形重绘：相图、折线图、电子衍射斑点图。
 - matplotlib 中文字体自动配置；随包内置 `dolbydu/font` 仓库中的完整字体集合，其他用户下载完整程序包后可直接使用这些字体渲染图中文字。
-- 公式优先使用 `latex2mathml -> mathml2omml.xsl -> Word OMML` 专业链路；缺少依赖时降级为内置最小转换器。
+- 公式使用 `latex2mathml -> 跨平台 MathML-to-OMML -> Word OMML` 专业链路；安装了 Microsoft Word 时也可优先复用其 `mathml2omml.xsl`。
 - 内置最小 OMML 转换支持分式、上下标、上下标组合。
 
 当前持续改进范围：
@@ -261,7 +261,7 @@ python3 scripts/data_inventory.py
 
 - 执行任务时不允许模型修改工具链。
 - 模型输出必须通过 v4 schema。
-- 高质量公式链路要求 `latex2mathml`、`lxml`、Microsoft Word 自带 `mathml2omml.xsl` 同时存在；`check_environment.py` 会显示 `preferred_chain_ready`。
+- 高质量公式链路要求 `latex2mathml`、`lxml` 和随安装包分发的 `math_ml2omml`；不再强制依赖用户安装 Microsoft Word。`check_environment.py` 会显示 `preferred_chain_ready`。
 - 正式流水线默认要求 `preferred_chain_ready=true`，否则环境阶段失败。
 - 使用 `--reuse-fragments` 时，平台必须先重新校验已有 `answer_fragments.json`，不合格则停止。
 - 普通 text segment 中出现公式样式内容会失败。

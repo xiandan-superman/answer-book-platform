@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import socket
+import subprocess
+import time
+from ipaddress import IPv4Address, ip_address, ip_network
 from typing import Any
 
 from .paths import DATA_ROOT, ensure_project_dirs
 
 LAN_CONFIG_PATH = DATA_ROOT / "runtime" / "lan_access.json"
 DEFAULT_USERNAME = "monitor"
+TAILSCALE_IPV4_NETWORK = ip_network("100.64.0.0/10")
+_TAILSCALE_CACHE_SECONDS = 60.0
+_tailscale_cache: tuple[float, list[str]] = (0.0, [])
 
 
 def _read_config() -> dict[str, Any]:
@@ -54,25 +61,74 @@ def lan_access_enabled() -> bool:
     return bool(ensure_lan_access_config().get("enabled", True))
 
 
+def _valid_ipv4(value: str) -> str:
+    try:
+        address = ip_address(str(value).strip())
+    except ValueError:
+        return ""
+    if not isinstance(address, IPv4Address) or address.is_loopback or address.is_unspecified:
+        return ""
+    return str(address)
+
+
+def tailscale_ipv4_addresses() -> list[str]:
+    """Return the local Tailscale IPv4 without requiring an optional Python package."""
+
+    global _tailscale_cache
+    cached_at, cached_addresses = _tailscale_cache
+    now = time.monotonic()
+    if now - cached_at < _TAILSCALE_CACHE_SECONDS:
+        return list(cached_addresses)
+    executable = shutil.which("tailscale") or shutil.which("tailscale.exe")
+    if not executable:
+        _tailscale_cache = (now, [])
+        return []
+    run_options: dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+        "timeout": 2,
+        "check": False,
+    }
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        run_options["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        completed = subprocess.run([executable, "ip", "-4"], **run_options)
+    except (OSError, subprocess.SubprocessError):
+        addresses = []
+    else:
+        addresses = []
+        if completed.returncode == 0:
+            for line in completed.stdout.splitlines():
+                address = _valid_ipv4(line)
+                if address and ip_address(address) in TAILSCALE_IPV4_NETWORK:
+                    addresses.append(address)
+    result = sorted(set(addresses), key=lambda value: int(ip_address(value)))
+    _tailscale_cache = (now, result)
+    return list(result)
+
+
 def lan_ipv4_addresses() -> list[str]:
     addresses: set[str] = set()
     try:
         for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM):
-            address = str(item[4][0])
-            if address and not address.startswith("127."):
+            address = _valid_ipv4(str(item[4][0]))
+            if address:
                 addresses.add(address)
     except OSError:
         pass
     try:
         probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         probe.connect(("192.0.2.1", 9))
-        address = str(probe.getsockname()[0])
+        address = _valid_ipv4(str(probe.getsockname()[0]))
         probe.close()
-        if address and not address.startswith("127."):
+        if address:
             addresses.add(address)
     except OSError:
         pass
-    return sorted(addresses)
+    tailscale_addresses = tailscale_ipv4_addresses()
+    addresses.update(tailscale_addresses)
+    # Tailscale is the preferred route for cross-network beta diagnostics.
+    return tailscale_addresses + sorted(addresses.difference(tailscale_addresses))
 
 
 def lan_access_info(port: int, include_secret: bool = False, *, bind_host: str = "") -> dict[str, Any]:
@@ -90,15 +146,20 @@ def lan_access_info(port: int, include_secret: bool = False, *, bind_host: str =
         }
     username, password = lan_credentials()
     addresses = lan_ipv4_addresses()
+    tailscale_addresses = [
+        address for address in addresses if ip_address(address) in TAILSCALE_IPV4_NETWORK
+    ]
     result: dict[str, Any] = {
         "enabled": lan_access_enabled(),
         "listening_on_lan": True,
         "username": username,
         "addresses": addresses,
         "urls": [f"http://{address}:{port}" for address in addresses],
+        "tailscale_addresses": tailscale_addresses,
+        "tailscale_urls": [f"http://{address}:{port}" for address in tailscale_addresses],
         "port": int(port),
         "transport_security": "http_basic",
-        "warning": "当前为局域网 HTTP 访问，请仅在可信网络中使用；跨网络访问建议通过 Tailscale HTTPS。",
+        "warning": "请仅在可信局域网或 Tailscale 私网中使用；远程接口受监控账号和密码保护。",
     }
     if include_secret and result["enabled"]:
         result["password"] = password
