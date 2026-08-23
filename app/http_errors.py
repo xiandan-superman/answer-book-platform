@@ -26,7 +26,14 @@ def public_error_payload(exc: Exception, *, status: int, path: str) -> dict[str,
     message = str(exc or "").strip()
     lowered = message.lower()
     support_id = uuid4().hex[:10]
-    if status == 400 and _looks_user_safe(message):
+    public_code = str(getattr(exc, "public_error_code", "") or "")
+    public_message = str(getattr(exc, "public_message", "") or "")
+    public_action = str(getattr(exc, "suggested_action", "") or "")
+    if public_code and public_message:
+        code = public_code
+        user_message = public_message
+        suggested_action = public_action or "请稍后重试。"
+    elif status == 400 and _looks_user_safe(message):
         code = "invalid_request"
         user_message = message
         suggested_action = "检查当前页面填写或选择的内容后重试。"

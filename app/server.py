@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .answer_coverage_audit import audit_answer_coverage
-from .api_key_config import api_key_file_info
+from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info
 from .audit_review_gate import get_pending_review_decision, submit_review_decision
 from .capabilities.quality_metrics import build_quality_metrics_report
 from .delivery_package import build_task_delivery_package
@@ -749,6 +749,16 @@ class PlatformHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             self._do_GET()
+        except ApiKeyConfigUnavailable as exc:
+            payload = public_error_payload(exc, status=503, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"API 配置暂时不可用 [{payload['support_id']}]",
+                "error",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
+            self.send_json(payload, status=503)
         except FileNotFoundError as exc:
             payload = public_error_payload(exc, status=404, path=parsed.path)
             append_runtime_log(
@@ -1879,6 +1889,16 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 })
                 return
             self.send_json({"error": "not found"}, status=404)
+        except ApiKeyConfigUnavailable as exc:
+            payload = public_error_payload(exc, status=503, path=parsed.path)
+            append_runtime_log(
+                "server",
+                f"API 配置暂时不可用 [{payload['support_id']}]",
+                "error",
+                {"path": parsed.path, "support_id": payload["support_id"], "error_type": exc.__class__.__name__},
+            )
+            append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
+            self.send_json(payload, status=503)
         except ValueError as exc:
             payload = public_error_payload(exc, status=400, path=parsed.path)
             append_runtime_log(

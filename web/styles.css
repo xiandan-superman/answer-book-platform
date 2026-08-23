@@ -748,6 +748,27 @@ button:not(.ghost-button):not(.text-button):not(.secondary-button):not(.outline-
   gap: 18px;
 }
 
+.key-config-load-error {
+  grid-column: 1 / -1;
+  padding: 18px;
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+  color: #991b1b;
+  background: #fff7f7;
+}
+
+.key-config-load-error strong,
+.key-config-load-error p {
+  display: block;
+  margin: 0;
+}
+
+.key-config-load-error p {
+  margin: 6px 0 12px;
+  color: #7f1d1d;
+  font-size: 13px;
+}
+
 .key-provider-card {
   padding: 20px;
   border: 1px solid #e1e7f2;

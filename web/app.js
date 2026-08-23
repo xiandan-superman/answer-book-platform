@@ -8,6 +8,7 @@ let taskBulkMode = false;
 const selectedTaskIds = new Set();
 let providerConfigs = {};
 let apiKeyFileInfo = {};
+let apiKeyConfigLoadState = { providers: "loading", keyFile: "loading" };
 let hybridExecutionSettings = {};
 const keyConfigTests = {};
 let libraryFiles = { exams: [], textbooks: [], exams_root: "", textbooks_root: "" };
@@ -1975,14 +1976,11 @@ async function refresh() {
   const appVersion = String(version.app_version || versionParts[0] || "未知").replace(/^v/i, "");
   $("platformVersion").textContent = `v${appVersion}`;
   $("versionBox").textContent = `应用版本 v${appVersion} · ${version.release_manifest_exists ? "正式发布清单已就绪" : "本地源码预览"}`;
-  const [providers, keyFile] = await Promise.all([
-    api("/api/providers"),
-    api("/api/providers/key-file").catch(() => ({}))
-  ]);
-  providerConfigs = providers;
-  apiKeyFileInfo = keyFile;
-  renderApiKeyFileInfo();
-  renderKeyProviderCards();
+  await loadApiConfiguration();
+  await Promise.all([loadLibraryFiles(), loadPracticeHistory()]);
+}
+
+function syncProviderControls(providers) {
   const select = $("providerSelect");
   const previousProvider = select.value;
   select.innerHTML = "";
@@ -2000,7 +1998,31 @@ async function refresh() {
   initializeExamModelPreset();
   updateProviderSummary(providers);
   populatePracticeModelSettings();
-  await Promise.all([loadLibraryFiles(), loadPracticeHistory()]);
+}
+
+async function loadApiConfiguration({ showLoading = true } = {}) {
+  if (showLoading) {
+    apiKeyConfigLoadState = { providers: "loading", keyFile: "loading" };
+    renderKeyProviderCards();
+  }
+  const [providersResult, keyFileResult] = await Promise.allSettled([
+    api("/api/providers"),
+    api("/api/providers/key-file")
+  ]);
+  apiKeyConfigLoadState = {
+    providers: providersResult.status === "fulfilled" ? "ready" : "error",
+    keyFile: keyFileResult.status === "fulfilled" ? "ready" : "error"
+  };
+  if (providersResult.status === "fulfilled") {
+    providerConfigs = providersResult.value || {};
+    syncProviderControls(providerConfigs);
+  }
+  if (keyFileResult.status === "fulfilled") {
+    apiKeyFileInfo = keyFileResult.value || {};
+  }
+  renderApiKeyFileInfo();
+  renderKeyProviderCards();
+  return apiKeyConfigLoadState.providers === "ready" && apiKeyConfigLoadState.keyFile === "ready";
 }
 
 async function checkPlatformUpdate() {
@@ -7796,6 +7818,10 @@ function updateModelControls() {
 }
 
 function renderApiKeyFileInfo() {
+  if (apiKeyConfigLoadState.keyFile === "error") {
+    setText("homeApiKeyFileStatus", "API 配置保存状态暂时无法读取，可进入配置中心重试");
+    return;
+  }
   const count = Number(apiKeyFileInfo?.configured_count || 0);
   const total = Object.keys(providerConfigs || {}).length;
   setText(
@@ -7821,12 +7847,32 @@ function keyProviderStatus(card, kind, title, detail = "") {
 function renderKeyProviderCards() {
   const grid = $("keyProviderGrid");
   if (!grid) return;
-  const entries = Object.entries(providerConfigs || {});
-  if (!entries.length) {
+  if (apiKeyConfigLoadState.providers === "loading") {
     grid.innerHTML = '<p class="empty-hint">正在加载已接入的平台...</p>';
     return;
   }
-  grid.innerHTML = entries.map(([name, cfg]) => `
+  if (apiKeyConfigLoadState.providers === "error") {
+    grid.innerHTML = `
+      <div class="key-config-load-error" role="alert">
+        <strong>API 配置加载失败，请重试</strong>
+        <p>平台列表暂时不可用，其他工作区仍可继续使用。</p>
+        <button type="button" class="outline-button" data-key-config-retry><i class="fas fa-rotate"></i>重试加载</button>
+      </div>`;
+    grid.querySelector("[data-key-config-retry]")?.addEventListener("click", () => loadApiConfiguration());
+    return;
+  }
+  const entries = Object.entries(providerConfigs || {});
+  if (!entries.length) {
+    grid.innerHTML = '<p class="empty-hint">当前没有可配置的平台。</p>';
+    return;
+  }
+  const keyFileWarning = apiKeyConfigLoadState.keyFile === "error" ? `
+    <div class="key-config-load-error" role="alert">
+      <strong>API 配置保存状态加载失败，请重试</strong>
+      <p>平台列表已加载，但暂时无法确认本地保存状态。</p>
+      <button type="button" class="outline-button" data-key-config-retry><i class="fas fa-rotate"></i>重试加载</button>
+    </div>` : "";
+  grid.innerHTML = keyFileWarning + entries.map(([name, cfg]) => `
     <form class="key-provider-card" data-key-provider="${escapeHtml(name)}" autocomplete="off">
       <header>
         <span class="key-provider-mark"><i class="fas fa-cloud"></i></span>
@@ -7853,6 +7899,7 @@ function renderKeyProviderCards() {
       <div class="key-provider-status idle" data-key-status><strong>等待测试</strong><span>新 Key 必须测试成功后才能保存。</span></div>
     </form>
   `).join("");
+  grid.querySelector("[data-key-config-retry]")?.addEventListener("click", () => loadApiConfiguration());
   grid.querySelectorAll("form[data-key-provider]").forEach((form) => {
     form.addEventListener("submit", (event) => event.preventDefault());
   });

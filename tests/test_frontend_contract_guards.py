@@ -124,6 +124,16 @@ def test_api_key_password_fields_belong_to_non_submitting_forms() -> None:
     assert 'event.preventDefault()' in APP_JS
 
 
+def test_api_key_configuration_failure_is_local_retryable_and_partial() -> None:
+    assert "async function loadApiConfiguration" in APP_JS
+    assert "Promise.allSettled" in APP_JS
+    assert "API 配置加载失败，请重试" in APP_JS
+    assert "API 配置保存状态加载失败，请重试" in APP_JS
+    assert 'data-key-config-retry' in APP_JS
+    assert 'apiKeyConfigLoadState.providers === "ready"' in APP_JS
+    assert 'apiKeyConfigLoadState.keyFile === "ready"' in APP_JS
+
+
 def test_practice_status_banner_tracks_blueprint_confirmation_stage() -> None:
     assert 'setPracticeStatusBanner("等待确认训练蓝图", "loading");' in APP_JS
 

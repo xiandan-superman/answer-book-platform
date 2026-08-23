@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
 from .paths import DATA_ROOT, LOCAL_CONFIG_DIR, ensure_project_dirs
-
 
 ALLOWED_API_KEY_NAMES = {
     "DEEPSEEK_API_KEY",
@@ -26,6 +27,15 @@ LEGACY_API_KEY_ALIASES = {
 }
 
 API_KEY_FILE = LOCAL_CONFIG_DIR / "api_keys.json"
+_API_KEY_FILE_LOCK = threading.RLock()
+
+
+class ApiKeyConfigUnavailable(RuntimeError):
+    """Safe public marker for recoverable local API configuration failures."""
+
+    public_error_code = "api_configuration_unavailable"
+    public_message = "API 配置暂时无法加载，请重试。"
+    suggested_action = "请在 API 配置页面就地重试；若仍失败，请根据诊断编号检查运行日志。"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -66,17 +76,29 @@ def _payload(keys: dict[str, str]) -> dict[str, Any]:
 
 def _write_payload(path: Path, keys: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(_payload(keys), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    content = json.dumps(_payload(keys), ensure_ascii=False, indent=2) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
     try:
-        temporary.chmod(0o600)
-    except OSError:
-        pass
-    temporary.replace(path)
-    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
         path.chmod(0o600)
-    except OSError:
-        pass
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _legacy_dotenv_keys() -> dict[str, str]:
@@ -116,71 +138,103 @@ def _legacy_provider_keys() -> dict[str, str]:
 
 
 def ensure_api_key_file() -> Path:
-    ensure_project_dirs()
     if API_KEY_FILE.exists():
         return API_KEY_FILE
-    migrated: dict[str, str] = {}
-    migrated.update(_legacy_provider_keys())
-    migrated.update(_legacy_dotenv_keys())
-    migrated.update(
-        {
-            name: str(os.environ.get(name) or "").strip()
-            for name in ALLOWED_API_KEY_NAMES
-            if str(os.environ.get(name) or "").strip()
-        }
-    )
-    for legacy_name, current_name in LEGACY_API_KEY_ALIASES.items():
-        legacy_secret = str(os.environ.get(legacy_name) or "").strip()
-        if legacy_secret and current_name not in migrated:
-            migrated[current_name] = legacy_secret
-    _write_payload(API_KEY_FILE, migrated)
-    return API_KEY_FILE
+    with _API_KEY_FILE_LOCK:
+        try:
+            ensure_project_dirs()
+            # The second check is deliberately inside the lock: another request
+            # may have completed first-start migration while this one waited.
+            if API_KEY_FILE.exists():
+                return API_KEY_FILE
+            migrated: dict[str, str] = {}
+            migrated.update(_legacy_provider_keys())
+            migrated.update(_legacy_dotenv_keys())
+            migrated.update(
+                {
+                    name: str(os.environ.get(name) or "").strip()
+                    for name in ALLOWED_API_KEY_NAMES
+                    if str(os.environ.get(name) or "").strip()
+                }
+            )
+            for legacy_name, current_name in LEGACY_API_KEY_ALIASES.items():
+                legacy_secret = str(os.environ.get(legacy_name) or "").strip()
+                if legacy_secret and current_name not in migrated:
+                    migrated[current_name] = legacy_secret
+            _write_payload(API_KEY_FILE, migrated)
+            return API_KEY_FILE
+        except ApiKeyConfigUnavailable:
+            raise
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc
 
 
 def read_api_keys() -> dict[str, str]:
-    path = ensure_api_key_file()
-    raw = _read_json(path)
-    return _clean_keys(raw.get("keys", raw))
+    with _API_KEY_FILE_LOCK:
+        try:
+            path = ensure_api_key_file()
+            raw = _read_json(path)
+            return _clean_keys(raw.get("keys", raw))
+        except ApiKeyConfigUnavailable:
+            raise
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc
 
 
 def load_api_keys() -> dict[str, str]:
-    values = read_api_keys()
-    for key, value in values.items():
-        os.environ.setdefault(key, value)
-    return values
+    with _API_KEY_FILE_LOCK:
+        values = read_api_keys()
+        for key, value in values.items():
+            os.environ.setdefault(key, value)
+        return values
 
 
 def update_api_key_values(values: dict[str, str]) -> dict[str, Any]:
-    current = read_api_keys()
-    changed = False
-    for key, value in values.items():
-        name = str(key)
-        if name not in ALLOWED_API_KEY_NAMES:
-            continue
-        secret = str(value).strip()
-        if secret:
-            changed = changed or current.get(name) != secret
-            current[name] = secret
-            os.environ[name] = secret
-        elif name in current:
-            changed = True
-            current.pop(name, None)
-            os.environ.pop(name, None)
-    if changed:
-        _write_payload(API_KEY_FILE, current)
-    return {
-        "updated": changed,
-        "config_exists": API_KEY_FILE.exists(),
-        "config_path": str(API_KEY_FILE),
-        "configured_keys": sorted(current),
-    }
+    with _API_KEY_FILE_LOCK:
+        try:
+            current = read_api_keys()
+            changed = False
+            environment_updates: dict[str, str] = {}
+            for key, value in values.items():
+                name = str(key)
+                if name not in ALLOWED_API_KEY_NAMES:
+                    continue
+                secret = str(value).strip()
+                if secret:
+                    changed = changed or current.get(name) != secret
+                    current[name] = secret
+                    environment_updates[name] = secret
+                elif name in current:
+                    changed = True
+                    current.pop(name, None)
+                    environment_updates[name] = ""
+            if changed:
+                _write_payload(API_KEY_FILE, current)
+            # Keep process state consistent with durable state: environment
+            # changes happen only after the atomic replacement succeeds.
+            for name, secret in environment_updates.items():
+                if secret:
+                    os.environ[name] = secret
+                else:
+                    os.environ.pop(name, None)
+            return {
+                "updated": changed,
+                "config_exists": API_KEY_FILE.exists(),
+                "config_path": str(API_KEY_FILE),
+                "configured_keys": sorted(current),
+            }
+        except ApiKeyConfigUnavailable:
+            raise
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message) from exc
 
 
 def api_key_file_info() -> dict[str, Any]:
-    values = read_api_keys()
-    return {
-        "path": str(API_KEY_FILE),
-        "exists": API_KEY_FILE.exists(),
-        "configured_keys": sorted(values),
-        "configured_count": len(values),
-    }
+    with _API_KEY_FILE_LOCK:
+        values = read_api_keys()
+        return {
+            "path": str(API_KEY_FILE),
+            "exists": API_KEY_FILE.exists(),
+            "configured_keys": sorted(values),
+            "configured_count": len(values),
+        }
