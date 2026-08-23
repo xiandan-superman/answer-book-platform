@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import datetime as dt
+import email.utils
 import json
 import time
 import urllib.error
@@ -16,7 +18,43 @@ from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 
 
 class LLMError(RuntimeError):
-    pass
+    """Provider failure with machine-readable transport metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _http_retry_after_seconds(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        target = email.utils.parsedate_to_datetime(text)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=dt.timezone.utc)
+        return max(0.0, (target - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _http_llm_error(exc: urllib.error.HTTPError, body: str) -> LLMError:
+    return LLMError(
+        f"Provider HTTP {exc.code}: {body[:800]}",
+        status_code=int(exc.code),
+        retry_after_seconds=_http_retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None),
+    )
 
 
 @dataclass(frozen=True)
@@ -174,7 +212,7 @@ class OpenAICompatibleClient:
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
-                        raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+                        raise _http_llm_error(exc, body) from exc
                     except Exception as exc:
                         record_model_diagnostic(call_record, payload, error=exc, outcome="failed")
                         raise
@@ -382,7 +420,7 @@ class OpenAICompatibleClient:
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
-                        raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+                        raise _http_llm_error(exc, body) from exc
                     except Exception as exc:
                         record_model_diagnostic(call_record, payload, error=exc, outcome="failed")
                         raise
@@ -444,7 +482,7 @@ class OpenAICompatibleClient:
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
-                        raise LLMError(f"Provider HTTP {exc.code}: {body[:800]}") from exc
+                        raise _http_llm_error(exc, body) from exc
                     except Exception as exc:
                         record_model_diagnostic(call_record, streaming_payload, error=exc, outcome="failed")
                         raise

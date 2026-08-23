@@ -135,7 +135,7 @@ def test_cancelled_job_does_not_submit_the_next_generation_batch(tmp_path, monke
         "generation_strategy": "parallel_exam",
         "question_text": "原题材料",
         "generation_batch_size": 1,
-        "generation_max_concurrency": 1,
+        "generation_concurrency": 1,
         "plan": {
             "source_analysis": {"subject": "测试学科"},
             "blueprint": {
@@ -735,7 +735,7 @@ def test_content_gate_retries_only_invalid_question_and_preserves_healthy_siblin
     assert diagnostic["content_gate_retries"][0]["status"] == "repaired"
 
 
-def test_partial_batch_fails_only_slot_still_missing_after_two_recovery_attempts() -> None:
+def test_partial_batch_fails_only_slot_still_missing_after_one_bounded_probe() -> None:
     calls: list[str] = []
 
     def exercise(batch_index: int, label: str) -> dict:
@@ -785,13 +785,13 @@ def test_partial_batch_fails_only_slot_still_missing_after_two_recovery_attempts
     ):
         result = generate_practice_from_plan(payload)
 
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert [item["generation_status"] for item in result["exercises"]] == ["failed", "completed", "completed"]
     failed = result["exercises"][0]["generation_error"]
     assert failed["code"] == "generation_response_invalid"
     assert failed["message"] == "模型未完整返回本题，逐题补生后仍未成功。"
     assert "首次实际返回 [2, 3]" in failed["detail"]
-    assert "经 2 次独立补生仍未返回" in failed["detail"]
+    assert "经 1 次独立补生仍未返回" in failed["detail"]
     assert [row["plan_item_id"] for row in result["generation"]["batch_errors"]] == ["plan_item_01"]
     diagnostic = result["generation"]["batch_diagnostics"][0]
     assert diagnostic["final_accepted_indexes"] == [2, 3]

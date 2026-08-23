@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import threading
 import time
 from dataclasses import replace
 from difflib import SequenceMatcher
@@ -31,6 +32,7 @@ from .practice_runtime import (
     iter_bounded_futures,
     load_practice_generation_checkpoint,
 )
+from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
 from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, provider_model_supports_vision, resolve_provider_model
 
@@ -3092,6 +3094,9 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
                 "code": _clean(error.get("code"), 100) or "provider_generation_missing",
                 "message": _clean(error.get("message"), 500) or "上游模型未返回本题。",
                 "retryable": error.get("retryable") is not False,
+                "requires_configuration": error.get("requires_configuration") is True,
+                "pending": error.get("pending") is True,
+                "signature": _clean(error.get("signature"), 200),
                 "detail": _clean(error.get("detail"), 800),
                 "audit_status": _clean(item.get("audit_status"), 40),
                 "review_status": _clean(item.get("review_status"), 40),
@@ -3103,10 +3108,16 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
             })
     generation = dict(data.get("generation") or {})
     generation.update({
-        "status": "partial_success" if quality["failed_count"] else "completed",
+        "status": (
+            "configuration_blocked"
+            if quality["generated_count"] == 0 and any(row.get("requires_configuration") for row in current_errors)
+            else ("partial_success" if quality["failed_count"] else "completed")
+        ),
         "partial_success": quality["failed_count"] > 0,
         "generated_count": quality["generated_count"],
         "failed_count": quality["failed_count"],
+        "total_count": quality["total_count"],
+        "configuration_blocked": any(row.get("requires_configuration") for row in current_errors),
         "batch_errors": current_errors,
     })
     data["quality"] = quality
@@ -3115,11 +3126,31 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
 
 
 def _generation_error_detail(exc: Exception) -> dict[str, Any]:
-    raw = _clean(str(exc) or exc.__class__.__name__, 800)
+    raw = _clean(redact_credentials(str(exc) or exc.__class__.__name__), 800)
     lowered = raw.lower()
-    if "524" in lowered:
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        status_match = re.search(r"(?:provider\s+)?http\s+(\d{3})", raw, flags=re.IGNORECASE)
+        status_code = int(status_match.group(1)) if status_match else None
+    requires_configuration = status_code in {401, 403, 404}
+    if status_code == 401:
+        code = "provider_http_401"
+        message = "模型服务认证失败，API Key 可能无效或已过期。"
+    elif status_code == 403:
+        code = "provider_http_403"
+        message = "当前账号或 API Key 缺少该模型的访问权限。"
+    elif status_code == 404:
+        code = "provider_http_404"
+        message = "模型名称、Endpoint 或可用区域不匹配。"
+    elif status_code == 524:
         code = "provider_http_524"
         message = "上游模型响应超时（HTTP 524）。"
+    elif status_code == 429:
+        code = "provider_http_429"
+        message = "模型服务请求过于频繁，请稍后继续。"
+    elif status_code is not None:
+        code = f"provider_http_{status_code}"
+        message = f"上游模型请求失败（HTTP {status_code}）。"
     elif "timeout" in lowered or "timed out" in lowered or "超时" in raw:
         code = "provider_timeout"
         message = "上游模型响应超时。"
@@ -3127,10 +3158,26 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         code = "generation_response_invalid"
         message = "模型返回的题目结构不完整，无法生成本题。"
     else:
-        status_match = re.search(r"(?:provider\s+)?http\s+(\d{3})", raw, flags=re.IGNORECASE)
-        code = f"provider_http_{status_match.group(1)}" if status_match else "provider_generation_failed"
-        message = f"上游模型请求失败（HTTP {status_match.group(1)}）。" if status_match else "上游模型生成失败。"
-    return {"code": code, "message": message, "retryable": True, "detail": raw}
+        code = "provider_generation_failed"
+        message = "上游模型生成失败。"
+    transient = (
+        status_code in {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+        or (status_code is None and isinstance(exc, LLMError) and any(token in lowered for token in (
+            "provider streaming", "provider request", "timeout", "timed out", "connection",
+            "remote end closed", "empty reply",
+        )))
+    )
+    signature = code
+    retry_after = getattr(exc, "retry_after_seconds", None)
+    return {
+        "code": code,
+        "message": message,
+        "retryable": bool(transient or isinstance(exc, ValueError)) and not requires_configuration,
+        "requires_configuration": requires_configuration,
+        "signature": signature,
+        "retry_after_seconds": retry_after if isinstance(retry_after, (int, float)) else None,
+        "detail": raw,
+    }
 
 
 def _generation_gate_error(issues: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3254,6 +3301,7 @@ def _failed_exercise_placeholder(
     plan_item_id = _clean(planned_item.get("plan_item_id"), 80) or f"plan_item_{index:02d}"
     message = _clean(error.get("message"), 500) or "上游模型未返回本题。"
     audit_failed = _clean(error.get("code"), 100) == "blueprint_audit_failed"
+    configuration_blocked = error.get("requires_configuration") is True
     result = {
         "plan_item_id": plan_item_id,
         "parent_plan_item_id": _clean(planned_item.get("parent_plan_item_id"), 80),
@@ -3271,11 +3319,15 @@ def _failed_exercise_placeholder(
         "question_type": _clean(planned_item.get("question_type"), 20) or "综合题",
         "difficulty": _clean(planned_item.get("difficulty"), 12) or "进阶",
         "target_skill": _clean(planned_item.get("target_skill"), 500) or _clean(planned_item.get("title"), 500),
-        "variation_type": "蓝图待复核占位" if audit_failed else "生成失败占位",
+        "variation_type": "蓝图待复核占位" if audit_failed else ("配置阻断占位" if configuration_blocked else "生成失败占位"),
         "stem": (
             f"本题蓝图待复核：{message}已保留蓝图位置，可在页面点击“复审并生成本题”继续。"
             if audit_failed
-            else f"本题生成失败：{message}已保留蓝图位置，可在页面点击“重新生成本题”补齐。"
+            else (
+                f"本题因模型配置未完成：{message}已保留蓝图位置，请检查 API 配置后继续未完成项。"
+                if configuration_blocked
+                else f"本题生成失败：{message}已保留蓝图位置，可在页面点击“重新生成本题”补齐。"
+            )
         ),
         "options": [],
         "knowledge_points": _string_list(
@@ -3301,6 +3353,9 @@ def _failed_exercise_placeholder(
             "code": _clean(error.get("code"), 100) or "provider_generation_failed",
             "message": message,
             "retryable": bool(error.get("retryable", True)),
+            "requires_configuration": configuration_blocked,
+            "pending": error.get("pending") is True,
+            "signature": _clean(error.get("signature"), 200),
             "detail": _clean(error.get("detail"), 800),
             "finding_signatures": _unique_strings(
                 error.get("finding_signatures"),
@@ -3501,6 +3556,10 @@ def normalize_practice_set(
                     "code": _clean((item.get("generation_error") or {}).get("code"), 100),
                     "message": _clean((item.get("generation_error") or {}).get("message"), 500),
                     "retryable": bool((item.get("generation_error") or {}).get("retryable", True)),
+                    "requires_configuration": (item.get("generation_error") or {}).get("requires_configuration") is True,
+                    "pending": (item.get("generation_error") or {}).get("pending") is True,
+                    "signature": _clean((item.get("generation_error") or {}).get("signature"), 200),
+                    "cause_code": _clean((item.get("generation_error") or {}).get("cause_code"), 100),
                     "detail": _clean((item.get("generation_error") or {}).get("detail"), 800),
                     "finding_signatures": _unique_strings(
                         (item.get("generation_error") or {}).get("finding_signatures"),
@@ -4723,17 +4782,7 @@ def _merge_incremental_semantic_review(
 
 
 def _is_transport_generation_error(exc: Exception) -> bool:
-    text = _clean(str(exc), 1000).lower()
-    return isinstance(exc, LLMError) and any(token in text for token in (
-        "provider streaming",
-        "provider request",
-        "provider http",
-        "timeout",
-        "timed out",
-        "connection",
-        "remote end closed",
-        "empty reply",
-    ))
+    return isinstance(exc, LLMError) and _generation_error_detail(exc)["retryable"] is True
 
 
 def _call_practice_json_with_transport_retry(
@@ -4748,11 +4797,16 @@ def _call_practice_json_with_transport_retry(
     backoff_seconds: float = 0.5,
     attempt_log: list[dict[str, Any]] | None = None,
     ensure_active: Callable[[], None] | None = None,
+    before_attempt: Callable[[int], None] | None = None,
+    after_attempt: Callable[[int, dict[str, Any] | None], None] | None = None,
+    max_retry_after_seconds: float = 30.0,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         if ensure_active is not None:
             ensure_active()
+        if before_attempt is not None:
+            before_attempt(attempt)
         try:
             result = _call_practice_json(
                 client,
@@ -4765,26 +4819,177 @@ def _call_practice_json_with_transport_retry(
             )
             if attempt_log is not None:
                 attempt_log.append({"attempt": attempt, "status": "succeeded"})
+            if after_attempt is not None:
+                after_attempt(attempt, None)
             return result
         except Exception as exc:
             if isinstance(exc, PracticeGenerationStopped):
                 raise
             last_error = exc
             retryable = _is_transport_generation_error(exc)
+            detail = _generation_error_detail(exc)
             if attempt_log is not None:
-                detail = _generation_error_detail(exc)
                 attempt_log.append({
                     "attempt": attempt,
                     "status": "failed",
                     "error_code": detail["code"],
                     "retryable": retryable,
+                    "requires_configuration": detail["requires_configuration"],
+                    "signature": detail["signature"],
                 })
+            if after_attempt is not None:
+                after_attempt(attempt, detail)
             if not retryable or attempt >= max(1, attempts):
                 raise
             delay = max(0.0, float(backoff_seconds)) * (2 ** (attempt - 1))
+            retry_after = detail.get("retry_after_seconds")
+            if isinstance(retry_after, (int, float)):
+                delay = max(delay, min(max(0.0, max_retry_after_seconds), max(0.0, float(retry_after))))
             if delay:
                 time.sleep(delay + random.uniform(0, min(0.25, delay / 2)))
     raise last_error or LLMError("上游模型生成失败。")
+
+
+class _GenerationRetryBudgetExceeded(LLMError):
+    pass
+
+
+class _GenerationRetryCoordinator:
+    """Durable, thread-safe call budget shared by every recovery of one parent batch."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        self.job_id = _clean(payload.get("_job_id"), 100)
+        self.lock = threading.RLock()
+        self.state: dict[str, Any] = {"schema_version": 1, "batches": {}, "configuration_block": None}
+        source_job_id = self.job_id or _clean(payload.get("resume_from_job_id"), 100)
+        if source_job_id and payload.get("reset_generation_retry_state") is not True:
+            try:
+                from .practice_jobs import load_practice_job
+                record = load_practice_job(source_job_id)
+                stored = record.get("generation_retry_state")
+                if isinstance(stored, dict) and stored.get("schema_version") == 1:
+                    self.state = copy.deepcopy(stored)
+            except Exception:
+                pass
+
+    def _persist(self) -> None:
+        if not self.job_id:
+            return
+        try:
+            from .practice_jobs import update_practice_job
+            update_practice_job(self.job_id, generation_retry_state=copy.deepcopy(self.state))
+        except Exception:
+            pass
+
+    def configuration_error(self) -> dict[str, Any] | None:
+        with self.lock:
+            value = self.state.get("configuration_block")
+            return copy.deepcopy(value) if isinstance(value, dict) else None
+
+    def batch_stop(self, root_key: str, *, limit: int) -> dict[str, Any] | None:
+        with self.lock:
+            row = (self.state.get("batches") or {}).get(root_key)
+            if not isinstance(row, dict):
+                return None
+            circuit = row.get("circuit")
+            if isinstance(circuit, dict):
+                return _retry_circuit_error(circuit)
+            if int(row.get("calls_used") or 0) >= max(int(row.get("limit") or 0), limit):
+                return {
+                    "code": "generation_retry_budget_exhausted",
+                    "message": "本批次已达到生成调用上限，已停止继续尝试。",
+                    "retryable": True,
+                    "requires_configuration": False,
+                    "pending": True,
+                    "signature": "generation_retry_budget_exhausted",
+                    "detail": "调用预算已跨拆分与补生共享保留，可由用户稍后继续未完成项。",
+                }
+            return None
+
+    def set_configuration_error(self, detail: dict[str, Any]) -> None:
+        if detail.get("requires_configuration") is not True:
+            return
+        with self.lock:
+            self.state["configuration_block"] = copy.deepcopy(detail)
+            self._persist()
+
+    def reserve(self, root_key: str, *, limit: int, phase: str) -> None:
+        with self.lock:
+            config_error = self.configuration_error()
+            if config_error:
+                raise _GenerationRetryBudgetExceeded(config_error["message"])
+            batches = self.state.setdefault("batches", {})
+            row = batches.setdefault(root_key, {"calls_used": 0, "limit": limit, "attempts": [], "circuit": None})
+            row["limit"] = max(int(row.get("limit") or 0), limit)
+            circuit = row.get("circuit")
+            if isinstance(circuit, dict):
+                raise _GenerationRetryBudgetExceeded("本批次已触发稳定错误熔断，不再继续消耗模型调用。")
+            if int(row.get("calls_used") or 0) >= int(row["limit"]):
+                raise _GenerationRetryBudgetExceeded("本批次已达到生成调用上限，不再继续消耗模型调用。")
+            row["calls_used"] = int(row.get("calls_used") or 0) + 1
+            row["attempts"].append({"call": row["calls_used"], "phase": phase, "status": "started"})
+            self._persist()
+
+    def record(self, root_key: str, *, phase: str, detail: dict[str, Any] | None) -> None:
+        with self.lock:
+            row = self.state.setdefault("batches", {}).setdefault(root_key, {"calls_used": 0, "attempts": []})
+            attempts = row.setdefault("attempts", [])
+            for attempt in reversed(attempts):
+                if attempt.get("phase") == phase and attempt.get("status") == "started":
+                    attempt["status"] = "failed" if detail else "succeeded"
+                    if detail:
+                        attempt["signature"] = detail.get("signature")
+                        attempt["error_code"] = detail.get("code")
+                    break
+            if detail and detail.get("requires_configuration"):
+                self.state["configuration_block"] = copy.deepcopy(detail)
+            self._persist()
+
+    def open_circuit(self, root_key: str, detail: dict[str, Any]) -> None:
+        with self.lock:
+            row = self.state.setdefault("batches", {}).setdefault(root_key, {"calls_used": 0, "attempts": []})
+            row["circuit"] = {
+                "signature": detail.get("signature"),
+                "code": detail.get("code"),
+                "message": detail.get("message"),
+            }
+            self._persist()
+
+    def summary(self) -> dict[str, Any]:
+        with self.lock:
+            batches = self.state.get("batches") if isinstance(self.state.get("batches"), dict) else {}
+            return {
+                "schema_version": 1,
+                "total_model_calls": sum(int(row.get("calls_used") or 0) for row in batches.values() if isinstance(row, dict)),
+                "batches": copy.deepcopy(batches),
+                "configuration_blocked": isinstance(self.state.get("configuration_block"), dict),
+            }
+
+
+def _configuration_blocked_error(cause: dict[str, Any], *, pending: bool) -> dict[str, Any]:
+    return {
+        "code": "provider_configuration_blocked",
+        "message": _clean(cause.get("message"), 500) or "模型服务配置不可用，请检查 API 配置。",
+        "retryable": False,
+        "requires_configuration": True,
+        "pending": pending,
+        "signature": _clean(cause.get("signature"), 200) or _clean(cause.get("code"), 100),
+        "cause_code": _clean(cause.get("code"), 100),
+        "detail": "本题尚未完成。请检查 API 配置后继续未完成项。",
+    }
+
+
+def _retry_circuit_error(cause: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "code": "generation_retry_circuit_open",
+        "message": "上游服务持续返回相同错误，已停止本批次的后续调用。",
+        "retryable": True,
+        "requires_configuration": False,
+        "pending": True,
+        "signature": _clean(cause.get("signature"), 200),
+        "detail": f"稳定错误：{_clean(cause.get('message'), 300)}；可稍后继续未完成项。",
+    }
 
 
 def _normalize_plan(
@@ -6865,8 +7070,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     )
     job_id = _clean(payload.get("_job_id"), 100)
     resume_from_job_id = _clean(payload.get("resume_from_job_id"), 100)
+    resume_from_history_id = _clean(payload.get("resume_from_history_id"), 100)
+    retry_coordinator = _GenerationRetryCoordinator(payload)
     all_exercises: list[dict[str, Any]] = []
-    if job_id or resume_from_job_id:
+    if job_id or resume_from_job_id or resume_from_history_id:
         checkpoint = load_practice_generation_checkpoint(
             payload,
             expected_plan_item_ids=[
@@ -6946,9 +7153,48 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     def generate_batch(
         batch_start: int,
         batch_plan: list[dict[str, Any]],
+        *,
+        retry_root_key: str = "",
+        probe_signature: str = "",
+        is_probe: bool = False,
     ) -> tuple[int, list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
         ensure_practice_generation_active(payload)
         batch_count = len(batch_plan)
+        parent_batch_start = (batch_start // batch_size) * batch_size
+        parent_batch_plan = exercise_plan[parent_batch_start:parent_batch_start + batch_size]
+        root_key = retry_root_key or "|".join(
+            _clean(item.get("plan_item_id"), 80) or f"plan_item_{parent_batch_start + index + 1:02d}"
+            for index, item in enumerate(parent_batch_plan)
+            if isinstance(item, dict)
+        )
+        retry_limit = max(3, min(12, 2 + len(parent_batch_plan)))
+        configuration_error = retry_coordinator.configuration_error()
+        if configuration_error:
+            failures = {
+                _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}":
+                _configuration_blocked_error(configuration_error, pending=True)
+                for index, item in enumerate(batch_plan)
+            }
+            return batch_start, [], failures, {
+                "batch_start": batch_start + 1,
+                "batch_end": batch_start + batch_count,
+                "status": "configuration_blocked",
+                "model_call_count": 0,
+                "failed_plan_item_ids": sorted(failures),
+            }
+        batch_stop = retry_coordinator.batch_stop(root_key, limit=retry_limit)
+        if batch_stop:
+            failures = {
+                _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}": copy.deepcopy(batch_stop)
+                for index, item in enumerate(batch_plan)
+            }
+            return batch_start, [], failures, {
+                "batch_start": batch_start + 1,
+                "batch_end": batch_start + batch_count,
+                "status": batch_stop["code"],
+                "model_call_count": 0,
+                "failed_plan_item_ids": sorted(failures),
+            }
         semantic_plan = _semantic_batch_plan(batch_plan, exercise_plan)
         semantic_sources = _semantic_batch_context(
             plan,
@@ -7087,12 +7333,13 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "batch_index": target_index,
                 "attempts": [],
             }
-            for recovery_attempt in range(1, 3):
+            for recovery_attempt in range(1, 2):
                 ensure_practice_generation_active(payload)
                 batch_diagnostic["recovery_attempt_count"] += 1
                 try:
-                    recovered_raw = _call_practice_json(
-        _practice_generation_client(provider, model),
+                    recovery_phase = f"missing_{target_index}_{phase}"
+                    recovered_raw = _call_practice_json_with_transport_retry(
+                        _practice_generation_client(provider, model),
                         [
                             *messages,
                             {"role": "assistant", "content": json.dumps(prior_raw, ensure_ascii=False)},
@@ -7103,6 +7350,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         thinking=_clean(payload.get("thinking"), 20) or None,
                         timeout_seconds=600,
                         ensure_active=lambda: ensure_practice_generation_active(payload),
+                        attempts=1,
+                        before_attempt=lambda _attempt: retry_coordinator.reserve(root_key, limit=retry_limit, phase=recovery_phase),
+                        after_attempt=lambda _attempt, detail: retry_coordinator.record(root_key, phase=recovery_phase, detail=detail),
                     )
                     recovered_rows, recovered_shape = _partition_batch_rows(recovered_raw)
                     attempt_report["attempts"].append({
@@ -7117,6 +7367,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     raise
                 except Exception as exc:
                     error = _generation_error_detail(exc)
+                    if error.get("requires_configuration"):
+                        retry_coordinator.set_configuration_error(error)
                     attempt_report["attempts"].append({
                         "attempt": recovery_attempt,
                         "error_code": error["code"],
@@ -7129,12 +7381,23 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             raw: dict[str, Any],
             *,
             phase: str,
+            allow_recovery: bool = True,
         ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
             rows_by_index, shape = _partition_batch_rows(raw)
             response_report = {"phase": phase, **shape, "recoveries": []}
             missing_before_recovery = list(shape["missing_indexes"])
             structural_failures: dict[int, dict[str, Any]] = {}
-            for target_index in missing_before_recovery:
+            for missing_position, target_index in enumerate(missing_before_recovery):
+                if not allow_recovery:
+                    structural_failures[target_index - 1] = {
+                        "code": "generation_response_invalid",
+                        "message": "模型返回的题目结构不完整，单题探测未获得有效题目。",
+                        "retryable": True,
+                        "requires_configuration": False,
+                        "signature": "generation_response_invalid",
+                        "detail": f"单题探测缺少 batch_index={target_index}。",
+                    }
+                    continue
                 recovered, recovery_report = _recover_missing_batch_item(
                     target_index,
                     prior_raw=raw,
@@ -7144,6 +7407,31 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 if recovered is not None:
                     rows_by_index[target_index] = recovered
                     continue
+                configuration_error = retry_coordinator.configuration_error()
+                if configuration_error:
+                    for rest_target in missing_before_recovery[missing_position:]:
+                        structural_failures[rest_target - 1] = _configuration_blocked_error(
+                            configuration_error,
+                            pending=rest_target != target_index,
+                        )
+                    break
+                if not shape["actual_indexes"] and missing_position == 0:
+                    stable_invalid = {
+                        "code": "generation_response_invalid",
+                        "message": "模型持续返回空题目结构。",
+                        "retryable": True,
+                        "requires_configuration": False,
+                        "signature": "generation_response_invalid:empty",
+                    }
+                    retry_coordinator.open_circuit(root_key, stable_invalid)
+                    structural_failures[target_index - 1] = {
+                        **stable_invalid,
+                        "pending": False,
+                        "detail": "批次响应为空，单题探测仍为空。",
+                    }
+                    for rest_target in missing_before_recovery[missing_position + 1:]:
+                        structural_failures[rest_target - 1] = _retry_circuit_error(stable_invalid)
+                    break
                 total_number = batch_start + target_index
                 structural_failures[target_index - 1] = {
                     "code": "generation_response_invalid",
@@ -7152,8 +7440,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "detail": (
                         f"第 {batch_start + 1}-{batch_start + batch_count} 题批次期望临时序号 "
                         f"{list(range(1, batch_count + 1))}，首次实际返回 {shape['actual_indexes']}；"
-                        f"第 {total_number} 题对应的临时序号 {target_index} 经 2 次独立补生仍未返回。"
+                        f"第 {total_number} 题对应的临时序号 {target_index} 经 1 次独立补生仍未返回。"
                     ),
+                    "signature": "generation_response_invalid",
                 }
             response_report["final_indexes"] = sorted(rows_by_index)
             response_report["failed_indexes"] = [index + 1 for index in sorted(structural_failures)]
@@ -7162,6 +7451,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
         try:
             ensure_practice_generation_active(payload)
+            transport_phase = "single_probe" if is_probe else "initial_batch"
             raw_batch = _call_practice_json_with_transport_retry(
         _practice_generation_client(provider, model),
                 messages,
@@ -7169,12 +7459,29 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 temperature=0.35,
                 thinking=_clean(payload.get("thinking"), 20) or None,
                 timeout_seconds=600,
-                attempts=max(1, min(3, _nonnegative_int(payload.get("generation_transport_attempts"), 2))),
+                attempts=1 if is_probe else max(1, min(2, _nonnegative_int(payload.get("generation_transport_attempts"), 2))),
                 backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
                 attempt_log=batch_diagnostic["transport_attempts"],
                 ensure_active=lambda: ensure_practice_generation_active(payload),
+                before_attempt=lambda _attempt: retry_coordinator.reserve(root_key, limit=retry_limit, phase=transport_phase),
+                after_attempt=lambda _attempt, detail: retry_coordinator.record(root_key, phase=transport_phase, detail=detail),
+                max_retry_after_seconds=float(payload.get("generation_retry_after_cap_seconds") or 30),
             )
         except Exception as exc:
+            error_detail = _generation_error_detail(exc)
+            if error_detail.get("requires_configuration"):
+                retry_coordinator.set_configuration_error(error_detail)
+                failures = {
+                    _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}":
+                    _configuration_blocked_error(error_detail, pending=False)
+                    for index, item in enumerate(batch_plan)
+                }
+                batch_diagnostic.update({
+                    "status": "configuration_blocked",
+                    "error_code": error_detail["code"],
+                    "failed_plan_item_ids": sorted(failures),
+                })
+                return batch_start, [], failures, batch_diagnostic
             if batch_count <= 1 or not _is_transport_generation_error(exc):
                 raise
             # A dead batch stream must not erase every question in that batch.
@@ -7184,10 +7491,19 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             split_failures: dict[str, dict[str, Any]] = {}
             split_reports: list[dict[str, Any]] = []
             for local_index, planned_item in enumerate(batch_plan):
+                if retry_coordinator.configuration_error():
+                    config_error = retry_coordinator.configuration_error() or error_detail
+                    for rest_index, rest_item in enumerate(batch_plan[local_index:], start=local_index):
+                        rest_id = _clean(rest_item.get("plan_item_id"), 80) or f"plan_item_{batch_start + rest_index + 1:02d}"
+                        split_failures[rest_id] = _configuration_blocked_error(config_error, pending=True)
+                    break
                 try:
                     _, restored, failures, diagnostic = generate_batch(
                         batch_start + local_index,
                         [planned_item],
+                        retry_root_key=root_key,
+                        probe_signature=error_detail.get("signature") if local_index == 0 else "",
+                        is_probe=local_index == 0,
                     )
                     split_restored.extend(restored)
                     split_failures.update(failures)
@@ -7196,13 +7512,20 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     raise
                 except Exception as split_exc:
                     plan_item_id = _clean(planned_item.get("plan_item_id"), 80) or f"plan_item_{batch_start + local_index + 1:02d}"
-                    split_failures[plan_item_id] = _generation_error_detail(split_exc)
+                    split_error = _generation_error_detail(split_exc)
+                    split_failures[plan_item_id] = split_error
                     split_reports.append({
                         "batch_start": batch_start + local_index + 1,
                         "batch_end": batch_start + local_index + 1,
                         "status": "split_item_failed",
                         "error_code": split_failures[plan_item_id]["code"],
                     })
+                    if local_index == 0 and split_error.get("signature") == error_detail.get("signature"):
+                        retry_coordinator.open_circuit(root_key, split_error)
+                        for rest_index, rest_item in enumerate(batch_plan[1:], start=1):
+                            rest_id = _clean(rest_item.get("plan_item_id"), 80) or f"plan_item_{batch_start + rest_index + 1:02d}"
+                            split_failures[rest_id] = _retry_circuit_error(split_error)
+                        break
             batch_diagnostic.update({
                 "status": "recovered_by_single_item_split" if not split_failures else "partial_success_after_single_item_split",
                 "split_recovery": split_reports,
@@ -7214,7 +7537,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "failed_plan_item_ids": sorted(split_failures),
             })
             return batch_start, split_restored, split_failures, batch_diagnostic
-        batch_exercises, structural_failures = _complete_partial_batch(raw_batch, phase="initial")
+        batch_exercises, structural_failures = _complete_partial_batch(
+            raw_batch,
+            phase="single_probe" if is_probe else "initial",
+            allow_recovery=not is_probe,
+        )
         def batch_content_issues(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             structure_issues: list[dict[str, Any]] = []
             for raw_item in rows:
@@ -7293,6 +7620,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 }
                 try:
                     ensure_practice_generation_active(payload)
+                    repair_phase = f"content_repair_{target_index}"
                     repaired_raw = _call_practice_json_with_transport_retry(
         _practice_generation_client(provider, model),
                         [
@@ -7308,6 +7636,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
                         attempt_log=transport_attempts,
                         ensure_active=lambda: ensure_practice_generation_active(payload),
+                        before_attempt=lambda _attempt, phase=repair_phase: retry_coordinator.reserve(root_key, limit=retry_limit, phase=phase),
+                        after_attempt=lambda _attempt, detail, phase=repair_phase: retry_coordinator.record(root_key, phase=phase, detail=detail),
+                        max_retry_after_seconds=float(payload.get("generation_retry_after_cap_seconds") or 30),
                     )
                     repaired_rows, repaired_shape = _partition_batch_rows(repaired_raw)
                     repaired_item = repaired_rows.get(target_index)
@@ -7318,10 +7649,19 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 except PracticeGenerationStopped:
                     raise
                 except Exception as exc:
+                    repair_error = _generation_error_detail(exc)
+                    if repair_error.get("requires_configuration"):
+                        retry_coordinator.set_configuration_error(repair_error)
+                        rows_by_index.pop(target_index, None)
+                        structural_failures[target_index - 1] = _configuration_blocked_error(repair_error, pending=False)
+                        retry_report["status"] = "configuration_blocked"
+                        retry_report["error"] = repair_error
+                        batch_diagnostic["content_gate_retries"].append(retry_report)
+                        break
                     if not _is_transport_generation_error(exc):
                         raise
                     retry_report["status"] = "transport_failed"
-                    retry_report["error"] = _generation_error_detail(exc)
+                    retry_report["error"] = repair_error
                 batch_diagnostic["content_gate_retries"].append(retry_report)
             # Rebuild in ordinal order. Healthy initial rows are kept byte-for-byte;
             # only explicitly failing slots may be replaced by repair responses.
@@ -7453,6 +7793,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             str(batch_plan[local_index].get("plan_item_id") or f"plan_item_{batch_start + local_index + 1:02d}"):
             _generation_gate_error(issues)
             for local_index, issues in issues_by_index.items()
+            if local_index not in structural_failures
         })
         batch_diagnostic["final_accepted_indexes"] = sorted(
             int(item.get("batch_index")) for item in batch_exercises if isinstance(item, dict)
@@ -7605,7 +7946,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         key=lambda row: int(row.get("batch_start") or 0),
                     ),
                     progress_message=(
-                        f"已成功生成 {completed}/{count} 道题，另有 {len(batch_failures)} 道题生成失败；"
+                        f"共 {count} 题：已生成 {completed} 题，{count - completed} 题未完成；"
                         "正在继续处理其余批次。可离开当前页面，任务会继续。"
                         if batch_failures
                         else f"已完成 {completed}/{count} 道题，正在继续生成并检查后续内容。可离开当前页面，任务会继续。"
@@ -7678,6 +8019,20 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             blueprint_multi_question=multi_question_config,
         ),
     )
+    retry_summary = retry_coordinator.summary()
+    result["generation"].update({
+        "retry_budget": retry_summary,
+        "configuration_blocked": retry_summary["configuration_blocked"],
+        "requires_configuration": retry_summary["configuration_blocked"],
+        "total_count": count,
+        "generated_count": int(quality.get("generated_count") or 0),
+        "failed_count": int(quality.get("failed_count") or 0),
+    })
+    if retry_summary["configuration_blocked"] and int(quality.get("generated_count") or 0) == 0:
+        result["generation"]["status"] = "configuration_blocked"
+    resume_history_id = _clean(payload.get("resume_from_history_id"), 100)
+    if resume_history_id:
+        result["history_id"] = resume_history_id
     result["blueprint_review_enabled"] = bool(payload.get("blueprint_review_enabled", True))
     result["quality"] = recompute_practice_quality(result)
     if _practice_semantic_review_should_run(result, payload):

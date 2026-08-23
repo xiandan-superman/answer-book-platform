@@ -84,6 +84,9 @@ def _with_current_quality(data: dict[str, Any]) -> dict[str, Any]:
 def _status_for_data(data: dict[str, Any]) -> str:
     quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
     generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
+    generated_count = int(quality.get("generated_count") or 0)
+    if generated_count == 0 and generation.get("configuration_blocked") is True:
+        return "failed"
     return (
         "completed_with_issues"
         if quality.get("blocking_issues")
@@ -356,16 +359,9 @@ def save_practice_record(
         if isinstance(request, dict) and (isinstance(request.get("plan"), dict) or isinstance(request.get("generation_contract"), dict))
         else str(existing.get("plan_fingerprint") or "")
     )
-    quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
-    generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
-    completed_with_issues = (
-        bool(quality.get("blocking_issues"))
-        or str(generation.get("status") or "") == "partial_success"
-        or bool(generation.get("partial_success"))
-    )
     record = {
         "history_id": history_id,
-        "status": "completed_with_issues" if completed_with_issues else "completed",
+        "status": _status_for_data(public_data),
         "created_at": created_at,
         "updated_at": _now(),
         "title": _material_task_title(request or {}, existing.get("title")) or str((data.get("blueprint") or {}).get("training_goal") or "研究生专项练习")[:120],
@@ -470,6 +466,65 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+@_store_synchronized
+def build_practice_continuation_payload(history_id: str) -> dict[str, Any]:
+    """Build a trusted request that reuses successes and generates only unfinished slots."""
+    path = _path(history_id)
+    if not path.exists():
+        raise FileNotFoundError("练习记录不存在。")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    data = _with_current_quality(record.get("data") if isinstance(record.get("data"), dict) else {})
+    request = record.get("request") if isinstance(record.get("request"), dict) else {}
+    quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
+    total_count = int(quality.get("total_count") or len(data.get("exercises") or []))
+    generated_count = int(quality.get("generated_count") or 0)
+    if total_count <= 0 or generated_count >= total_count:
+        raise ValueError("这份练习没有未完成题目，无需继续生成。")
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    exercise_plan = blueprint.get("exercise_plan") if isinstance(blueprint.get("exercise_plan"), list) else []
+    if not exercise_plan:
+        raise ValueError("历史记录缺少已确认蓝图，无法安全继续未完成项。")
+    source_scope = data.get("source_scope") if isinstance(data.get("source_scope"), dict) else request.get("source_scope_checkpoint") or {}
+    source_analysis = data.get("source_analysis") if isinstance(data.get("source_analysis"), dict) else request.get("source_analysis") or {}
+    selected = data.get("selected_source_questions") if isinstance(data.get("selected_source_questions"), list) else request.get("selected_source_questions") or []
+    plan = {
+        "schema_version": "answer_book.practice_plan.v1",
+        "source_mode": data.get("source_mode") or request.get("source_mode") or "exam",
+        "knowledge_title": data.get("knowledge_title") or request.get("knowledge_title") or "",
+        "source_scope": source_scope,
+        "source_analysis": source_analysis,
+        "selected_source_questions": selected,
+        "include_source_content_in_generation": data.get("include_source_content_in_generation") is not False,
+        "blueprint": blueprint,
+    }
+    difficulty_counts = {
+        level: sum(1 for item in exercise_plan if isinstance(item, dict) and str(item.get("difficulty") or "进阶") == level)
+        for level in ("基础", "进阶", "挑战")
+    }
+    return {
+        **copy_request(request),
+        "plan": plan,
+        "source_scope": source_scope,
+        "source_analysis": source_analysis,
+        "selected_source_questions": selected,
+        "count": total_count,
+        "difficulty_counts": difficulty_counts,
+        "question_types": list(dict.fromkeys(
+            str(item.get("question_type") or "综合题") for item in exercise_plan if isinstance(item, dict)
+        )),
+        "resume_from_history_id": history_id,
+        "reset_generation_retry_state": True,
+        "fresh_generation": True,
+        "practice_batch_id": f"continue_{history_id}_{uuid4().hex[:8]}",
+        "task_title": _material_task_title(request, record.get("title")),
+    }
+
+
+def copy_request(request: dict[str, Any]) -> dict[str, Any]:
+    """JSON-safe copy kept local so continuation never mutates stored input."""
+    return json.loads(json.dumps(request, ensure_ascii=False))
+
+
 def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
     PRACTICE_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
@@ -477,6 +532,10 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
         data = _with_current_quality(record.get("data") if isinstance(record.get("data"), dict) else {})
         request = record.get("request") if isinstance(record.get("request"), dict) else {}
         source_mode = str(request.get("source_mode") or "exam")
+        quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
+        generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
+        total_count = int(quality.get("total_count") or len(data.get("exercises") or []))
+        generated_count = int(quality.get("generated_count") or 0)
         rows.append(
             {
                 "history_id": record.get("history_id"),
@@ -484,9 +543,14 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
                 "created_at": record.get("created_at"),
                 "updated_at": record.get("updated_at"),
                 "source_excerpt": record.get("source_excerpt"),
-                "question_count": len(data.get("exercises") or []),
-                "generation": data.get("generation") or {},
-                "quality": data.get("quality") or {},
+                "question_count": generated_count,
+                "generated_count": generated_count,
+                "total_count": total_count,
+                "unfinished_count": max(0, total_count - generated_count),
+                "configuration_blocked": generation.get("configuration_blocked") is True,
+                "requires_configuration": generation.get("requires_configuration") is True,
+                "generation": generation,
+                "quality": quality,
                 "generation_strategy": data.get("generation_strategy") or request.get("generation_strategy") or "",
                 "status": _status_for_data(data),
                 "generation_phases": record.get("generation_phases") or [],

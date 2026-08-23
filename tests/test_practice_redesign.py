@@ -144,7 +144,7 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn('"generation_response_invalid"', self.js)
         self.assertIn("generationErrorDetailCodes.has", self.js)
         self.assertIn("generationErrorDetail", self.js)
-        self.assertIn('题${auditNeedsReview ? "蓝图待复核" : "生成失败"}', self.js)
+        self.assertIn('题${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : "生成失败"}', self.js)
         self.assertIn("本题尚未调用生成模型", self.js)
         self.assertIn("hasAuditReviewFailures", self.js)
         self.assertIn("完成待复核 · 已生成", self.js)

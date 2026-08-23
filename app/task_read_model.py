@@ -86,7 +86,18 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
     quality = quality_from_practice(
         data or {"generation": record.get("generation") or {}, "quality": record.get("quality") or {}}
     )
-    status = practice_run_status("completed", operation="generate_from_plan", quality=quality)
+    engine_status = str(record.get("status") or "completed")
+    status = practice_run_status(engine_status, operation="generate_from_plan", quality=quality)
+    generation = record.get("generation") or data.get("generation") or {}
+    configuration_blocked = record.get("configuration_blocked") is True or generation.get("configuration_blocked") is True
+    config_error = next(
+        (
+            str(item.get("message") or "")
+            for item in generation.get("batch_errors") or []
+            if isinstance(item, dict) and item.get("requires_configuration") is True
+        ),
+        "",
+    )
     phases = record.get("generation_phases") if isinstance(record.get("generation_phases"), list) else []
     kind_label = "知识点出题" if task_kind == "knowledge" else "按题出题"
     task_title = str(record.get("title") or request.get("task_title") or "未命名材料").strip()
@@ -104,12 +115,17 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         "provider": request.get("provider") or "",
         "model": request.get("model") or "",
         "textbooks_dir": "知识点出题" if task_kind == "knowledge" else "按题出题",
-        "status": "completed",
-        "current_stage": "completed",
+        "status": engine_status,
+        "current_stage": "configuration" if configuration_blocked else "completed",
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
-        "question_count": record.get("question_count") or len(data.get("exercises") or []),
-        "generation": record.get("generation") or data.get("generation") or {},
+        "question_count": int(record.get("generated_count") or record.get("question_count") or 0),
+        "generated_count": int(record.get("generated_count") or record.get("question_count") or 0),
+        "total_count": int(record.get("total_count") or len(data.get("exercises") or [])),
+        "unfinished_count": int(record.get("unfinished_count") or 0),
+        "configuration_blocked": configuration_blocked,
+        "requires_configuration": configuration_blocked,
+        "generation": generation,
         "quality": record.get("quality") or data.get("quality") or {},
         "duration_seconds": 0,
         "duration_text": "已完成",
@@ -120,9 +136,14 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         workflow=workflow_for_kind(task_kind),
         status=status,
         quality=quality,
-        stage="completed",
+        stage="configuration" if configuration_blocked else "completed",
         operation="generate_from_plan",
+        error=config_error,
     )
+    if configuration_blocked:
+        result["capabilities"]["view_result"] = True
+        result["capabilities"]["retry"] = True
+        result["capabilities"]["reuse"] = False
     result["health"] = task_health_summary(row, kind="practice")
     return result
 

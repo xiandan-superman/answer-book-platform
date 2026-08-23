@@ -77,6 +77,7 @@ from .practice_queue import (
 )
 from .practice_store import (
     PracticeEditConflict,
+    build_practice_continuation_payload,
     delete_practice_record,
     find_completed_by_plan,
     list_practice_records,
@@ -1174,6 +1175,19 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         "status": record["status"],
                         "deduplicated": bool(record.get("deduplicated")),
                     },
+                    status=202,
+                )
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "history"] and parts[4] == "continue":
+                payload = build_practice_continuation_payload(parts[3])
+                record = _start_practice_job("generate_from_plan", payload)
+                append_runtime_log(
+                    "practice",
+                    f"继续未完成题目 {parts[3]}",
+                    payload={"task_id": record["job_id"], "history_id": parts[3], "status": "queued"},
+                )
+                self.send_json(
+                    {"job_id": record["job_id"], "status": record["status"], "deduplicated": bool(record.get("deduplicated"))},
                     status=202,
                 )
                 return

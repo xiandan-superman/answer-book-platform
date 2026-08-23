@@ -3295,7 +3295,7 @@ function renderPracticeRecentHistory(records) {
     <div class="practice-recent-item" data-practice-recent="${escapeHtml(row.history_id)}">
       <div>
         <strong>${escapeHtml(row.title || "研究生专项练习")}</strong>
-        <small>${row.question_count || 0} 题 · ${escapeHtml(String(row.updated_at || "").replace("T", " ").slice(0, 16))}</small>
+        <small>共 ${row.total_count ?? row.question_count ?? 0} 题：已生成 ${row.generated_count ?? row.question_count ?? 0} 题 · ${escapeHtml(String(row.updated_at || "").replace("T", " ").slice(0, 16))}</small>
       </div>
       <button type="button" class="practice-recent-reuse"><i class="fas fa-rotate-left"></i>复用</button>
     </div>
@@ -3442,6 +3442,9 @@ function renderPracticeResults(data) {
   const semanticReviewIncomplete = Boolean(semanticReview) && !["passed", "warning"].includes(semanticReviewStatus);
   const semanticNeedsReview = semanticReviewIncomplete || semanticReviewActionable;
   const failedCount = Number(data.quality?.failed_count || 0);
+  const configurationBlockedItems = (data.exercises || []).filter((item) => item?.generation_error?.requires_configuration === true);
+  const configurationBlockedCount = configurationBlockedItems.length;
+  const configurationBlocked = configurationBlockedCount > 0 || data.generation?.configuration_blocked === true;
   const auditReviewFailedCount = (data.exercises || []).filter((item) => item?.audit_status === "audit_failed" || item?.generation_error?.code === "blueprint_audit_failed").length;
   const successfulCount = Number(data.quality?.generated_count ?? Math.max(0, (data.exercises?.length || 0) - failedCount));
   const blockingIssues = Array.isArray(data.quality?.blocking_issues) ? data.quality.blocking_issues : [];
@@ -3465,7 +3468,9 @@ function renderPracticeResults(data) {
       : "题目已生成并保存。";
   const reviewIssueCount = Math.max(warnings.length, semanticNeedsReview ? 1 : 0);
   $("practiceQuality").innerHTML = isPassed
-    ? `<i class="fas fa-circle-check"></i><span><strong>题目生成完成</strong>已生成 ${data.exercises?.length || 0} 题，可直接查看、编辑或导出。</span>`
+    ? `<i class="fas fa-circle-check"></i><span><strong>题目生成完成</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，可直接查看、编辑或导出。</span>`
+    : configurationBlocked
+      ? `<i class="fas fa-key"></i><span><strong>${successfulCount > 0 ? "完成待复核" : "模型配置阻断"}</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，${Math.max(0, resultCount - successfulCount)} 题待配置。请先检查 API 配置，再继续未完成项。</span><button type="button" class="secondary-btn" data-practice-config><i class="fas fa-key"></i>检查 API 配置</button>${data.history_id ? '<button type="button" class="secondary-btn" data-practice-continue><i class="fas fa-play"></i>继续未完成项</button>' : ""}`
     : needsReview
       ? `<i class="fas fa-triangle-exclamation"></i><span><strong>题目已生成，仍有 ${reviewIssueCount} 项需复核</strong>${escapeHtml(warningSummary)} 结果已保留，可查看、编辑或导出草稿。</span>`
       : hasRepairableResults
@@ -3476,6 +3481,8 @@ function renderPracticeResults(data) {
     badge.className = `practice-quality-badge ${isPassed ? "passed" : "warning"}`;
     badge.innerHTML = isPassed
       ? '<i class="fas fa-circle-check"></i>题目已完成'
+      : configurationBlocked
+        ? `<i class="fas fa-key"></i>${successfulCount > 0 ? "完成待复核" : "配置阻断"}`
       : needsReview
         ? '<i class="fas fa-triangle-exclamation"></i>题目已生成 · 待复核'
         : hasAuditReviewFailures
@@ -3485,7 +3492,9 @@ function renderPracticeResults(data) {
         : '<i class="fas fa-triangle-exclamation"></i>生成未完成';
   }
   setPracticeStatusBanner(isPassed
-    ? `已生成 ${data.exercises?.length || 0} 题 · 可查看、编辑或导出`
+    ? `共 ${resultCount} 题：已生成 ${successfulCount} 题`
+    : configurationBlocked
+      ? `共 ${resultCount} 题：已生成 ${successfulCount} 题，${Math.max(0, resultCount - successfulCount)} 题待配置`
     : needsReview
       ? `已生成 ${data.exercises?.length || 0} 题 · ${reviewIssueCount} 项需复核`
       : hasAuditReviewFailures
@@ -3493,7 +3502,7 @@ function renderPracticeResults(data) {
       : hasRepairableResults
         ? `已生成 ${resultCount} 题 · ${blockingIssues.length} 项需修复`
       : (failedCount ? `已生成 ${successfulCount} 题 · ${auditReviewFailedCount ? `${auditReviewFailedCount} 题蓝图待复核` : `${failedCount} 题生成失败`}` : `题目生成未完成`),
-    isPassed ? "done" : (needsReview || hasAuditReviewFailures) ? "warning" : "error");
+    isPassed ? "done" : (needsReview || hasAuditReviewFailures || (configurationBlocked && successfulCount > 0)) ? "warning" : "error");
   renderPracticeBlueprintSummary(data);
   renderPracticeFilters(data);
   const practiceSourceLookup = new Map((data.selected_source_questions || []).map((item) => [String(item.source_question_id), item]));
@@ -3521,6 +3530,7 @@ function renderPracticeResults(data) {
     const visibleTags = tagsArr.slice(0, 4);
     const generationFailed = item.generation_status === "failed";
     const auditNeedsReview = item.audit_status === "audit_failed" || item.generation_error?.code === "blueprint_audit_failed";
+    const configurationNeedsReview = item.generation_error?.requires_configuration === true;
     const generationError = item.generation_error?.message || "上游模型未返回本题。";
     const generationErrorDetail = generationErrorDetailCodes.has(String(item.generation_error?.code || ""))
       ? (item.generation_error?.detail || "")
@@ -3539,7 +3549,7 @@ function renderPracticeResults(data) {
       ${sourceCaption ? `<div class="practice-source-link"><i class="fas fa-link"></i>${escapeHtml(sourceCaption)}</div>` : ""}
       ${variantLabel ? `<div class="practice-variant-link"><i class="fas fa-layer-group"></i>${escapeHtml(variantLabel)}</div>` : ""}
       <header class="practice-exercise__header">
-        <div class="practice-exercise__identity"><b>第 ${escapeHtml(item.number || String(idx + 1))} 题</b><span>${auditNeedsReview ? "蓝图待复核" : generationFailed ? "生成失败" : escapeHtml(item.question_type || "综合题")}</span></div>
+        <div class="practice-exercise__identity"><b>第 ${escapeHtml(item.number || String(idx + 1))} 题</b><span>${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : generationFailed ? "生成失败" : escapeHtml(item.question_type || "综合题")}</span></div>
         <div class="practice-exercise__meta">
           <small>${escapeHtml(item.target_skill || "核心能力训练")}</small>
           <em class="${item.difficulty === "挑战" ? "hard" : item.difficulty === "基础" ? "easy" : ""}">${escapeHtml(item.difficulty)}</em>
@@ -3547,7 +3557,7 @@ function renderPracticeResults(data) {
             <label title="选择本题" class="practice-exercise__select"><input type="checkbox" data-practice-select="${idx}" ${selectedPracticeExerciseIndexes.has(idx) ? "checked" : ""}><span class="visually-hidden">选择本题</span></label>
             <button type="button" data-practice-feedback="${idx}" title="反馈此题" aria-label="反馈此题"><i class="fas fa-bug"></i></button>
             <button type="button" data-practice-edit="${idx}" title="编辑本题" aria-label="编辑本题"><i class="fas fa-pen"></i></button>
-            <button type="button" data-practice-regenerate="${idx}" title="${auditNeedsReview ? "复审并生成本题" : "重新生成本题"}" aria-label="${auditNeedsReview ? "复审并生成本题" : "重新生成本题"}"><i class="fas fa-rotate"></i></button>
+            <button type="button" ${configurationNeedsReview ? "data-practice-config" : `data-practice-regenerate="${idx}"`} title="${configurationNeedsReview ? "检查 API 配置" : auditNeedsReview ? "复审并生成本题" : "重新生成本题"}" aria-label="${configurationNeedsReview ? "检查 API 配置" : auditNeedsReview ? "复审并生成本题" : "重新生成本题"}"><i class="fas ${configurationNeedsReview ? "fa-key" : "fa-rotate"}"></i></button>
             <div class="practice-action-menu practice-action-menu--question" data-practice-action-menu>
               <button type="button" class="practice-question-more-trigger" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" data-practice-menu-trigger><i class="fas fa-ellipsis"></i></button>
               <div class="practice-action-menu__panel hidden" role="menu" data-practice-menu-panel>
@@ -3561,7 +3571,7 @@ function renderPracticeResults(data) {
       ${generationFailed ? `
         <div class="practice-generation-error" role="alert">
           <i class="fas fa-triangle-exclamation"></i>
-          <div><strong>第 ${escapeHtml(item.number || String(idx + 1))} 题${auditNeedsReview ? "蓝图待复核" : "生成失败"}</strong><p>${escapeHtml(generationError)}</p>${generationErrorDetail ? `<small class="practice-generation-error__detail">${escapeHtml(generationErrorDetail)}</small>` : ""}<small>${auditNeedsReview ? "本题尚未调用生成模型；点击右上角“复审并生成本题”只处理这一项，其他题目不受影响。" : "已保留蓝图位置；可点击右上角“重新生成本题”补齐，其他题目不受影响。"}</small></div>
+          <div><strong>第 ${escapeHtml(item.number || String(idx + 1))} 题${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : "生成失败"}</strong><p>${escapeHtml(generationError)}</p>${generationErrorDetail ? `<small class="practice-generation-error__detail">${escapeHtml(generationErrorDetail)}</small>` : ""}<small>${auditNeedsReview ? "本题尚未调用生成模型；点击右上角“复审并生成本题”只处理这一项，其他题目不受影响。" : configurationNeedsReview ? "本题尚未完成；请先检查 API 配置，再使用“继续未完成项”，已生成题目不会重复调用或被覆盖。" : "已保留蓝图位置；可点击右上角“重新生成本题”补齐，其他题目不受影响。"}</small></div>
         </div>
       ` : `
         <div class="practice-stem">${practiceMarkdown(item.stem)}</div>
@@ -3592,6 +3602,12 @@ function renderPracticeResults(data) {
   });
   document.querySelectorAll("[data-practice-regenerate]").forEach((button) => {
     button.addEventListener("click", () => regeneratePracticeQuestion(Number(button.dataset.practiceRegenerate), button));
+  });
+  document.querySelectorAll("[data-practice-config]").forEach((button) => {
+    button.addEventListener("click", () => goToPage("keys"));
+  });
+  document.querySelectorAll("[data-practice-continue]").forEach((button) => {
+    button.addEventListener("click", () => continuePracticeHistory(currentPracticeHistoryId, button));
   });
   document.querySelectorAll("[data-practice-download]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -4836,7 +4852,7 @@ async function loadPracticeHistory() {
   container.innerHTML = rows.length ? rows.map((row) => `
     <button type="button" data-practice-history="${escapeHtml(row.history_id)}">
       <strong>${escapeHtml(row.title || "研究生专项练习")}</strong>
-      <span>${row.question_count || 0} 题 · ${escapeHtml(String(row.updated_at || "").replace("T", " ").slice(0, 16))}</span>
+      <span>共 ${row.total_count ?? row.question_count ?? 0} 题：已生成 ${row.generated_count ?? row.question_count ?? 0} 题 · ${escapeHtml(String(row.updated_at || "").replace("T", " ").slice(0, 16))}</span>
     </button>
   `).join("") : "<p>暂无历史记录</p>";
   container.querySelectorAll("[data-practice-history]").forEach((button) => {
@@ -8311,6 +8327,7 @@ function renderTasks(tasks) {
 
 function taskProgressPercent(task) {
   if (!task) return 0;
+  if (task.configuration_blocked && !task.is_generation_job) return 100;
   const progress = task.current_progress || null;
   const current = effectiveCurrentStage(task, (task.pipeline_status && task.pipeline_status.stages) || []);
   if (["completed", "completed_with_issues"].includes(task.status) || current === "completed") return 100;
@@ -8650,12 +8667,17 @@ function completedGenerationTaskMessage(task = {}) {
   const quality = task.quality || {};
   const failedCount = Number(generation.failed_count ?? quality.failed_count ?? 0);
   const generatedCount = Number(generation.generated_count ?? quality.generated_count ?? task.question_count ?? 0);
+  const totalCount = Number(task.total_count ?? generation.total_count ?? quality.total_count ?? (generatedCount + failedCount));
+  const unfinishedCount = Math.max(0, Number(task.unfinished_count ?? (totalCount - generatedCount)));
+  if (task.configuration_blocked || generation.configuration_blocked) {
+    return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${unfinishedCount} 题待配置`;
+  }
   const auditReviewCount = (generation.batch_errors || []).filter((error) => error?.code === "blueprint_audit_failed").length;
   if (auditReviewCount > 0) {
     const otherFailures = Math.max(0, failedCount - auditReviewCount);
-    return `已生成 ${generatedCount} 题，${auditReviewCount} 题蓝图待复核${otherFailures ? `，${otherFailures} 题未完成` : ""}`;
+    return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${auditReviewCount} 题蓝图待复核${otherFailures ? `，${otherFailures} 题未完成` : ""}`;
   }
-  if (failedCount > 0) return `已生成 ${generatedCount} 题，${failedCount} 题未完成`;
+  if (failedCount > 0) return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${unfinishedCount} 题未完成`;
   const blockers = Array.isArray(quality.blocking_issues) ? quality.blocking_issues.length : 0;
   if (blockers > 0) return `题目已生成，但有 ${blockers} 项结构问题需要处理`;
   const warnings = Array.isArray(quality.warnings) ? quality.warnings.length : 0;
@@ -8712,7 +8734,7 @@ function renderTaskManager(tasks = latestTasks) {
     const subtitle = formatTask
       ? `${task.format_profile_label || "格式标准"} · ${task.mode_label || "格式审查与修改"}`
       : generationTask
-      ? (task.is_generation_job ? `${task.description || kindMeta.label} · ${phaseText}` : `${task.description || kindMeta.label} · 已生成 ${Number(task.question_count || 0)} 题`)
+      ? (task.is_generation_job ? `${task.description || kindMeta.label} · ${phaseText}` : `${task.description || kindMeta.label} · 共 ${Number(task.total_count ?? task.question_count ?? 0)} 题：已生成 ${Number(task.generated_count ?? task.question_count ?? 0)} 题`)
       : `教材：${shortName(task.textbooks_dir || "教材库")}`;
     const contractQuality = task.quality_presentation;
     const qualityMeta = contractQuality ? {
@@ -9167,7 +9189,9 @@ function taskManagerActions(task = {}, reviewPending = false) {
       add(caps.cancel, "job-cancel", "red-action", "fas fa-times", "取消任务");
     } else {
       add(caps.view_result, "result", "blue-action", "fas fa-eye", "查看结果");
-      add(caps.reuse, "reuse", "green-action", "fas fa-rotate", "再次出题");
+      add(task.configuration_blocked, "history-config", "blue-action", "fas fa-key", "检查 API 配置");
+      add(task.configuration_blocked && caps.retry, "history-continue", "green-action", "fas fa-play", "继续未完成项");
+      add(caps.reuse && !task.configuration_blocked, "reuse", "green-action", "fas fa-rotate", "再次出题");
       add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
     }
   } else {
@@ -9289,6 +9313,8 @@ async function handleTaskManagerAction(task, action, button = null) {
     else if (task.is_generation_job && action === "job-config") goToPage("keys");
     else if (task.is_generation_job && action === "job-retry") await retryGenerationJob(task);
     else if (task.is_generation_job && action === "job-cancel") await cancelGenerationJob(task);
+    else if (!task.is_generation_job && action === "history-config") goToPage("keys");
+    else if (!task.is_generation_job && action === "history-continue") await continuePracticeHistory(task.task_id, null, task.task_kind);
     else if (action === "result") await openGenerationTaskResult(task);
     else if (action === "reuse") await reuseGenerationTask(task);
     else if (action === "delete") await deleteGenerationTask(task);
@@ -9405,7 +9431,7 @@ async function retryGenerationJob(task) {
   if (requestedSessionVersion !== practiceSessionVersion) return;
   beginNewPracticeSession();
   const sessionVersion = practiceSessionVersion;
-  latestPracticeRequest = { ...failed.payload, resume_from_job_id: failed.job_id };
+  latestPracticeRequest = { ...failed.payload, resume_from_job_id: failed.job_id, reset_generation_retry_state: true };
   restorePracticePreferenceOrders(latestPracticeRequest);
   syncPracticeSourceContentPreference(latestPracticeRequest.include_source_content_in_generation !== false);
   latestPracticePlan = failed.payload?.plan || null;
@@ -9424,6 +9450,44 @@ async function retryGenerationJob(task) {
   else if (finished.operation === "plan") renderPracticePlan(finished.result);
   else renderPracticeResults(finished.result);
   await loadTasks({ silent: true, includeLiveDetails: true });
+}
+
+async function continuePracticeHistory(historyId, button = null, taskKind = "") {
+  const targetHistoryId = String(historyId || "").trim();
+  if (!targetHistoryId) throw new Error("缺少需要继续的练习记录。");
+  const requestedSessionVersion = practiceSessionVersion;
+  const confirmed = await platformConfirm({
+    eyebrow: "继续未完成项",
+    title: "已完成 API 配置检查？",
+    message: "平台只会继续尚未完成的题目；已成功题目将直接复用，不会重复调用或覆盖。",
+    confirmText: "继续未完成项",
+    tone: "primary"
+  });
+  if (!confirmed || requestedSessionVersion !== practiceSessionVersion) return;
+  if (button) button.disabled = true;
+  try {
+    beginNewPracticeSession();
+    const sessionVersion = practiceSessionVersion;
+    setPracticeWorkspaceMode(taskKind === "knowledge" || latestPracticeSet?.source_mode === "knowledge" ? "knowledge" : "exam");
+    goToPage("practice");
+    showPracticeOperationLoading("正在继续未完成题目", "generate_from_plan");
+    const started = await api(`/api/practice/history/${encodeURIComponent(targetHistoryId)}/continue`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    if (sessionVersion !== practiceSessionVersion) return;
+    rememberPracticeJob(started.job_id);
+    const finished = await waitForPracticeJob(started.job_id);
+    if (sessionVersion !== practiceSessionVersion) return;
+    rememberPracticeJob("");
+    setPracticeWorkspaceMode(finished.result?.source_mode === "knowledge" ? "knowledge" : "exam");
+    renderPracticeResults(finished.result);
+    await loadTasks({ silent: true, includeLiveDetails: true });
+  } catch (error) {
+    await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "继续未完成项失败", tone: "danger" });
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function openGenerationJob(task) {

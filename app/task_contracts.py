@@ -78,6 +78,12 @@ def quality_presentation(
 ) -> dict[str, str] | None:
     if quality == QualityStatus.UNKNOWN:
         return None
+    if workflow != WorkflowType.EXAM_ANALYSIS and status == RunStatus.FAILED:
+        return {
+            "label": "生成未完成",
+            "class_name": "blocked",
+            "icon": "fas fa-triangle-exclamation",
+        }
     if workflow != WorkflowType.EXAM_ANALYSIS and status == RunStatus.COMPLETED_WITH_ISSUES:
         return {
             "label": "存在未完成项（需复核）",
@@ -136,6 +142,8 @@ def quality_from_practice(data: dict[str, Any] | None) -> QualityStatus:
     quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
     generation_status = str(generation.get("status") or "")
     quality_status = str(quality.get("status") or "").lower()
+    if generation_status == "configuration_blocked" or generation.get("configuration_blocked") is True:
+        return QualityStatus.BLOCKED
     if generation_status == "partial_success" or generation.get("partial_success"):
         return QualityStatus.WARNING
     if quality_status in {"failed", "blocked", "error"}:

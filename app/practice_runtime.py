@@ -97,6 +97,33 @@ def load_practice_generation_checkpoint(
     """
     current_job_id = str(payload.get("_job_id") or "").strip()[:100]
     resume_job_id = str(payload.get("resume_from_job_id") or "").strip()[:100]
+    resume_history_id = str(payload.get("resume_from_history_id") or "").strip()[:100]
+    if resume_history_id:
+        from .practice_store import load_practice_record
+
+        record = load_practice_record(resume_history_id)
+        data = record.get("data") if isinstance(record.get("data"), dict) else {}
+        blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+        stored_plan_ids = [
+            str(item.get("plan_item_id") or "").strip()
+            for item in blueprint.get("exercise_plan") or []
+            if isinstance(item, dict)
+        ]
+        if stored_plan_ids != expected_plan_item_ids:
+            raise ValueError("历史记录的已确认蓝图与当前继续请求不一致，已阻止混用旧题目。")
+        accepted: list[dict[str, Any]] = []
+        accepted_ids: list[str] = []
+        seen: set[str] = set()
+        for item in data.get("exercises") or []:
+            if not isinstance(item, dict) or item.get("generation_status") == "failed":
+                continue
+            plan_item_id = str(item.get("plan_item_id") or "").strip()
+            if not plan_item_id or plan_item_id not in set(expected_plan_item_ids) or plan_item_id in seen:
+                raise ValueError("历史记录的已生成题目与当前蓝图不一致，已停止恢复。")
+            seen.add(plan_item_id)
+            accepted_ids.append(plan_item_id)
+            accepted.append(dict(item))
+        return PracticeGenerationCheckpoint(resume_history_id, tuple(accepted), tuple(accepted_ids))
     source_job_id = resume_job_id or current_job_id
     if not source_job_id:
         return PracticeGenerationCheckpoint("", (), ())
