@@ -374,6 +374,96 @@ def _required_knowledge_points_for_plan_item(
     return supplied
 
 
+def _semantic_knowledge_text(value: Any) -> str:
+    """Normalize short Chinese knowledge labels for deterministic overlap checks."""
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(value or "")).lower()
+
+
+def _knowledge_point_is_explicitly_adopted(point: str, evidence_parts: list[str]) -> bool:
+    """Return whether authoritative blueprint text clearly adopts one source point.
+
+    The check deliberately excludes difficulty rationales and applicable-boundary
+    text: those fields often name misconceptions or out-of-scope topics.  Exact
+    matches handle short labels; longer labels may match by strong character-bigram
+    recall so that harmless wording differences such as ``主导动态软化`` versus
+    ``主导软化`` do not lose the structured requirement.
+    """
+    normalized_point = _semantic_knowledge_text(point)
+    if len(normalized_point) < 3:
+        return False
+    normalized_evidence = _semantic_knowledge_text("。".join(evidence_parts))
+    if normalized_point in normalized_evidence:
+        return True
+    if len(normalized_point) < 7:
+        return False
+    point_bigrams = {
+        normalized_point[index : index + 2]
+        for index in range(len(normalized_point) - 1)
+    }
+    evidence_bigrams = {
+        normalized_evidence[index : index + 2]
+        for index in range(len(normalized_evidence) - 1)
+    }
+    matched = point_bigrams & evidence_bigrams
+    return len(matched) >= 5 and len(matched) / max(1, len(point_bigrams)) >= 0.72
+
+
+def _reconcile_adopted_knowledge_points(
+    item: dict[str, Any],
+    source_refs: list[str],
+    source_catalog: list[dict[str, Any]],
+    generation_strategy: str,
+) -> list[str]:
+    """Sync comprehensive-blueprint evidence back to its structured KP contract.
+
+    Comprehensive generation is still allowed to cover only part of the selected
+    material.  We add a missing point only when the item's target/design or positive
+    required definitions/formulas clearly adopt it.
+    """
+    current = _unique_strings(item.get("required_knowledge_points"), limit=60, item_limit=500)
+    if _mode_kind(generation_strategy) != "comprehensive":
+        return current
+    available = _required_knowledge_points_for_refs(source_refs, source_catalog)
+    if not available:
+        return current
+    constraints = item.get("required_constraints") if isinstance(item.get("required_constraints"), dict) else {}
+    evidence_parts = [
+        _clean(item.get("target_skill"), 500),
+        _clean(item.get("variation_type"), 200),
+        _clean(item.get("design_intent"), 800),
+        *_string_list(constraints.get("essential_definitions"), limit=30),
+        *_string_list(constraints.get("essential_formulas"), limit=30),
+    ]
+    reconciled = list(current)
+    added: list[str] = []
+    for point in available:
+        if point in reconciled:
+            continue
+        if _knowledge_point_is_explicitly_adopted(point, evidence_parts):
+            reconciled.append(point)
+            added.append(point)
+    prior_reconciliation = (
+        item.get("knowledge_point_reconciliation")
+        if isinstance(item.get("knowledge_point_reconciliation"), dict)
+        else {}
+    )
+    recorded = [
+        point
+        for point in _string_list(prior_reconciliation.get("added_from_blueprint_evidence"), limit=60)
+        if point in reconciled and point in available
+    ]
+    for point in added:
+        if point not in recorded:
+            recorded.append(point)
+    if recorded:
+        item["knowledge_point_reconciliation"] = {
+            "added_from_blueprint_evidence": recorded,
+        }
+    else:
+        item.pop("knowledge_point_reconciliation", None)
+    return reconciled[:60]
+
+
 def _required_knowledge_point_issue(generated: dict[str, Any], planned_item: dict[str, Any]) -> dict[str, Any] | None:
     required = _unique_strings(planned_item.get("required_knowledge_points"), limit=60, item_limit=500)
     if not required:
@@ -1410,6 +1500,12 @@ def ensure_practice_blueprint_defaults(plan: dict[str, Any]) -> dict[str, Any]:
             strategy,
             source_analysis if len(source_catalog) <= 1 else None,
             allow_partition=allow_partition,
+        )
+        item["required_knowledge_points"] = _reconcile_adopted_knowledge_points(
+            item,
+            refs,
+            source_catalog,
+            strategy,
         )
         stem_figure_required = item.get("stem_figure_required") is True or item.get("requires_figure") is True
         item["stem_figure_required"] = stem_figure_required
@@ -5317,13 +5413,15 @@ def scope_cover_summary(
     exercise_plan: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
-    生成「已选来源 × 计划题目」的覆盖摘要（父项聚合感知，修复 P0-1 假阳性）。
+    生成「已选来源 × 计划题目」与「必考知识点 × 蓝图」双层覆盖摘要。
 
     规则：
     - 每个已选单元被计划引用一次视为覆盖；
     - 若已选单元是含子项的顶层父项，则必须已聚合其全部子项内容（知识点并集覆盖），
       否则即使被引用也判定为“未完成覆盖”（防止“父项只保留第 1 个子项却 complete=true”）。
-    - complete 仅在全部已选单元被引用且父项聚合完整时为 true。
+    - complete/source_complete 仅表示来源引用完整，保留既有生成门禁语义；
+    - knowledge_points.complete 表示已选来源中的知识点是否纳入蓝图必考清单；
+    - content_complete 同时要求来源引用和知识点覆盖完整。
     """
     scope = source_scope if isinstance(source_scope, dict) else {}
     all_questions = [q for q in (scope.get("questions") or []) if isinstance(q, dict)]
@@ -5366,6 +5464,22 @@ def scope_cover_summary(
     covered_units = sum(1 for v in covered_map.values() if v)
     total_selected = len(selected_map)
     uncovered_units = sum(1 for v in covered_map.values() if not v)
+    expected_points: list[str] = []
+    for unit in selected_map.values():
+        for point in _string_list(unit.get("knowledge_points"), limit=60):
+            if point not in expected_points:
+                expected_points.append(point)
+    planned_points: list[str] = []
+    for item in exercise_plan or []:
+        if not isinstance(item, dict):
+            continue
+        for point in _string_list(item.get("required_knowledge_points"), limit=60):
+            if point in expected_points and point not in planned_points:
+                planned_points.append(point)
+    covered_points = [point for point in expected_points if point in planned_points]
+    uncovered_points = [point for point in expected_points if point not in planned_points]
+    source_complete = total_selected > 0 and covered_units == total_selected
+    knowledge_complete = not expected_points or not uncovered_points
     return {
         "granularity": _clean(scope.get("granularity"), 20) or "atomic",
         "per_unit": per_unit,
@@ -5376,7 +5490,19 @@ def scope_cover_summary(
             "planned_exercises": len(exercise_plan or []),
             "degraded_parents": degraded,
         },
-        "complete": total_selected > 0 and covered_units == total_selected,
+        "source_complete": source_complete,
+        "knowledge_points": {
+            "applicable": bool(expected_points),
+            "expected_count": len(expected_points),
+            "covered_count": len(covered_points),
+            "uncovered_count": len(uncovered_points),
+            "complete": knowledge_complete,
+            "expected_points": expected_points,
+            "covered_points": covered_points,
+            "uncovered_points": uncovered_points,
+        },
+        "content_complete": source_complete and knowledge_complete,
+        "complete": source_complete,
     }
 
 

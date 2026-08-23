@@ -4424,18 +4424,49 @@ function renderPracticePlanCoverage(cover) {
   }
   const c = cover.counts;
   const perUnit = cover.per_unit || {};
-  const complete = c.selected_units > 0 && c.covered_units === c.selected_units;
+  const sourceComplete = typeof cover.source_complete === "boolean"
+    ? cover.source_complete
+    : c.selected_units > 0 && c.covered_units === c.selected_units;
+  const knowledge = cover.knowledge_points || {};
+  const knowledgeApplicable = knowledge.applicable === true;
+  const knowledgeComplete = !knowledgeApplicable || knowledge.complete !== false;
+  const contentComplete = typeof cover.content_complete === "boolean"
+    ? cover.content_complete
+    : sourceComplete && knowledgeComplete;
   box.classList.remove("hidden");
   if (badge) {
-    badge.textContent = complete ? `✅ 已覆盖 ${c.covered_units}/${c.selected_units}` : `⚠️ 未覆盖 ${c.uncovered_units}/${c.selected_units}`;
-    badge.style.color = complete ? "var(--brand-success, #16a34a)" : "var(--brand-danger, #dc2626)";
+    const sourceBadge = `来源 ${c.covered_units}/${c.selected_units}`;
+    const knowledgeBadge = knowledgeApplicable
+      ? ` · 知识点 ${knowledge.covered_count || 0}/${knowledge.expected_count || 0}`
+      : "";
+    badge.textContent = `${contentComplete ? "✅" : "⚠️"} ${sourceBadge}${knowledgeBadge}`;
+    badge.style.color = contentComplete
+      ? "var(--brand-success, #16a34a)"
+      : sourceComplete
+        ? "var(--brand-warning, #b45309)"
+        : "var(--brand-danger, #dc2626)";
   }
   if (text) {
     const entries = Object.entries(perUnit);
     const detail = entries.length
       ? `（${entries.map(([id, n]) => `${id}:${n}题`).join("，")}）`
       : "";
-    text.textContent = `${c.selected_units} 个来源单元 / ${c.planned_exercises} 道计划题目${detail}；${complete ? "覆盖完整，可生成。" : "存在未覆盖来源，已拦截生成。请返回范围页编辑、合并、拆分或新增单元后重试。"}`;
+    const sourceText = `${c.selected_units} 个来源单元 / ${c.planned_exercises} 道计划题目${detail}；${sourceComplete ? "来源引用完整。" : "存在未覆盖来源，已拦截生成。请返回范围页编辑、合并、拆分或新增单元后重试。"}`;
+    if (!knowledgeApplicable) {
+      text.textContent = sourceText;
+      return;
+    }
+    const coveredPoints = Array.isArray(knowledge.covered_points) ? knowledge.covered_points : [];
+    const uncoveredPoints = Array.isArray(knowledge.uncovered_points) ? knowledge.uncovered_points : [];
+    const coveredText = coveredPoints.length ? coveredPoints.join("、") : "无";
+    const uncoveredText = uncoveredPoints.length ? uncoveredPoints.join("、") : "无";
+    const knowledgeText = `必考知识点 ${knowledge.covered_count || 0}/${knowledge.expected_count || 0}；本次纳入：${coveredText}；本次未纳入：${uncoveredText}。`;
+    const conclusion = contentComplete
+      ? "来源单元与必考知识点均覆盖完整，可生成。"
+      : sourceComplete
+        ? "蓝图可继续生成，但只覆盖本次纳入的知识点范围。"
+        : "";
+    text.textContent = `${sourceText}${knowledgeText}${conclusion}`;
   }
 }
 
