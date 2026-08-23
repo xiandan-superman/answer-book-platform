@@ -115,7 +115,7 @@ from .support_reporting import start_support_retry_worker, stop_support_retry_wo
 from .task_contracts import present_error, public_support_id
 from .task_control import delete_task
 from .task_diagnostics import build_task_diagnostics
-from .task_read_model import build_exam_run, build_practice_runs
+from .task_read_model import build_exam_run, build_practice_runs, practice_network_statistics
 from .task_result_view import build_task_result_view
 from .task_runner import control_exam_task, start_exam_task
 from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
@@ -507,17 +507,9 @@ def _practice_job_api_payload(record: dict) -> dict:
         stage=str(record.get("current_stage") or ""),
         support_id=support_id,
     )
-    remaining_seconds = None
-    try:
-        deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
-        if deadline.tzinfo is None:
-            deadline = deadline.astimezone()
-        remaining_seconds = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
-    except (TypeError, ValueError):
-        pass
     payload = {
         **record,
-        "deadline_remaining_seconds": remaining_seconds,
+        **practice_network_statistics(record),
         "error": presentation.message if presentation else "",
         "support_id": support_id if presentation else "",
         "warning_reason": presentation.message if presentation else str(record.get("warning_reason") or ""),

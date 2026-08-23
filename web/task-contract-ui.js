@@ -70,6 +70,7 @@
   }
 
   function filterStatus(status, currentStage = "") {
+    if (["failed", "cancelled", "paused", "completed", "completed_with_issues"].includes(status)) return status;
     if (status === "completed_with_issues") return "completed_with_issues";
     if (status === "completed" || currentStage === "completed") return "completed";
     if (status === "failed") return "failed";

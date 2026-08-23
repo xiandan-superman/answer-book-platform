@@ -245,6 +245,8 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         "control_epoch": 0,
         "generation_deadline_at": deadline_at,
         "network_attempted_count": 0,
+        "network_call_budget": None,
+        "network_stats_synced": False,
         "network_phase": "waiting",
         "current_stage": "analyzing" if operation == "analyze" else ("planning" if operation == "plan" else "generating"),
         "created_at": now,

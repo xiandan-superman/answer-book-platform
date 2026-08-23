@@ -288,11 +288,38 @@ def test_reusing_knowledge_generation_restores_files_as_a_new_session() -> None:
     assert "knowledgeSourceFiles = normalizeSourceFileList(request.source_files)" in reuse
 
 
-def test_task_manager_labels_creation_time_and_truncates_only_material_name() -> None:
+def test_task_manager_uses_persisted_public_title_without_model_or_paths() -> None:
     assert "function shortTaskMaterialName(value, limit = 18)" in APP_JS
-    assert "function shortTaskModelName(value, provider = \"\")" in APP_JS
-    assert "${kindMeta.label} · ${shortTaskModelName(primaryModel, task.provider)} · ${shortTaskMaterialName(materialName)}" in APP_JS
+    title_block = APP_JS[APP_JS.index("function taskManagerTitle"):APP_JS.index("function renderTaskManagerPagination")]
+    assert "task.display_title" in title_block
+    assert "shortName(task.description || task.exam_display_name || task.exam_path" in title_block
+    assert "shortTaskModelName" not in title_block
     assert "开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}" in APP_JS
+
+
+def test_task_manager_terminal_copy_and_unknown_network_statistics_are_truthful() -> None:
+    assert 'failed: { label: "执行失败", meta: "请查看原因并按建议重试" }' in APP_JS
+    assert '["failed", "cancelled", "paused", "completed", "completed_with_issues"].includes(normalized)' in APP_JS
+    assert '"模型请求次数统计中"' in APP_JS
+    assert '"模型请求次数暂无数据"' in APP_JS
+    assert '"调用预算统计中"' in APP_JS
+    assert '"剩余等待上限暂无数据"' in APP_JS
+    assert "Number(task.network_attempted_count || 0)" not in APP_JS
+    paused_start = APP_JS.index('if (job.status === "paused")')
+    paused_end = APP_JS.index("latestPracticeRequest = job.payload", paused_start)
+    paused_copy = APP_JS[paused_start:paused_end]
+    assert "Number(job.network_attempted_count || 0)" not in paused_copy
+    assert 'job.network_call_budget !== null' in paused_copy
+    assert '"暂无数据"' in paused_copy
+
+
+def test_exam_task_list_tooltips_never_render_storage_paths() -> None:
+    render_start = APP_JS.index("function renderTasks(tasks)")
+    render_end = APP_JS.index("function taskProgressPercent", render_start)
+    renderer = APP_JS[render_start:render_end]
+    assert "task.textbook_material_names" in renderer
+    assert 'row.title = `${task.exam_path' not in renderer
+    assert 'pretty({ selected_task: task })' not in renderer
 
 
 def test_task_manager_opens_all_tasks_instead_of_action_required_filter() -> None:

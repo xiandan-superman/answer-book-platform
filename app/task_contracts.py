@@ -378,7 +378,14 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
 
     if "用户拒绝" in text or "user reject" in lowered:
         return public("review_rejected", "等待修正后重新确认", "本次结构确认已被拒绝，任务没有进入后续生成。", "修正题目结构后，从结构确认阶段继续。")
-    if "524" in lowered or "timeout" in lowered or "timed out" in lowered or "超时" in text:
+    if (
+        "524" in lowered
+        or "timeout" in lowered
+        or "timed out" in lowered
+        or "wall-clock deadline" in lowered
+        or "stream exceeded" in lowered
+        or "超时" in text
+    ):
         return public("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。")
     if re.fullmatch(r"api key is not configured for provider:\s*ark", text, flags=re.IGNORECASE):
         return public(
@@ -443,7 +450,12 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
             "模型服务返回异常，本次任务没有完整完成。",
             "请先检查 API 配置和模型服务状态；确认配置可用后，再从当前检查点重试。",
         )
-    return public("workflow_failed", "任务执行未完成", text, "查看失败阶段和诊断记录后，从匹配的检查点重试。")
+    return public(
+        "workflow_failed",
+        "任务执行未完成",
+        "任务在当前阶段异常结束，已保存此前完成的内容。",
+        "请查看失败阶段；确认输入和服务状态后，从匹配的检查点重试。",
+    )
 
 
 def exam_run_status(row: dict[str, Any]) -> RunStatus:

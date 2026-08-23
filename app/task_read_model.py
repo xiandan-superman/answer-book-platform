@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime
@@ -30,6 +31,122 @@ def _time_key(value: object) -> float:
             return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
         except ValueError:
             return 0
+
+
+_INTERNAL_MATERIAL_NAMES = {
+    "selected_textbooks",
+    "textbooks",
+    "教材库",
+}
+
+
+def _display_basename(value: object, *, fallback: str = "") -> str:
+    """Return a public label, never a local path or an internal storage key."""
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return fallback
+    name = re.split(r"[\\/]", text.rstrip("\\/"))[-1].strip()
+    if not name or name.lower() in _INTERNAL_MATERIAL_NAMES:
+        return fallback
+    return name[:120]
+
+
+def _textbook_display_names(row: dict[str, Any]) -> list[str]:
+    selected = row.get("selected_textbooks") if isinstance(row.get("selected_textbooks"), list) else []
+    supplied = row.get("textbook_display_names") if isinstance(row.get("textbook_display_names"), dict) else {}
+    by_basename = {
+        _display_basename(path): _display_basename(label)
+        for path, label in supplied.items()
+        if _display_basename(path) and _display_basename(label)
+    }
+    names: list[str] = []
+    for path in selected:
+        path_text = str(path or "")
+        name = _display_basename(supplied.get(path_text)) or by_basename.get(_display_basename(path_text), "") or _display_basename(path_text)
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        for label in supplied.values():
+            name = _display_basename(label)
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _practice_material_metadata(record: dict[str, Any], task_kind: str) -> tuple[str, list[str]]:
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    request = record.get("request") if isinstance(record.get("request"), dict) else {}
+    metadata = payload or request
+    title = _display_basename(record.get("title") or metadata.get("task_title"))
+    if not title:
+        title = _display_basename(metadata.get("knowledge_title"))
+    material_names: list[str] = []
+    for item in metadata.get("source_files") or []:
+        if not isinstance(item, dict):
+            continue
+        name = _display_basename(item.get("name"))
+        if name and name not in material_names:
+            material_names.append(name)
+    if not title and material_names:
+        title = material_names[0]
+    return title or ("未命名知识点" if task_kind == "knowledge" else "未命名原题"), material_names
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def practice_network_statistics(record: dict[str, Any]) -> dict[str, Any]:
+    """Derive public counters only from the durable job record and its ledger snapshot."""
+    engine_status = str(record.get("status") or "queued")
+    model_usage = record.get("model_usage") if isinstance(record.get("model_usage"), dict) else {}
+    retry_state = record.get("generation_retry_state") if isinstance(record.get("generation_retry_state"), dict) else {}
+    batches = retry_state.get("batches") if isinstance(retry_state.get("batches"), dict) else {}
+    state_calls = sum(
+        _optional_nonnegative_int(item.get("calls_used")) or 0
+        for item in batches.values()
+        if isinstance(item, dict)
+    ) if batches else None
+    state_budget = sum(
+        _optional_nonnegative_int(item.get("limit")) or 0
+        for item in batches.values()
+        if isinstance(item, dict)
+    ) if batches else None
+    ledger_calls = _optional_nonnegative_int(model_usage.get("call_count"))
+    stored_calls = _optional_nonnegative_int(record.get("network_attempted_count"))
+    synced = record.get("network_stats_synced") is True
+    calls = state_calls if state_calls is not None else ledger_calls
+    if calls is None and (synced or (stored_calls is not None and stored_calls > 0)):
+        calls = stored_calls
+    budget = _optional_nonnegative_int(record.get("network_call_budget"))
+    if state_budget is not None:
+        budget = state_budget
+
+    remaining_seconds = None
+    deadline_text = str(record.get("generation_deadline_at") or "").strip()
+    if deadline_text:
+        try:
+            deadline = datetime.fromisoformat(deadline_text)
+            if deadline.tzinfo is None:
+                deadline = deadline.astimezone()
+            remaining_seconds = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
+        except (TypeError, ValueError):
+            pass
+    active = engine_status in {"queued", "running"}
+    statistics_status = "syncing" if active and (calls is None or budget is None or remaining_seconds is None) else (
+        "ready" if any(value is not None for value in (calls, budget, remaining_seconds)) else "unavailable"
+    )
+    return {
+        "network_attempted_count": calls,
+        "network_call_budget": budget,
+        "deadline_remaining_seconds": remaining_seconds,
+        "network_statistics_status": statistics_status,
+    }
 
 
 def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -64,8 +181,18 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
         status = practice_run_status("completed", quality=quality)
     elif status.value == "completed" and quality == QualityStatus.WARNING and not formally_accepted:
         status = practice_run_status("completed", quality=quality)
+    exam_name = _display_basename(row.get("exam_display_name") or row.get("exam_path"), fallback="未命名真题")
+    textbook_names = _textbook_display_names(row)
+    public_row = {
+        **row,
+        "display_title": f"真题解析 · {exam_name}",
+        "description": exam_name,
+        "exam_display_name": exam_name,
+        "material_display_names": [exam_name],
+        "textbook_material_names": textbook_names,
+    }
     enriched = enrich_contract(
-        row,
+        public_row,
         workflow=workflow_for_kind("exam"),
         status=status,
         quality=quality,
@@ -100,7 +227,7 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
     )
     phases = record.get("generation_phases") if isinstance(record.get("generation_phases"), list) else []
     kind_label = "知识点出题" if task_kind == "knowledge" else "按题出题"
-    task_title = str(record.get("title") or request.get("task_title") or "未命名材料").strip()
+    task_title, material_names = _practice_material_metadata(record, task_kind)
     row = {
         "task_id": record.get("history_id"),
         "task_kind": task_kind,
@@ -111,6 +238,7 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         "is_generation_task": True,
         "display_title": f"{kind_label} · {task_title}",
         "description": task_title,
+        "material_display_names": material_names or [task_title],
         "exam_path": task_title,
         "provider": request.get("provider") or "",
         "model": request.get("model") or "",
@@ -165,19 +293,12 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
     running_progress = min(88, 30 + elapsed // 15) if operation in {"generate_from_plan", "generate_from_contract"} else min(88, 35 + elapsed // 10)
     status = practice_run_status(engine_status, operation=operation, quality=QualityStatus.UNKNOWN)
     kind_label = "知识点出题" if task_kind == "knowledge" else "按题出题"
-    task_title = str(record.get("title") or (record.get("payload") or {}).get("task_title") or "未命名材料").strip()
+    task_title, material_names = _practice_material_metadata(record, task_kind)
     support_id = public_support_id(
         str(record.get("support_id") or ""),
         task_id=str(record.get("job_id") or ""),
     )
-    remaining_seconds = None
-    try:
-        deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
-        if deadline.tzinfo is None:
-            deadline = deadline.astimezone()
-        remaining_seconds = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
-    except (TypeError, ValueError):
-        pass
+    network_statistics = practice_network_statistics(record)
     row = {
         "task_id": record.get("job_id"),
         "task_kind": task_kind,
@@ -187,6 +308,7 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         "operation": operation,
         "display_title": f"{kind_label} · {task_title}",
         "description": task_title,
+        "material_display_names": material_names or [task_title],
         "steps": steps,
         "exam_path": task_title,
         "provider": record.get("provider") or "",
@@ -200,9 +322,8 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         "support_id": support_id,
         "progress_message": record.get("progress_message") or "",
         "elapsed_seconds": elapsed,
-        "network_attempted_count": int(record.get("network_attempted_count") or 0),
         "network_phase": str(record.get("network_phase") or ""),
-        "deadline_remaining_seconds": remaining_seconds,
+        **network_statistics,
         "duration_text": (
             "后台生成中" if engine_status in {"queued", "running"}
             else "已暂停" if engine_status == "paused"
@@ -243,7 +364,6 @@ def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, An
 
     job_runs: list[dict[str, Any]] = []
     operation_order = {"analyze": 0, "plan": 1, "generate_from_plan": 2, "generate_from_contract": 2}
-    status_order = {"running": 5, "paused": 4, "queued": 3, "failed": 2, "cancelled": 2, "completed": 1}
     for key, group in groups.items():
         batch_id = "" if key.startswith("legacy:") else key
         if batch_id and batch_id in history_batches:
@@ -253,9 +373,9 @@ def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, An
         ordered = sorted(
             group,
             key=lambda item: (
-                status_order.get(str(item.get("status") or ""), 0),
-                operation_order.get(str(item.get("operation") or ""), -1),
+                _time_key(item.get("created_at") or item.get("updated_at")),
                 _time_key(item.get("updated_at")),
+                operation_order.get(str(item.get("operation") or ""), -1),
             ),
             reverse=True,
         )

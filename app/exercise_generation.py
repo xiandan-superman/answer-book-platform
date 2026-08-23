@@ -5074,11 +5074,18 @@ class _GenerationRetryCoordinator:
                 for row in (self.state.get("batches") or {}).values()
                 if isinstance(row, dict)
             )
+            budget = sum(
+                int(row.get("limit") or 0)
+                for row in (self.state.get("batches") or {}).values()
+                if isinstance(row, dict)
+            )
             update_practice_job(
                 self.job_id,
                 expected_epoch=self.expected_epoch,
                 generation_retry_state=copy.deepcopy(self.state),
                 network_attempted_count=calls,
+                network_call_budget=budget,
+                network_stats_synced=True,
             )
         except Exception:
             pass

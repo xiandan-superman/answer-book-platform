@@ -1110,7 +1110,15 @@ function latestPipelineStage(stages = []) {
 }
 
 function effectiveCurrentStage(task = {}, stages = []) {
-  if (task.status === "completed" || task.current_stage === "completed") return "completed";
+  const authoritativeTerminalStages = {
+    completed: "completed",
+    completed_with_issues: "completed",
+    failed: "failed",
+    cancelled: "cancelled",
+    paused: "paused"
+  };
+  if (authoritativeTerminalStages[task.status]) return authoritativeTerminalStages[task.status];
+  if (task.current_stage === "completed") return "completed";
   let current = task.effective_current_stage || task.current_stage || "";
   const last = latestPipelineStage(stages);
   if (last && stageOrderIndex(last.stage) >= stageOrderIndex(current)) current = last.stage;
@@ -1422,7 +1430,7 @@ function updateTaskSummary(task) {
     setText("taskSummary", "未选择");
     return;
   }
-  setText("taskSummary", `${statusLabel(task.status)} · ${shortName(task.exam_path)}`);
+  setText("taskSummary", `${statusLabel(task.status)} · ${task.exam_display_name || shortName(task.exam_path)}`);
   applyExamTaskControls(task, task.quality_summary || {});
 }
 
@@ -8757,7 +8765,7 @@ async function createTask() {
         model_thinking: selectedThinkingMode()
       })
     });
-    $("taskResult").textContent = pretty(data);
+    $("taskResult").textContent = data.task?.task_id ? `任务已创建：${data.task.task_id}` : "任务已创建";
     if (data.task && data.task.task_id) {
       $("taskIdInput").value = data.task.task_id;
       activeTaskId = data.task.task_id;
@@ -8790,21 +8798,21 @@ function renderTasks(tasks) {
     row.className = "task-row";
     row.classList.toggle("selected", task.task_id === activeTaskId);
     const title = document.createElement("strong");
-    title.textContent = shortName(task.exam_path);
+    title.textContent = task.exam_display_name || shortName(task.exam_path);
     const meta = document.createElement("span");
-    meta.textContent = `${statusLabel(task.status)} · ${stageLabel(task.current_stage)} · ${formatTaskTimestamp(task.updated_at)}`;
+    meta.textContent = `${statusLabel(task.status)} · ${taskProgressSummary(task).label} · ${formatTaskTimestamp(task.updated_at)}`;
     const badge = document.createElement("em");
     badge.className = `status-badge status-${task.status || "unknown"}`;
     badge.textContent = statusLabel(task.status);
     row.append(title, meta, badge);
-    row.title = `${task.exam_path || ""}\n${task.textbooks_dir || ""}`;
+    row.title = [task.exam_display_name || shortName(task.exam_path), ...(task.textbook_material_names || [])].filter(Boolean).join("\n");
     row.addEventListener("click", async () => {
       $("taskIdInput").value = task.task_id;
       activeTaskId = task.task_id;
       document.querySelectorAll(".task-row").forEach((el) => el.classList.remove("selected"));
       row.classList.add("selected");
       updateTaskSummary(task);
-      $("runResult").textContent = pretty({ selected_task: task });
+      $("runResult").textContent = pretty({ task_id: task.task_id, status: task.status, current_stage: taskProgressSummary(task).label });
       try {
         const data = await api(`/api/tasks/${encodeURIComponent(task.task_id)}`);
         renderTaskVisual(data);
@@ -8924,6 +8932,14 @@ function taskProgressSummary(task) {
   const current = effectiveCurrentStage(task, stages);
   const progress = task?.current_progress || null;
   const percent = taskProgressPercent(task);
+  const terminal = {
+    failed: { label: "执行失败", meta: "请查看原因并按建议重试" },
+    cancelled: { label: "已取消", meta: "任务已取消，不会继续执行" },
+    paused: { label: "已暂停", meta: "任务已暂停，可继续或取消" },
+    completed: { label: "已完成", meta: "任务已完成" },
+    completed_with_issues: { label: "完成待复核", meta: "结果已保存，请按提示复核" }
+  }[task?.status];
+  if (terminal) return { percent, stage: task.status, ...terminal };
 
   if (current === "question_understanding" && progress && Number(progress.total || 0) > 0) {
     const total = Number(progress.total || 0);
@@ -9126,9 +9142,9 @@ function shortTaskModelName(value, provider = "") {
 }
 
 function taskManagerTitle(task, kindMeta) {
-  const materialName = task.description || task.exam_path || "未命名材料";
-  const primaryModel = task.model_label || task.answer_model || task.model || "";
-  return `${kindMeta.label} · ${shortTaskModelName(primaryModel, task.provider)} · ${shortTaskMaterialName(materialName)}`;
+  if (task.display_title) return shortTaskMaterialName(task.display_title, 56);
+  const materialName = shortName(task.description || task.exam_display_name || task.exam_path || "未命名材料");
+  return `${kindMeta.label} · ${shortTaskMaterialName(materialName, 36)}`;
 }
 
 function renderTaskManagerPagination(total) {
@@ -9170,7 +9186,6 @@ function completedGenerationTaskMessage(task = {}) {
 
 function generationNetworkSummary(task = {}) {
   if (!task.is_generation_job || !["queued", "running", "paused"].includes(task.status)) return "";
-  const attempts = Math.max(0, Number(task.network_attempted_count || 0));
   const phaseLabels = {
     waiting: "等待派发",
     provider_connect_timeout: "连接超时",
@@ -9181,12 +9196,20 @@ function generationNetworkSummary(task = {}) {
     succeeded: "最近调用成功"
   };
   const phase = String(task.network_phase || "");
-  const phaseText = phaseLabels[phase] || (phase ? `网络阶段 ${phase}` : "");
+  const phaseText = phaseLabels[phase] || "";
+  const attemptsValue = task.network_attempted_count;
+  const attemptsText = attemptsValue !== null && attemptsValue !== undefined && Number.isFinite(Number(attemptsValue))
+    ? `已发起 ${Math.max(0, Number(attemptsValue))} 次模型请求`
+    : (task.network_statistics_status === "syncing" ? "模型请求次数统计中" : "模型请求次数暂无数据");
+  const budgetValue = task.network_call_budget;
+  const budgetText = budgetValue !== null && budgetValue !== undefined && Number.isFinite(Number(budgetValue))
+    ? `调用预算 ${Math.max(0, Number(budgetValue))} 次`
+    : (task.network_statistics_status === "syncing" ? "调用预算统计中" : "调用预算暂无数据");
   const remaining = task.deadline_remaining_seconds;
-  const timeText = Number.isFinite(Number(remaining))
+  const timeText = remaining !== null && remaining !== undefined && Number.isFinite(Number(remaining))
     ? `剩余等待上限 ${Math.floor(Math.max(0, Number(remaining)) / 60)} 分 ${Math.max(0, Number(remaining)) % 60} 秒`
-    : "";
-  return [phaseText, `已发起 ${attempts} 次模型请求`, timeText].filter(Boolean).join("，");
+    : (task.network_statistics_status === "syncing" ? "剩余等待上限统计中" : "剩余等待上限暂无数据");
+  return [phaseText, attemptsText, budgetText, timeText].filter(Boolean).join("，");
 }
 
 function renderTaskManager(tasks = latestTasks) {
@@ -9240,7 +9263,7 @@ function renderTaskManager(tasks = latestTasks) {
       ? `${task.format_profile_label || "格式标准"} · ${task.mode_label || "格式审查与修改"}`
       : generationTask
       ? (task.is_generation_job ? `${task.description || kindMeta.label} · ${phaseText}` : `${task.description || kindMeta.label} · 共 ${Number(task.total_count ?? task.question_count ?? 0)} 题：已生成 ${Number(task.generated_count ?? task.question_count ?? 0)} 题`)
-      : `教材：${shortName(task.textbooks_dir || "教材库")}`;
+      : `教材：${Array.isArray(task.textbook_material_names) && task.textbook_material_names.length ? task.textbook_material_names.map(shortName).join("、") : "暂无教材信息"}`;
     const contractQuality = task.quality_presentation;
     const qualityMeta = contractQuality ? {
       label: contractQuality.label,
@@ -9250,18 +9273,27 @@ function renderTaskManager(tasks = latestTasks) {
     const errorMessage = task.error_presentation
       ? practicePublicErrorText(task.error_presentation, task.error || "")
       : (task.error || "");
-    const defaultProgressMessage = formatTask
+    const terminalProgressMessages = {
+      failed: errorMessage || "任务执行失败，请查看原因并按建议重试。",
+      cancelled: "任务已取消，不会继续执行。",
+      paused: "任务已暂停，可选择继续或取消。",
+      completed: generationTask ? completedGenerationTaskMessage(task) : "任务已完成。",
+      completed_with_issues: generationTask ? completedGenerationTaskMessage(task) : "任务已完成，结果需要复核。"
+    };
+    const defaultProgressMessage = terminalProgressMessages[normalized] || (formatTask
       ? (errorMessage || task.progress_message || "格式审查任务已保存")
       : generationTask
       ? (task.is_generation_job ? (errorMessage || task.progress_message || (normalized === "queued" ? "任务已进入等待队列" : normalized === "needs_input" ? "当前步骤已完成，等待确认后继续" : "任务正在后台执行")) : completedGenerationTaskMessage(task))
-      : (errorMessage || (normalized === "queued" ? "等待开始" : stageText));
+      : (errorMessage || (normalized === "queued" ? "等待开始" : stageText)));
     const networkSummary = generationNetworkSummary(task);
     const progressMessage = reviewPending
       ? "当前步骤已完成，等待你确认后继续。"
-      : `${isLiveTask(task) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage}${networkSummary ? ` · ${networkSummary}` : ""}`;
+      : `${["running", "queued"].includes(normalized) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage}${networkSummary ? ` · ${networkSummary}` : ""}`;
     const currentStageText = reviewPending
       ? "等待确认"
-      : (generationTask ? (task.is_generation_job ? stageLabel(task.current_stage) : phaseText) : (progress.meta || stageText));
+      : (["failed", "cancelled", "paused", "completed", "completed_with_issues"].includes(normalized)
+        ? progress.label
+        : (generationTask ? (task.is_generation_job ? stageLabel(task.current_stage) : phaseText) : (progress.meta || stageText)));
     const displayCurrentStageText = formatTask
       ? (reviewPending ? "等待确认修改" : "格式处理完成")
       : currentStageText;
@@ -9280,7 +9312,7 @@ function renderTaskManager(tasks = latestTasks) {
           <div class="task-manager-meta">
             <span class="task-kind-chip"><i class="${kindMeta.icon}"></i>${kindMeta.label}</span>
             <span class="task-status-chip status-${normalized}"><i class="${meta.icon}"></i>${escapeHtml(meta.label)}</span>
-            ${isLiveTask(task) && taskHealth.health_status ? `<span class="task-health-chip health-${escapeHtml(taskHealthState)}"><i class="${taskHealthMeta.icon}"></i>${escapeHtml(taskHealthMeta.label)}</span>` : ""}
+            ${["running", "queued"].includes(normalized) && taskHealth.health_status ? `<span class="task-health-chip health-${escapeHtml(taskHealthState)}"><i class="${taskHealthMeta.icon}"></i>${escapeHtml(taskHealthMeta.label)}</span>` : ""}
             ${qualityMeta && !reviewPending && qualityMeta.label !== meta.label ? `<span class="task-quality-chip quality-${qualityMeta.className}"><i class="${qualityMeta.icon}"></i>${qualityMeta.label}</span>` : ""}
             <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制完整ID"><i class="fas fa-hashtag"></i><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
             <span title="任务开始时间"><i class="far fa-clock"></i>开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}</span>
@@ -10050,12 +10082,19 @@ async function openGenerationJob(task) {
       return;
     }
     if (job.status === "paused") {
-      const remaining = Number(job.deadline_remaining_seconds);
-      const remainingText = Number.isFinite(remaining)
+      const hasRemaining = job.deadline_remaining_seconds !== null && job.deadline_remaining_seconds !== undefined && Number.isFinite(Number(job.deadline_remaining_seconds));
+      const remaining = hasRemaining ? Number(job.deadline_remaining_seconds) : null;
+      const remainingText = remaining !== null
         ? `${Math.floor(Math.max(0, remaining) / 60)} 分 ${Math.max(0, remaining) % 60} 秒`
-        : "暂无法计算";
+        : "暂无数据";
+      const attemptsText = job.network_attempted_count !== null && job.network_attempted_count !== undefined && Number.isFinite(Number(job.network_attempted_count))
+        ? `${Math.max(0, Number(job.network_attempted_count))} 次`
+        : "暂无数据";
+      const budgetText = job.network_call_budget !== null && job.network_call_budget !== undefined && Number.isFinite(Number(job.network_call_budget))
+        ? `${Math.max(0, Number(job.network_call_budget))} 次`
+        : "暂无数据";
       await platformAlert(
-        `任务已暂停派发新请求。已发起 ${Number(job.network_attempted_count || 0)} 次模型请求，本批次剩余等待上限 ${remainingText}。可在任务管理中点击“继续”，仅补齐未完成题目。`,
+        `任务已暂停派发新请求。模型请求次数 ${attemptsText}，调用预算 ${budgetText}，本批次剩余等待上限 ${remainingText}。可在任务管理中点击“继续”，仅补齐未完成题目。`,
         { title: "任务已暂停", tone: "warning" }
       );
       return;
