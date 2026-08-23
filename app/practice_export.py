@@ -128,6 +128,12 @@ def validate_practice_export(data: dict[str, Any]) -> dict[str, Any]:
     warning_issues: list[str] = []
     quality = data.get("quality") if isinstance(data, dict) and isinstance(data.get("quality"), dict) else {}
     blocking_issues.extend(str(issue) for issue in quality.get("blocking_issues") or [] if str(issue).strip())
+    if quality.get("release_level") == "review_candidate":
+        quality_warnings = [str(issue).strip() for issue in quality.get("warnings") or [] if str(issue).strip()]
+        warning_issues.extend(
+            quality_warnings
+            or ["网页质量状态已将本组题目标记为待复核；Word 同步以待复核候选版导出。"]
+        )
     exercises = data.get("exercises") if isinstance(data, dict) else []
     if not exercises:
         blocking_issues.append("没有可导出的题目。")

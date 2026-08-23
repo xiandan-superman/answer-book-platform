@@ -2952,8 +2952,12 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
     semantic_review_completed = semantic_review_status in {"passed", "warning"}
     if semantic_review_status == "failed":
         warnings.append("语义质量审查未完成，已保留题目并标记为待复核。")
-    subject_review_required = bool(boundary_issues or complex_review_candidates) and (
-        not semantic_review_completed or bool(actionable_semantic_risks)
+    elif semantic_review and not semantic_review_completed:
+        warnings.append("语义质量审查未执行，已保留题目并标记为待复核。")
+    subject_review_required = bool(actionable_semantic_risks) or (
+        bool(semantic_review) and not semantic_review_completed
+    ) or (
+        bool(boundary_issues or complex_review_candidates) and not semantic_review_completed
     )
     checks = {
         "scope_coverage": not any("蓝图" in issue or "来源未全部覆盖" in issue for issue in blocking_issues),
@@ -2969,8 +2973,10 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         "semantic_review_passed": semantic_review_completed and not actionable_semantic_risks,
         "subject_matter_review_required": subject_review_required,
     }
+    release_level = "blocked" if blocking_issues else ("review_candidate" if warnings else "formal")
     return {
         "status": "blocked" if blocking_issues else "passed",
+        "release_level": release_level,
         "warnings": list(dict.fromkeys(warnings)),
         "blocking_issues": list(dict.fromkeys(blocking_issues)),
         "generated_count": len(exercises) - failed_count,
@@ -3173,6 +3179,11 @@ def _failed_exercise_placeholder(
         "variant_mode": _clean(planned_item.get("variant_mode"), 30),
         "variant_role": _clean(planned_item.get("variant_role"), 100),
         "source_question_id": _clean(planned_item.get("source_question_id"), 80),
+        "source_refs": _unique_strings(
+            planned_item.get("source_refs") or [planned_item.get("source_question_id")],
+            limit=3,
+            item_limit=80,
+        ),
         "question_type": _clean(planned_item.get("question_type"), 20) or "综合题",
         "difficulty": _clean(planned_item.get("difficulty"), 12) or "进阶",
         "target_skill": _clean(planned_item.get("target_skill"), 500) or _clean(planned_item.get("title"), 500),
@@ -3428,6 +3439,15 @@ def normalize_practice_set(
                     _clean(planned_source_ids[index - 1], 80)
                     if planned_source_ids and index <= len(planned_source_ids)
                     else _clean(item.get("source_question_id"), 80)
+                ),
+                "source_refs": _unique_strings(
+                    item.get("source_refs") or [
+                        planned_source_ids[index - 1]
+                        if planned_source_ids and index <= len(planned_source_ids)
+                        else item.get("source_question_id")
+                    ],
+                    limit=3,
+                    item_limit=80,
                 ),
                 "difficulty": difficulty if difficulty in ALLOWED_DIFFICULTIES else "进阶",
                 "target_skill": target_skill,
@@ -4211,7 +4231,28 @@ def _practice_semantic_review_should_run(practice: dict[str, Any], payload: dict
     quality = practice.get("quality") if isinstance(practice.get("quality"), dict) else recompute_practice_quality(practice)
     if quality.get("blocking_issues") or int(quality.get("failed_count") or 0) > 0:
         return False
-    return bool(quality.get("subject_review_candidates") or quality.get("boundary_issues") or payload.get("formal_quality_review"))
+    blueprint = practice.get("blueprint") if isinstance(practice.get("blueprint"), dict) else {}
+    strategy = _clean(
+        practice.get("generation_strategy") or blueprint.get("generation_strategy"),
+        40,
+    )
+    source_mode = _clean(practice.get("source_mode"), 30)
+    cross_source_item = any(
+        len(_unique_strings(
+            item.get("source_refs") or [item.get("source_question_id")],
+            limit=3,
+            item_limit=80,
+        )) > 1
+        for item in (blueprint.get("exercise_plan") or [])
+        if isinstance(item, dict)
+    )
+    return bool(
+        quality.get("subject_review_candidates")
+        or quality.get("boundary_issues")
+        or payload.get("formal_quality_review")
+        or (source_mode == "knowledge" and strategy == "knowledge_overall")
+        or cross_source_item
+    )
 
 
 def _sample_series_points_for_review(series: dict[str, Any], *, limit: int = 24) -> list[list[float]]:
@@ -4229,6 +4270,75 @@ def _sample_series_points_for_review(series: dict[str, Any], *, limit: int = 24)
         except (TypeError, ValueError, IndexError):
             continue
     return normalized
+
+
+def _cross_source_universal_premise_risks(
+    exercise: dict[str, Any],
+    planned_item: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Guard a proven cross-source boundary that models may normalize away.
+
+    A judgment question may intentionally contain a false universal claim. For
+    other question types, the same wording is a factual premise unless the
+    student is explicitly asked to evaluate it.
+    """
+    refs = _unique_strings(
+        exercise.get("source_refs")
+        or planned_item.get("source_refs")
+        or [exercise.get("source_question_id"), planned_item.get("source_question_id")],
+        limit=3,
+        item_limit=80,
+    )
+    if len(refs) < 2 or _effective_question_type(exercise, planned_item) == "判断题":
+        return []
+    stem = _clean(exercise.get("stem"), 12000)
+    if any(marker in stem for marker in ("判断该表述", "判断上述", "判断正误", "辨析该说法", "评价该说法", "指出该说法")):
+        return []
+    simultaneous_dynamic_softening = re.search(
+        r"(?:动态回复\s*[、和与及]\s*动态再结晶.{0,24}同时(?:发生|存在)"
+        r"|同时(?:发生|存在).{0,24}动态回复\s*[、和与及]\s*动态再结晶)",
+        stem,
+    )
+    if not simultaneous_dynamic_softening:
+        return []
+    return [{
+        "severity": "high",
+        "code": "cross_source_universal_premise",
+        "message": "题干把动态回复与动态再结晶同时发生或存在写成跨材料共同前提，未保留不同材料类别的触发边界。",
+        "evidence": simultaneous_dynamic_softening.group(0),
+        "suggested_action": "改为加工硬化与各自相应的动态软化共存，再分别要求辨析主导机制。",
+    }]
+
+
+def _judgment_risk_only_says_proposition_is_false(
+    exercise: dict[str, Any],
+    risk: dict[str, Any],
+) -> bool:
+    """Ignore factual/scope critiques when a judgment proposition stays decidable."""
+    code = _clean(risk.get("code"), 100)
+    if _effective_question_type(exercise) != "判断题" or code not in {
+        "fact_error",
+        "ambiguous_proposition_scope",
+        "ambiguity_or_scope",
+        "boundary_violation",
+        "boundary_mismatch",
+    }:
+        return False
+    detail = " ".join(
+        _clean(risk.get(key), 1200)
+        for key in ("message", "evidence", "suggested_action")
+    )
+    ambiguity_markers = (
+        "无法唯一判断",
+        "不能唯一判断",
+        "真假不唯一",
+        "整体无法判断",
+        "条件不足",
+        "缺少关键条件",
+    )
+    if any(marker in detail for marker in ambiguity_markers):
+        return False
+    return True
 
 
 def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -4249,10 +4359,22 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
         for item in (blueprint.get("exercise_plan") or [])
         if isinstance(item, dict) and _clean(item.get("plan_item_id"), 80)
     }
+    source_by_id = {
+        _clean(item.get("source_question_id"), 80): item
+        for item in (practice.get("selected_source_questions") or [])
+        if isinstance(item, dict) and _clean(item.get("source_question_id"), 80)
+    }
     review_rows: list[dict[str, Any]] = []
     for index, exercise in enumerate(exercises, start=1):
         plan_item_id = _clean(exercise.get("parent_plan_item_id") or exercise.get("plan_item_id"), 80)
         planned_item = planned_by_id.get(plan_item_id) or {}
+        source_refs = _unique_strings(
+            exercise.get("source_refs")
+            or planned_item.get("source_refs")
+            or [exercise.get("source_question_id"), planned_item.get("source_question_id")],
+            limit=3,
+            item_limit=80,
+        )
         review_rows.append({
             "number": exercise.get("number") or index,
             "question_type": _clean(exercise.get("question_type"), 30),
@@ -4308,12 +4430,27 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
             ],
             "blueprint": {
                 "target_skill": _clean(planned_item.get("target_skill"), 500),
+                "source_refs": source_refs,
                 "required_knowledge_points": _unique_strings(
                     planned_item.get("required_knowledge_points"), limit=60, item_limit=500
                 ),
                 "required_constraints": planned_item.get("required_constraints") or {},
                 "figure_design": planned_item.get("figure_design") or {},
             },
+            "bound_source_evidence": [
+                {
+                    "source_question_id": source_ref,
+                    "title": _clean(source_by_id[source_ref].get("title"), 300),
+                    "content": _clean(
+                        source_by_id[source_ref].get("source_content")
+                        or source_by_id[source_ref].get("stem_excerpt"),
+                        6000,
+                    ),
+                    "required_constraints": source_by_id[source_ref].get("required_constraints") or {},
+                }
+                for source_ref in source_refs
+                if source_ref in source_by_id
+            ],
         })
     task = f"""# 任务
 
@@ -4326,7 +4463,11 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
 - low：纯表达建议，不影响作答。
 - 逐项核对 blueprint.required_knowledge_points：题干必须实际要求学生使用每个必考知识点；练习题自己的 knowledge_points 字段只是声明，不是已经考查的证据。声明覆盖但题干未考查属于蓝图偏离。
 - 逐项核对 required_constraints：只有与本题目标相关的定义、公式和适用边界才应被绑定；若蓝图把其它子主题的约束误绑到本题，应报告蓝图内部不一致，不应强迫题干堆入无关内容。
+- bound_source_evidence 是本题绑定的材料证据。跨来源题必须逐项对照全部绑定材料，不能只用其中一项为题干的全称前提背书；材料之间存在对象或条件差异时，题干必须保留这些边界。
+- 当一般概述与具体材料类别的触发条件或主导机制存在张力时，以具体类别边界为准。例如题目比较高、低层错能金属时，不得把“动态回复和动态再结晶同时发生/同时存在”写成两类金属共同的事实前提；可概括为加工硬化与“各自相应的动态软化”共存，再让学生辨析具体主导机制。违反此规则属于事实性前提越界，不因后文要求比较机制而自动免责。
 - 根据题干实际需要的识记、转换、方法选择、多概念综合、迁移、纠错或评价负担核对 difficulty；不得把 difficulty_evidence 或 difficulty_rationale 的自我声明当作证明。若“挑战”题仅为教材原句识记、唯一正确项明显的直接判断，应报告难度偏低。
+- 判断题的待判断命题可以为真，也可以为假。命题为假本身不是 fact_error；只检查学生能否依据已给材料和边界得到唯一真值。仅当命题真假不唯一、混合了无法整体判断的多项陈述、缺少决定真值的条件、超出材料边界，或题干的事实性前提本身错误时报告风险。
+- 区分“待判断命题”和题干用来设定情境的事实性前提。无论题型如何，事实性前提都必须受材料支持；主动核对“同时发生、均、总是、必然、无论、始终”等全称或绝对化措辞，不能把只对部分材料成立的结论扩展到全部对象。
 - 不得为了显得严格而编造问题；不要把“要求学生掌握标准示意图”误判为题干必须给出全部曲线数据。
 - figure_summary.renderer_contract 是实际导出器的可视规则；已声明会显示的图例和节点标签，不得误报为“图中未标注”。
 
@@ -4375,13 +4516,20 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
             message = _clean(risk.get("message"), 800)
             if severity not in {"high", "medium", "low"} or not message:
                 continue
-            risks.append({
+            normalized_risk = {
                 "severity": severity,
                 "code": _clean(risk.get("code"), 100) or "semantic_risk",
                 "message": message,
                 "evidence": _clean(risk.get("evidence"), 800),
                 "suggested_action": _clean(risk.get("suggested_action"), 800),
-            })
+            }
+            if _judgment_risk_only_says_proposition_is_false(exercise, normalized_risk):
+                continue
+            risks.append(normalized_risk)
+        plan_item_id = _clean(exercise.get("parent_plan_item_id") or exercise.get("plan_item_id"), 80)
+        for risk in _cross_source_universal_premise_risks(exercise, planned_by_id.get(plan_item_id) or {}):
+            if not any(existing.get("code") == risk["code"] for existing in risks):
+                risks.append(risk)
         items.append({
             "number": exercise.get("number") or index,
             "status": "risk" if risks else "passed",
@@ -6671,6 +6819,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 - 仅生成题目正文；不得输出答案、解析、解题步骤、评分依据或自我验证过程
 - verification_note 仅记录题干条件充分性检查，不得包含答案、结论、推导或解题过程
 - 每题独立、条件充分、可作答；严格执行 change_contract.required_difference
+- 不得把仅适用于部分来源、部分材料类别或特定边界的结论，写成“同时发生、均、总是、必然、无论、始终”等普遍事实；综合多来源时须逐项核对各来源边界后再设定题干前提
+- 当一般概述与具体材料类别的触发条件或主导机制存在张力时，以具体类别边界为准。例如比较高、低层错能金属时，不得把“动态回复和动态再结晶同时发生/同时存在”写成两类金属共同的事实前提；应表述为加工硬化与“各自相应的动态软化”共存，再要求辨析具体主导机制
+- 判断题允许待判断命题为真或为假，但整句必须在已给材料与边界内具有唯一真值；不要把错误命题当作题干之外的既定事实
 - diversity_signature 只用于系统去重，必须忠实概括本题，不得写入 stem，也不得伪造差异
 - difficulty_intent 是难度方向和防退化边界，不是检查表；每题自主选择一种最自然的主要机制，最多再加一种辅助机制，不得把候选项全部堆叠
 - difficulty_evidence 只记录实际使用的主要机制和学生瓶颈，不得为迎合难度标签伪造，也不得包含答案或推导
@@ -7096,6 +7247,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             item["variant_mode"] = _clean(planned_item.get("variant_mode"), 30)
             item["variant_role"] = _clean(planned_item.get("variant_role"), 100)
             item["source_question_id"] = _clean(planned_item.get("source_question_id"), 80)
+            item["source_refs"] = _unique_strings(
+                planned_item.get("source_refs") or [planned_item.get("source_question_id")],
+                limit=3,
+                item_limit=80,
+            )
             restored.append(item)
         failures = {
             str(batch_plan[local_index].get("plan_item_id") or f"plan_item_{batch_start + local_index + 1:02d}"): error

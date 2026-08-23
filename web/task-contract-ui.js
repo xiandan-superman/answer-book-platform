@@ -81,7 +81,6 @@
 
   function displayStatus(task = {}) {
     if (isActionRequiredTask(task)) return "needs_input";
-    if (task.is_generation_task && task.status === "completed_with_issues" && !task.generation?.partial_success) return "completed";
     return filterStatus(task.status, task.current_stage);
   }
 

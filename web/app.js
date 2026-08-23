@@ -2967,9 +2967,21 @@ function updatePracticeAsideSummary(data) {
   setText("practiceResultModeAside", labels[data.generation_strategy] || "专项练习");
   setText("practiceTrainingGoalAside", data.blueprint?.training_goal || "训练目标");
   setText("practiceSummaryCount", String(data.exercises?.length || 0));
-  const warnings = data.quality?.warnings || [];
+  const warnings = Array.isArray(data.quality?.warnings) ? [...data.quality.warnings] : [];
+  const semanticReview = data.semantic_review && typeof data.semantic_review === "object" ? data.semantic_review : null;
+  const semanticReviewStatus = String(semanticReview?.status || "").toLowerCase();
+  const semanticReviewActionable = (semanticReview?.items || []).some((reviewItem) =>
+    (reviewItem?.risks || []).some((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()))
+  );
+  const semanticReviewIncomplete = Boolean(semanticReview) && !["passed", "warning"].includes(semanticReviewStatus);
+  const semanticNeedsReview = semanticReviewIncomplete || semanticReviewActionable;
+  const needsReview = warnings.length > 0 || data.quality?.release_level === "review_candidate" || semanticNeedsReview;
   setText("practiceSummaryQuality", "已完成");
   setText("practiceSummaryStatus", "已生成 · 完成");
+  if (needsReview) {
+    setText("practiceSummaryQuality", "待复核");
+    setText("practiceSummaryStatus", "已生成 · 待复核");
+  }
 }
 
 function renderPracticeBlueprintSummary(data) {
@@ -3246,7 +3258,14 @@ function renderPracticeResults(data) {
   $("practiceKnowledgeTags").innerHTML = visibleAnalysisTags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")
     + (analysisTags.length > visibleAnalysisTags.length ? `<span class="practice-tag-count">其余 ${analysisTags.length - visibleAnalysisTags.length} 项见下方筛选</span>` : "");
   $("practiceStrategy").innerHTML = (analysis.solution_strategy || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const warnings = data.quality?.warnings || [];
+  const warnings = Array.isArray(data.quality?.warnings) ? [...data.quality.warnings] : [];
+  const semanticReview = data.semantic_review && typeof data.semantic_review === "object" ? data.semantic_review : null;
+  const semanticReviewStatus = String(semanticReview?.status || "").toLowerCase();
+  const semanticReviewActionable = (semanticReview?.items || []).some((reviewItem) =>
+    (reviewItem?.risks || []).some((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()))
+  );
+  const semanticReviewIncomplete = Boolean(semanticReview) && !["passed", "warning"].includes(semanticReviewStatus);
+  const semanticNeedsReview = semanticReviewIncomplete || semanticReviewActionable;
   const failedCount = Number(data.quality?.failed_count || 0);
   const successfulCount = Number(data.quality?.generated_count ?? Math.max(0, (data.exercises?.length || 0) - failedCount));
   const blockingIssues = Array.isArray(data.quality?.blocking_issues) ? data.quality.blocking_issues : [];
@@ -3254,17 +3273,24 @@ function renderPracticeResults(data) {
   const hasGeneratedResults = resultCount > 0;
   const isComplete = failedCount === 0 && blockingIssues.length === 0 && hasGeneratedResults;
   const hasRepairableResults = failedCount === 0 && blockingIssues.length > 0 && hasGeneratedResults;
-  const needsReview = isComplete && warnings.length > 0;
+  const needsReview = isComplete && (
+    warnings.length > 0
+    || data.quality?.release_level === "review_candidate"
+    || semanticNeedsReview
+  );
   const isPassed = isComplete && !needsReview;
   $("practiceQuality").className = `practice-quality ${isPassed ? "passed" : "warning"}`;
   const visibleWarnings = warnings.slice(0, 4);
   const warningSummary = visibleWarnings.length
     ? `${visibleWarnings.join("；")}${warnings.length > visibleWarnings.length ? `；另有 ${warnings.length - visibleWarnings.length} 项。` : ""}`
-    : "题目已生成并保存。";
+    : semanticNeedsReview
+      ? "语义质量审查尚未完成或仍有学科风险，题目已保留并标记为待复核。"
+      : "题目已生成并保存。";
+  const reviewIssueCount = Math.max(warnings.length, semanticNeedsReview ? 1 : 0);
   $("practiceQuality").innerHTML = isPassed
     ? `<i class="fas fa-circle-check"></i><span><strong>题目生成完成</strong>已生成 ${data.exercises?.length || 0} 题，可直接查看、编辑或导出。</span>`
     : needsReview
-      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>题目已生成，仍有 ${warnings.length} 项需复核</strong>${escapeHtml(warningSummary)} 结果已保留，可查看、编辑或导出草稿。</span>`
+      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>题目已生成，仍有 ${reviewIssueCount} 项需复核</strong>${escapeHtml(warningSummary)} 结果已保留，可查看、编辑或导出草稿。</span>`
       : hasRepairableResults
         ? `<i class="fas fa-triangle-exclamation"></i><span><strong>已生成 ${resultCount} 题，${blockingIssues.length} 项需修复</strong>${escapeHtml(blockingIssues.slice(0, 4).join("；"))} 其余结果已保留，可继续查看和编辑。</span>`
       : `<i class="fas fa-triangle-exclamation"></i><span><strong>${failedCount ? `已生成 ${successfulCount} 题，${failedCount} 题生成失败` : "题目尚未生成完成"}</strong>${escapeHtml(failedCount ? "可重新生成失败题目或重新生题。" : (blockingIssues.join("；") || warningSummary))}</span>`;
@@ -3282,7 +3308,7 @@ function renderPracticeResults(data) {
   setPracticeStatusBanner(isPassed
     ? `已生成 ${data.exercises?.length || 0} 题 · 可查看、编辑或导出`
     : needsReview
-      ? `已生成 ${data.exercises?.length || 0} 题 · ${warnings.length} 项需复核`
+      ? `已生成 ${data.exercises?.length || 0} 题 · ${reviewIssueCount} 项需复核`
       : hasRepairableResults
         ? `已生成 ${resultCount} 题 · ${blockingIssues.length} 项需修复`
       : (failedCount ? `已生成 ${successfulCount} 题 · ${failedCount} 题生成失败` : `题目生成未完成`),
@@ -3297,7 +3323,18 @@ function renderPracticeResults(data) {
     "provider_generation_missing"
   ]);
   $("practiceExerciseList").innerHTML = (data.exercises || []).map((item, idx) => {
-    const sourceQuestion = practiceSourceLookup.get(String(item.source_question_id || ""));
+    const sourceRefs = uniquePracticeLabels([
+      ...(Array.isArray(item.source_refs) ? item.source_refs : []),
+      item.source_question_id
+    ].filter(Boolean));
+    const sourceQuestions = sourceRefs
+      .map((sourceRef) => practiceSourceLookup.get(String(sourceRef)))
+      .filter(Boolean);
+    const sourceCaption = sourceQuestions.length
+      ? `${data.source_mode === "knowledge" ? "来源知识单元" : "来源原题"}：${sourceQuestions.map((sourceQuestion) =>
+          `${sourceQuestion.number || ""} · ${sourceQuestion.title || sourceQuestion.source_question_id || "未命名来源"}`
+        ).join("；")}`
+      : "";
     const tagsArr = uniquePracticeLabels(item.knowledge_points || []);
     const visibleTags = tagsArr.slice(0, 4);
     const generationFailed = item.generation_status === "failed";
@@ -3315,7 +3352,7 @@ function renderPracticeResults(data) {
     const wordExportKey = practiceWordExportKey({ ...data, exercises: [item] });
     return `
     <article class="practice-exercise${generationFailed ? " practice-exercise--generation-failed" : ""}${variantIndex === 1 ? " practice-exercise--variant-start" : ""}" data-exercise-index="${idx}" data-exercise-type="${escapeHtml(item.question_type || "")}" data-exercise-difficulty="${escapeHtml(item.difficulty || "")}" data-exercise-tags="${escapeHtml(tagsArr.join("|"))}" data-variant-parent="${escapeHtml(parentPlanItemId)}">
-      ${sourceQuestion ? `<div class="practice-source-link"><i class="fas fa-link"></i>来源：原题 ${escapeHtml(sourceQuestion.number || "")} · ${escapeHtml(sourceQuestion.title || "")}</div>` : ""}
+      ${sourceCaption ? `<div class="practice-source-link"><i class="fas fa-link"></i>${escapeHtml(sourceCaption)}</div>` : ""}
       ${variantLabel ? `<div class="practice-variant-link"><i class="fas fa-layer-group"></i>${escapeHtml(variantLabel)}</div>` : ""}
       <header class="practice-exercise__header">
         <div class="practice-exercise__identity"><b>第 ${escapeHtml(item.number || String(idx + 1))} 题</b><span>${generationFailed ? "生成失败" : escapeHtml(item.question_type || "综合题")}</span></div>
@@ -8117,6 +8154,9 @@ function completedGenerationTaskMessage(task = {}) {
   const blockers = Array.isArray(quality.blocking_issues) ? quality.blocking_issues.length : 0;
   if (blockers > 0) return `题目已生成，但有 ${blockers} 项结构问题需要处理`;
   const warnings = Array.isArray(quality.warnings) ? quality.warnings.length : 0;
+  if (quality.release_level === "review_candidate") {
+    return `题目已生成，${Math.max(1, warnings)} 项需复核`;
+  }
   if (warnings > 0) return `题目已生成，含 ${warnings} 项非阻断提示`;
   return "题目已生成并保存";
 }
