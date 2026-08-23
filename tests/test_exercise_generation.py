@@ -773,6 +773,44 @@ def test_blueprint_warns_when_other_semantic_fields_contradict_source_boundary()
     assert any("改变已有适用边界" in warning for warning in audit["warnings"])
 
 
+def test_blueprint_does_not_treat_boundary_conclusion_or_misconception_as_boundary_change():
+    plan = ensure_practice_blueprint_defaults({
+        "selected_source_questions": [{
+            "source_question_id": "source_1",
+            "knowledge_points": ["二元系反应扩散的相区分布规律"],
+            "required_constraints": {"applicable_boundaries": [
+                "二元系反应扩散无两相区的结论仅适用于恒温恒压的平衡态过程",
+                "结论不适用于三元及以上体系和非平衡扩散过程",
+            ]},
+        }],
+        "blueprint": {
+            "training_goal": "辨析二元系反应扩散规律",
+            "progression": ["先判断标准结论"],
+            "generation_strategy": "per_question",
+            "exercise_plan": [{
+                "plan_item_id": "plan_item_01",
+                "question_type": "判断题",
+                "difficulty": "基础",
+                "target_skill": "准确识别经典结论的适用边界",
+                "variation_type": "嵌入混淆二元与多元、平衡与非平衡过程的常见误区，但保持原适用条件",
+                "design_intent": "聚焦恒温恒压平衡条件下不存在连续两相区的结论，为后续非平衡场景分析打基础。",
+                "difficulty_rationale": "学生容易混淆非平衡扩散与平衡反应扩散。",
+                "source_question_id": "source_1",
+                "source_refs": ["source_1"],
+                "required_knowledge_points": ["二元系反应扩散的相区分布规律"],
+            }],
+        },
+    })
+
+    audit = audit_practice_blueprint(plan)
+
+    assert not any("改变已有适用边界" in warning for warning in audit["warnings"])
+    assert not any(
+        finding.get("code") == "applicable_boundary_change_declared"
+        for finding in audit["findings"]
+    )
+
+
 def test_difficulty_evidence_is_preserved_and_drift_never_blocks_the_set():
     normalized = normalize_practice_set(
         {"exercises": [{

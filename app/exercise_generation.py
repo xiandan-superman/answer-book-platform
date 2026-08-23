@@ -981,6 +981,49 @@ def _is_non_assessment_bridge(field: str, value: str, anchor: str) -> bool:
     return False
 
 
+def _blueprint_boundary_change_evidence(
+    boundaries: list[str],
+    design_fields: dict[str, str],
+) -> list[dict[str, str]]:
+    """Return only explicit evidence that a blueprint changes a hard boundary.
+
+    Boundary text often contains negative conclusions such as "不存在两相区",
+    while design rationales legitimately mention out-of-scope cases as common
+    misconceptions.  Substring negation therefore cannot prove that the planned
+    exercise actually adopts a conflicting condition.
+    """
+    if not boundaries:
+        return []
+    evidence: list[dict[str, str]] = []
+    explicit_boundary_change = re.compile(r"(?:改变|更换|突破|超出|放宽|取消).{0,8}(?:适用)?边界")
+    for field, value in design_fields.items():
+        if explicit_boundary_change.search(value):
+            evidence.append({"field": field, "marker": "边界变更声明"})
+
+    normalized_boundaries = [_normalized_figure_term(boundary) for boundary in boundaries]
+    target_skill_exclusions = ("识别", "辨析", "误区", "不适用", "排除", "避免", "区别")
+    change_verbs = r"(?:改为|转为|切换为|引入|采用|结合|设置为|设为|变更为)"
+    for key, markers in _BOUNDARY_CONTRADICTION_MARKERS.items():
+        if not any(_normalized_figure_term(key) in boundary for boundary in normalized_boundaries):
+            continue
+        for marker in markers:
+            for field, value in design_fields.items():
+                if marker not in value:
+                    continue
+                direct_target = (
+                    field == "target_skill"
+                    and not any(token in value for token in target_skill_exclusions)
+                )
+                explicit_adoption = bool(re.search(fr"{change_verbs}.{{0,24}}{re.escape(marker)}", value))
+                if direct_target or explicit_adoption:
+                    evidence.append({"field": field, "marker": marker})
+    unique_evidence: list[dict[str, str]] = []
+    for item in evidence:
+        if item not in unique_evidence:
+            unique_evidence.append(item)
+    return unique_evidence
+
+
 def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     """Run deterministic confirmation-time checks on a user-edited blueprint."""
     blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
@@ -1175,19 +1218,17 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 "bound_source_refs": refs,
                 "matches": bridge_matches,
             })
-        compact_boundaries = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", "".join(boundaries))
-        boundary_phrases = {
-            compact_boundaries[start : start + size]
-            for size in range(2, min(6, len(compact_boundaries)) + 1)
-            for start in range(0, len(compact_boundaries) - size + 1)
-        }
-        negates_boundary = any(
-            f"{prefix}{phrase}" in design_text
-            for phrase in boundary_phrases
-            for prefix in ("非", "不", "无")
-        )
-        if boundaries and ("改变边界" in design_text or negates_boundary):
-            boundary_review_items.append(str(item.get("number") or index))
+        boundary_change_evidence = _blueprint_boundary_change_evidence(boundaries, design_fields)
+        if boundary_change_evidence:
+            item_number = str(item.get("number") or index)
+            boundary_review_items.append(item_number)
+            findings.append({
+                "code": "applicable_boundary_change_declared",
+                "severity": "warning",
+                "item_number": item_number,
+                "plan_item_id": _clean(item.get("plan_item_id"), 120),
+                "evidence": boundary_change_evidence,
+            })
     if missing_required_points:
         errors.append(f"第 {','.join(missing_required_points)} 项缺少必考知识点组合。")
     if invalid_required_points:
