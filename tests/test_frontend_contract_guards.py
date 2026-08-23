@@ -66,6 +66,14 @@ def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert "API Key、教材、任务和输出不会被覆盖" in APP_JS
 
 
+def test_runtime_monitor_exposes_an_explicit_default_off_hybrid_switch() -> None:
+    assert 'id="hybridExecutionEnabled"' in INDEX_HTML
+    assert "本机执行（默认）" in INDEX_HTML
+    assert 'api("/api/hybrid/settings")' in APP_JS
+    assert 'body: JSON.stringify({ enabled: requested })' in APP_JS
+    assert "任务材料不上传到混合云服务器" in INDEX_HTML
+
+
 def test_frontend_displays_formal_app_version_without_legacy_internal_label() -> None:
     assert 'version.app_version || versionParts[0]' in APP_JS
     assert '$("platformVersion").textContent = `v${appVersion}`;' in APP_JS

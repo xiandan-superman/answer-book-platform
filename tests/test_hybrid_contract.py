@@ -48,6 +48,53 @@ def test_hybrid_config_merges_build_time_bundle_and_local_override(tmp_path, mon
     assert value["poll_interval_seconds"] == 8
 
 
+def test_bundled_server_credentials_do_not_enable_hybrid_by_default(tmp_path, monkeypatch) -> None:
+    example = tmp_path / "hybrid_cloud.example.json"
+    bundled = tmp_path / "hybrid_cloud.json"
+    local = tmp_path / "local.json"
+    example.write_text(json.dumps({"enabled": False}), encoding="utf-8")
+    bundled.write_text(
+        json.dumps({"enabled": False, "base_url": "http://cloud.private:8781", "token": "bundled"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hybrid_client, "DEFAULT_CONFIG_PATH", example)
+    monkeypatch.setattr(hybrid_client, "BUNDLED_CONFIG_PATH", bundled)
+    monkeypatch.setattr(hybrid_client, "LOCAL_CONFIG_PATH", local)
+    for name in ("ANSWER_BOOK_HYBRID_URL", "ANSWER_BOOK_HYBRID_TOKEN", "ANSWER_BOOK_HYBRID_TENANT", "ANSWER_BOOK_HYBRID_ENABLED"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = hybrid_client.hybrid_settings_payload()
+
+    assert settings["available"] is True
+    assert settings["enabled"] is False
+    assert settings["execution_mode"] == "local"
+    assert settings["server_host"] == "cloud.private"
+    assert "token" not in settings
+
+
+def test_local_owner_can_toggle_hybrid_execution_without_rewriting_credentials(tmp_path, monkeypatch) -> None:
+    example = tmp_path / "hybrid_cloud.example.json"
+    bundled = tmp_path / "hybrid_cloud.json"
+    local = tmp_path / "local.json"
+    example.write_text(json.dumps({"enabled": False, "poll_interval_seconds": 3}), encoding="utf-8")
+    bundled.write_text(
+        json.dumps({"enabled": False, "base_url": "http://cloud.private:8781", "token": "bundled"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hybrid_client, "DEFAULT_CONFIG_PATH", example)
+    monkeypatch.setattr(hybrid_client, "BUNDLED_CONFIG_PATH", bundled)
+    monkeypatch.setattr(hybrid_client, "LOCAL_CONFIG_PATH", local)
+    monkeypatch.delenv("ANSWER_BOOK_HYBRID_ENABLED", raising=False)
+
+    enabled = hybrid_client.save_hybrid_enabled(True)
+    disabled = hybrid_client.save_hybrid_enabled(False)
+
+    assert enabled["enabled"] is True
+    assert disabled["enabled"] is False
+    assert json.loads(local.read_text(encoding="utf-8")) == {"enabled": False}
+    assert "token" not in local.read_text(encoding="utf-8")
+
+
 def test_hybrid_input_bundle_rebinds_assets_and_never_serializes_credentials(tmp_path, monkeypatch) -> None:
     tasks = tmp_path / "tasks"
     tasks.mkdir()

@@ -56,6 +56,57 @@ def hybrid_enabled() -> bool:
     return bool(config.get("enabled") and config.get("base_url") and config.get("token"))
 
 
+def hybrid_settings_payload() -> dict[str, Any]:
+    """Expose execution mode without disclosing the bundled server credential."""
+
+    config = load_hybrid_config()
+    parsed = urlsplit(str(config.get("base_url") or ""))
+    available = bool(parsed.hostname and config.get("token"))
+    environment_locked = "ANSWER_BOOK_HYBRID_ENABLED" in os.environ
+    if environment_locked:
+        source = "environment"
+    elif LOCAL_CONFIG_PATH.is_file() and "enabled" in _read_json(LOCAL_CONFIG_PATH):
+        source = "local"
+    elif BUNDLED_CONFIG_PATH.is_file() and "enabled" in _read_json(BUNDLED_CONFIG_PATH):
+        source = "bundled"
+    else:
+        source = "default"
+    enabled = bool(config.get("enabled") and available)
+    return {
+        "available": available,
+        "enabled": enabled,
+        "execution_mode": "hybrid" if enabled else "local",
+        "server_host": str(parsed.hostname or ""),
+        "setting_source": source,
+        "environment_locked": environment_locked,
+        "message": (
+            "真题解析将上传必要任务材料并由混合云服务器执行。"
+            if enabled
+            else "默认在当前电脑执行，任务材料不上传到混合云服务器。"
+        ),
+    }
+
+
+def save_hybrid_enabled(enabled: bool) -> dict[str, Any]:
+    if "ANSWER_BOOK_HYBRID_ENABLED" in os.environ:
+        raise HybridClientError("混合云开关当前由启动环境锁定，无法在页面修改。")
+    current = _read_json(LOCAL_CONFIG_PATH)
+    if enabled:
+        merged = load_hybrid_config()
+        if not str(merged.get("base_url") or "").strip() or not str(merged.get("token") or "").strip():
+            raise HybridClientError("当前安装包未配置可用的混合云服务器。")
+    current["enabled"] = bool(enabled)
+    LOCAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = LOCAL_CONFIG_PATH.with_suffix(f"{LOCAL_CONFIG_PATH.suffix}.tmp")
+    temporary.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, LOCAL_CONFIG_PATH)
+    try:
+        LOCAL_CONFIG_PATH.chmod(0o600)
+    except OSError:
+        pass
+    return hybrid_settings_payload()
+
+
 def _event(task_id: str, event: str, **detail: Any) -> None:
     path = task_dir(task_id) / "stage_outputs" / "hybrid_client_events.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -7588,6 +7588,69 @@ input:focus, select:focus, textarea:focus {
   .lan-access-values { justify-content: flex-start; }
 }
 
+.execution-mode-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+  border: 1px solid #bbf7d0;
+  border-radius: 16px;
+  padding: 18px 24px;
+  background: linear-gradient(135deg, #f0fdf4, #f8fafc);
+}
+.execution-mode-panel.hybrid-mode {
+  border-color: #fed7aa;
+  background: linear-gradient(135deg, #fff7ed, #f8fafc);
+}
+.execution-mode-copy { display: flex; align-items: center; gap: 14px; }
+.execution-mode-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  border-radius: 13px;
+  background: #16a34a;
+  color: #fff;
+}
+.hybrid-mode .execution-mode-icon { background: #ea580c; }
+.execution-mode-panel h3 { margin: 0 0 5px; color: #166534; font-size: 16px; }
+.execution-mode-panel.hybrid-mode h3 { color: #9a3412; }
+.execution-mode-panel p { margin: 0; color: #64748b; font-size: 13px; line-height: 1.55; }
+.execution-mode-switch { display: flex; align-items: center; gap: 12px; cursor: pointer; white-space: nowrap; }
+.execution-mode-switch > span { color: #166534; font-size: 13px; font-weight: 800; }
+.hybrid-mode .execution-mode-switch > span { color: #9a3412; }
+.execution-mode-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.execution-mode-switch i {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background-color .18s ease;
+}
+.execution-mode-switch i::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, .28);
+  transition: transform .18s ease;
+}
+.execution-mode-switch input:checked + i { background: #ea580c; }
+.execution-mode-switch input:checked + i::after { transform: translateX(22px); }
+.execution-mode-switch input:focus-visible + i { outline: 3px solid rgba(37, 99, 235, .28); outline-offset: 2px; }
+.execution-mode-switch input:disabled + i { opacity: .45; cursor: not-allowed; }
+@media (max-width: 900px) {
+  .execution-mode-panel { align-items: stretch; flex-direction: column; }
+  .execution-mode-switch { justify-content: space-between; }
+}
+
 
 /* ===== Design prototype practice styles ===== */
 .no-scrollbar::-webkit-scrollbar { display: none; }

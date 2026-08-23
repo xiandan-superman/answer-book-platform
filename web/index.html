@@ -1730,6 +1730,20 @@
             </button>
           </div>
         </article>
+        <article id="hybridExecutionPanel" class="execution-mode-panel local-mode">
+          <div class="execution-mode-copy">
+            <span class="execution-mode-icon"><i class="fas fa-laptop"></i></span>
+            <div>
+              <h3>真题解析执行位置</h3>
+              <p id="hybridExecutionHint">默认在当前电脑执行，任务材料不上传到混合云服务器。</p>
+            </div>
+          </div>
+          <label class="execution-mode-switch" for="hybridExecutionEnabled">
+            <span id="hybridExecutionLabel">本机执行（默认）</span>
+            <input id="hybridExecutionEnabled" type="checkbox" role="switch" aria-label="启用混合云服务器执行">
+            <i aria-hidden="true"></i>
+          </label>
+        </article>
         <article class="system-monitor-panel">
           <div class="system-monitor-header">
             <div>

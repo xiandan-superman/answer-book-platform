@@ -37,6 +37,7 @@ from .exercise_generation import (
 )
 from .final_acceptance import build_final_acceptance_report
 from .http_errors import public_error_payload
+from .hybrid_client import HybridClientError, hybrid_settings_payload, save_hybrid_enabled
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
 from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
 from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
@@ -810,6 +811,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/environment":
             self.send_json(check_environment())
             return
+        if parsed.path == "/api/hybrid/settings":
+            self.send_json(hybrid_settings_payload())
+            return
         if parsed.path == "/api/providers":
             self.send_json({name: cfg.redacted() for name, cfg in list_providers().items()})
             return
@@ -1574,6 +1578,24 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/shared-textbook-library/settings":
                 body = self.read_json()
                 self.send_json(save_shared_library_settings(str(body.get("remote_url") or "")))
+                return
+            if parsed.path == "/api/hybrid/settings":
+                if not self.is_local_client():
+                    self.send_json({"ok": False, "error": "只能在运行程序的本机修改混合云开关。"}, status=403)
+                    return
+                body = self.read_json()
+                if not isinstance(body.get("enabled"), bool):
+                    raise ValueError("enabled must be a boolean")
+                try:
+                    result = save_hybrid_enabled(bool(body["enabled"]))
+                except HybridClientError as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, status=400)
+                    return
+                append_runtime_log(
+                    "hybrid_settings",
+                    "混合云执行已开启" if result["enabled"] else "混合云执行已关闭，改为本机执行",
+                )
+                self.send_json({"ok": True, **result})
                 return
             if parsed.path == "/api/shared-textbook-library/remote-catalog":
                 body = self.read_json()

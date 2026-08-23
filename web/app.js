@@ -8,6 +8,7 @@ let taskBulkMode = false;
 const selectedTaskIds = new Set();
 let providerConfigs = {};
 let apiKeyFileInfo = {};
+let hybridExecutionSettings = {};
 const keyConfigTests = {};
 let libraryFiles = { exams: [], textbooks: [], exams_root: "", textbooks_root: "" };
 let activeTaskId = "";
@@ -8397,10 +8398,80 @@ function renderSystemStatus(data) {
 async function loadSystemStatus() {
   const [data] = await Promise.all([
     api("/api/system/status"),
-    loadLanAccessInfo().catch(() => null)
+    loadLanAccessInfo().catch(() => null),
+    loadHybridExecutionSettings().catch(() => null)
   ]);
   renderSystemStatus(data);
   return data;
+}
+
+function renderHybridExecutionSettings(data = {}) {
+  hybridExecutionSettings = data || {};
+  const enabled = Boolean(data?.enabled);
+  const available = Boolean(data?.available);
+  const locked = Boolean(data?.environment_locked);
+  const checkbox = $("hybridExecutionEnabled");
+  const panel = $("hybridExecutionPanel");
+  if (checkbox) {
+    checkbox.checked = enabled;
+    checkbox.disabled = !available || locked;
+  }
+  panel?.classList.toggle("hybrid-mode", enabled);
+  panel?.classList.toggle("local-mode", !enabled);
+  const hostText = data?.server_host ? `服务器：${data.server_host}。` : "";
+  setText(
+    "hybridExecutionLabel",
+    enabled ? "混合云服务器执行" : "本机执行（默认）"
+  );
+  setText(
+    "hybridExecutionHint",
+    !available
+      ? "当前安装包未配置混合云服务器，真题解析固定在本机执行。"
+      : locked
+        ? `${data.message || ""}${hostText}开关由启动环境锁定。`
+        : `${data.message || ""}${hostText}`
+  );
+}
+
+async function loadHybridExecutionSettings() {
+  const data = await api("/api/hybrid/settings");
+  renderHybridExecutionSettings(data);
+  return data;
+}
+
+async function saveHybridExecutionSetting() {
+  const checkbox = $("hybridExecutionEnabled");
+  if (!checkbox) return;
+  const requested = Boolean(checkbox.checked);
+  if (requested) {
+    const confirmed = await platformConfirm({
+      eyebrow: "执行位置",
+      title: "启用混合云服务器？",
+      message: "启用后，新的真题解析任务会将必要材料上传到已配置的混合云服务器计算。按题出题、知识点出题和 Word 工具仍在本机执行。",
+      confirmText: "确认启用",
+      tone: "warning"
+    });
+    if (!confirmed) {
+      checkbox.checked = Boolean(hybridExecutionSettings?.enabled);
+      return;
+    }
+  }
+  checkbox.disabled = true;
+  try {
+    const data = await api("/api/hybrid/settings", {
+      method: "POST",
+      body: JSON.stringify({ enabled: requested })
+    });
+    renderHybridExecutionSettings(data);
+    await platformAlert(
+      requested ? "新的真题解析任务将使用混合云服务器。" : "新的真题解析任务将在当前电脑执行。",
+      { title: "执行位置已更新", tone: "success" }
+    );
+  } catch (error) {
+    checkbox.checked = Boolean(hybridExecutionSettings?.enabled);
+    checkbox.disabled = !hybridExecutionSettings?.available || Boolean(hybridExecutionSettings?.environment_locked);
+    await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "无法修改执行位置", tone: "warning" });
+  }
 }
 
 function stopSystemMonitorPolling() {
@@ -10827,6 +10898,7 @@ $("taskBulkSelectAllBtn")?.addEventListener("click", () => {
 });
 $("refreshSystemBtn")?.addEventListener("click", loadSystemStatus);
 $("copyLanAccessBtn")?.addEventListener("click", () => copyLanAccessInfo().catch(() => {}));
+$("hybridExecutionEnabled")?.addEventListener("change", () => saveHybridExecutionSetting());
 $("pageMapBtn").addEventListener("click", pageMap);
 $("savePageMapBtn").addEventListener("click", savePageMap);
 $("seedPageMapBtn").addEventListener("click", seedPageMap);

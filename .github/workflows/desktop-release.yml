@@ -69,6 +69,7 @@ jobs:
           ANSWER_BOOK_HYBRID_URL: ${{ secrets.HYBRID_CLOUD_URL }}
           ANSWER_BOOK_HYBRID_TOKEN: ${{ secrets.HYBRID_CLOUD_TOKEN }}
           ANSWER_BOOK_HYBRID_TENANT: default
+          ANSWER_BOOK_HYBRID_ENABLED: "0"
         run: python scripts/build_macos_app.py
       - name: Upload macOS package
         uses: actions/upload-artifact@v4
@@ -108,6 +109,7 @@ jobs:
           ANSWER_BOOK_HYBRID_URL: ${{ secrets.HYBRID_CLOUD_URL }}
           ANSWER_BOOK_HYBRID_TOKEN: ${{ secrets.HYBRID_CLOUD_TOKEN }}
           ANSWER_BOOK_HYBRID_TENANT: default
+          ANSWER_BOOK_HYBRID_ENABLED: "0"
         run: python scripts/build_windows_app.py
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
