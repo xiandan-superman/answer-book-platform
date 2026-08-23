@@ -58,6 +58,11 @@ let practiceEditorDraftTimer = null;
 let currentPracticeRevisionCount = 0;
 let currentPracticeHistoryId = "";
 let activePracticeJobId = "";
+let practiceNavigationVersion = 0;
+let practiceRecoveryObserverVersion = 0;
+let practiceRecoveryNoticeJob = null;
+let practiceRecoveryNoticeDismissedKey = "";
+let practiceRecoveryNoticeSignature = "";
 let practicePreferenceSequence = 0;
 let practiceDifficultySelectionOrder = 0;
 let practiceVariantSelectionOrder = 0;
@@ -189,6 +194,7 @@ function startWizard() {
 
 function goToPage(page) {
   window.SupportTelemetry?.record("navigation", { action: "go_to_page", target: page });
+  practiceNavigationVersion += 1;
   if (page !== currentPage) {
     if (currentPage === "knowledge") flushScheduledPracticeWorkspaceDraft("knowledge");
     if (currentPage === "practice") flushScheduledPracticeWorkspaceDraft(currentPracticeSourceMode);
@@ -798,6 +804,7 @@ function newPracticeBatchId() {
 function beginNewPracticeSession() {
   // A new entry is a new user intent, even when its materials are identical to
   // an active task. Detach this page from any old job before submitting again.
+  invalidatePracticeRecoveryObserver();
   practiceSessionVersion += 1;
   practiceBatchId = newPracticeBatchId();
   restorePracticePreferenceOrders();
@@ -1563,6 +1570,141 @@ function rememberPracticeJob(jobId) {
   } catch (e) {}
 }
 
+function practiceRecoveryNoticeKey(job = {}) {
+  return `${String(job.job_id || "")}:${String(job.status || "unknown")}`;
+}
+
+function hidePracticeRecoveryNotice({ dismiss = false } = {}) {
+  const notice = $("practiceRecoveryNotice");
+  if (dismiss && practiceRecoveryNoticeJob) {
+    practiceRecoveryNoticeDismissedKey = practiceRecoveryNoticeKey(practiceRecoveryNoticeJob);
+  }
+  notice?.classList.add("hidden");
+}
+
+function invalidatePracticeRecoveryObserver({ hideNotice = true } = {}) {
+  practiceRecoveryObserverVersion += 1;
+  practiceRecoveryNoticeJob = null;
+  practiceRecoveryNoticeDismissedKey = "";
+  practiceRecoveryNoticeSignature = "";
+  if (hideNotice) hidePracticeRecoveryNotice();
+}
+
+function practiceRecoveryNoticeMeta(job = {}, { navigationChanged = false } = {}) {
+  const status = String(job.status || "unknown");
+  const taskName = String(job.title || job.payload?.knowledge_title || "模拟出题任务");
+  if (status === "completed") {
+    return {
+      eyebrow: "后台任务已完成",
+      title: taskName,
+      message: navigationChanged
+        ? "结果已保留，当前页面不会被打断。需要时可进入工作区继续。"
+        : "结果已保留。点击查看结果后再进入对应工作区。",
+      action: "查看结果",
+      tone: "success",
+    };
+  }
+  if (status === "failed") {
+    return {
+      eyebrow: "后台任务未完成",
+      title: taskName,
+      message: job.error_presentation?.message || job.error || "任务执行失败，当前页面和已有任务记录均已保留。",
+      action: "查看详情",
+      tone: "danger",
+    };
+  }
+  if (status === "cancelled") {
+    return {
+      eyebrow: "后台任务已取消",
+      title: taskName,
+      message: job.error_presentation?.message || job.error || "任务已取消，当前页面和已有任务记录均已保留。",
+      action: "查看详情",
+      tone: "warning",
+    };
+  }
+  if (status === "unavailable") {
+    return {
+      eyebrow: "正在恢复后台任务",
+      title: taskName,
+      message: "暂时无法刷新任务状态。任务标识已保留，可稍后继续查看。",
+      action: "继续查看",
+      tone: "warning",
+    };
+  }
+  return {
+    eyebrow: status === "queued" ? "已恢复排队中的任务" : "已恢复进行中的任务",
+    title: taskName,
+    message: job.progress_message || "任务仍在后台继续，停留在当前页面不会影响执行。",
+    action: "继续查看",
+    tone: "progress",
+  };
+}
+
+function showPracticeRecoveryNotice(job = {}, options = {}) {
+  if (!job.job_id) return;
+  const notice = $("practiceRecoveryNotice");
+  if (!notice) return;
+  practiceRecoveryNoticeJob = { ...job };
+  const key = practiceRecoveryNoticeKey(job);
+  if (practiceRecoveryNoticeDismissedKey === key) return;
+  const meta = practiceRecoveryNoticeMeta(job, options);
+  const signature = JSON.stringify([key, meta.eyebrow, meta.title, meta.message, meta.action]);
+  if (signature === practiceRecoveryNoticeSignature && !notice.classList.contains("hidden")) return;
+  practiceRecoveryNoticeSignature = signature;
+  setText("practiceRecoveryEyebrow", meta.eyebrow);
+  setText("practiceRecoveryTitle", meta.title);
+  setText("practiceRecoveryMessage", meta.message);
+  setText("practiceRecoveryOpenBtn", meta.action);
+  notice.dataset.status = String(job.status || "unknown");
+  notice.dataset.tone = meta.tone;
+  notice.classList.remove("hidden");
+}
+
+function practiceRecoveryContextIsCurrent(context = {}) {
+  return context.observerVersion === practiceRecoveryObserverVersion
+    && context.sessionVersion === practiceSessionVersion;
+}
+
+function renderStoppedPracticeRecoveryJob(job = {}) {
+  const stoppedKnowledgeAnalyze = job.task_kind === "knowledge" && job.operation === "analyze";
+  latestPracticeRequest = job.payload || latestPracticeRequest;
+  restorePracticePreferenceOrders(latestPracticeRequest);
+  syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
+  setPracticeWorkspaceMode(job.task_kind === "knowledge" ? "knowledge" : "exam");
+  if (stoppedKnowledgeAnalyze) {
+    goToPage("knowledge");
+  } else {
+    goToPage("practice");
+    setPracticeSourceEntryVisibility(true);
+    setPracticeStatusBanner(job.status === "cancelled" ? "任务已取消" : "任务未完成", "error");
+  }
+  const errorBox = $(stoppedKnowledgeAnalyze ? "knowledgeError" : "practiceError");
+  if (errorBox) {
+    errorBox.textContent = job.error_presentation?.message
+      || job.error
+      || (job.status === "cancelled" ? "后台出题任务已取消。" : "后台出题任务失败。");
+    errorBox.classList.remove("hidden");
+  }
+}
+
+async function openPracticeRecoveryNoticeJob() {
+  const remembered = practiceRecoveryNoticeJob;
+  if (!remembered?.job_id) return;
+  invalidatePracticeRecoveryObserver();
+  rememberPracticeJob("");
+  const job = await api(`/api/practice/jobs/${encodeURIComponent(remembered.job_id)}?detail=1`);
+  if (["failed", "cancelled"].includes(String(job.status || ""))) {
+    practiceSessionVersion += 1;
+    renderStoppedPracticeRecoveryJob(job);
+    return;
+  }
+  await openGenerationJob({
+    task_id: job.job_id,
+    task_kind: job.task_kind,
+    error_presentation: job.error_presentation || {},
+  });
+}
+
 function practiceJobDelay(ms = 1200) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1603,12 +1745,15 @@ function updatePracticeLoadingProgress(job = {}) {
   setText("practiceLoadingElapsed", `${formatPracticeWaitTime(elapsed)} · ${practiceWaitExpectation(job)}`);
 }
 
-async function waitForPracticeJob(jobId) {
+async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
   let transientFailures = 0;
   while (true) {
     try {
       const job = await api(`/api/practice/jobs/${encodeURIComponent(jobId)}?detail=1`);
       transientFailures = 0;
+      if (typeof onUpdate === "function") {
+        try { onUpdate(job); } catch (e) {}
+      }
       if (job.progress_message && activePracticeJobId === jobId) {
         setPracticeStageDescription(job.progress_message);
         updatePracticeLoadingProgress(job);
@@ -1650,57 +1795,55 @@ async function submitPracticeJob(operation, payload) {
 
 async function resumeRememberedPracticeJob() {
   const sessionVersion = practiceSessionVersion;
+  const navigationVersion = practiceNavigationVersion;
   let jobId = "";
   try { jobId = localStorage.getItem("activePracticeJobId") || ""; } catch (e) {}
   if (!jobId || activePracticeJobId) return;
+  const observerVersion = ++practiceRecoveryObserverVersion;
+  const context = { observerVersion, sessionVersion, navigationVersion, jobId };
   rememberPracticeJob(jobId);
   try {
-    const job = await waitForPracticeJob(jobId);
-    if (sessionVersion !== practiceSessionVersion) return;
-    latestPracticeRequest = job.payload || latestPracticeRequest;
-    restorePracticePreferenceOrders(latestPracticeRequest);
-    syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
-    setPracticeWorkspaceMode(job.task_kind === "knowledge" ? "knowledge" : "exam");
-    goToPage("practice");
-    if (job.operation === "analyze") {
-      renderPracticeSourceSelection(job.result);
-    } else if (job.operation === "plan") {
-      if (job.result?.requires_source_selection && job.task_kind === "knowledge") throw new Error("知识点材料不需要选择原题范围，请重新生成知识点蓝图。");
-      if (job.result?.requires_source_selection) renderPracticeSourceSelection(job.result);
-      else renderPracticePlan(job.result);
-    } else if (["generate_from_plan", "generate_from_contract"].includes(job.operation)) {
-      latestPracticePlan = job.payload?.plan || latestPracticePlan;
-      renderPracticeResults(job.result);
-      await loadPracticeHistory();
+    const initialJob = await api(`/api/practice/jobs/${encodeURIComponent(jobId)}?detail=1`);
+    if (!practiceRecoveryContextIsCurrent(context)) return;
+    const navigationChanged = navigationVersion !== practiceNavigationVersion;
+    showPracticeRecoveryNotice(initialJob, { navigationChanged });
+    if (["completed", "failed", "cancelled"].includes(String(initialJob.status || ""))) {
+      rememberPracticeJob("");
+      loadTasks({ silent: true, includeLiveDetails: true }).catch(() => {});
+      return;
     }
-    if (sessionVersion === practiceSessionVersion) rememberPracticeJob("");
+    const job = await waitForPracticeJob(jobId, {
+      onUpdate(currentJob) {
+        if (!practiceRecoveryContextIsCurrent(context)) return;
+        showPracticeRecoveryNotice(currentJob, {
+          navigationChanged: navigationVersion !== practiceNavigationVersion,
+        });
+      },
+    });
+    if (!practiceRecoveryContextIsCurrent(context)) return;
+    rememberPracticeJob("");
+    showPracticeRecoveryNotice(job, {
+      navigationChanged: navigationVersion !== practiceNavigationVersion,
+    });
+    loadTasks({ silent: true, includeLiveDetails: true }).catch(() => {});
   } catch (error) {
-    if (sessionVersion !== practiceSessionVersion) return;
+    if (!practiceRecoveryContextIsCurrent(context)) return;
     const stoppedJob = error?.practiceJob && typeof error.practiceJob === "object"
       ? error.practiceJob
       : null;
-    const stoppedKnowledgeAnalyze = stoppedJob?.task_kind === "knowledge" && stoppedJob?.operation === "analyze";
     if (stoppedJob) {
-      setPracticeWorkspaceMode(stoppedJob.task_kind === "knowledge" ? "knowledge" : "exam");
-      if (stoppedKnowledgeAnalyze) {
-        goToPage("knowledge");
-      } else {
-        goToPage("practice");
-        setPracticeSourceEntryVisibility(true);
-        setPracticeStatusBanner(
-          stoppedJob.status === "cancelled" ? "任务已取消" : "任务未完成",
-          "error"
-        );
-      }
+      rememberPracticeJob("");
+      showPracticeRecoveryNotice(stoppedJob, {
+        navigationChanged: navigationVersion !== practiceNavigationVersion,
+      });
+      loadTasks({ silent: true, includeLiveDetails: true }).catch(() => {});
+      return;
     }
-    const errorBox = $(stoppedKnowledgeAnalyze
-      ? "knowledgeError"
-      : (currentPracticeSourceMode === "knowledge" && !stoppedJob ? "knowledgeError" : "practiceError"));
-    if (errorBox) {
-      errorBox.textContent = stoppedJob?.error_presentation?.message
-        || String(error).replace(/^Error:\s*/, "");
-      errorBox.classList.remove("hidden");
-    }
+    showPracticeRecoveryNotice({
+      job_id: jobId,
+      status: "unavailable",
+      title: practiceRecoveryNoticeJob?.title || "模拟出题任务",
+    }, { navigationChanged: navigationVersion !== practiceNavigationVersion });
   }
 }
 
@@ -8920,6 +9063,7 @@ async function retryGenerationJob(task) {
 }
 
 async function openGenerationJob(task) {
+  invalidatePracticeRecoveryObserver();
   const sessionVersion = practiceSessionVersion + 1;
   practiceSessionVersion = sessionVersion;
   rememberPracticeJob("");
@@ -8978,6 +9122,7 @@ async function openGenerationJob(task) {
 }
 
 async function openGenerationTaskResult(task) {
+  invalidatePracticeRecoveryObserver();
   const sessionVersion = practiceSessionVersion + 1;
   practiceSessionVersion = sessionVersion;
   rememberPracticeJob("");
@@ -10975,6 +11120,23 @@ Object.assign(window, {
 $("refreshBtn")?.addEventListener("click", async () => {
   await refresh();
   if (currentPage === "env") await loadEnvironmentStatus();
+});
+$("practiceRecoveryOpenBtn")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await openPracticeRecoveryNoticeJob();
+  } catch (error) {
+    await platformAlert(String(error).replace(/^Error:\s*/, ""), {
+      title: "无法打开恢复任务",
+      tone: "danger",
+    });
+  } finally {
+    button.disabled = false;
+  }
+});
+$("practiceRecoveryStayBtn")?.addEventListener("click", () => {
+  hidePracticeRecoveryNotice({ dismiss: true });
 });
 $("prepareTextbookIndexBtn").addEventListener("click", prepareTextbookIndex);
 $("saveSharedLibraryBtn")?.addEventListener("click", () => {

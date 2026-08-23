@@ -56,6 +56,19 @@
   </div>
   </header>
 
+  <aside id="practiceRecoveryNotice" class="practice-recovery-notice hidden" data-status="" data-tone="progress" aria-labelledby="practiceRecoveryTitle" aria-describedby="practiceRecoveryMessage">
+    <span class="practice-recovery-notice__icon" aria-hidden="true"><i class="fas fa-clock-rotate-left"></i></span>
+    <div class="practice-recovery-notice__content" role="status" aria-live="polite" aria-atomic="true">
+      <span id="practiceRecoveryEyebrow" class="practice-recovery-notice__eyebrow">正在恢复后台任务</span>
+      <strong id="practiceRecoveryTitle">模拟出题任务</strong>
+      <p id="practiceRecoveryMessage">任务仍在后台继续，停留在当前页面不会影响执行。</p>
+    </div>
+    <div class="practice-recovery-notice__actions">
+      <button id="practiceRecoveryOpenBtn" class="primary-button" type="button">继续查看</button>
+      <button id="practiceRecoveryStayBtn" class="text-button" type="button">留在当前页</button>
+    </div>
+  </aside>
+
   <main class="app-shell">
     <section id="page-home" class="page active">
       <div class="platform-home">

@@ -1,11 +1,63 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.e2e
+
+
+def _practice_recovery_job(job_id: str, status: str, title: str) -> dict:
+    return {
+        "job_id": job_id,
+        "status": status,
+        "operation": "analyze",
+        "task_kind": "knowledge",
+        "title": title,
+        "progress_message": "正在梳理恢复测试材料",
+        "payload": {
+            "source_mode": "knowledge",
+            "knowledge_title": title,
+            "question_text": "恢复测试材料",
+            "source_files": [],
+            "blueprint_review_enabled": True,
+            "include_source_content_in_generation": True,
+        },
+        "result": {
+            "source_mode": "knowledge",
+            "source_analysis": {"subject": "恢复测试", "knowledge_points": ["恢复知识点"]},
+            "source_scope": {
+                "mode": "question_set",
+                "title": title,
+                "granularity": "top_level",
+                "has_hierarchy": False,
+                "questions": [{
+                    "source_question_id": "source_01",
+                    "number": "1",
+                    "title": "恢复知识单元",
+                    "stem_excerpt": "用于验证显式恢复入口",
+                    "source_content": "用于验证显式恢复入口",
+                    "question_type": "概念题",
+                    "source_difficulty": "基础",
+                    "knowledge_points": ["恢复知识点"],
+                    "required_constraints": {
+                        "essential_definitions": [],
+                        "essential_formulas": [],
+                        "applicable_boundaries": [],
+                    },
+                    "source_ref": {},
+                    "constraint_status": "complete",
+                }],
+            },
+            "source_files": [],
+            "source_file_diagnostics": [],
+            "generation": {"provider": "fixture", "model": "recovery-fixture"},
+        },
+        "error": "任务未完成测试说明",
+        "error_presentation": {"message": "任务未完成测试说明"},
+    }
 
 
 def test_primary_desktop_workflows_have_safe_initial_state() -> None:
@@ -302,4 +354,114 @@ def test_pre_generation_inputs_scope_and_blueprint_survive_reload_without_cross_
         page.locator("#practiceWorkspaceDraftClearActive").click()
         page.locator("#practiceQuestionText").wait_for(state="visible")
         assert page.locator("#practiceQuestionText").input_value() == ""
+        browser.close()
+
+
+def test_practice_job_refresh_recovery_never_steals_navigation() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+        jobs = {
+            "recovery-job": _practice_recovery_job("recovery-job", "running", "刷新恢复任务"),
+        }
+
+        def route_practice_job(route) -> None:
+            job_id = route.request.url.split("/api/practice/jobs/", 1)[1].split("?", 1)[0]
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(jobs[job_id], ensure_ascii=False))
+
+        context.route("**/api/practice/jobs/**", route_practice_job)
+        page.goto(base_url, wait_until="networkidle")
+        page.evaluate("localStorage.setItem('activePracticeJobId', 'recovery-job')")
+
+        for _ in range(2):
+            page.reload(wait_until="networkidle")
+            page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+            assert page.locator("#practiceRecoveryNotice").count() == 1
+            assert page.locator("#practiceRecoveryEyebrow").inner_text() == "已恢复进行中的任务"
+            assert page.locator("#practiceRecoveryTitle").inner_text() == "刷新恢复任务"
+            assert page.locator("#page-home.active").is_visible()
+
+        page.locator("#practiceRecoveryStayBtn").click()
+        assert page.locator("#practiceRecoveryNotice").is_hidden()
+        page.evaluate("goToPage('tasks')")
+        page.locator("#page-tasks.active").wait_for()
+
+        jobs["recovery-job"]["status"] = "completed"
+        page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#practiceRecoveryEyebrow").inner_text() == "后台任务已完成"
+        assert page.locator("#practiceRecoveryOpenBtn").inner_text() == "查看结果"
+        assert page.locator("#page-tasks.active").is_visible()
+        assert page.evaluate("localStorage.getItem('activePracticeJobId')") is None
+
+        page.locator("#practiceRecoveryOpenBtn").click()
+        page.locator("#page-practice.active").wait_for(timeout=4000)
+        page.locator("#practiceScopeDrawer:not(.hidden)").wait_for(timeout=4000)
+        assert "刷新恢复任务" in page.locator("#practiceScopeDrawer").inner_text()
+        browser.close()
+
+
+def test_terminal_recovery_and_stale_callbacks_preserve_the_current_page() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+        jobs = {
+            "old-job": _practice_recovery_job("old-job", "running", "旧恢复任务"),
+            "new-job": _practice_recovery_job("new-job", "running", "新恢复任务"),
+            "failed-job": _practice_recovery_job("failed-job", "failed", "失败恢复任务"),
+            "cancelled-job": _practice_recovery_job("cancelled-job", "cancelled", "取消恢复任务"),
+        }
+
+        def route_practice_job(route) -> None:
+            job_id = route.request.url.split("/api/practice/jobs/", 1)[1].split("?", 1)[0]
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(jobs[job_id], ensure_ascii=False))
+
+        context.route("**/api/practice/jobs/**", route_practice_job)
+        page.goto(base_url, wait_until="networkidle")
+        page.evaluate("localStorage.setItem('activePracticeJobId', 'old-job')")
+        page.reload(wait_until="networkidle")
+        page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#practiceRecoveryTitle").inner_text() == "旧恢复任务"
+
+        page.evaluate("openKnowledgeEntry()")
+        page.locator("#page-knowledge.active").wait_for()
+        assert page.locator("#practiceRecoveryNotice").is_hidden()
+        page.evaluate("localStorage.setItem('activePracticeJobId', 'new-job'); void resumeRememberedPracticeJob()")
+        page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#practiceRecoveryTitle").inner_text() == "新恢复任务"
+
+        jobs["old-job"]["status"] = "completed"
+        page.wait_for_timeout(1600)
+        assert page.locator("#practiceRecoveryTitle").inner_text() == "新恢复任务"
+        assert page.locator("#page-knowledge.active").is_visible()
+
+        jobs["new-job"]["status"] = "completed"
+        page.locator("#practiceRecoveryOpenBtn").filter(has_text="查看结果").wait_for(timeout=4000)
+        assert page.locator("#practiceRecoveryTitle").inner_text() == "新恢复任务"
+        assert page.locator("#page-knowledge.active").is_visible()
+
+        for job_id, expected_page in (("failed-job", "knowledge"), ("cancelled-job", "knowledge")):
+            page.evaluate("jobId => localStorage.setItem('activePracticeJobId', jobId)", job_id)
+            page.reload(wait_until="networkidle")
+            page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+            assert page.locator("#page-home.active").is_visible()
+            assert page.locator("#practiceRecoveryOpenBtn").inner_text() == "查看详情"
+            assert page.evaluate("localStorage.getItem('activePracticeJobId')") is None
+            page.locator("#practiceRecoveryOpenBtn").click()
+            page.locator(f"#page-{expected_page}.active").wait_for(timeout=4000)
+            assert "任务未完成测试说明" in page.locator("#knowledgeError").inner_text()
+
         browser.close()

@@ -140,7 +140,7 @@ def test_review_candidate_download_prefers_explicit_candidate_filename() -> None
 
 
 def test_resumed_practice_job_uses_public_error_presentation() -> None:
-    assert "stoppedJob?.error_presentation?.message" in APP_JS
+    assert "job.error_presentation?.message" in APP_JS
 
 
 def test_stale_practice_job_callbacks_cannot_replace_a_newer_workspace() -> None:
@@ -150,7 +150,7 @@ def test_stale_practice_job_callbacks_cannot_replace_a_newer_workspace() -> None
 
 
 def test_cancelled_practice_job_stops_polling_and_clears_resume_pointer() -> None:
-    start = APP_JS.index("async function waitForPracticeJob(jobId)")
+    start = APP_JS.index("async function waitForPracticeJob(jobId, { onUpdate = null } = {})")
     end = APP_JS.index("async function submitPracticeJob", start)
     polling = APP_JS[start:end]
     assert 'job.status === "cancelled"' in polling
@@ -159,14 +159,47 @@ def test_cancelled_practice_job_stops_polling_and_clears_resume_pointer() -> Non
     assert "terminalError.practiceJob = job;" in polling
 
 
-def test_terminal_practice_job_resume_opens_the_visible_error_workspace() -> None:
+def test_terminal_practice_job_resume_never_forces_the_visible_workspace() -> None:
     start = APP_JS.index("async function resumeRememberedPracticeJob()")
     end = APP_JS.index("async function refresh()", start)
     resume = APP_JS[start:end]
     assert "const stoppedJob = error?.practiceJob" in resume
-    assert 'goToPage("knowledge");' in resume
-    assert 'goToPage("practice");' in resume
-    assert 'stoppedJob.status === "cancelled" ? "任务已取消" : "任务未完成"' in resume
+    assert 'showPracticeRecoveryNotice(stoppedJob' in resume
+    assert 'goToPage("knowledge");' not in resume
+    assert 'goToPage("practice");' not in resume
+
+
+def test_practice_recovery_notice_is_accessible_non_blocking_and_unique() -> None:
+    assert INDEX_HTML.count('id="practiceRecoveryNotice"') == 1
+    assert 'aria-labelledby="practiceRecoveryTitle"' in INDEX_HTML
+    assert 'aria-describedby="practiceRecoveryMessage"' in INDEX_HTML
+    assert 'role="status" aria-live="polite" aria-atomic="true"' in INDEX_HTML
+    assert 'id="practiceRecoveryOpenBtn"' in INDEX_HTML
+    assert 'id="practiceRecoveryStayBtn"' in INDEX_HTML
+    assert "practiceRecoveryNoticeSignature" in APP_JS
+    assert 'signature === practiceRecoveryNoticeSignature' in APP_JS
+
+
+def test_practice_recovery_requires_explicit_open_and_tracks_navigation() -> None:
+    start = APP_JS.index("async function resumeRememberedPracticeJob()")
+    end = APP_JS.index("async function refresh()", start)
+    resume = APP_JS[start:end]
+    assert "const navigationVersion = practiceNavigationVersion;" in resume
+    assert "navigationVersion !== practiceNavigationVersion" in resume
+    assert "practiceRecoveryContextIsCurrent(context)" in resume
+    assert "rememberPracticeJob(\"\");" in resume
+    assert 'goToPage("practice");' not in resume
+    assert "async function openPracticeRecoveryNoticeJob()" in APP_JS
+    assert 'await openGenerationJob({' in APP_JS
+
+
+def test_new_practice_session_invalidates_old_recovery_observer() -> None:
+    start = APP_JS.index("function beginNewPracticeSession()")
+    end = APP_JS.index("function updateStepIndicator", start)
+    new_session = APP_JS[start:end]
+    assert "invalidatePracticeRecoveryObserver();" in new_session
+    assert "practiceSessionVersion += 1;" in new_session
+    assert "rememberPracticeJob(\"\");" in new_session
 
 
 def test_reusing_knowledge_generation_restores_files_as_a_new_session() -> None:
