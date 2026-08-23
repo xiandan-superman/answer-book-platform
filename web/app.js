@@ -65,8 +65,11 @@ let practiceBatchId = "";
 let practiceEditingIndex = -1;
 let practiceEditorDraftKey = "";
 let practiceEditorDraftBaseVersion = "";
+let practiceEditorServerVersion = "";
 let practiceEditorDraftSource = "manual";
 let practiceEditorDraftTimer = null;
+let practiceEditorDraftStale = false;
+let practiceEditorMergeInProgress = false;
 let currentPracticeRevisionCount = 0;
 let currentPracticeHistoryId = "";
 let activePracticeJobId = "";
@@ -1698,6 +1701,12 @@ function practiceErrorNeedsConfiguration(presentation = {}) {
   ].includes(String(presentation?.kind || ""));
 }
 
+function practiceErrorExplicitlyNeedsArkConfiguration(subject = {}) {
+  return subject?.requires_configuration === true
+    && String(subject?.configuration_provider || "").toLowerCase() === "ark"
+    && String(subject?.configuration_reason || "") === "missing_api_key";
+}
+
 function practicePublicErrorText(presentation = {}, fallback = "任务执行失败。", { includeAction = true } = {}) {
   const message = String(presentation.message || fallback || "任务执行失败。").trim();
   const action = String(presentation.retry_hint || "").trim();
@@ -1741,11 +1750,13 @@ function practiceRecoveryNoticeMeta(job = {}, { navigationChanged = false } = {}
   }
   if (status === "failed") {
     const presentation = job.error_presentation || {};
+    const configurationAction = practiceErrorExplicitlyNeedsArkConfiguration(job);
     return {
       eyebrow: "后台任务未完成",
       title: taskName,
       message: practicePublicErrorText(presentation, job.error || "任务执行失败，当前页面和已有任务记录均已保留。"),
-      action: "查看详情",
+      action: configurationAction ? "前往 API 配置" : "查看详情",
+      configurationAction,
       tone: "danger",
     };
   }
@@ -1802,6 +1813,7 @@ function showPracticeRecoveryNotice(job = {}, options = {}) {
   setText("practiceRecoveryOpenBtn", meta.action);
   notice.dataset.status = String(job.status || "unknown");
   notice.dataset.completionAction = String(meta.completionAction || "");
+  notice.dataset.configurationAction = meta.configurationAction ? "true" : "false";
   notice.dataset.tone = meta.tone;
   notice.classList.remove("hidden");
 }
@@ -1825,6 +1837,8 @@ function renderStoppedPracticeRecoveryJob(job = {}) {
     setPracticeStatusBanner(job.status === "cancelled" ? "任务已取消" : "任务未完成", "error");
   }
   const errorBox = $(stoppedKnowledgeAnalyze ? "knowledgeError" : "practiceError");
+  const configurationButton = $(stoppedKnowledgeAnalyze ? "knowledgeConfigurationAction" : "practiceConfigurationAction");
+  configurationButton?.classList.toggle("hidden", !practiceErrorExplicitlyNeedsArkConfiguration(job));
   if (errorBox) {
     errorBox.textContent = job.status === "cancelled"
       ? (job.error_presentation?.message || job.error || "后台出题任务已取消。")
@@ -1840,6 +1854,10 @@ async function openPracticeRecoveryNoticeJob() {
   rememberPracticeJob("");
   const job = await api(`/api/practice/jobs/${encodeURIComponent(remembered.job_id)}?detail=1`);
   const completion = practiceCompletionContract(job.result || job);
+  if (String(job.status || "") === "failed" && practiceErrorExplicitlyNeedsArkConfiguration(job)) {
+    goToPage("keys");
+    return;
+  }
   if (["completed", "completed_with_issues"].includes(String(job.status || "")) && completion.action === "check_configuration") {
     goToPage("keys");
     return;
@@ -5170,6 +5188,25 @@ function setPracticeEditorDraftAvailable(available) {
   $("practiceEditorDiscardDraft")?.classList.toggle("hidden", !available);
 }
 
+function setPracticeEditorReadOnly(readOnly) {
+  PRACTICE_EDITOR_FIELD_IDS.forEach((id) => {
+    const field = $(id);
+    if (!field) return;
+    if (field instanceof HTMLSelectElement) field.disabled = readOnly;
+    else field.readOnly = readOnly;
+  });
+}
+
+function setPracticeEditorStaleState(stale) {
+  practiceEditorDraftStale = Boolean(stale);
+  if (!practiceEditorDraftStale) practiceEditorMergeInProgress = false;
+  $("practiceEditorCopyDraft")?.classList.toggle("hidden", !practiceEditorDraftStale);
+  $("practiceEditorMergeDraft")?.classList.toggle("hidden", !practiceEditorDraftStale);
+  setPracticeEditorReadOnly(practiceEditorDraftStale);
+  const saveButton = $("practiceEditorSave");
+  if (saveButton) saveButton.disabled = practiceEditorDraftStale;
+}
+
 function cleanupPracticeEditorDrafts() {
   try {
     const rows = [];
@@ -5229,6 +5266,7 @@ function clearPracticeEditorDraft() {
     if (practiceEditorDraftKey) localStorage.removeItem(practiceEditorDraftKey);
   } catch (_error) {}
   setPracticeEditorDraftAvailable(false);
+  setPracticeEditorStaleState(false);
 }
 
 function restorePracticeEditorDraft() {
@@ -5238,13 +5276,15 @@ function restorePracticeEditorDraft() {
     if (!record || record.schema !== "practice_editor_draft.v1" || !record.values) return null;
     applyPracticeEditorValues(record.values);
     practiceEditorDraftSource = String(record.source || "manual");
+    practiceEditorDraftBaseVersion = String(record.base_edit_version || "");
     setPracticeEditorDraftAvailable(true);
-    const stale = String(record.base_edit_version || "") !== practiceEditorDraftBaseVersion;
+    const stale = practiceEditorDraftBaseVersion !== practiceEditorServerVersion;
+    setPracticeEditorStaleState(stale);
     $("practiceEditorError").textContent = stale
-      ? "已恢复旧版本的未保存草稿。服务器题目后来发生过变化，请比较后再决定是否应用。"
+      ? "已恢复旧版本草稿。服务器题目已有更新，旧稿现为只读且不能保存。请复制旧稿内容后进行受控手工合并，或明确放弃旧稿并加载最新版本。"
       : (practiceEditorDraftSource === "regeneration_candidate"
           ? "已恢复上次未应用的生成候选，请确认后再保存。"
-          : "已恢复上次未保存的编辑内容。请确认后保存，或点击“放弃草稿”。");
+          : "已恢复上次未保存的编辑内容。请确认后保存，或点击“放弃旧稿并加载最新版本”。");
     $("practiceEditorError").classList.remove("hidden");
     return record;
   } catch (_error) {
@@ -5269,21 +5309,28 @@ function populatePracticeEditor(item) {
   $("practiceEditFigures").value = JSON.stringify(item.figures || [], null, 2);
 }
 
-function openPracticeEditor(index, draftItem = null) {
+function openPracticeEditor(index, draftItem = null, draftBaseVersion = null) {
   const currentItem = latestPracticeSet?.exercises?.[index];
   if (!currentItem) return;
   const item = draftItem && typeof draftItem === "object" ? draftItem : currentItem;
   practiceEditingIndex = index;
   practiceEditorDraftKey = practiceEditorStorageKey(index, currentItem);
-  practiceEditorDraftBaseVersion = String(currentItem._edit_version || "");
+  practiceEditorServerVersion = String(currentItem._edit_version || "");
+  practiceEditorDraftBaseVersion = draftBaseVersion === null
+    ? practiceEditorServerVersion
+    : String(draftBaseVersion || "");
   practiceEditorDraftSource = draftItem ? "regeneration_candidate" : "manual";
+  practiceEditorMergeInProgress = false;
   populatePracticeEditor(item);
   $("practiceEditorError").classList.add("hidden");
   setPracticeEditorDraftAvailable(false);
-  if (draftItem) persistPracticeEditorDraft("regeneration_candidate");
-  else restorePracticeEditorDraft();
+  setPracticeEditorStaleState(false);
+  if (draftItem) {
+    persistPracticeEditorDraft("regeneration_candidate");
+    setPracticeEditorStaleState(practiceEditorDraftBaseVersion !== practiceEditorServerVersion);
+  } else restorePracticeEditorDraft();
   const saveButton = $("practiceEditorSave");
-  if (saveButton) saveButton.disabled = false;
+  if (saveButton) saveButton.disabled = practiceEditorDraftStale;
   setText("practiceEditorTitle", `编辑第 ${index + 1} 题`);
   $("practiceEditor").showModal();
 }
@@ -5303,6 +5350,11 @@ async function applyPracticeEditor(event) {
   event.preventDefault();
   const item = latestPracticeSet?.exercises?.[practiceEditingIndex];
   if (!item) return;
+  if (practiceEditorDraftStale && !practiceEditorMergeInProgress) {
+    $("practiceEditorError").textContent = "旧稿基线已过期，不能直接应用。请先复制旧稿并开始受控手工合并，或放弃旧稿加载最新版本。";
+    $("practiceEditorError").classList.remove("hidden");
+    return;
+  }
   const saveButton = $("practiceEditorSave");
   let editConflict = false;
   try {
@@ -5334,6 +5386,9 @@ async function applyPracticeEditor(event) {
     await loadPracticeHistory();
   } catch (error) {
     editConflict = error?.code === "practice_edit_conflict";
+    if (practiceEditorDraftTimer) clearTimeout(practiceEditorDraftTimer);
+    practiceEditorDraftTimer = null;
+    persistPracticeEditorDraft(practiceEditorDraftSource);
     if (editConflict) {
       try {
         const historyId = String(latestPracticeSet?.history_id || currentPracticeHistoryId || "");
@@ -5342,18 +5397,21 @@ async function applyPracticeEditor(event) {
           currentPracticeRevisionCount = Number(latest.revision_count || latest.revisions?.length || 0);
           latestPracticeSet = latest.data;
           latestPracticeRequest = latest.request || latestPracticeRequest;
+          practiceEditorServerVersion = String(latestPracticeSet?.exercises?.[practiceEditingIndex]?._edit_version || "");
         }
       } catch (_reloadError) {}
+      practiceEditorMergeInProgress = false;
+      setPracticeEditorStaleState(true);
     }
     const message = String(error).replace(/^Error:\s*/, "");
     $("practiceEditorError").textContent = editConflict
-      ? `修改未保存，其他页面的新内容未被覆盖。当前填写内容仍保留在编辑框中；请复制需要保留的部分，关闭后重新打开本题，再基于最新版本合并：${message}`
+      ? `修改未保存，其他页面的新内容未被覆盖。当前填写内容已作为旧稿保留并锁定；请复制旧稿后受控合并，或明确放弃旧稿：${message}`
       : `修改未保存，原题已保留：${message}`;
     $("practiceEditorError").classList.remove("hidden");
   } finally {
     // A conflicted draft must not be retried against a newly fetched token,
     // because that would turn a safe conflict into a silent overwrite.
-    if (saveButton) saveButton.disabled = editConflict;
+    if (saveButton) saveButton.disabled = editConflict || (practiceEditorDraftStale && !practiceEditorMergeInProgress);
   }
 }
 
@@ -5453,6 +5511,7 @@ async function regeneratePracticeQuestion(index, button) {
     ? `正在复审第 ${index + 1} 题蓝图：通过后只生成本题`
     : `正在重新生成第 ${index + 1} 题：生成后会自动检查并必要时修复配图`, "loading");
   let generatedCandidate = null;
+  const regenerationBaseEditVersion = String(latestPracticeSet?.exercises?.[index]?._edit_version || "");
   try {
     const response = await regeneratePracticeExercise(index, instruction);
     generatedCandidate = response.exercise;
@@ -5473,8 +5532,8 @@ async function regeneratePracticeQuestion(index, button) {
         }
       } catch (_reloadError) {}
       if (generatedCandidate) {
-        openPracticeEditor(index, generatedCandidate);
-        $("practiceEditorError").textContent = "这道候选题已生成，但其他页面刚保存了更新，因此没有自动覆盖。候选内容已保留在编辑框中；请与最新题目比较后决定是否应用。";
+        openPracticeEditor(index, generatedCandidate, regenerationBaseEditVersion);
+        $("practiceEditorError").textContent = "这道候选题已生成，但其基线已经落后于服务器版本，因此没有自动覆盖。候选内容已作为只读旧稿保留；请复制后受控合并，或明确放弃旧稿。";
         $("practiceEditorError").classList.remove("hidden");
       }
     }
@@ -12449,11 +12508,64 @@ $("practiceEditor")?.addEventListener("close", () => {
     persistPracticeEditorDraft(practiceEditorDraftSource);
   }
 });
+$("practiceEditorCopyDraft")?.addEventListener("click", async () => {
+  const values = practiceEditorValues();
+  const text = [
+    `题型：${values.practiceEditType}`,
+    `难度：${values.practiceEditDifficulty}`,
+    `训练能力：${values.practiceEditSkill}`,
+    `题干：\n${values.practiceEditStem}`,
+    `选项：\n${values.practiceEditOptions}`,
+    `公式：\n${values.practiceEditFormulas}`,
+    `表格：\n${values.practiceEditTables}`,
+    `图表：\n${values.practiceEditFigures}`,
+  ].join("\n\n");
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch (_error) {
+    try {
+      const helper = document.createElement("textarea");
+      helper.value = text;
+      helper.setAttribute("readonly", "");
+      helper.style.position = "fixed";
+      helper.style.opacity = "0";
+      document.body.appendChild(helper);
+      helper.select();
+      copied = document.execCommand("copy");
+      helper.remove();
+    } catch (_fallbackError) {}
+  }
+  $("practiceEditorError").textContent = copied
+    ? "旧稿内容已复制。可开始受控手工合并；在成功保存前，旧基线草稿仍会保留。"
+    : "浏览器未允许自动复制。旧稿仍完整保留，请手动选择并复制后再合并。";
+  $("practiceEditorError").classList.remove("hidden");
+});
+$("practiceEditorMergeDraft")?.addEventListener("click", () => {
+  const currentItem = latestPracticeSet?.exercises?.[practiceEditingIndex];
+  if (!currentItem || !practiceEditorDraftStale) return;
+  populatePracticeEditor(currentItem);
+  practiceEditorMergeInProgress = true;
+  setPracticeEditorReadOnly(false);
+  $("practiceEditorCopyDraft")?.classList.add("hidden");
+  $("practiceEditorMergeDraft")?.classList.add("hidden");
+  const saveButton = $("practiceEditorSave");
+  if (saveButton) saveButton.disabled = false;
+  $("practiceEditorError").textContent = "已加载服务器最新版本并进入受控手工合并。请把需要的旧稿内容手工合入；成功保存前，带旧基线的草稿仍会保留，刷新后会重新锁定。";
+  $("practiceEditorError").classList.remove("hidden");
+});
 $("practiceEditorDiscardDraft")?.addEventListener("click", () => {
   clearPracticeEditorDraft();
   const currentItem = latestPracticeSet?.exercises?.[practiceEditingIndex];
-  if (currentItem) populatePracticeEditor(currentItem);
-  $("practiceEditorError").textContent = "未保存草稿已放弃，当前显示服务器中的题目。";
+  if (currentItem) {
+    populatePracticeEditor(currentItem);
+    practiceEditorServerVersion = String(currentItem._edit_version || "");
+    practiceEditorDraftBaseVersion = practiceEditorServerVersion;
+  }
+  const saveButton = $("practiceEditorSave");
+  if (saveButton) saveButton.disabled = false;
+  $("practiceEditorError").textContent = "旧稿已明确放弃，当前显示服务器最新版本，可以继续编辑并保存。";
   $("practiceEditorError").classList.remove("hidden");
 });
 window.addEventListener("beforeunload", () => {
@@ -12472,6 +12584,9 @@ $("practicePlanCollapseAllBtn")?.addEventListener("click", () => {
 });
 $("practiceUndoBtn")?.addEventListener("click", undoPracticeChange);
 $("practiceEditorSave")?.addEventListener("click", applyPracticeEditor);
+["knowledgeConfigurationAction", "practiceConfigurationAction"].forEach((id) => {
+  $(id)?.addEventListener("click", () => goToPage("keys"));
+});
 $("practiceSelectAllBtn")?.addEventListener("click", () => {
   (latestPracticeSet?.exercises || []).forEach((_item, index) => selectedPracticeExerciseIndexes.add(index));
   document.querySelectorAll("[data-practice-select]").forEach((input) => { input.checked = true; });

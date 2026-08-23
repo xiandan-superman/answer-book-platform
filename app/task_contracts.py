@@ -380,6 +380,13 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
         return public("review_rejected", "等待修正后重新确认", "本次结构确认已被拒绝，任务没有进入后续生成。", "修正题目结构后，从结构确认阶段继续。")
     if "524" in lowered or "timeout" in lowered or "timed out" in lowered or "超时" in text:
         return public("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。")
+    if re.fullmatch(r"api key is not configured for provider:\s*ark", text, flags=re.IGNORECASE):
+        return public(
+            "provider_missing_api_key",
+            "火山方舟 API Key 尚未配置",
+            "尚未配置火山方舟 API Key，本次任务没有发出模型请求。",
+            "请前往 API 配置填写并验证火山方舟 Key，验证成功后再重试。",
+        )
     if re.search(r"\b401\b", lowered) or any(marker in lowered for marker in ("unauthorized", "authentication failed", "invalid api key", "invalid_api_key")):
         return public(
             "provider_authentication",

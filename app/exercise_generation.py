@@ -1057,6 +1057,87 @@ def _source_evidence_covers_anchor(anchor: str, evidence: str) -> bool:
     return len(terms) >= 2 and all(term in canonical_evidence for term in terms)
 
 
+def _knowledge_scope_supports_point(point: str, scope_points: list[str]) -> bool:
+    """Match one declared knowledge label to a server-confirmed scope.
+
+    This deliberately reuses the deterministic scope alias/canonicalization
+    rules and the existing strong-overlap reconciliation rule. It does not ask
+    a model to judge scope. Formula annotations may elaborate a confirmed label
+    (for example ``导热热阻 R=L/(kA)``), but ordinary prose cannot expand a
+    short in-scope label with an unrelated topic.
+    """
+    point = _clean(point, 500)
+    scope_points = _unique_strings(scope_points, limit=60, item_limit=500)
+    if not point or not scope_points:
+        return False
+    expanded_scope_points = list(scope_points)
+    for candidate in scope_points:
+        if not any(marker in candidate for marker in ("=", "≈", "≤", "≥", "→")):
+            continue
+        alias = "".join(re.findall(r"[\u4e00-\u9fff]+", candidate))
+        alias = alias.replace("对流边界热阻", "对流热阻")
+        alias = alias.replace("总热阻", "热阻").replace("热阻热阻", "热阻")
+        if alias and alias not in expanded_scope_points:
+            expanded_scope_points.append(alias)
+    scope_points = expanded_scope_points
+    evidence = "。".join(scope_points)
+    if _source_evidence_covers_anchor(point, evidence):
+        return True
+    compound_parts = [
+        _canonical_scope_text(part)
+        for part in re.split(r"(?:与|和|及|、)", point)
+        if _canonical_scope_text(part)
+    ]
+    if len(compound_parts) >= 2:
+        canonical_evidence = _canonical_scope_text(evidence)
+        # Coordinated labels often expand the second head (for example
+        # ``串联与并联热路径边界辨析``). Requiring every coordinated
+        # head to exist in the confirmed scope prevents a known head from
+        # laundering an unrelated sibling such as radiation.
+        return all(len(part) >= 2 and part[:2] in canonical_evidence for part in compound_parts)
+    if any(_knowledge_point_is_explicitly_adopted(point, [candidate]) for candidate in scope_points):
+        return True
+    normalized_point = _semantic_knowledge_text(point)
+    point_bigrams = {
+        normalized_point[index : index + 2]
+        for index in range(max(0, len(normalized_point) - 1))
+    }
+    for candidate in scope_points:
+        normalized_candidate = _semantic_knowledge_text(candidate)
+        if (
+            len(normalized_point) >= 4
+            and len(normalized_point) == len(normalized_candidate)
+            and normalized_point[0] != normalized_candidate[0]
+            and normalized_point[1:] == normalized_candidate[1:]
+        ):
+            # A single leading character can encode the whole distinction
+            # (for example 串联 vs 并联). High suffix overlap is not an alias.
+            continue
+        candidate_bigrams = {
+            normalized_candidate[index : index + 2]
+            for index in range(max(0, len(normalized_candidate) - 1))
+        }
+        matched_count = len(point_bigrams & candidate_bigrams)
+        smaller = min(len(point_bigrams), len(candidate_bigrams))
+        larger = max(len(point_bigrams), len(candidate_bigrams))
+        if smaller >= 4 and (
+            matched_count / larger >= 0.65
+            or (matched_count >= 5 and matched_count / smaller >= 0.70)
+        ):
+            return True
+    if any(marker in point for marker in ("=", "≈", "≤", "≥", "→")):
+        formula_label = "".join(re.findall(r"[\u4e00-\u9fff]+", point))
+        formula_label = formula_label.replace("对流边界热阻", "对流热阻")
+        formula_label = formula_label.replace("总热阻", "热阻").replace("热阻热阻", "热阻")
+        if formula_label and _source_evidence_covers_anchor(formula_label, evidence):
+            return True
+        return any(
+            _source_evidence_covers_anchor(candidate, formula_label or point)
+            for candidate in scope_points
+        )
+    return False
+
+
 _BLUEPRINT_CONTRAST_SPLIT = re.compile(
     r"[。！？;；\n，,]|(?:但(?:是)?|然而|不过|却|转而|反而)"
 )
@@ -1234,6 +1315,11 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         for item in source_catalog
         if _clean(item.get("source_question_id"), 80)
     }
+    unbound_knowledge_targeted = (
+        strategy == "knowledge_targeted"
+        and _clean(plan.get("source_mode"), 30) == "knowledge"
+        and not source_catalog
+    )
     source_slot_counts: dict[str, int] = {}
     for item in items:
         refs = _unique_strings(item.get("source_refs") or [item.get("source_question_id")], limit=3, item_limit=80)
@@ -1259,6 +1345,8 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     )
     missing_required_points: list[str] = []
     invalid_required_points: list[str] = []
+    unsupported_required_points: list[str] = []
+    supported_knowledge_targeted_points: list[str] = []
     expected_scope_points: list[str] = []
     for source in source_catalog:
         for point in _string_list(source.get("knowledge_points"), limit=60):
@@ -1287,9 +1375,22 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             and len(refs) == 1
             and source_slot_counts.get(refs[0], 0) > 1
         )
-        if expected and not required:
+        if (expected or unbound_knowledge_targeted) and not required:
             missing_required_points.append(str(item.get("number") or index))
-        if expected:
+        if unbound_knowledge_targeted:
+            unsupported = [
+                point
+                for point in required
+                if not _knowledge_scope_supports_point(point, analysis_fallback_points)
+            ]
+            if unsupported:
+                unsupported_required_points.extend(
+                    f"第 {item.get('number') or index} 项：{point}" for point in unsupported
+                )
+            for point in required:
+                if point not in unsupported and point not in supported_knowledge_targeted_points:
+                    supported_knowledge_targeted_points.append(point)
+        elif expected:
             if mode == "single_source" and not partitioned_knowledge_item and set(required) != set(expected):
                 invalid_required_points.append(str(item.get("number") or index))
             elif (mode == "comprehensive" or partitioned_knowledge_item) and not set(required).issubset(set(expected)):
@@ -1394,6 +1495,26 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     if invalid_required_points:
         message = "第 {} 项的必考知识点与绑定来源规则不一致。"
         errors.append(message.format(",".join(invalid_required_points)))
+    if unbound_knowledge_targeted:
+        if not analysis_fallback_points:
+            errors.append("知识点定向蓝图缺少可验证的全局目标知识点。")
+        if unsupported_required_points:
+            errors.append(
+                "知识点定向蓝图引入了材料范围外的必考知识点："
+                + "；".join(unsupported_required_points[:12])
+                + "。"
+            )
+        uncovered_global_points = [
+            point
+            for point in analysis_fallback_points
+            if not _knowledge_scope_supports_point(point, supported_knowledge_targeted_points)
+        ]
+        if uncovered_global_points:
+            errors.append(
+                "知识点定向蓝图的整套必考知识点未覆盖全局目标："
+                + "、".join(uncovered_global_points[:12])
+                + "。"
+            )
     if strategy == "knowledge_item_wise":
         incomplete_sources = []
         for source_id, count_for_source in source_slot_counts.items():
@@ -1489,6 +1610,12 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             "plan_count": len(items),
             "unique_plan_item_count": len(set(ids)),
             "duplicate_signature_count": duplicate_signatures,
+            "knowledge_targeted_global_point_count": (
+                len(analysis_fallback_points) if unbound_knowledge_targeted else 0
+            ),
+            "knowledge_targeted_supported_declared_point_count": (
+                len(supported_knowledge_targeted_points) if unbound_knowledge_targeted else 0
+            ),
         },
     }
 

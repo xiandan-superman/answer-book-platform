@@ -136,8 +136,15 @@ class _LayeredHTTPHandler(urllib.request.HTTPHandler):
 
 class _LayeredHTTPSHandler(urllib.request.HTTPSHandler):
     def __init__(self, *, connect_timeout: float, first_byte_timeout: float, hard_deadline_monotonic: float) -> None:
-        self._context: ssl.SSLContext
-        super().__init__()
+        # Some bundled macOS Python runtimes do not honor SSL_CERT_FILE when
+        # their patched default-cert loader is used implicitly.  Resolve the
+        # standard OpenSSL environment inputs explicitly while retaining the
+        # verified default context and hostname checks.
+        cafile = str(os.environ.get("SSL_CERT_FILE") or "").strip() or None
+        capath = str(os.environ.get("SSL_CERT_DIR") or "").strip() or None
+        context = ssl.create_default_context(cafile=cafile, capath=capath)
+        super().__init__(context=context)
+        self._context: ssl.SSLContext = context
         self._connection_options = {
             "connect_timeout": connect_timeout,
             "first_byte_timeout": first_byte_timeout,

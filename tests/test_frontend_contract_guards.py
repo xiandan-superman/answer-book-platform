@@ -190,6 +190,23 @@ def test_resumed_practice_job_uses_public_error_presentation() -> None:
     assert 'String(presentation?.kind || "")' in APP_JS
 
 
+def test_missing_ark_key_action_requires_explicit_backend_contract() -> None:
+    assert "function practiceErrorExplicitlyNeedsArkConfiguration(subject = {})" in APP_JS
+    assert 'subject?.requires_configuration === true' in APP_JS
+    assert 'String(subject?.configuration_provider || "").toLowerCase() === "ark"' in APP_JS
+    assert 'String(subject?.configuration_reason || "") === "missing_api_key"' in APP_JS
+    assert INDEX_HTML.count("前往 API 配置") == 2
+
+
+def test_stale_practice_draft_requires_explicit_resolution() -> None:
+    assert "base_edit_version: practiceEditorDraftBaseVersion" in APP_JS
+    assert "practiceEditorDraftBaseVersion = String(record.base_edit_version" in APP_JS
+    assert "setPracticeEditorStaleState(true);" in APP_JS
+    assert 'id="practiceEditorCopyDraft"' in INDEX_HTML
+    assert 'id="practiceEditorMergeDraft"' in INDEX_HTML
+    assert "放弃旧稿并加载最新版本" in INDEX_HTML
+
+
 def test_stale_practice_job_callbacks_cannot_replace_a_newer_workspace() -> None:
     assert "if (sessionVersion !== practiceSessionVersion) return;" in APP_JS
     assert "async function openGenerationJob(task)" in APP_JS
@@ -398,10 +415,12 @@ def test_practice_question_save_sends_edit_version_and_handles_conflicts() -> No
     assert 'error?.code === "practice_edit_conflict"' in save_flow
     assert "/api/practice/history/${encodeURIComponent(historyId)}" in save_flow
     assert "generatedCandidate = response.exercise" in save_flow
-    assert "openPracticeEditor(index, generatedCandidate)" in save_flow
+    assert "openPracticeEditor(index, generatedCandidate, regenerationBaseEditVersion)" in save_flow
+    assert "const regenerationBaseEditVersion" in save_flow
     assert "本次生成候选均已保留" in save_flow
     assert 'editConflict = error?.code === "practice_edit_conflict"' in editor_flow
-    assert "当前填写内容仍保留在编辑框中" in editor_flow
+    assert "当前填写内容已作为旧稿保留并锁定" in editor_flow
+    assert "persistPracticeEditorDraft(practiceEditorDraftSource)" in editor_flow
     assert "saveButton.disabled = editConflict" in editor_flow
 
 

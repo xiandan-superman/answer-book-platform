@@ -409,6 +409,12 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
         second_page = context.new_page()
         first_page.goto(base_url, wait_until="networkidle")
         second_page.goto(base_url, wait_until="networkidle")
+        for ready_page in (first_page, second_page):
+            ready_page.wait_for_timeout(500)
+            ready_page.wait_for_load_state("networkidle")
+            ready_page.wait_for_function(
+                "() => typeof PlatformApi !== 'undefined' && typeof openPracticeEditor === 'function'"
+            )
         history_id = first_page.evaluate(
             """async () => {
               const record = await PlatformApi.request('/api/practice/history', {
@@ -435,16 +441,21 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             first_page.evaluate(async_load_and_open, history_id)
             second_page.evaluate(async_load_and_open, history_id)
 
+            second_page.locator("#practiceEditStem").fill("第二个旧页面中的草稿")
+            second_page.wait_for_timeout(350)
             first_page.locator("#practiceEditStem").fill("第一个页面先保存的内容")
             first_page.locator("#practiceEditorSave").click()
             first_page.locator("#practiceEditor").wait_for(state="hidden")
 
-            second_page.locator("#practiceEditStem").fill("第二个旧页面中的草稿")
             second_page.locator("#practiceEditorSave").click()
             second_page.locator("#practiceEditorError:not(.hidden)").wait_for()
-            assert "当前填写内容仍保留在编辑框中" in second_page.locator("#practiceEditorError").inner_text()
+            assert "旧稿保留并锁定" in second_page.locator("#practiceEditorError").inner_text()
             assert second_page.locator("#practiceEditStem").input_value() == "第二个旧页面中的草稿"
+            assert second_page.locator("#practiceEditStem").is_editable() is False
             assert second_page.locator("#practiceEditorSave").is_disabled()
+            assert second_page.locator("#practiceEditorCopyDraft").is_visible()
+            assert second_page.locator("#practiceEditorMergeDraft").is_visible()
+            assert second_page.locator("#practiceEditorDiscardDraft").is_visible()
 
             latest_stem = first_page.evaluate(
                 """async (historyId) => {
@@ -457,10 +468,30 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
 
             second_page.locator('#practiceEditor button[value="cancel"]').first.click()
             second_page.evaluate("openPracticeEditor(0)")
+            assert second_page.locator("#practiceEditStem").input_value() == "第二个旧页面中的草稿"
+            assert second_page.locator("#practiceEditorSave").is_disabled()
+            assert "旧版本草稿" in second_page.locator("#practiceEditorError").inner_text()
+            second_page.reload(wait_until="networkidle")
+            second_page.evaluate(async_load_and_open, history_id)
+            assert second_page.locator("#practiceEditStem").input_value() == "第二个旧页面中的草稿"
+            assert second_page.locator("#practiceEditStem").is_editable() is False
+            assert second_page.locator("#practiceEditorSave").is_disabled()
+
+            second_page.locator("#practiceEditorCopyDraft").click()
+            assert "旧稿内容" in second_page.locator("#practiceEditorError").inner_text()
+            second_page.locator("#practiceEditorMergeDraft").click()
             assert second_page.locator("#practiceEditStem").input_value() == "第一个页面先保存的内容"
+            assert second_page.locator("#practiceEditStem").is_editable()
+            assert second_page.locator("#practiceEditorSave").is_enabled()
+            second_page.locator("#practiceEditStem").fill("受控手工合并后保存的内容")
+            second_page.locator("#practiceEditorSave").click()
+            second_page.locator("#practiceEditor").wait_for(state="hidden")
+            second_page.evaluate("openPracticeEditor(0)")
+            assert second_page.locator("#practiceEditStem").input_value() == "受控手工合并后保存的内容"
+            assert second_page.locator("#practiceEditorDiscardDraft").is_hidden()
             second_page.locator('#practiceEditor button[value="cancel"]').first.click()
 
-            first_page.evaluate("openPracticeEditor(0)")
+            first_page.evaluate(async_load_and_open, history_id)
             first_page.locator("#practiceEditStem").fill("服务器随后保存的最新内容")
             first_page.locator("#practiceEditorSave").click()
             first_page.locator("#practiceEditor").wait_for(state="hidden")
@@ -480,15 +511,20 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             )
             second_page.locator("#practiceEditor").wait_for(state="visible")
             assert second_page.locator("#practiceEditStem").input_value() == "已经生成但尚未应用的候选题"
-            assert "候选内容已保留在编辑框中" in second_page.locator("#practiceEditorError").inner_text()
+            assert "只读旧稿保留" in second_page.locator("#practiceEditorError").inner_text()
+            assert second_page.locator("#practiceEditStem").is_editable() is False
+            assert second_page.locator("#practiceEditorSave").is_disabled()
 
             second_page.reload(wait_until="networkidle")
             second_page.evaluate(async_load_and_open, history_id)
             assert second_page.locator("#practiceEditStem").input_value() == "已经生成但尚未应用的候选题"
-            assert "已恢复上次未应用的生成候选" in second_page.locator("#practiceEditorError").inner_text()
+            assert "旧版本草稿" in second_page.locator("#practiceEditorError").inner_text()
+            assert second_page.locator("#practiceEditorSave").is_disabled()
 
             second_page.locator("#practiceEditorDiscardDraft").click()
             assert second_page.locator("#practiceEditStem").input_value() == "服务器随后保存的最新内容"
+            assert second_page.locator("#practiceEditStem").is_editable()
+            assert second_page.locator("#practiceEditorSave").is_enabled()
             second_page.locator("#practiceEditStem").fill("刷新和断网后仍应恢复的手工草稿")
             second_page.wait_for_timeout(350)
             second_page.locator('#practiceEditor button[value="cancel"]').first.click()
@@ -849,6 +885,7 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         assert "InvalidEndpointOrModel" not in recovery_copy
         assert "req-must-not-be-visible" not in recovery_copy
         assert page.locator("#page-home.active").is_visible()
+        assert page.locator("#practiceRecoveryOpenBtn").inner_text() == "查看详情"
 
         page.locator("#practiceRecoveryOpenBtn").click()
         page.locator("#page-knowledge.active").wait_for(timeout=4000)
@@ -857,6 +894,7 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         assert presentation["retry_hint"] in detail_copy
         assert presentation["support_id"] in detail_copy
         assert "InvalidEndpointOrModel" not in detail_copy
+        assert page.locator("#knowledgeConfigurationAction").is_hidden()
 
         page.evaluate("openTaskManager('knowledge')")
         page.locator("#page-tasks.active").wait_for(timeout=4000)
@@ -878,6 +916,34 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         assert page.locator("#platformDialogConfirm").inner_text() == "确认重试"
         assert "连接验证成功后再重试" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogCancel").click()
+
+        missing_key_presentation = {
+            "kind": "provider_missing_api_key",
+            "title": "火山方舟 API Key 尚未配置",
+            "message": "尚未配置火山方舟 API Key，本次任务没有发出模型请求。",
+            "retry_hint": "请前往 API 配置填写并验证火山方舟 Key，验证成功后再重试。",
+            "support_id": "PJ-E2ENOKEY01",
+        }
+        job.update({
+            "error": missing_key_presentation["message"],
+            "error_presentation": missing_key_presentation,
+            "support_id": missing_key_presentation["support_id"],
+            "requires_configuration": True,
+            "configuration_provider": "ark",
+            "configuration_reason": "missing_api_key",
+        })
+        page.evaluate("jobId => localStorage.setItem('activePracticeJobId', jobId)", job_id)
+        page.reload(wait_until="networkidle")
+        page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#practiceRecoveryOpenBtn").inner_text() == "前往 API 配置"
+        assert page.locator("#practiceRecoveryNotice").get_attribute("data-configuration-action") == "true"
+        page.locator("#practiceRecoveryOpenBtn").click()
+        page.locator("#page-keys.active").wait_for(timeout=4000)
+
+        page.evaluate("job => renderStoppedPracticeRecoveryJob(job)", job)
+        page.locator("#page-knowledge.active").wait_for(timeout=4000)
+        assert page.locator("#knowledgeConfigurationAction").is_visible()
+        assert page.locator("#knowledgeConfigurationAction").inner_text() == "前往 API 配置"
 
         browser.close()
 

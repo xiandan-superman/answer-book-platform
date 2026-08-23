@@ -285,6 +285,7 @@
               <button class="text-button knowledge-model-button" type="button" onclick="goToPage('knowledge-models')">调整模型<i class="fas fa-arrow-right"></i></button>
             </div>
             <p id="knowledgeError" class="practice-error hidden" role="alert"></p>
+            <button id="knowledgeConfigurationAction" class="secondary-button hidden" type="button">前往 API 配置</button>
             <button id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit">
               <i class="fas fa-magnifying-glass-chart"></i>解析知识点与范围
             </button>
@@ -586,6 +587,7 @@
                 </button>
                 <p class="practice-next-step-card__hint"><i data-lucide="info"></i>模型配置独立保存，API Key 仍由统一配置中心管理。</p>
                 <p id="practiceError" class="practice-error hidden" role="alert"></p>
+                <button id="practiceConfigurationAction" class="secondary-button hidden" type="button">前往 API 配置</button>
               </aside>
 
               <!-- Advanced Config -->
@@ -1056,7 +1058,9 @@
           </details>
           <p id="practiceEditorError" class="practice-error hidden" role="alert"></p>
           <footer>
-            <button id="practiceEditorDiscardDraft" type="button" class="secondary-button hidden">放弃草稿</button>
+            <button id="practiceEditorCopyDraft" type="button" class="secondary-button hidden">复制旧稿内容</button>
+            <button id="practiceEditorMergeDraft" type="button" class="secondary-button hidden">开始受控手工合并</button>
+            <button id="practiceEditorDiscardDraft" type="button" class="secondary-button hidden">放弃旧稿并加载最新版本</button>
             <button type="submit" value="cancel" class="secondary-button">取消</button>
             <button id="practiceEditorSave" type="submit" value="default" class="practice-generate-button">应用修改</button>
           </footer>

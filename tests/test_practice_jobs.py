@@ -53,6 +53,36 @@ def test_practice_job_records_worker_failure(tmp_path, monkeypatch):
     assert failed["support_id"].startswith("PJ-")
 
 
+def test_only_explicit_ark_missing_key_marks_configuration_required(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(practice_jobs, "pin_model_diagnostics_for_failure", lambda _job_id: 0)
+
+    def run_failure(provider: str, message: str) -> dict:
+        created = practice_jobs.create_practice_job(
+            "analyze",
+            {"source_mode": "knowledge", "provider": provider},
+        )
+
+        def fail(_operation, _payload):
+            raise RuntimeError(message)
+
+        practice_jobs.run_practice_job(created["job_id"], fail)
+        return practice_jobs.load_practice_job(created["job_id"])
+
+    missing = run_failure("ark", "API key is not configured for provider: ark")
+    network = run_failure("ark", "Provider request failed: connection reset")
+    permission = run_failure("ark", "Provider HTTP 403: access denied")
+    other_provider = run_failure("other", "API key is not configured for provider: ark")
+
+    assert missing["requires_configuration"] is True
+    assert missing["configuration_provider"] == "ark"
+    assert missing["configuration_reason"] == "missing_api_key"
+    for record in (network, permission, other_provider):
+        assert record["requires_configuration"] is False
+        assert record["configuration_provider"] == ""
+        assert record["configuration_reason"] == ""
+
+
 def test_practice_failure_diagnostics_redact_credentials_but_keep_provider_response(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
     monkeypatch.setattr(practice_jobs, "pin_model_diagnostics_for_failure", lambda _job_id: 1)

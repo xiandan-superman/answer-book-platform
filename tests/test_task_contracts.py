@@ -300,6 +300,30 @@ def test_practice_job_api_includes_public_error_presentation() -> None:
     assert payload["suggested_action"] == payload["error_presentation"]["retry_hint"]
 
 
+def test_explicit_ark_missing_key_has_precise_sanitized_configuration_contract() -> None:
+    from app.server import _practice_job_api_payload
+
+    payload = _practice_job_api_payload({
+        "job_id": "job-missing-ark-key",
+        "status": "failed",
+        "provider": "ark",
+        "current_stage": "analyze",
+        "error": "API key is not configured for provider: ark",
+        "requires_configuration": True,
+        "configuration_provider": "ark",
+        "configuration_reason": "missing_api_key",
+        "support_id": "PJ-ARKNOKEY01",
+    })
+
+    assert payload["requires_configuration"] is True
+    assert payload["configuration_provider"] == "ark"
+    assert payload["configuration_reason"] == "missing_api_key"
+    assert payload["error_presentation"]["kind"] == "provider_missing_api_key"
+    assert payload["error_presentation"]["title"] == "火山方舟 API Key 尚未配置"
+    assert "前往 API 配置" in payload["error_presentation"]["retry_hint"]
+    assert "API key is not configured" not in str(payload)
+
+
 def test_provider_timeout_has_scenario_specific_recovery_copy() -> None:
     presentation = present_error("Provider HTTP 524: error code: 524", stage="generating")
 
