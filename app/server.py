@@ -125,11 +125,15 @@ from .v4_schema import validate_v4_answer_fragment
 from .version import get_app_version, get_source_revision, get_version, release_manifest_status
 from .word_format_tasks import (
     apply_word_format_task,
+    cancel_word_format_task,
     create_word_format_task,
     delete_word_format_task,
     list_word_format_tasks,
+    restore_word_format_task,
     save_word_format_profile_settings,
     word_format_download_path,
+    word_format_preview_path,
+    word_format_source_path,
     word_format_settings_payload,
     word_format_task_payload,
 )
@@ -902,6 +906,42 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "source":
+            try:
+                target, filename = word_format_source_path(parts[3])
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=404)
+                return
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "preview":
+            version = str(parse_qs(parsed.query).get("version", ["source"])[0])
+            try:
+                target = word_format_preview_path(parts[3], version)
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=404)
+                return
+            except Exception as exc:
+                self.send_json({"error": f"暂时无法生成预览：{exc}"}, status=503)
+                return
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", "inline")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/api/practice/history":
             self.send_json(
                 READ_SNAPSHOTS.get(
@@ -1163,6 +1203,22 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(exc)}, status=404)
                     return
                 append_runtime_log("word_format", f"应用 Word 格式修改 {parts[3]}", payload={"status": result.get("status")})
+                self.send_json(result)
+                return
+            if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "cancel":
+                try:
+                    result = cancel_word_format_task(parts[3])
+                except FileNotFoundError as exc:
+                    self.send_json({"error": str(exc)}, status=404)
+                    return
+                self.send_json(result, status=202 if result.get("status") == "cancel_requested" else 200)
+                return
+            if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "restore":
+                try:
+                    result = restore_word_format_task(parts[3])
+                except FileNotFoundError as exc:
+                    self.send_json({"error": str(exc)}, status=404)
+                    return
                 self.send_json(result)
                 return
             if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "delete":

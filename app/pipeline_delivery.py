@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,6 +35,25 @@ def delivery_status_message(final_report: dict[str, Any]) -> str:
     return "当前产物已通过正式验收。"
 
 
+def finalize_primary_docx_filename(
+    output_dir: Path,
+    docx_path: Path,
+    final_report: dict[str, Any],
+) -> tuple[Path, str]:
+    """Make the surviving filename match the final publication tier."""
+
+    candidate_path = output_dir / "answer_book_review_candidate.docx"
+    outputs = final_report.setdefault("outputs", {})
+    if final_report.get("formal_acceptance_passed") is False:
+        candidate_path.unlink(missing_ok=True)
+        docx_path.replace(candidate_path)
+        outputs["docx"] = str(candidate_path)
+        outputs["docx_exists"] = candidate_path.exists()
+        return candidate_path, str(candidate_path)
+    candidate_path.unlink(missing_ok=True)
+    return docx_path, ""
+
+
 def complete_pipeline_delivery(
     *,
     task_id: str,
@@ -58,7 +76,10 @@ def complete_pipeline_delivery(
 
     checkpoint(task_id)
     update_task(task_id, current_stage="docx")
-    docx_path = output_dir / "answer_book.docx"
+    # Construction and intermediate audits use a neutral internal name.  A
+    # run that fails before final acceptance must never leave a formal-looking
+    # answer_book.docx behind.
+    docx_path = stage_dir / "working_answer_book.docx"
     mark("docx", "started", {"docx": str(docx_path), "message": "开始生成并审查最终 Word 文档。"})
     docx_result = build_docx_with_repair(
         task_id,
@@ -240,19 +261,31 @@ def complete_pipeline_delivery(
     checkpoint(task_id)
     update_task(task_id, current_stage="final_acceptance")
     mark("final_acceptance", "started", {"require_render": render_with_word})
+    formal_docx_path = output_dir / "answer_book.docx"
+    formal_docx_path.unlink(missing_ok=True)
+    docx_path.replace(formal_docx_path)
+    docx_path = formal_docx_path
     final_report = build_final_acceptance_report(
         stage_dir,
         output_dir,
         require_render=render_with_word,
     )
     if not final_report.get("delivery_ready", final_report.get("ok", False)):
+        primary_docx, review_candidate_docx = finalize_primary_docx_filename(
+            output_dir,
+            docx_path,
+            final_report,
+        )
+        write_json(stage_dir / "final_acceptance_report.json", final_report)
         mark("final_acceptance", "failed", {"issues": final_report["issues"][:30]})
         raise RuntimeError("Final acceptance audit failed")
-    review_candidate_docx = ""
-    if final_report.get("delivery_tier") == "review_candidate":
-        candidate_path = output_dir / "answer_book_review_candidate.docx"
-        shutil.copy2(docx_path, candidate_path)
-        review_candidate_docx = str(candidate_path)
+    primary_docx, review_candidate_docx = finalize_primary_docx_filename(
+        output_dir,
+        docx_path,
+        final_report,
+    )
+    if review_candidate_docx:
+        write_json(stage_dir / "final_acceptance_report.json", final_report)
     answer_delivery_summary = final_report.get("answer_fragment_delivery_summary") or {}
     delivery_status = {
         "schema_version": "answer_book.delivery_status.v1",
@@ -260,7 +293,7 @@ def complete_pipeline_delivery(
         "formal_acceptance_passed": bool(final_report.get("formal_acceptance_passed")),
         "delivery_tier": str(final_report.get("delivery_tier") or "blocked"),
         "delivery_tier_label": str(final_report.get("delivery_tier_label") or ""),
-        "primary_docx": str(docx_path),
+        "primary_docx": str(primary_docx),
         "review_candidate_docx": review_candidate_docx,
         "review_docx": str(output_dir / "question_review.docx"),
         "answer_fragment_delivery_summary": answer_delivery_summary,
@@ -275,6 +308,7 @@ def complete_pipeline_delivery(
     report["status"] = str(final_report.get("status") or "failed")
     report["delivery_ready"] = bool(final_report.get("delivery_ready"))
     report["review_candidate_docx"] = review_candidate_docx
+    report["docx"] = str(primary_docx)
     write_json(stage_dir / "acceptance_report.json", report)
     # Refresh the user-facing usage report after the final tier is known. The
     # earlier copy is useful during failure handling, but must not remain stale

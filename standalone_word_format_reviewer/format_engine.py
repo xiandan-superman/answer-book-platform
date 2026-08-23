@@ -316,6 +316,15 @@ def _set_style(style, spec: ParagraphSpec) -> None:
 def _format_paragraph(paragraph: Paragraph, spec: ParagraphSpec, *, force_body_bold: bool = False) -> None:
     fmt = paragraph.paragraph_format
     fmt.alignment = spec.alignment
+    # LibreOffice does not honor Word's document-level
+    # doNotExpandShiftReturn compatibility switch.  Apply the equivalent
+    # fallback only to a justified paragraph that actually contains a manual
+    # text-wrapping break; its Normal/style definition remains justified and
+    # all ordinary paragraphs keep the requested alignment.
+    if spec.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY and paragraph._p.xpath(
+        ".//w:br[not(@w:type) or @w:type='textWrapping']"
+    ):
+        fmt.alignment = WD_ALIGN_PARAGRAPH.LEFT
     fmt.line_spacing = spec.line_spacing
     fmt.first_line_indent = Pt(spec.first_line_indent_pt)
     fmt.space_before = Pt(spec.space_before_pt)
@@ -325,6 +334,30 @@ def _format_paragraph(paragraph: Paragraph, spec: ParagraphSpec, *, force_body_b
         if run._r.xpath(".//w:drawing|.//w:object|.//m:oMath"):
             continue
         _set_run_fonts(run, spec, set_bold=force_body_bold or spec.bold is not None)
+
+
+def _set_shift_return_compatibility(document: DocumentObject) -> None:
+    """Keep justified Shift+Enter lines from expanding across the page.
+
+    Word exposes this as a document compatibility switch.  It is deliberately
+    narrower than changing affected paragraphs to left alignment: ordinary
+    paragraphs keep their requested style and only the last line before a
+    manual line break receives Word's compatibility behaviour.
+    """
+
+    has_manual_break = any(
+        paragraph._p.xpath(".//w:br[not(@w:type) or @w:type='textWrapping']")
+        for paragraph in _all_body_paragraphs(document)
+    )
+    if not has_manual_break:
+        return
+    settings = document.settings.element
+    compat = settings.find(qn("w:compat"))
+    if compat is None:
+        compat = OxmlElement("w:compat")
+        settings.append(compat)
+    if compat.find(qn("w:doNotExpandShiftReturn")) is None:
+        compat.append(OxmlElement("w:doNotExpandShiftReturn"))
 
 
 def _all_body_paragraphs(document: DocumentObject) -> Iterable[Paragraph]:
@@ -876,6 +909,7 @@ def repair_docx(source: str | Path, destination: str | Path, profile_key: str, h
             _format_paragraph(page_paragraph, page_spec)
 
     _set_math_font(document)
+    _set_shift_return_compatibility(document)
     _remove_exact_row_heights(document)
     content_width = Cm(normalized_options["image"]["max_width_cm"])
     content_height = Cm(normalized_options["image"]["max_height_cm"])

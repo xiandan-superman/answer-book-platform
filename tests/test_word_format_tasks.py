@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 from pathlib import Path
 
 from docx import Document
@@ -47,13 +48,88 @@ def test_review_task_persists_and_can_be_applied_downloaded_and_deleted(tmp_path
     assert applied["status"] in {"completed", "completed_with_issues"}
     assert applied["final_report"]["source_name"] == "示例答案.docx"
     assert applied["download_url"].endswith(f"/{task_id}/download")
+    assert applied["changes"]["resolved"]
+    assert applied["source_preview_url"].endswith("preview?version=source")
+    assert applied["modified_preview_url"].endswith("preview?version=modified")
+    assert applied["suggested_filename"] == "示例答案_格式已修改.docx"
     output, filename = word_format_tasks.word_format_download_path(task_id)
     assert output.exists()
     assert filename == "示例答案_格式已修改.docx"
+    source, source_filename = word_format_tasks.word_format_source_path(task_id)
+    assert source.read_bytes() == content
+    assert source_filename == "示例答案.docx"
+
+    restored = word_format_tasks.restore_word_format_task(task_id)
+    assert restored["status"] == "needs_input"
+    assert restored["final_report"] is None
+    assert restored["download_url"] is None
+    assert source.read_bytes() == content
 
     deleted = word_format_tasks.delete_word_format_task(task_id)
     assert deleted["ok"] is True
     assert word_format_tasks.list_word_format_tasks() == []
+
+
+def test_running_task_records_a_real_cancel_request(tmp_path: Path, monkeypatch) -> None:
+    _configure_storage(tmp_path, monkeypatch)
+    content = _docx_bytes(tmp_path / "input.docx")
+    task_id = "word_format_web_" + "a" * 32
+    created = word_format_tasks.create_word_format_task({
+        "job_id": task_id,
+        "filename": "取消测试.docx",
+        "content_base64": base64.b64encode(content).decode("ascii"),
+        "profile": "answer",
+        "mode": "review",
+    })
+    record = word_format_tasks._load_record(task_id)
+    record["status"] = "running"
+    word_format_tasks._save_record(record)
+
+    canceled = word_format_tasks.cancel_word_format_task(task_id)
+
+    assert created["task_id"] == task_id
+    assert canceled["status"] == "cancel_requested"
+    assert word_format_tasks._load_record(task_id)["status"] == "cancel_requested"
+
+
+def test_cancel_during_audit_discards_completion_and_keeps_source(tmp_path: Path, monkeypatch) -> None:
+    _configure_storage(tmp_path, monkeypatch)
+    content = _docx_bytes(tmp_path / "input.docx")
+    task_id = "word_format_web_" + "b" * 32
+    entered = threading.Event()
+    release = threading.Event()
+    original_audit = word_format_tasks.audit_docx
+    result: dict = {}
+
+    def slow_audit(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original_audit(*args, **kwargs)
+
+    monkeypatch.setattr(word_format_tasks, "audit_docx", slow_audit)
+
+    def create() -> None:
+        result.update(word_format_tasks.create_word_format_task({
+            "job_id": task_id,
+            "filename": "运行中取消.docx",
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "profile": "answer",
+            "mode": "auto",
+        }))
+
+    worker = threading.Thread(target=create)
+    worker.start()
+    assert entered.wait(5)
+    assert word_format_tasks.cancel_word_format_task(task_id)["status"] == "cancel_requested"
+    release.set()
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert result["status"] == "canceled"
+    assert result["download_url"] is None
+    source, _ = word_format_tasks.word_format_source_path(task_id)
+    assert source.read_bytes() == content
+    assert not (source.parent / "modified.docx").exists()
 
 
 def test_auto_task_finishes_with_download_and_profile_settings_are_persistent(tmp_path: Path, monkeypatch) -> None:

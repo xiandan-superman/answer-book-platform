@@ -4,7 +4,7 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.table import WD_ROW_HEIGHT_RULE
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches
@@ -85,6 +85,27 @@ def test_lecture_profile_uses_lecture_body_indent_and_styles(tmp_path: Path) -> 
     assert repaired.styles["注"].paragraph_format.first_line_indent.pt == 5
 
 
+def test_manual_line_break_uses_word_compatibility_without_disabling_justify(tmp_path: Path) -> None:
+    source = tmp_path / "manual_break.docx"
+    output = tmp_path / "manual_break_fixed.docx"
+    document = Document()
+    paragraph = document.add_paragraph("第一条短要求")
+    paragraph.add_run().add_break(WD_BREAK.LINE)
+    paragraph.add_run("第二条短要求")
+    document.add_paragraph("这是保持普通两端对齐样式的完整正文段落。")
+    document.save(source)
+
+    repair_docx(source, output, "answer", "")
+
+    repaired = Document(output)
+    compat = repaired.settings.element.find(qn("w:compat"))
+    assert compat is not None
+    assert compat.find(qn("w:doNotExpandShiftReturn")) is not None
+    assert repaired.styles["Normal"].paragraph_format.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert repaired.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.LEFT
+    assert repaired.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+
+
 def test_safe_filename_removes_paths_and_reserved_characters() -> None:
     assert _safe_filename("../../有:问题?.docx") == "有问题.docx"
     assert _safe_filename("") == "document.docx"
@@ -158,6 +179,55 @@ def test_server_embeds_settings_in_initial_page() -> None:
     assert "__INITIAL_SETTINGS_JSON__" not in html
     assert '"answer":{"defaults"' in html
     assert '"lecture":{"defaults"' in html
+
+
+def test_standalone_job_payload_keeps_before_after_changes_and_recovery_links(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(reviewer_server, "JOB_ROOT", tmp_path)
+    job_id = "a" * 32
+    job = tmp_path / job_id
+    job.mkdir()
+    source = job / "source.docx"
+    modified = job / "modified.docx"
+    _fixture(source)
+    before = audit_docx(source, "answer", "新页眉")
+    after = repair_docx(source, modified, "answer", "新页眉")
+    reviewer_server._write_json(job / "meta.json", {
+        "job_id": job_id,
+        "filename": "真实题目.docx",
+        "profile": "answer",
+        "mode": "review",
+        "status": "completed",
+    })
+    reviewer_server._write_json(job / "audit.json", before)
+    reviewer_server._write_json(job / "final_audit.json", after)
+
+    payload = reviewer_server._job_payload(job_id)
+
+    assert payload["report"] == before
+    assert payload["final_report"] == after
+    assert payload["changes"]["resolved"]
+    assert payload["suggested_filename"] == "真实题目_格式已修改.docx"
+    assert payload["source_download_url"].endswith("/source")
+    assert payload["source_preview_url"].endswith("preview?version=source")
+    assert payload["modified_preview_url"].endswith("preview?version=modified")
+    assert payload["can_restore"] is True
+
+
+def test_frontend_explains_history_recovery_preview_cancel_and_download_state() -> None:
+    html = (Path(__file__).parents[1] / "standalone_word_format_reviewer" / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert "修改前问题" in html
+    assert "最终复查" in html
+    assert "实际处理" in html
+    assert "wordFormatReviewer:lastJob" in html
+    assert "previewModal" in html
+    assert "cancelCurrentOperation" in html
+    assert "restoreOriginal" in html
+    assert "重试上一步" in html
+    assert "已向浏览器发起下载" in html
+    assert "桌面版已保存" in html
+    assert "实际路径" in html
+    assert "saved?.status === 'cancelled'" in html
 
 
 def test_permanent_profile_settings_are_stored_and_reloaded(tmp_path: Path, monkeypatch) -> None:

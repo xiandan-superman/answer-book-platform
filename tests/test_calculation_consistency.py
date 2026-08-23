@@ -625,6 +625,19 @@ def test_reconcile_mirrors_missing_ledger_result_and_connects_all_step_values() 
     assert reconciled["calculation_contract"]["result_quantities"][1]["formula_index"] == 2
     assert reconciled["answer_units"][0]["steps"][0]["result_formula_indices"] == [1, 2]
 
+    from app.answer_generation import _calculation_step_segments
+
+    rendered = _calculation_step_segments(
+        reconciled["answer_units"][0]["steps"],
+        reconciled["formulas"],
+    )
+    assert not any(
+        segment.get("type") == "formula_ref"
+        and segment.get("formula_id") == reconciled["formulas"][1].get("formula_id")
+        for segment in rendered
+    )
+    assert not any("63.5" in str(segment.get("text") or "") for segment in rendered)
+
 
 def test_reconcile_does_not_match_ledger_value_to_formula_operand() -> None:
     draft = {

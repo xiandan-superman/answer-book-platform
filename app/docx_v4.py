@@ -716,13 +716,13 @@ def add_mixed_paragraph(
             if base_dir and not image_path.is_absolute():
                 image_path = base_dir / image_path
             break_text_paragraph()
-            if image_path.exists():
+            if image_path.is_file():
                 pic_p = doc.add_paragraph()
                 set_para(pic_p, WD_ALIGN_PARAGRAPH.CENTER)
                 add_figure_picture(pic_p, image_path)
             else:
-                r = ensure_text_paragraph().add_run(f"[缺失图:{seg.get('image_id','') or image_path}]")
-                set_run_font(r)
+                image_id = str(seg.get("image_id") or image_path)
+                raise FileNotFoundError(f"Required Word image is missing: {image_id} ({image_path})")
         else:
             raise ValueError(f"Unsupported segment type: {typ}")
     if label_pending and label:
@@ -744,7 +744,8 @@ def add_split_block(doc: Document, segments: list[dict], formulas: dict[str, dic
                 previous_was_formula = False
                 continue
             if skip_promoted_tail and re.fullmatch(
-                r"[<>{}\[\]()（）0-9⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻+\-−*/×·.,，、\s]+",
+                r"(?:(?:总|隔离|系统|环境|环|外|内)+\s*=\s*)?"
+                r"[=<>{}\[\]()（）A-Za-z0-9⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻+\-−*/×·.,。，、\s]+",
                 text,
             ):
                 skip_promoted_tail = False
@@ -767,18 +768,25 @@ def add_split_block(doc: Document, segments: list[dict], formulas: dict[str, dic
             formula = formulas.get(fid)
             if not formula:
                 raise ValueError(f"Missing formula for formula_ref: {fid}")
+            source_note = str(formula.get("source_note") or formula.get("meaning") or "")
+            if bool(formula.get("_program_mirrored_from_contract")) or "程序从计算结果账本中镜像" in source_note:
+                # The ledger mirror is machine-audit evidence, not a second
+                # student-facing result.  Older checkpoints only carry the
+                # source_note marker, so keep that migration path deterministic.
+                continue
             add_formula_paragraph(doc, str(formula.get("latex", "")))
             previous_was_formula = True
         elif typ == "image_ref":
             image_path = Path(str(seg.get("path") or ""))
             if base_dir and not image_path.is_absolute():
                 image_path = base_dir / image_path
-            if image_path.exists():
+            if image_path.is_file():
                 pic_p = doc.add_paragraph()
                 set_para(pic_p, WD_ALIGN_PARAGRAPH.CENTER)
                 add_figure_picture(pic_p, image_path)
             else:
-                add_text_paragraph(doc, f"[缺失图:{seg.get('image_id','') or image_path}]")
+                image_id = str(seg.get("image_id") or image_path)
+                raise FileNotFoundError(f"Required Word image is missing: {image_id} ({image_path})")
             previous_was_formula = False
         else:
             raise ValueError(f"Unsupported segment type: {typ}")

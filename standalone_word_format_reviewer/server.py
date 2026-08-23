@@ -11,7 +11,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .format_engine import PROFILE_LABELS, audit_docx, default_task_options, normalize_task_options, repair_docx
 
@@ -38,7 +38,10 @@ def _job_dir(job_id: str) -> Path:
 
 
 def _write_json(path: Path, value: dict) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _read_json(path: Path) -> dict:
@@ -100,6 +103,76 @@ def _save_profile_settings(profile: str, settings: dict) -> dict:
     return normalized
 
 
+def _with_display_filename(report: dict, filename: str) -> dict:
+    report["source_name"] = filename
+    return report
+
+
+def _issue_key(issue: dict) -> tuple[str, str, str]:
+    return (
+        str(issue.get("code") or ""),
+        str(issue.get("location") or ""),
+        str(issue.get("item") or ""),
+    )
+
+
+def _report_changes(original: dict | None, final: dict | None) -> dict:
+    original_issues = original.get("issues", []) if isinstance(original, dict) else []
+    final_issues = final.get("issues", []) if isinstance(final, dict) else []
+    final_keys = {_issue_key(issue) for issue in final_issues if isinstance(issue, dict)}
+    original_keys = {_issue_key(issue) for issue in original_issues if isinstance(issue, dict)}
+    resolved = [issue for issue in original_issues if isinstance(issue, dict) and _issue_key(issue) not in final_keys]
+    remaining = [issue for issue in final_issues if isinstance(issue, dict) and _issue_key(issue) in original_keys]
+    introduced = [issue for issue in final_issues if isinstance(issue, dict) and _issue_key(issue) not in original_keys]
+    return {"resolved": resolved, "remaining": remaining, "introduced": introduced}
+
+
+def _download_filename(meta: dict) -> str:
+    return f"{Path(str(meta.get('filename') or 'document.docx')).stem}_格式已修改.docx"
+
+
+def _job_payload(job_id: str) -> dict:
+    job = _job_dir(job_id)
+    meta = _read_json(job / "meta.json")
+    report = _read_json(job / "audit.json") if (job / "audit.json").exists() else None
+    final_report = _read_json(job / "final_audit.json") if (job / "final_audit.json").exists() else None
+    output_exists = (job / "modified.docx").exists()
+    filename = str(meta.get("filename") or "document.docx")
+    return {
+        "job_id": job_id,
+        "mode": meta.get("mode"),
+        "status": meta.get("status") or ("completed" if output_exists else "needs_input"),
+        "filename": filename,
+        "suggested_filename": _download_filename(meta) if output_exists else None,
+        "report": report,
+        "final_report": final_report,
+        "changes": _report_changes(report, final_report),
+        "download_url": f"/api/jobs/{job_id}/download" if output_exists else None,
+        "source_download_url": f"/api/jobs/{job_id}/source",
+        "source_preview_url": f"/api/jobs/{job_id}/preview?version=source",
+        "modified_preview_url": f"/api/jobs/{job_id}/preview?version=modified" if output_exists else None,
+        "can_restore": output_exists,
+        "error": meta.get("error"),
+    }
+
+
+def _job_cancelled(job: Path) -> bool:
+    try:
+        return _read_json(job / "meta.json").get("status") in {"cancel_requested", "canceled"}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _mark_job(job: Path, **updates: object) -> dict:
+    meta = _read_json(job / "meta.json")
+    if meta.get("status") in {"cancel_requested", "canceled"} and updates.get("status") not in {"cancel_requested", "canceled"}:
+        updates.pop("status", None)
+    meta.update(updates)
+    meta["updated_at"] = time.time()
+    _write_json(job / "meta.json", meta)
+    return meta
+
+
 class WordFormatHandler(BaseHTTPRequestHandler):
     server_version = "WordFormatReviewer/0.1"
 
@@ -125,7 +198,8 @@ class WordFormatHandler(BaseHTTPRequestHandler):
             raise ValueError("请求内容不是有效JSON") from exc
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             data = _render_web_page()
             self.send_response(200)
@@ -148,6 +222,12 @@ class WordFormatHandler(BaseHTTPRequestHandler):
             self._send_json(200, _settings_payload())
             return
         parts = path.strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["api", "jobs"]:
+            try:
+                self._send_json(200, _job_payload(parts[2]))
+            except (ValueError, FileNotFoundError, OSError, json.JSONDecodeError):
+                self._send_json(404, {"error": "审查任务不存在或已过期"})
+            return
         if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "download":
             try:
                 job = _job_dir(parts[2])
@@ -158,11 +238,57 @@ class WordFormatHandler(BaseHTTPRequestHandler):
             except (ValueError, FileNotFoundError, OSError):
                 self._send_json(404, {"error": "修改后的文件不存在或已过期"})
                 return
-            filename = f"{Path(meta['filename']).stem}_格式已修改.docx"
+            filename = _download_filename(meta)
             data = output.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "source":
+            try:
+                job = _job_dir(parts[2])
+                meta = _read_json(job / "meta.json")
+                source = job / "source.docx"
+                if not source.exists():
+                    raise FileNotFoundError
+            except (ValueError, FileNotFoundError, OSError):
+                self._send_json(404, {"error": "原始文件不存在或已过期"})
+                return
+            data = source.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(str(meta.get('filename') or 'document.docx'))}")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "preview":
+            version = str(parse_qs(parsed.query).get("version", ["source"])[0])
+            try:
+                job = _job_dir(parts[2])
+                source = job / ("modified.docx" if version == "modified" else "source.docx")
+                if not source.exists():
+                    raise FileNotFoundError
+                preview = job / f"preview_{version}.pdf"
+                if not preview.exists() or preview.stat().st_mtime < source.stat().st_mtime:
+                    from app.render_word import export_docx_to_pdf
+
+                    export_docx_to_pdf(source, preview)
+                data = preview.read_bytes()
+            except (ValueError, FileNotFoundError, OSError):
+                self._send_json(404, {"error": "预览文件不存在或已过期"})
+                return
+            except Exception as exc:
+                self._send_json(503, {"error": f"暂时无法生成预览：{exc}"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", "inline")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -182,6 +308,12 @@ class WordFormatHandler(BaseHTTPRequestHandler):
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "apply":
                 self._handle_apply(parts[2])
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel":
+                self._handle_cancel(parts[2])
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "restore":
+                self._handle_restore(parts[2])
                 return
             self._send_json(404, {"error": "接口不存在"})
         except ValueError as exc:
@@ -214,26 +346,51 @@ class WordFormatHandler(BaseHTTPRequestHandler):
         if not content.startswith(b"PK"):
             raise ValueError("文件不是有效的DOCX压缩包")
 
-        job_id = uuid.uuid4().hex
+        requested_job_id = str(payload.get("job_id") or "")
+        if requested_job_id:
+            _job_dir(requested_job_id)
+        job_id = requested_job_id or uuid.uuid4().hex
         job = _job_dir(job_id)
-        job.mkdir(parents=True)
+        try:
+            job.mkdir(parents=True)
+        except FileExistsError as exc:
+            raise ValueError("该审查任务已存在，请刷新页面恢复或重新开始") from exc
         source = job / "source.docx"
         source.write_bytes(content)
-        meta = {"job_id": job_id, "filename": filename, "profile": profile, "mode": mode, "header_text": header_text, "task_options": task_options, "created_at": time.time()}
+        meta = {"job_id": job_id, "filename": filename, "profile": profile, "mode": mode, "header_text": header_text, "task_options": task_options, "status": "running", "created_at": time.time(), "updated_at": time.time()}
         _write_json(job / "meta.json", meta)
         try:
-            report = audit_docx(source, profile, header_text, task_options)
+            report = _with_display_filename(audit_docx(source, profile, header_text, task_options), filename)
         except Exception as exc:
             shutil.rmtree(job, ignore_errors=True)
             raise ValueError(f"无法读取该DOCX文件：{exc}") from exc
         _write_json(job / "audit.json", report)
-        result = {"job_id": job_id, "mode": mode, "report": report, "download_url": None, "final_report": None}
+        if _job_cancelled(job):
+            _mark_job(job, status="canceled")
+            self._send_json(409, {"error": "任务已取消", "job_id": job_id, "status": "canceled"})
+            return
+        _mark_job(job, status="needs_input")
+        if _job_cancelled(job):
+            _mark_job(job, status="canceled")
+            self._send_json(409, {"error": "任务已取消", "job_id": job_id, "status": "canceled"})
+            return
         if mode == "auto":
-            final_report = repair_docx(source, job / "modified.docx", profile, header_text, task_options)
+            final_report = _with_display_filename(repair_docx(source, job / "modified.docx", profile, header_text, task_options), filename)
             _write_json(job / "final_audit.json", final_report)
-            result["download_url"] = f"/api/jobs/{job_id}/download"
-            result["final_report"] = final_report
-        self._send_json(200, result)
+            if _job_cancelled(job):
+                (job / "modified.docx").unlink(missing_ok=True)
+                (job / "final_audit.json").unlink(missing_ok=True)
+                _mark_job(job, status="canceled")
+                self._send_json(409, {"error": "任务已取消", "job_id": job_id, "status": "canceled"})
+                return
+            _mark_job(job, status="completed")
+            if _job_cancelled(job):
+                (job / "modified.docx").unlink(missing_ok=True)
+                (job / "final_audit.json").unlink(missing_ok=True)
+                _mark_job(job, status="canceled")
+                self._send_json(409, {"error": "任务已取消", "job_id": job_id, "status": "canceled"})
+                return
+        self._send_json(200, _job_payload(job_id))
 
     def _handle_settings(self) -> None:
         payload = self._read_json()
@@ -256,9 +413,51 @@ class WordFormatHandler(BaseHTTPRequestHandler):
         except (OSError, FileNotFoundError):
             self._send_json(404, {"error": "审查任务不存在或已过期"})
             return
-        final_report = repair_docx(source, job / "modified.docx", meta["profile"], meta["header_text"], meta.get("task_options"))
+        _mark_job(job, status="running", operation="apply")
+        final_report = _with_display_filename(repair_docx(source, job / "modified.docx", meta["profile"], meta["header_text"], meta.get("task_options")), str(meta.get("filename") or "document.docx"))
         _write_json(job / "final_audit.json", final_report)
-        self._send_json(200, {"job_id": job_id, "download_url": f"/api/jobs/{job_id}/download", "final_report": final_report})
+        if _job_cancelled(job):
+            (job / "modified.docx").unlink(missing_ok=True)
+            (job / "final_audit.json").unlink(missing_ok=True)
+            _mark_job(job, status="canceled")
+            self._send_json(409, {"error": "任务已取消", "job_id": job_id, "status": "canceled"})
+            return
+        _mark_job(job, status="completed", operation=None)
+        if _job_cancelled(job):
+            (job / "modified.docx").unlink(missing_ok=True)
+            (job / "final_audit.json").unlink(missing_ok=True)
+            _mark_job(job, status="canceled", operation=None)
+            self._send_json(409, {"error": "任务已取消", "job_id": job_id, "status": "canceled"})
+            return
+        self._send_json(200, _job_payload(job_id))
+
+    def _handle_cancel(self, job_id: str) -> None:
+        try:
+            job = _job_dir(job_id)
+            meta = _read_json(job / "meta.json")
+        except (ValueError, FileNotFoundError, OSError):
+            self._send_json(404, {"error": "审查任务不存在或已过期"})
+            return
+        status = str(meta.get("status") or "")
+        if status == "running":
+            _mark_job(job, status="cancel_requested")
+            self._send_json(202, {"job_id": job_id, "status": "cancel_requested", "message": "已请求取消，当前步骤结束后将不保留修改结果"})
+            return
+        self._send_json(200, {"job_id": job_id, "status": status, "message": "任务已不在运行"})
+
+    def _handle_restore(self, job_id: str) -> None:
+        try:
+            job = _job_dir(job_id)
+            _read_json(job / "meta.json")
+            if not (job / "source.docx").exists() or not (job / "audit.json").exists():
+                raise FileNotFoundError
+        except (ValueError, FileNotFoundError, OSError):
+            self._send_json(404, {"error": "原始文件或审查任务不存在"})
+            return
+        for name in ("modified.docx", "final_audit.json", "preview_modified.pdf"):
+            (job / name).unlink(missing_ok=True)
+        _mark_job(job, status="needs_input", operation=None)
+        self._send_json(200, _job_payload(job_id))
 
     def log_message(self, format: str, *args) -> None:
         print(f"[{self.log_date_time_string()}] {format % args}")

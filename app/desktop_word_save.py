@@ -20,6 +20,7 @@ from .paths import CACHE_DIR
 
 
 _JOB_ID_PATTERN = re.compile(r"^practice_word_[a-zA-Z0-9_-]{8,96}$")
+_WORD_FORMAT_TASK_ID_PATTERN = re.compile(r"^word_format_[a-z0-9_]{1,96}$")
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -134,6 +135,40 @@ class DesktopWordSaveBridge:
         _validate_docx(resolved_source)
         return resolved_source, _sanitize_docx_filename(server_filename)
 
+    def _resolve_word_format_source(self, task_id: str) -> tuple[Path, str]:
+        if not _WORD_FORMAT_TASK_ID_PATTERN.fullmatch(str(task_id or "")):
+            raise DesktopWordSaveError("invalid_task_id", "Word 格式审查任务标识无效，请重新打开任务。")
+        from . import word_format_tasks
+
+        try:
+            raw_source, server_filename = word_format_tasks.word_format_download_path(task_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise DesktopWordSaveError(
+                "format_output_unavailable",
+                str(exc) or "修改后的 Word 文件不可用，请重新运行格式审查。",
+            ) from exc
+
+        source = Path(raw_source)
+        tasks_root = Path(word_format_tasks.TASKS_DIR)
+        expected_task_dir = tasks_root / task_id
+        if source.is_symlink() or expected_task_dir.is_symlink():
+            raise DesktopWordSaveError("invalid_source", "Word 格式审查文件来源无效，请重新运行任务。")
+        try:
+            resolved_tasks_root = tasks_root.resolve(strict=True)
+            resolved_task_dir = expected_task_dir.resolve(strict=True)
+            resolved_task_dir.relative_to(resolved_tasks_root)
+            resolved_source = source.resolve(strict=True)
+            resolved_source.relative_to(resolved_task_dir)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise DesktopWordSaveError(
+                "invalid_source",
+                "Word 格式审查文件来源不受信任，请重新运行任务。",
+            ) from exc
+        if not resolved_source.is_file():
+            raise DesktopWordSaveError("invalid_source", "Word 格式审查文件不是有效文件，请重新运行任务。")
+        _validate_docx(resolved_source)
+        return resolved_source, _sanitize_docx_filename(server_filename, "格式已修改.docx")
+
     def _choose_target(self, filename: str) -> Path | None:
         if self._window is None:
             raise DesktopWordSaveError("desktop_unavailable", "桌面保存窗口尚未就绪，请稍后重试。")
@@ -213,7 +248,8 @@ class DesktopWordSaveBridge:
         return {
             str(job_id): record
             for job_id, record in records.items()
-            if _JOB_ID_PATTERN.fullmatch(str(job_id)) and isinstance(record, dict)
+            if (_JOB_ID_PATTERN.fullmatch(str(job_id)) or _WORD_FORMAT_TASK_ID_PATTERN.fullmatch(str(job_id)))
+            and isinstance(record, dict)
         }
 
     def _record_save(self, job_id: str, result: dict[str, Any]) -> bool:
@@ -255,6 +291,36 @@ class DesktopWordSaveBridge:
                     "saved_at": _now(),
                 }
                 result["receipt_persisted"] = self._record_save(job_id, result)
+                return result
+            except DesktopWordSaveError as exc:
+                return {"status": "error", "code": exc.code, "message": exc.message}
+            except Exception:
+                return {
+                    "status": "error",
+                    "code": "save_failed",
+                    "message": "Word 保存未完成，未确认任何文件已写入；请重新选择位置。",
+                }
+
+    def save_word_format(self, task_id: str, suggested_filename: str = "") -> dict[str, Any]:
+        with self._lock:
+            try:
+                source, server_filename = self._resolve_word_format_source(str(task_id or ""))
+                filename = _sanitize_docx_filename(suggested_filename, server_filename)
+                target = self._choose_target(filename)
+                if target is None:
+                    return {"status": "cancelled", "message": "已取消保存。修改后的 Word 仍保留，可点击“重新保存”。"}
+                size_bytes, sha256 = self._copy_atomically(source, target)
+                result = {
+                    "status": "saved",
+                    "task_id": task_id,
+                    "job_id": task_id,
+                    "filename": target.name,
+                    "path": str(target),
+                    "size_bytes": size_bytes,
+                    "sha256": sha256,
+                    "saved_at": _now(),
+                }
+                result["receipt_persisted"] = self._record_save(task_id, result)
                 return result
             except DesktopWordSaveError as exc:
                 return {"status": "error", "code": exc.code, "message": exc.message}

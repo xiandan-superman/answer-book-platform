@@ -67,6 +67,41 @@ SPATIAL_MEMBERSHIP_INFERENCE_RE = re.compile(
     r"(?:包含|含有|含|归入|属于|纳入)[^。；;\n]{0,12}"
     r"(?:依附|附着|包覆|嵌入|邻接)[^。；;\n]{0,40}"
 )
+INCOMPLETE_NUMERIC_SLOT_PATTERNS = (
+    re.compile(r"(?:质量分数|摩尔分数|体积分数|百分比|含量)\s*(?:为|=|:|：|/)?\s*(?:/\s*)?[%％]"),
+    re.compile(r"[:：]\s*/\s*[:：]"),
+    re.compile(r"(?:^|[\s,，;；、])[%％](?:$|[\s,，;；、])"),
+)
+DANGLING_COMPOSITION_VALUE_RE = re.compile(
+    r"(?=.*(?:=|为)\s*[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*[%％])"
+    r".*[，,；;、]\s*[A-Za-zΑ-ω\u3400-\u9fff]{1,24}(?:相|体|组织|奥氏体|铁素体|渗碳体)\s*$"
+)
+
+
+def _incomplete_numeric_slots(fragment: dict[str, Any]) -> list[tuple[str, str]]:
+    """Locate deterministic empty numeric slots without inventing a value."""
+
+    fields: list[tuple[str, Any]] = [
+        ("answer", fragment.get("answer")),
+        ("answer_summary", fragment.get("answer_summary")),
+    ]
+    for unit_index, unit in enumerate(fragment.get("answer_units", []) or []):
+        if not isinstance(unit, dict):
+            continue
+        fields.append((f"answer_units[{unit_index}].answer", unit.get("answer")))
+        for step_index, step in enumerate(unit.get("steps", []) or []):
+            if isinstance(step, dict):
+                fields.append(
+                    (f"answer_units[{unit_index}].steps[{step_index}].result_text", step.get("result_text"))
+                )
+    hits: list[tuple[str, str]] = []
+    for location, raw in fields:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if any(pattern.search(text) for pattern in INCOMPLETE_NUMERIC_SLOT_PATTERNS) or DANGLING_COMPOSITION_VALUE_RE.search(text):
+            hits.append((location, text[:160]))
+    return hits
 
 
 def _calculation_has_high_confidence_missing_unit(fragment: dict[str, Any], draft: dict[str, Any]) -> bool:
@@ -606,6 +641,13 @@ def audit_content_quality(
         answer_summary = str(fragment.get("answer_summary", "") or draft.get("answer", "")).strip()
         if answer in PENDING_ANSWERS or (kind == "term_explanation" and answer == "见解析"):
             issue("missing_answer", "答案为空或仍为待复核状态。")
+        incomplete_slots = _incomplete_numeric_slots(fragment)
+        if incomplete_slots:
+            locations = "；".join(f"{location}={snippet}" for location, snippet in incomplete_slots[:6])
+            issue(
+                "incomplete_numeric_slot",
+                "答案存在确定性的残缺数值槽位，已阻止正式验收；程序不会猜测或补造数值。定位：" + locations,
+            )
 
         analysis_text = _block_text(fragment, "解析")
         calculation_steps_text = _block_text(fragment, "解题步骤") if has_calculation_part else ""

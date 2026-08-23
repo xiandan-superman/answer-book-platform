@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import copy
 import hashlib
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -440,11 +441,36 @@ def _snapshot_question(stage_dir: Path, output_dir: Path, fragment: dict[str, An
     snapshot_json = snapshot_dir / "fragment.json"
     snapshot_docx = snapshot_dir / f"{qid}.docx"
     snapshot_pdf = snapshot_dir / f"{qid}.pdf"
+    snapshot_fragment = copy.deepcopy(fragment)
+
+    def migrate_image_refs(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "image_ref":
+                raw_path = Path(str(value.get("path") or ""))
+                if not raw_path.is_absolute():
+                    source = (stage_dir / raw_path).resolve()
+                    destination = (snapshot_dir / raw_path).resolve()
+                    try:
+                        destination.relative_to(snapshot_dir.resolve())
+                    except ValueError as exc:
+                        raise ValueError(f"Snapshot image path escapes output directory: {raw_path}") from exc
+                    if not source.is_file():
+                        image_id = str(value.get("image_id") or raw_path)
+                        raise FileNotFoundError(f"Required snapshot image is missing: {image_id} ({source})")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+            for child in value.values():
+                migrate_image_refs(child)
+        elif isinstance(value, list):
+            for child in value:
+                migrate_image_refs(child)
+
+    migrate_image_refs(snapshot_fragment)
     snapshot_json.write_text(
         json.dumps(
             {
                 "schema_version": "answer_book.answer_fragments.v4",
-                "fragments": [fragment],
+                "fragments": [snapshot_fragment],
             },
             ensure_ascii=False,
             indent=2,

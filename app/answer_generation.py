@@ -1977,9 +1977,21 @@ def _calculation_step_segments(steps: Any, formulas: list[dict[str, Any]]) -> li
         relation_indices = item.get("relation_formula_indices") or item.get("formula_indices", [])
         _append_indexed_formula_refs(segments, formula_ids, relation_indices, used)
         _append_indexed_formula_refs(segments, formula_ids, item.get("substitution_formula_indices", []), used, "带入数值：")
-        _append_indexed_formula_refs(segments, formula_ids, item.get("result_formula_indices", []), used, "求得：")
+        result_indices = [
+            index
+            for index in item.get("result_formula_indices", []) or []
+            if isinstance(index, int)
+            and 0 < index <= len(formulas)
+            and not bool(formulas[index - 1].get("_program_mirrored_from_contract"))
+        ]
+        _append_indexed_formula_refs(segments, formula_ids, result_indices, used, "求得：")
         result_text = str(item.get("result_text") or "").strip()
-        if result_text:
+        # A structured result formula is the authoritative visible layer.  The
+        # model's result_text commonly repeats the same label/value/unit and,
+        # after inline-expression promotion, can leave a second partial text
+        # fallback next to the OMML object.  Keep prose-only results, but do not
+        # render a duplicate fallback when visible result formulas exist.
+        if result_text and not result_indices:
             result_segments, result_used = _segments_from_inline_formula_text(result_text, formula_ids)
             for segment in result_segments:
                 if segment.get("type") == "formula_ref":

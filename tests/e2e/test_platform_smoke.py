@@ -9,6 +9,55 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
+@pytest.fixture(autouse=True)
+def _assert_no_browser_console_exceptions(monkeypatch, request):
+    """Make browser/runtime exceptions part of every E2E assertion."""
+
+    sync_api = pytest.importorskip("playwright.sync_api")
+    failures: list[str] = []
+    expected_resource_errors = {
+        "test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries": (
+            " 404 (Not Found)",
+            " 503 (Service Unavailable)",
+        ),
+        "test_two_pages_cannot_silently_overwrite_the_same_practice_question": (
+            " 409 (Conflict)",
+            "net::ERR_FAILED",
+        ),
+    }.get(request.node.name, ())
+
+    def observe(page):
+        page.on("pageerror", lambda error: failures.append(f"pageerror: {error}"))
+        page.on(
+            "console",
+            lambda message: failures.append(f"console.error: {message.text}")
+            if message.type == "error"
+            # Negative-path scenarios deliberately produce these exact HTTP
+            # failures. Scope the exemption to the owning test so the same
+            # status remains a failure everywhere else.
+            and not any(token in message.text for token in expected_resource_errors)
+            else None,
+        )
+        return page
+
+    original_browser_new_page = sync_api.Browser.new_page
+    original_context_new_page = sync_api.BrowserContext.new_page
+    monkeypatch.setattr(
+        sync_api.Browser,
+        "new_page",
+        lambda self, *args, **kwargs: observe(original_browser_new_page(self, *args, **kwargs)),
+    )
+    monkeypatch.setattr(
+        sync_api.BrowserContext,
+        "new_page",
+        lambda self, *args, **kwargs: observe(original_context_new_page(self, *args, **kwargs)),
+    )
+
+    yield
+
+    assert not failures, "浏览器控制台或页面异常：\n" + "\n".join(failures)
+
+
 def _practice_recovery_job(job_id: str, status: str, title: str) -> dict:
     return {
         "job_id": job_id,
@@ -428,18 +477,45 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             }"""
         )
 
-        async_load_and_open = """async (historyId) => {
-          const record = await PlatformApi.request(`/api/practice/history/${encodeURIComponent(historyId)}`);
-          goToPage('practice');
-          currentPracticeHistoryId = historyId;
-          currentPracticeRevisionCount = Number(record.revision_count || 0);
-          latestPracticeSet = record.data;
-          latestPracticeRequest = record.request || {};
-          openPracticeEditor(0);
-        }"""
         try:
-            first_page.evaluate(async_load_and_open, history_id)
-            second_page.evaluate(async_load_and_open, history_id)
+            # Keep the fixture's async API read outside ``page.evaluate``.
+            # Under full-suite load Chromium can replace an otherwise healthy
+            # execution context while the awaited fetch is pending, producing
+            # a false "navigation" failure before any product assertion.  The
+            # product race under test starts after both pages hold the same
+            # revision, so load that immutable snapshot through Playwright's
+            # request context and make page setup synchronous.
+            response = context.request.get(
+                f"{base_url}/api/practice/history/{history_id}"
+            )
+            assert response.ok
+            record = response.json()
+
+            def load_and_open(page, snapshot):
+                page.wait_for_function(
+                    "() => typeof goToPage === 'function' && typeof openPracticeEditor === 'function'"
+                )
+                page.evaluate(
+                    """({historyId, record}) => {
+                      goToPage('practice');
+                      currentPracticeHistoryId = historyId;
+                      currentPracticeRevisionCount = Number(record.revision_count || 0);
+                      latestPracticeSet = record.data;
+                      latestPracticeRequest = record.request || {};
+                      openPracticeEditor(0);
+                    }""",
+                    {"historyId": history_id, "record": snapshot},
+                )
+
+            def fetch_and_open(page):
+                latest_response = context.request.get(
+                    f"{base_url}/api/practice/history/{history_id}"
+                )
+                assert latest_response.ok
+                load_and_open(page, latest_response.json())
+
+            for page in (first_page, second_page):
+                load_and_open(page, record)
 
             second_page.locator("#practiceEditStem").fill("第二个旧页面中的草稿")
             second_page.wait_for_timeout(350)
@@ -472,7 +548,7 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             assert second_page.locator("#practiceEditorSave").is_disabled()
             assert "旧版本草稿" in second_page.locator("#practiceEditorError").inner_text()
             second_page.reload(wait_until="networkidle")
-            second_page.evaluate(async_load_and_open, history_id)
+            fetch_and_open(second_page)
             assert second_page.locator("#practiceEditStem").input_value() == "第二个旧页面中的草稿"
             assert second_page.locator("#practiceEditStem").is_editable() is False
             assert second_page.locator("#practiceEditorSave").is_disabled()
@@ -491,7 +567,7 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             assert second_page.locator("#practiceEditorDiscardDraft").is_hidden()
             second_page.locator('#practiceEditor button[value="cancel"]').first.click()
 
-            first_page.evaluate(async_load_and_open, history_id)
+            fetch_and_open(first_page)
             first_page.locator("#practiceEditStem").fill("服务器随后保存的最新内容")
             first_page.locator("#practiceEditorSave").click()
             first_page.locator("#practiceEditor").wait_for(state="hidden")
@@ -516,7 +592,7 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             assert second_page.locator("#practiceEditorSave").is_disabled()
 
             second_page.reload(wait_until="networkidle")
-            second_page.evaluate(async_load_and_open, history_id)
+            fetch_and_open(second_page)
             assert second_page.locator("#practiceEditStem").input_value() == "已经生成但尚未应用的候选题"
             assert "旧版本草稿" in second_page.locator("#practiceEditorError").inner_text()
             assert second_page.locator("#practiceEditorSave").is_disabled()
@@ -531,7 +607,7 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             second_page.evaluate("openPracticeEditor(0)")
             assert second_page.locator("#practiceEditStem").input_value() == "刷新和断网后仍应恢复的手工草稿"
             second_page.reload(wait_until="networkidle")
-            second_page.evaluate(async_load_and_open, history_id)
+            fetch_and_open(second_page)
             assert second_page.locator("#practiceEditStem").input_value() == "刷新和断网后仍应恢复的手工草稿"
             assert "已恢复上次未保存的编辑内容" in second_page.locator("#practiceEditorError").inner_text()
 
@@ -543,7 +619,7 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
             assert second_page.locator("#practiceEditor").is_visible()
             second_page.unroute(exercise_route)
             second_page.reload(wait_until="networkidle")
-            second_page.evaluate(async_load_and_open, history_id)
+            fetch_and_open(second_page)
             assert second_page.locator("#practiceEditStem").input_value() == "短暂断网时保留的内容"
             second_page.locator("#practiceEditorSave").click()
             second_page.locator("#practiceEditor").wait_for(state="hidden")

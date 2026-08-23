@@ -107,6 +107,29 @@ def _completion_status(report: dict) -> str:
     return "completed_with_issues" if int(summary.get("issue_count") or 0) > 0 else "completed"
 
 
+def _issue_key(issue: dict) -> tuple[str, str, str]:
+    return (str(issue.get("code") or ""), str(issue.get("location") or ""), str(issue.get("item") or ""))
+
+
+def _report_changes(original: dict | None, final: dict | None) -> dict:
+    before = original.get("issues", []) if isinstance(original, dict) else []
+    after = final.get("issues", []) if isinstance(final, dict) else []
+    before_keys = {_issue_key(issue) for issue in before if isinstance(issue, dict)}
+    after_keys = {_issue_key(issue) for issue in after if isinstance(issue, dict)}
+    return {
+        "resolved": [issue for issue in before if isinstance(issue, dict) and _issue_key(issue) not in after_keys],
+        "remaining": [issue for issue in after if isinstance(issue, dict) and _issue_key(issue) in before_keys],
+        "introduced": [issue for issue in after if isinstance(issue, dict) and _issue_key(issue) not in before_keys],
+    }
+
+
+def _cancel_requested(task_id: str) -> bool:
+    try:
+        return str(_load_record(task_id).get("status") or "") in {"cancel_requested", "canceled"}
+    except FileNotFoundError:
+        return True
+
+
 def _with_display_filename(report: dict, filename: str) -> dict:
     report["source_name"] = filename
     return report
@@ -222,7 +245,10 @@ def create_word_format_task(payload: dict) -> dict:
     if not content.startswith(b"PK"):
         raise ValueError("文件不是有效的DOCX文件")
 
-    task_id = f"word_format_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    requested_task_id = str(payload.get("job_id") or "")
+    if requested_task_id:
+        _task_dir(requested_task_id)
+    task_id = requested_task_id or f"word_format_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     directory = _task_dir(task_id)
     directory.mkdir(parents=True, exist_ok=False)
     created_at = _now_text()
@@ -247,6 +273,12 @@ def create_word_format_task(payload: dict) -> dict:
         report = _with_display_filename(audit_docx(source, profile, header_text, task_options), filename)
         _write_json(directory / "audit.json", report)
         record["report"] = report
+        if _cancel_requested(task_id):
+            record = _load_record(task_id)
+            record["status"] = "canceled"
+            record["report"] = report
+            _save_record(record)
+            return word_format_task_payload(task_id)
         if mode == "auto":
             final_report = _with_display_filename(
                 repair_docx(source, directory / "modified.docx", profile, header_text, task_options),
@@ -254,6 +286,13 @@ def create_word_format_task(payload: dict) -> dict:
             )
             _write_json(directory / "final_audit.json", final_report)
             record["final_report"] = final_report
+            if _cancel_requested(task_id):
+                (directory / "modified.docx").unlink(missing_ok=True)
+                (directory / "final_audit.json").unlink(missing_ok=True)
+                record = _load_record(task_id)
+                record.update({"status": "canceled", "report": report})
+                _save_record(record)
+                return word_format_task_payload(task_id)
             record["status"] = _completion_status(final_report)
         else:
             record["status"] = "needs_input"
@@ -271,6 +310,11 @@ def create_word_format_task(payload: dict) -> dict:
         raise ValueError(record["error"]) from exc
     record["updated_at"] = _now_text()
     record["updated_epoch"] = time.time()
+    if _cancel_requested(task_id):
+        (directory / "modified.docx").unlink(missing_ok=True)
+        (directory / "final_audit.json").unlink(missing_ok=True)
+        record.pop("final_report", None)
+        record["status"] = "canceled"
     _save_record(record)
     return word_format_task_payload(task_id)
 
@@ -281,6 +325,15 @@ def apply_word_format_task(task_id: str) -> dict:
     source = directory / "source.docx"
     if not source.exists():
         raise FileNotFoundError("原始Word文件不存在")
+    record["status"] = "running"
+    record["updated_at"] = _now_text()
+    record["updated_epoch"] = time.time()
+    if _cancel_requested(task_id):
+        (directory / "modified.docx").unlink(missing_ok=True)
+        (directory / "final_audit.json").unlink(missing_ok=True)
+        record.pop("final_report", None)
+        record["status"] = "canceled"
+    _save_record(record)
     try:
         final_report = _with_display_filename(
             repair_docx(
@@ -305,10 +358,23 @@ def apply_word_format_task(task_id: str) -> dict:
         _queue_automatic_failure_report(record)
         raise ValueError(record["error"]) from exc
     _write_json(directory / "final_audit.json", final_report)
+    if _cancel_requested(task_id):
+        (directory / "modified.docx").unlink(missing_ok=True)
+        (directory / "final_audit.json").unlink(missing_ok=True)
+        record = _load_record(task_id)
+        record["status"] = "canceled"
+        record.pop("final_report", None)
+        _save_record(record)
+        return word_format_task_payload(task_id)
     record["final_report"] = final_report
     record["status"] = _completion_status(final_report)
     record["updated_at"] = _now_text()
     record["updated_epoch"] = time.time()
+    if _cancel_requested(task_id):
+        (directory / "modified.docx").unlink(missing_ok=True)
+        (directory / "final_audit.json").unlink(missing_ok=True)
+        record.pop("final_report", None)
+        record["status"] = "canceled"
     _save_record(record)
     return word_format_task_payload(task_id)
 
@@ -317,6 +383,7 @@ def word_format_task_payload(task_id: str) -> dict:
     record = _load_record(task_id)
     directory = _task_dir(task_id)
     output_exists = (directory / "modified.docx").exists()
+    filename = str(record.get("filename") or "document.docx")
     return {
         "job_id": task_id,
         "task_id": task_id,
@@ -324,7 +391,14 @@ def word_format_task_payload(task_id: str) -> dict:
         "status": record.get("status"),
         "report": record.get("report"),
         "final_report": record.get("final_report"),
+        "filename": filename,
+        "suggested_filename": f"{Path(filename).stem}_格式已修改.docx" if output_exists else None,
+        "changes": _report_changes(record.get("report"), record.get("final_report")),
         "download_url": f"/api/word-format/tasks/{task_id}/download" if output_exists else None,
+        "source_download_url": f"/api/word-format/tasks/{task_id}/source",
+        "source_preview_url": f"/api/word-format/tasks/{task_id}/preview?version=source",
+        "modified_preview_url": f"/api/word-format/tasks/{task_id}/preview?version=modified" if output_exists else None,
+        "can_restore": output_exists,
         "task": _task_row(record),
     }
 
@@ -351,6 +425,51 @@ def word_format_download_path(task_id: str) -> tuple[Path, str]:
         raise FileNotFoundError("修改后的Word文件尚未生成")
     filename = f"{Path(str(record.get('filename') or 'document.docx')).stem}_格式已修改.docx"
     return output, filename
+
+
+def word_format_source_path(task_id: str) -> tuple[Path, str]:
+    record = _load_record(task_id)
+    source = _task_dir(task_id) / "source.docx"
+    if not source.exists():
+        raise FileNotFoundError("原始Word文件不存在")
+    return source, str(record.get("filename") or "document.docx")
+
+
+def word_format_preview_path(task_id: str, version: str) -> Path:
+    directory = _task_dir(task_id)
+    source = directory / ("modified.docx" if version == "modified" else "source.docx")
+    if not source.exists():
+        raise FileNotFoundError("要预览的Word文件不存在")
+    preview = directory / f"preview_{version}.pdf"
+    if not preview.exists() or preview.stat().st_mtime < source.stat().st_mtime:
+        from .render_word import export_docx_to_pdf
+
+        export_docx_to_pdf(source, preview)
+    return preview
+
+
+def cancel_word_format_task(task_id: str) -> dict:
+    record = _load_record(task_id)
+    if record.get("status") == "running":
+        record["status"] = "cancel_requested"
+        record["updated_at"] = _now_text()
+        record["updated_epoch"] = time.time()
+        _save_record(record)
+    return {"ok": True, "task_id": task_id, "status": record.get("status"), "message": "已请求取消，当前步骤结束后将不保留修改结果"}
+
+
+def restore_word_format_task(task_id: str) -> dict:
+    record = _load_record(task_id)
+    directory = _task_dir(task_id)
+    for name in ("modified.docx", "final_audit.json", "preview_modified.pdf"):
+        (directory / name).unlink(missing_ok=True)
+    record.pop("final_report", None)
+    record.pop("error", None)
+    record["status"] = "needs_input"
+    record["updated_at"] = _now_text()
+    record["updated_epoch"] = time.time()
+    _save_record(record)
+    return word_format_task_payload(task_id)
 
 
 def delete_word_format_task(task_id: str) -> dict:

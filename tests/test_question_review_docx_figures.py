@@ -4,7 +4,9 @@ import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 from PIL import Image
@@ -15,6 +17,52 @@ sys.path.insert(0, str(ROOT))
 
 
 class QuestionReviewDocxFigureTests(unittest.TestCase):
+    def test_snapshot_migrates_relative_images_and_embeds_media(self) -> None:
+        from app.question_review_docx import _snapshot_question
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            stage = tmp / "stage"
+            output = tmp / "output"
+            (stage / "figures").mkdir(parents=True)
+            Image.new("RGB", (320, 180), "white").save(stage / "figures" / "q1.png")
+            fragment = {
+                "question_id": "q1",
+                "number": "1",
+                "section": "作图题",
+                "question_type": "作图题",
+                "answer": "见图",
+                "blocks": [{
+                    "label": "图示",
+                    "segments": [{"type": "image_ref", "image_id": "q1_fig", "path": "figures/q1.png"}],
+                }],
+            }
+            with patch("app.question_review_docx.export_docx_to_pdf", lambda _docx, pdf: pdf.write_bytes(b"pdf")), patch(
+                "app.question_review_docx.render_pdf_to_png", return_value=[]
+            ):
+                _snapshot_question(stage, output, fragment)
+
+            snapshot = output / "question_review_snapshots" / "q1"
+            self.assertTrue((snapshot / "figures" / "q1.png").is_file())
+            with zipfile.ZipFile(snapshot / "q1.docx") as archive:
+                self.assertTrue(any(name.startswith("word/media/") for name in archive.namelist()))
+
+    def test_missing_snapshot_image_blocks_instead_of_writing_placeholder(self) -> None:
+        from app.question_review_docx import _snapshot_question
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            fragment = {
+                "question_id": "q1",
+                "blocks": [{
+                    "label": "图示",
+                    "segments": [{"type": "image_ref", "image_id": "missing_fig", "path": "figures/missing.png"}],
+                }],
+            }
+            with self.assertRaisesRegex(FileNotFoundError, "missing_fig"):
+                _snapshot_question(tmp / "stage", tmp / "output", fragment)
+            self.assertFalse((tmp / "output" / "question_review_snapshots" / "q1" / "q1.docx").exists())
+
     def test_prepare_figures_archives_stage_images_for_review_docx(self) -> None:
         from app.figures import prepare_figures_for_fragments
         from app.question_review_docx import collect_question_figure_review_items

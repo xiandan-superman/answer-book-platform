@@ -105,6 +105,33 @@ def test_unresolved_high_risk_correctness_flag_is_a_content_issue() -> None:
     }
 
 
+def test_incomplete_numeric_slots_are_located_and_block_formal_content() -> None:
+    structured_exam = {
+        "items": [{"question_id": "q1", "number": "1", "question_type": "简答题", "stem": "写出组织比例。"}]
+    }
+    fragment = _fragment()
+    fragment["answer"] = "初生α相=73.3%，共晶体"
+    fragment["answer_summary"] = "先共晶奥氏体的质量分数 / %，室温组织组成质量比P: / :2.23"
+    fragment["answer_units"] = [{"number": "1", "answer": "%"}]
+
+    report = audit_content_quality(
+        structured_exam,
+        {"fragments": [fragment]},
+        {"drafts": [{"question_id": "q1", "answer": fragment["answer"], "analysis": "按组织组成定义逐项列出。"}]},
+    )
+
+    finding = next(item for item in report["issues"] if item["code"] == "incomplete_numeric_slot")
+    assert "answer=" in finding["message"]
+    assert "answer_summary=" in finding["message"]
+    assert "answer_units[0].answer=%" in finding["message"]
+
+
+def test_plain_composition_list_is_not_mistaken_for_an_empty_numeric_slot() -> None:
+    from app.content_quality_audit import _incomplete_numeric_slots
+
+    assert _incomplete_numeric_slots({"answer": "室温组织由初生α相、共晶体组成。"}) == []
+
+
 def test_xrd_text_is_checked_against_active_final_figure_contract() -> None:
     structured_exam = {
         "items": [
