@@ -91,12 +91,12 @@ def tailscale_ipv4_addresses() -> list[str]:
     }
     if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
         run_options["creationflags"] = subprocess.CREATE_NO_WINDOW
+    addresses: list[str] = []
     try:
         completed = subprocess.run([executable, "ip", "-4"], **run_options)
     except (OSError, subprocess.SubprocessError):
-        addresses = []
+        pass
     else:
-        addresses = []
         if completed.returncode == 0:
             for line in completed.stdout.splitlines():
                 address = _valid_ipv4(line)

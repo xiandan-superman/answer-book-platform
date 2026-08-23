@@ -170,6 +170,14 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         str(record.get("support_id") or ""),
         task_id=str(record.get("job_id") or ""),
     )
+    remaining_seconds = None
+    try:
+        deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
+        if deadline.tzinfo is None:
+            deadline = deadline.astimezone()
+        remaining_seconds = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
+    except (TypeError, ValueError):
+        pass
     row = {
         "task_id": record.get("job_id"),
         "task_kind": task_kind,
@@ -192,8 +200,16 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         "support_id": support_id,
         "progress_message": record.get("progress_message") or "",
         "elapsed_seconds": elapsed,
-        "duration_text": "后台生成中" if engine_status in {"queued", "running"} else ("生成失败" if engine_status == "failed" else "等待下一步确认"),
-        "progress_percent": 15 if engine_status == "queued" else (running_progress if engine_status == "running" else 100),
+        "network_attempted_count": int(record.get("network_attempted_count") or 0),
+        "network_phase": str(record.get("network_phase") or ""),
+        "deadline_remaining_seconds": remaining_seconds,
+        "duration_text": (
+            "后台生成中" if engine_status in {"queued", "running"}
+            else "已暂停" if engine_status == "paused"
+            else "生成失败" if engine_status == "failed"
+            else "等待下一步确认"
+        ),
+        "progress_percent": 15 if engine_status == "queued" else (running_progress if engine_status in {"running", "paused"} else 100),
     }
     result = enrich_contract(
         row,
@@ -205,6 +221,10 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         error=str(row["error"]),
         support_id=support_id,
     )
+    if operation in {"generate_from_plan", "generate_from_contract"}:
+        result["capabilities"]["pause"] = engine_status in {"queued", "running"}
+        result["capabilities"]["resume"] = engine_status == "paused"
+        result["capabilities"]["cancel"] = engine_status in {"queued", "running", "paused"}
     public_health_record = dict(record)
     if result.get("error_presentation"):
         public_health_record["error"] = result["error"]
@@ -223,7 +243,7 @@ def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, An
 
     job_runs: list[dict[str, Any]] = []
     operation_order = {"analyze": 0, "plan": 1, "generate_from_plan": 2, "generate_from_contract": 2}
-    status_order = {"running": 4, "queued": 3, "failed": 2, "completed": 1}
+    status_order = {"running": 5, "paused": 4, "queued": 3, "failed": 2, "cancelled": 2, "completed": 1}
     for key, group in groups.items():
         batch_id = "" if key.startswith("legacy:") else key
         if batch_id and batch_id in history_batches:

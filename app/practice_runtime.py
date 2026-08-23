@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Iterable, Iterator, TypeVar
 
 InputT = TypeVar("InputT")
@@ -20,11 +21,25 @@ def ensure_practice_generation_active(payload: dict[str, Any]) -> None:
         return
     from .practice_jobs import load_practice_job
 
-    status = str(load_practice_job(job_id).get("status") or "")
+    record = load_practice_job(job_id)
+    status = str(record.get("status") or "")
     if status != "running":
         raise PracticeGenerationStopped(
             f"出题任务已停止（{status or '未知状态'}），不再发起后续模型请求。"
         )
+    expected_epoch = payload.get("_job_epoch")
+    if expected_epoch is not None and int(record.get("control_epoch") or 0) != int(expected_epoch):
+        raise PracticeGenerationStopped("出题任务的运行批次已变更，迟到结果已作废。")
+    deadline_text = str(record.get("generation_deadline_at") or "")
+    if deadline_text:
+        try:
+            deadline = datetime.fromisoformat(deadline_text)
+            if deadline.tzinfo is None:
+                deadline = deadline.astimezone()
+            if datetime.now().astimezone() >= deadline:
+                raise PracticeGenerationStopped("本批次网络等待截止时间已到，不再发起新请求。")
+        except ValueError:
+            pass
 
 
 @dataclass(frozen=True)

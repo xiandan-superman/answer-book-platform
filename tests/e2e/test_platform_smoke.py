@@ -699,7 +699,7 @@ def test_practice_job_refresh_recovery_never_steals_navigation() -> None:
 
         jobs["recovery-job"]["status"] = "completed"
         page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
-        assert page.locator("#practiceRecoveryEyebrow").inner_text() == "后台任务已完成"
+        assert page.locator("#practiceRecoveryEyebrow").inner_text() == "已完成"
         assert page.locator("#practiceRecoveryOpenBtn").inner_text() == "查看结果"
         assert page.locator("#page-tasks.active").is_visible()
         assert page.evaluate("localStorage.getItem('activePracticeJobId')") is None
@@ -1030,4 +1030,67 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
         assert page.locator("#taskManagerList .task-manager-item").count() == 4
         assert config_card.locator('[data-action="job-config"]').is_visible()
 
+        browser.close()
+
+
+def test_practice_network_pause_resume_and_deadline_status_are_actionable() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        page.goto(base_url, wait_until="networkidle")
+        page.evaluate(
+            """() => {
+              window.stage12Status = 'running';
+              window.stage12Actions = [];
+              window.PlatformApi.request = async (path) => {
+                if (path.endsWith('/pause')) { window.stage12Status = 'paused'; window.stage12Task.status = 'paused'; window.stage12Actions.push('pause'); }
+                if (path.endsWith('/resume')) { window.stage12Status = 'running'; window.stage12Task.status = 'running'; window.stage12Actions.push('resume'); }
+                if (path === '/api/tasks') return {tasks: [window.stage12Task]};
+                return {ok: true, status: window.stage12Status};
+              };
+              window.stage12Task = {
+                task_id: 'generation_stage12_browser', task_kind: 'practice', is_generation_task: true,
+                is_generation_job: true, operation: 'generate_from_plan', description: '网络故障闭环',
+                exam_path: '网络故障闭环', status: 'running', current_stage: 'generating',
+                progress_message: '正在等待模型返回', network_attempted_count: 2,
+                deadline_remaining_seconds: 125, provider: 'ark', model: 'fixture-model',
+                capabilities: {view_detail: true, view_progress: true, pause: true, cancel: true}
+              };
+              goToPage('tasks');
+              stopTaskManagerPolling();
+              latestTasks = [window.stage12Task];
+              renderTaskManager();
+            }"""
+        )
+
+        card = page.locator(".task-manager-item").filter(has_text="网络故障闭环")
+        assert "已发起 2 次模型请求" in card.inner_text()
+        assert "剩余等待上限 2 分 5 秒" in card.inner_text()
+        card.locator('[data-action="job-pause"]').click()
+        page.wait_for_function("() => window.stage12Actions.includes('pause')")
+
+        page.evaluate(
+            """() => {
+              window.stage12Task.status = 'paused';
+              latestTasks = [window.stage12Task];
+              latestTasks[0].capabilities = {view_detail: true, resume: true, cancel: true};
+              renderTaskManager();
+              showPracticeRecoveryNotice({
+                job_id: 'generation_stage12_browser', status: 'paused', title: '网络故障闭环',
+                network_attempted_count: 2
+              });
+            }"""
+        )
+        card = page.locator(".task-manager-item").filter(has_text="网络故障闭环")
+        assert card.locator('[data-action="job-resume"]').is_visible()
+        assert page.locator("#practiceRecoveryEyebrow").inner_text() == "后台任务已暂停"
+        card.locator('[data-action="job-resume"]').click()
+        page.wait_for_function("() => window.stage12Actions.includes('resume')")
+        assert page.evaluate("window.stage12Actions") == ["pause", "resume"]
         browser.close()

@@ -89,6 +89,13 @@ class ModelRequestAborted(RuntimeError):
     """The owning user task stopped before a queued request was admitted."""
 
 
+def ensure_model_request_active() -> None:
+    """Revalidate a durable owner during and immediately after network I/O."""
+    admission_check = _MODEL_REQUEST_ADMISSION_CHECK.get()
+    if admission_check:
+        admission_check()
+
+
 def _model_request_limit() -> int:
     return model_request_max_concurrency()
 

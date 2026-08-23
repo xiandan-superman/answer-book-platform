@@ -66,8 +66,10 @@ from .practice_jobs import (
     delete_practice_job,
     list_practice_jobs,
     load_practice_job,
+    pause_practice_job,
     recover_practice_jobs,
     rename_practice_job,
+    resume_practice_job,
 )
 from .practice_queue import (
     enqueue_practice_job,
@@ -454,6 +456,14 @@ def _practice_job_task_row(record: dict) -> dict:
     stage = str(record.get("current_stage") or "planning")
     elapsed = max(0, int(record.get("elapsed_seconds") or 0))
     running_progress = min(88, 30 + elapsed // 15) if record.get("operation") == "generate_from_plan" else min(88, 35 + elapsed // 10)
+    deadline_remaining = None
+    try:
+        deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
+        if deadline.tzinfo is None:
+            deadline = deadline.astimezone()
+        deadline_remaining = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
+    except (TypeError, ValueError):
+        pass
     return {
         "task_id": record.get("job_id"),
         "task_kind": record.get("task_kind") or "practice",
@@ -474,8 +484,16 @@ def _practice_job_task_row(record: dict) -> dict:
         "error": record.get("error") or "",
         "progress_message": record.get("progress_message") or "",
         "elapsed_seconds": elapsed,
-        "duration_text": "后台生成中" if status in {"queued", "running"} else ("生成失败" if status == "failed" else "已完成"),
-        "progress_percent": 15 if status == "queued" else (running_progress if status == "running" else 100),
+        "network_attempted_count": int(record.get("network_attempted_count") or 0),
+        "network_phase": record.get("network_phase") or "",
+        "deadline_remaining_seconds": deadline_remaining,
+        "duration_text": (
+            "后台生成中" if status in {"queued", "running"}
+            else "已暂停" if status == "paused"
+            else "生成失败" if status == "failed"
+            else "已完成"
+        ),
+        "progress_percent": 15 if status == "queued" else (running_progress if status in {"running", "paused"} else 100),
     }
 
 
@@ -489,8 +507,17 @@ def _practice_job_api_payload(record: dict) -> dict:
         stage=str(record.get("current_stage") or ""),
         support_id=support_id,
     )
+    remaining_seconds = None
+    try:
+        deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
+        if deadline.tzinfo is None:
+            deadline = deadline.astimezone()
+        remaining_seconds = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
+    except (TypeError, ValueError):
+        pass
     payload = {
         **record,
+        "deadline_remaining_seconds": remaining_seconds,
         "error": presentation.message if presentation else "",
         "support_id": support_id if presentation else "",
         "warning_reason": presentation.message if presentation else str(record.get("warning_reason") or ""),
@@ -1215,6 +1242,23 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "jobs"] and parts[4] == "cancel":
                 body = self.read_json()
                 self.send_json(cancel_practice_job(parts[3], str(body.get("reason") or "用户取消出题任务")))
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "jobs"] and parts[4] == "pause":
+                self.send_json(pause_practice_job(parts[3]))
+                return
+            if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "jobs"] and parts[4] == "resume":
+                record = resume_practice_job(parts[3])
+                if record.get("status") == "queued":
+                    record = enqueue_practice_job(parts[3])
+                self.send_json(
+                    {
+                        "ok": record.get("status") in {"queued", "running"},
+                        "task_id": parts[3],
+                        "status": record.get("status"),
+                        "code": record.get("code", ""),
+                        "message": record.get("message", ""),
+                    }
+                )
                 return
             if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "tasks"] and parts[4] == "title":
                 body = self.read_json()

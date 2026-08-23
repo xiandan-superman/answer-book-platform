@@ -9,10 +9,11 @@ import re
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from .concurrency import model_request_slot
+from .concurrency import ModelRequestAborted, model_request_slot
 from .llm_client import LLMError, OpenAICompatibleClient
 from .practice_batch_contracts import complete_practice_slots, partition_practice_batch_rows
 from .practice_export import (
@@ -3133,6 +3134,7 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         status_match = re.search(r"(?:provider\s+)?http\s+(\d{3})", raw, flags=re.IGNORECASE)
         status_code = int(status_match.group(1)) if status_match else None
     requires_configuration = status_code in {401, 403, 404}
+    transport_phase = str(getattr(exc, "transport_phase", "") or "")
     if status_code == 401:
         code = "provider_http_401"
         message = "模型服务认证失败，API Key 可能无效或已过期。"
@@ -3151,9 +3153,24 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     elif status_code is not None:
         code = f"provider_http_{status_code}"
         message = f"上游模型请求失败（HTTP {status_code}）。"
+    elif transport_phase == "connect":
+        code = "provider_connect_timeout"
+        message = "无法在限定时间内连接模型服务。"
+    elif transport_phase == "first_byte":
+        code = "provider_first_byte_timeout"
+        message = "已连接模型服务，但未在限定时间内收到首个响应。"
+    elif transport_phase == "read_idle":
+        code = "provider_read_idle_timeout"
+        message = "模型连接已建立，但长时间未读取到新数据。"
+    elif transport_phase == "hard_timeout":
+        code = "provider_call_deadline_exceeded"
+        message = "单次模型请求已达硬截止时间。"
     elif "timeout" in lowered or "timed out" in lowered or "超时" in raw:
-        code = "provider_timeout"
-        message = "上游模型响应超时。"
+        code = "provider_connect_or_first_byte_timeout"
+        message = "无法在限定时间内连接模型服务或收到首个响应。"
+    elif any(token in lowered for token in ("connection", "remote end closed", "empty reply", "network")):
+        code = "provider_network_connection_failed"
+        message = "与模型服务的网络连接中断。"
     elif isinstance(exc, ValueError):
         code = "generation_response_invalid"
         message = "模型返回的题目结构不完整，无法生成本题。"
@@ -3162,6 +3179,7 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         message = "上游模型生成失败。"
     transient = (
         status_code in {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+        or transport_phase in {"read_idle", "hard_timeout", "connect", "first_byte"}
         or (status_code is None and isinstance(exc, LLMError) and any(token in lowered for token in (
             "provider streaming", "provider request", "timeout", "timed out", "connection",
             "remote end closed", "empty reply",
@@ -4342,6 +4360,8 @@ def _call_practice_json(
             thinking=thinking,
             timeout=timeout_seconds,
         )
+    if ensure_active is not None:
+        ensure_active()
     try:
         raw = _parse_safe_practice_json(result.content)
     except LLMError as first_error:
@@ -4370,6 +4390,8 @@ def _call_practice_json(
                 thinking="disabled",
                 timeout=timeout_seconds,
             )
+        if ensure_active is not None:
+            ensure_active()
         try:
             raw = _parse_safe_practice_json(repaired.content)
         except LLMError as repair_error:
@@ -4381,7 +4403,7 @@ def _practice_stage_timeout(stage: str, default: int) -> int:
     key = f"PRACTICE_{stage.upper()}_TIMEOUT_SECONDS"
     raw = os.environ.get(key, os.environ.get("PRACTICE_MODEL_TIMEOUT_SECONDS", str(default)))
     try:
-        return max(60, min(1800, int(raw)))
+        return max(5, min(300, int(raw)))
     except (TypeError, ValueError):
         return default
 
@@ -4823,8 +4845,23 @@ def _call_practice_json_with_transport_retry(
                 after_attempt(attempt, None)
             return result
         except Exception as exc:
-            if isinstance(exc, PracticeGenerationStopped):
-                raise
+            if not isinstance(exc, (PracticeGenerationStopped, ModelRequestAborted)) and ensure_active is not None:
+                try:
+                    ensure_active()
+                except (PracticeGenerationStopped, ModelRequestAborted) as invalidated:
+                    exc = invalidated
+            if isinstance(exc, (PracticeGenerationStopped, ModelRequestAborted)):
+                if after_attempt is not None:
+                    after_attempt(attempt, {
+                        "code": "generation_request_invalidated",
+                        "message": "任务已暂停、取消或运行批次已变更；本次调用已记账但结果作废。",
+                        "signature": "generation_request_invalidated",
+                        "requires_configuration": False,
+                        "retryable": False,
+                    })
+                if isinstance(exc, ModelRequestAborted):
+                    raise PracticeGenerationStopped(str(exc)) from exc
+                raise exc
             last_error = exc
             retryable = _is_transport_generation_error(exc)
             detail = _generation_error_detail(exc)
@@ -4860,25 +4897,62 @@ class _GenerationRetryCoordinator:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload
         self.job_id = _clean(payload.get("_job_id"), 100)
+        try:
+            self.expected_epoch: int | None = int(payload.get("_job_epoch"))
+        except (TypeError, ValueError):
+            self.expected_epoch = None
         self.lock = threading.RLock()
-        self.state: dict[str, Any] = {"schema_version": 1, "batches": {}, "configuration_block": None}
+        self.state: dict[str, Any] = {"schema_version": 2, "batches": {}, "configuration_block": None}
         source_job_id = self.job_id or _clean(payload.get("resume_from_job_id"), 100)
         if source_job_id and payload.get("reset_generation_retry_state") is not True:
             try:
                 from .practice_jobs import load_practice_job
                 record = load_practice_job(source_job_id)
                 stored = record.get("generation_retry_state")
-                if isinstance(stored, dict) and stored.get("schema_version") == 1:
+                if isinstance(stored, dict) and stored.get("schema_version") in {1, 2}:
                     self.state = copy.deepcopy(stored)
+                    self.state["schema_version"] = 2
             except Exception:
                 pass
+        if self.expected_epoch is not None:
+            stale_started = False
+            for row in (self.state.get("batches") or {}).values():
+                if not isinstance(row, dict):
+                    continue
+                for attempt in row.get("attempts") or []:
+                    if not isinstance(attempt, dict) or attempt.get("status") != "started":
+                        continue
+                    try:
+                        attempt_epoch = int(attempt.get("lease_epoch"))
+                    except (TypeError, ValueError):
+                        attempt_epoch = -1
+                    if attempt_epoch == self.expected_epoch:
+                        continue
+                    attempt.update({
+                        "status": "failed",
+                        "signature": "generation_request_invalidated",
+                        "error_code": "generation_request_invalidated",
+                    })
+                    stale_started = True
+            if stale_started:
+                self._persist()
 
     def _persist(self) -> None:
         if not self.job_id:
             return
         try:
             from .practice_jobs import update_practice_job
-            update_practice_job(self.job_id, generation_retry_state=copy.deepcopy(self.state))
+            calls = sum(
+                int(row.get("calls_used") or 0)
+                for row in (self.state.get("batches") or {}).values()
+                if isinstance(row, dict)
+            )
+            update_practice_job(
+                self.job_id,
+                expected_epoch=self.expected_epoch,
+                generation_retry_state=copy.deepcopy(self.state),
+                network_attempted_count=calls,
+            )
         except Exception:
             pass
 
@@ -4889,6 +4963,9 @@ class _GenerationRetryCoordinator:
 
     def batch_stop(self, root_key: str, *, limit: int) -> dict[str, Any] | None:
         with self.lock:
+            deadline_error = self._deadline_error()
+            if deadline_error:
+                return deadline_error
             row = (self.state.get("batches") or {}).get(root_key)
             if not isinstance(row, dict):
                 return None
@@ -4916,6 +4993,9 @@ class _GenerationRetryCoordinator:
 
     def reserve(self, root_key: str, *, limit: int, phase: str) -> None:
         with self.lock:
+            deadline_error = self._deadline_error()
+            if deadline_error:
+                raise _GenerationRetryBudgetExceeded(deadline_error["message"])
             config_error = self.configuration_error()
             if config_error:
                 raise _GenerationRetryBudgetExceeded(config_error["message"])
@@ -4928,8 +5008,37 @@ class _GenerationRetryCoordinator:
             if int(row.get("calls_used") or 0) >= int(row["limit"]):
                 raise _GenerationRetryBudgetExceeded("本批次已达到生成调用上限，不再继续消耗模型调用。")
             row["calls_used"] = int(row.get("calls_used") or 0) + 1
-            row["attempts"].append({"call": row["calls_used"], "phase": phase, "status": "started"})
+            row["attempts"].append({
+                "call": row["calls_used"],
+                "phase": phase,
+                "status": "started",
+                "lease_epoch": self.expected_epoch,
+            })
             self._persist()
+
+    def _deadline_error(self) -> dict[str, Any] | None:
+        if not self.job_id:
+            return None
+        try:
+            from .practice_jobs import load_practice_job
+            record = load_practice_job(self.job_id)
+            raw = str(record.get("generation_deadline_at") or "")
+            deadline = datetime.fromisoformat(raw) if raw else None
+            if deadline is not None and deadline.tzinfo is None:
+                deadline = deadline.astimezone()
+            if deadline is not None and datetime.now().astimezone() >= deadline:
+                return {
+                    "code": "generation_parent_deadline_exceeded",
+                    "message": "本批次网络等待已超过截止时间，已停止新请求。",
+                    "retryable": True,
+                    "requires_configuration": False,
+                    "pending": True,
+                    "signature": "generation_parent_deadline_exceeded",
+                    "detail": "已生成题目和调用记录已保留，用户可显式继续未完成项。",
+                }
+        except (FileNotFoundError, ValueError, TypeError):
+            return None
+        return None
 
     def record(self, root_key: str, *, phase: str, detail: dict[str, Any] | None) -> None:
         with self.lock:
@@ -4945,6 +5054,17 @@ class _GenerationRetryCoordinator:
             if detail and detail.get("requires_configuration"):
                 self.state["configuration_block"] = copy.deepcopy(detail)
             self._persist()
+            if self.job_id:
+                try:
+                    from .practice_jobs import update_practice_job
+                    update_practice_job(
+                        self.job_id,
+                        expected_epoch=self.expected_epoch,
+                        network_phase=("succeeded" if detail is None else str(detail.get("code") or "failed")),
+                        last_network_error_code=("" if detail is None else str(detail.get("code") or "")),
+                    )
+                except Exception:
+                    pass
 
     def open_circuit(self, root_key: str, detail: dict[str, Any]) -> None:
         with self.lock:
@@ -4960,7 +5080,7 @@ class _GenerationRetryCoordinator:
         with self.lock:
             batches = self.state.get("batches") if isinstance(self.state.get("batches"), dict) else {}
             return {
-                "schema_version": 1,
+                "schema_version": 2,
                 "total_model_calls": sum(int(row.get("calls_used") or 0) for row in batches.values() if isinstance(row, dict)),
                 "batches": copy.deepcopy(batches),
                 "configuration_blocked": isinstance(self.state.get("configuration_block"), dict),
@@ -7348,11 +7468,15 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         model=model,
                         temperature=0.3 if recovery_attempt == 1 else 0.15,
                         thinking=_clean(payload.get("thinking"), 20) or None,
-                        timeout_seconds=600,
+                        timeout_seconds=_practice_stage_timeout("generation", 180),
                         ensure_active=lambda: ensure_practice_generation_active(payload),
                         attempts=1,
-                        before_attempt=lambda _attempt: retry_coordinator.reserve(root_key, limit=retry_limit, phase=recovery_phase),
-                        after_attempt=lambda _attempt, detail: retry_coordinator.record(root_key, phase=recovery_phase, detail=detail),
+                        before_attempt=lambda _attempt, current_phase=recovery_phase: retry_coordinator.reserve(
+                            root_key, limit=retry_limit, phase=current_phase
+                        ),
+                        after_attempt=lambda _attempt, detail, current_phase=recovery_phase: retry_coordinator.record(
+                            root_key, phase=current_phase, detail=detail
+                        ),
                     )
                     recovered_rows, recovered_shape = _partition_batch_rows(recovered_raw)
                     attempt_report["attempts"].append({
@@ -7458,7 +7582,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 model=model,
                 temperature=0.35,
                 thinking=_clean(payload.get("thinking"), 20) or None,
-                timeout_seconds=600,
+                timeout_seconds=_practice_stage_timeout("generation", 180),
                 attempts=1 if is_probe else max(1, min(2, _nonnegative_int(payload.get("generation_transport_attempts"), 2))),
                 backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
                 attempt_log=batch_diagnostic["transport_attempts"],
@@ -7631,7 +7755,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         model=model,
                         temperature=0.45,
                         thinking=_clean(payload.get("thinking"), 20) or None,
-                        timeout_seconds=600,
+                        timeout_seconds=_practice_stage_timeout("generation", 180),
                         attempts=2,
                         backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
                         attempt_log=transport_attempts,

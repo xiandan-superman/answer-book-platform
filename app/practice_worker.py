@@ -8,6 +8,7 @@ from .exercise_generation import (
     generate_practice_from_plan,
     plan_practice_set,
 )
+from .practice_runtime import ensure_practice_generation_active
 from .practice_store import find_completed_by_plan, save_practice_continuation_record, save_practice_record
 
 
@@ -32,6 +33,7 @@ def execute_practice_operation(operation: str, payload: dict[str, Any]) -> dict[
             if operation == "generate_from_contract"
             else generate_practice_from_plan(payload)
         )
+        ensure_practice_generation_active(payload)
         record = (
             save_practice_continuation_record(result, request=payload)
             if payload.get("resume_from_history_id")

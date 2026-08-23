@@ -206,6 +206,20 @@ def test_cancelled_practice_job_stops_polling_and_clears_resume_pointer() -> Non
     assert "terminalError.practiceJob = job;" in polling
 
 
+def test_practice_network_pause_is_visible_and_never_polls_forever() -> None:
+    assert 'data-action="job-pause"' in APP_JS
+    assert 'data-action="job-resume"' in APP_JS
+    assert 'controlGenerationJob(task, "pause")' in APP_JS
+    assert 'controlGenerationJob(task, "resume")' in APP_JS
+    start = APP_JS.index("async function waitForPracticeJob(jobId, { onUpdate = null } = {})")
+    end = APP_JS.index("async function submitPracticeJob", start)
+    polling = APP_JS[start:end]
+    assert 'job.status === "paused"' in polling
+    assert "pausedError.practiceJob = job;" in polling
+    assert "function generationNetworkSummary(task = {})" in APP_JS
+    assert "deadline_remaining_seconds" in APP_JS
+
+
 def test_terminal_practice_job_resume_never_forces_the_visible_workspace() -> None:
     start = APP_JS.index("async function resumeRememberedPracticeJob()")
     end = APP_JS.index("async function refresh()", start)
@@ -431,3 +445,17 @@ def test_word_format_reviewer_is_a_secondary_home_tool_and_managed_task_kind() -
     assert '"format-download"' in APP_JS
     assert '"format-delete"' in APP_JS
     assert 'window.location.href = `/word-format${query}`' in APP_JS
+
+
+def test_generation_network_summary_exposes_each_transport_layer() -> None:
+    assert 'provider_connect_timeout: "连接超时"' in APP_JS
+    assert 'provider_first_byte_timeout: "首字节超时"' in APP_JS
+    assert 'provider_read_idle_timeout: "读取空闲超时"' in APP_JS
+    assert 'provider_call_deadline_exceeded: "单次调用截止"' in APP_JS
+    assert "network_attempted_count" in APP_JS
+    assert "deadline_remaining_seconds" in APP_JS
+    task_contract_ui = (ROOT / "web" / "task-contract-ui.js").read_text(encoding="utf-8")
+    assert 'paused: "已暂停"' in task_contract_ui.split("const statusLabels", 1)[0]
+    hydrate_start = APP_JS.index("async function hydrateLiveTaskDetails")
+    hydrate_end = APP_JS.index("async function loadTasks", hydrate_start)
+    assert "!task.is_generation_job" in APP_JS[hydrate_start:hydrate_end]

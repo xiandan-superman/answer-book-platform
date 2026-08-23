@@ -136,7 +136,8 @@ class PracticeRedesignTests(unittest.TestCase):
         generation = (ROOT / "app" / "exercise_generation.py").read_text(encoding="utf-8")
         self.assertIn('"generate_from_plan": bounded_env_int("PRACTICE_GENERATE_JOB_TIMEOUT_SECONDS", 14400', jobs)
         self.assertIn("内容较长，模型仍在生成完整结果", jobs)
-        self.assertIn("timeout_seconds=600", generation)
+        self.assertNotIn("timeout_seconds=600", generation)
+        self.assertIn('_practice_stage_timeout("generation", 180)', generation)
 
     def test_partial_generation_has_visible_error_cards_and_keeps_export_enabled(self) -> None:
         self.assertIn('item.generation_status === "failed"', self.js)

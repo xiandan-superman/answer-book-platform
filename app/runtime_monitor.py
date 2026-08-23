@@ -157,6 +157,7 @@ def model_call_context(
     stage: str = "",
     operation: str = "",
     active_item: str = "",
+    lease_epoch: int | None = None,
 ) -> Iterator[None]:
     current = dict(_MODEL_CALL_CONTEXT.get() or {})
     current.update(
@@ -168,8 +169,9 @@ def model_call_context(
                 "stage": stage,
                 "operation": operation,
                 "active_item": active_item,
+                "lease_epoch": lease_epoch,
             }.items()
-            if value
+            if value is not None and value != ""
         }
     )
     token = _MODEL_CALL_CONTEXT.set(current)
@@ -181,11 +183,17 @@ def model_call_context(
         from .task_control import TaskCancelled
 
         if current_task_id.startswith("generation_"):
+            from .concurrency import ModelRequestAborted
             from .practice_jobs import load_practice_job
 
             try:
-                if str(load_practice_job(current_task_id).get("status") or "") == "cancelled":
-                    raise TaskCancelled("用户取消任务")
+                job = load_practice_job(current_task_id)
+                status = str(job.get("status") or "")
+                expected_epoch = current.get("lease_epoch")
+                if status != "running":
+                    raise ModelRequestAborted(f"出题任务已停止派发（{status or '未知状态'}）")
+                if expected_epoch is not None and int(job.get("control_epoch") or 0) != int(expected_epoch):
+                    raise ModelRequestAborted("出题任务运行批次已变更")
             except FileNotFoundError:
                 pass
             return

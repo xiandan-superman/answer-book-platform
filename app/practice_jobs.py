@@ -25,6 +25,9 @@ _JOB_TIMEOUT_SECONDS = {
     "generate_from_plan": bounded_env_int("PRACTICE_GENERATE_JOB_TIMEOUT_SECONDS", 14400, 1800, 43200),
     "generate_from_contract": bounded_env_int("PRACTICE_GENERATE_JOB_TIMEOUT_SECONDS", 14400, 1800, 43200),
 }
+_GENERATION_DEADLINE_SECONDS = bounded_env_int(
+    "PRACTICE_GENERATION_DEADLINE_SECONDS", 420, 30, 1800
+)
 
 
 _MAX_CONCURRENT_JOBS = practice_job_max_concurrency()
@@ -172,7 +175,7 @@ def find_active_practice_job(operation: str, payload: dict[str, Any]) -> dict[st
                 record = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if record.get("status") not in {"queued", "running"}:
+            if record.get("status") not in {"queued", "running", "paused"}:
                 continue
             # Recalculate from the durable payload instead of trusting a stored
             # legacy fingerprint. This keeps active jobs created before an
@@ -216,6 +219,11 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
     now = _now()
     job_id = f"generation_{datetime.now():%Y%m%d%H%M%S}_{uuid4().hex[:8]}"
     source_mode = str(payload.get("source_mode") or "exam")
+    deadline_at = ""
+    if operation in {"generate_from_plan", "generate_from_contract"}:
+        deadline_at = (
+            datetime.now().astimezone() + timedelta(seconds=_GENERATION_DEADLINE_SECONDS)
+        ).isoformat(timespec="seconds")
     record = {
         "job_id": job_id,
         "operation": operation,
@@ -227,6 +235,10 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         "provider": str(payload.get("provider") or ""),
         "model": str(payload.get("model") or ""),
         "status": "queued",
+        "control_epoch": 0,
+        "generation_deadline_at": deadline_at,
+        "network_attempted_count": 0,
+        "network_phase": "waiting",
         "current_stage": "analyzing" if operation == "analyze" else ("planning" if operation == "plan" else "generating"),
         "created_at": now,
         "updated_at": now,
@@ -263,7 +275,7 @@ def create_or_reuse_practice_job(operation: str, payload: dict[str, Any]) -> dic
         if continuation_key:
             continuation_jobs = _continuation_jobs(continuation_key)
             active = next(
-                (record for record in continuation_jobs if record.get("status") in {"queued", "running"}),
+                (record for record in continuation_jobs if record.get("status") in {"queued", "running", "paused"}),
                 None,
             )
             if active:
@@ -302,7 +314,7 @@ def cancel_practice_job(job_id: str, reason: str = "用户取消出题任务") -
     """Mark a durable generation job cancelled; late provider responses are ignored."""
     with _LOCK:
         record = load_practice_job(job_id)
-        if record.get("status") not in {"queued", "running"}:
+        if record.get("status") not in {"queued", "running", "paused"}:
             return {"ok": False, "task_id": job_id, "message": "当前出题任务已经结束，不能取消。", "status": record.get("status")}
         updated = update_practice_job(
             job_id,
@@ -315,14 +327,65 @@ def cancel_practice_job(job_id: str, reason: str = "用户取消出题任务") -
             warning_reason=reason,
             suggested_action="可从已保存的中间结果重新发起任务。",
             cancel_requested=True,
+            control_epoch=int(record.get("control_epoch") or 0) + 1,
+            completed_at=_now(),
         )
     return {"ok": True, "task_id": job_id, "status": updated.get("status"), "message": reason}
+
+
+def pause_practice_job(job_id: str) -> dict[str, Any]:
+    """Pause dispatch and invalidate every request owned by the old lease."""
+    with _LOCK:
+        record = load_practice_job(job_id)
+        if record.get("status") not in {"queued", "running"}:
+            return {"ok": False, "task_id": job_id, "status": record.get("status"), "message": "当前任务不能暂停。"}
+        updated = update_practice_job(
+            job_id,
+            status="paused",
+            current_stage="paused",
+            control_epoch=int(record.get("control_epoch") or 0) + 1,
+            current_operation="任务已暂停",
+            progress_message="已暂停派发新请求；已生成题目和调用预算已保留。",
+            health_status="waiting",
+            suggested_action="可继续本任务，仅补齐未完成项。",
+        )
+    return {"ok": True, "task_id": job_id, "status": updated.get("status"), "message": "任务已暂停。"}
+
+
+def resume_practice_job(job_id: str) -> dict[str, Any]:
+    """Resume the same durable job without renewing its parent deadline."""
+    with _LOCK:
+        record = load_practice_job(job_id)
+        if record.get("status") != "paused":
+            return {"ok": False, "task_id": job_id, "status": record.get("status"), "message": "当前任务不能继续。"}
+        try:
+            deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
+        except ValueError:
+            deadline = None
+        if deadline is not None and deadline <= datetime.now().astimezone():
+            return {
+                "ok": False,
+                "task_id": job_id,
+                "status": "paused",
+                "code": "generation_deadline_expired",
+                "message": "本批次生成截止时间已到，请从检查点重试未完成项。",
+            }
+        return update_practice_job(
+            job_id,
+            expected_status="paused",
+            status="queued",
+            current_stage="generating",
+            control_epoch=int(record.get("control_epoch") or 0) + 1,
+            current_operation="正在恢复未完成项",
+            progress_message="任务已继续，将复用已完成题目并只补齐缺失项。",
+            cancel_requested=False,
+        )
 
 
 def delete_practice_job(job_id: str) -> dict[str, Any]:
     with _LOCK:
         record = load_practice_job(job_id)
-        if record.get("status") in {"queued", "running"}:
+        if record.get("status") in {"queued", "running", "paused"}:
             return {"ok": False, "task_id": job_id, "message": "任务仍在进行，请先取消或等待完成后再删除。"}
         path = _path(job_id)
         removed_bytes = path.stat().st_size if path.exists() else 0
@@ -400,7 +463,7 @@ def cleanup_practice_jobs(*, dry_run: bool = False, now: datetime | None = None)
             except (OSError, json.JSONDecodeError):
                 continue
             status = str(record.get("status") or "")
-            if status in {"queued", "running"}:
+            if status in {"queued", "running", "paused"}:
                 continue
             timestamp = _record_time(record)
             if timestamp is None:
@@ -441,6 +504,7 @@ def update_practice_job(
     job_id: str,
     *,
     expected_status: str | None = None,
+    expected_epoch: int | None = None,
     **updates: Any,
 ) -> dict[str, Any]:
     """Atomically update a durable job without reviving stale worker state.
@@ -454,6 +518,8 @@ def update_practice_job(
         record = load_practice_job(job_id)
         current_status = str(record.get("status") or "")
         if expected_status is not None and current_status != expected_status:
+            return record
+        if expected_epoch is not None and int(record.get("control_epoch") or 0) != int(expected_epoch):
             return record
         # Terminal states are immutable. Retries create a new durable job and
         # link back to the old checkpoint; no heartbeat, queue recovery, or
@@ -546,6 +612,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             completed_at="",
             progress_message=_friendly_progress(str(current.get("operation") or ""), 0),
         )
+        lease_epoch = int(record.get("control_epoch") or 0)
     operation = str(record.get("operation") or "")
     timeout_seconds = _JOB_TIMEOUT_SECONDS.get(operation, 600)
     finished = threading.Event()
@@ -555,9 +622,19 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
         while not finished.wait(10):
             elapsed = int(time.monotonic() - started)
             current = load_practice_job(job_id)
-            if current.get("status") != "running":
+            if current.get("status") != "running" or int(current.get("control_epoch") or 0) != lease_epoch:
                 return
-            if elapsed >= timeout_seconds:
+            generation_deadline_reached = False
+            deadline_text = str(current.get("generation_deadline_at") or "")
+            if deadline_text:
+                try:
+                    deadline = datetime.fromisoformat(deadline_text)
+                    if deadline.tzinfo is None:
+                        deadline = deadline.astimezone()
+                    generation_deadline_reached = datetime.now().astimezone() >= deadline
+                except ValueError:
+                    pass
+            if elapsed >= timeout_seconds or generation_deadline_reached:
                 try:
                     pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
                 except Exception:
@@ -565,17 +642,22 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 failed_record = update_practice_job(
                     job_id,
                     expected_status="running",
+                    expected_epoch=lease_epoch,
                     last_heartbeat_at=_now(),
                     status="failed",
                     current_stage="failed",
                     support_id=_new_support_id(),
-                    error=f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待，可直接重试。",
+                    error=(
+                        "本批次网络等待已达持久化截止时间，已停止新请求。"
+                        if generation_deadline_reached
+                        else f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待。"
+                    ),
                     model_usage=model_call_cost_summary(job_id),
                     diagnostic_context={"pinned_model_traces": pinned_model_traces},
-                    progress_message="任务超时。",
+                    progress_message="网络等待截止时间已到，已保留完成的题目。",
                     health_status="error",
                     warning_reason="后台任务已超过允许等待时间。",
-                    suggested_action="可重新运行任务。",
+                    suggested_action="可显式继续未完成项。",
                     completed_at=_now(),
                     elapsed_seconds=elapsed,
                 )
@@ -584,6 +666,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             update_practice_job(
                 job_id,
                 expected_status="running",
+                expected_epoch=lease_epoch,
                 last_heartbeat_at=_now(),
                 health_status="waiting",
                 current_operation="正在等待模型返回",
@@ -604,14 +687,21 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             run_id=job_id,
             stage=str(record.get("current_stage") or ""),
             operation="出题任务",
+            lease_epoch=lease_epoch,
         ):
-            outcome = worker(str(record["operation"]), {**(record.get("payload") or {}), "_job_id": job_id})
+            outcome = worker(str(record["operation"]), {
+                **(record.get("payload") or {}),
+                "_job_id": job_id,
+                "_job_epoch": lease_epoch,
+            })
             # A timed-out or cancelled task may return from a provider socket
             # later. Never let that stale response overwrite terminal state.
-        if load_practice_job(job_id).get("status") == "running":
+        latest = load_practice_job(job_id)
+        if latest.get("status") == "running" and int(latest.get("control_epoch") or 0) == lease_epoch:
             update_practice_job(
                 job_id,
                 expected_status="running",
+                expected_epoch=lease_epoch,
                 status="completed",
                 current_stage="completed",
                 result=outcome.get("result"),
@@ -628,7 +718,8 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 elapsed_seconds=max(0, int(time.monotonic() - started)),
             )
     except BaseException as exc:
-        if load_practice_job(job_id).get("status") == "running":
+        latest = load_practice_job(job_id)
+        if latest.get("status") == "running" and int(latest.get("control_epoch") or 0) == lease_epoch:
             exception_text = redact_credentials(str(exc) or exc.__class__.__name__)
             exception_traceback = redact_credentials(traceback.format_exc())
             try:
@@ -641,6 +732,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             failed_record = update_practice_job(
                 job_id,
                 expected_status="running",
+                expected_epoch=lease_epoch,
                 status="failed",
                 current_stage="failed",
                 support_id=_new_support_id(),

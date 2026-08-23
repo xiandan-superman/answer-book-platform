@@ -1758,6 +1758,15 @@ function practiceRecoveryNoticeMeta(job = {}, { navigationChanged = false } = {}
       tone: "warning",
     };
   }
+  if (status === "paused") {
+    return {
+      eyebrow: "后台任务已暂停",
+      title: taskName,
+      message: `已停止派发新请求，已发起 ${Number(job.network_attempted_count || 0)} 次调用；已生成题目和调用预算均已保留。`,
+      action: "查看并继续",
+      tone: "warning",
+    };
+  }
   if (status === "unavailable") {
     return {
       eyebrow: "正在恢复后台任务",
@@ -1922,6 +1931,12 @@ async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
         terminalError.practiceJob = job;
         throw terminalError;
       }
+      if (job.status === "paused") {
+        if (activePracticeJobId === jobId) rememberPracticeJob("");
+        const pausedError = new Error("后台出题任务已暂停，已生成题目已保留。");
+        pausedError.practiceJob = job;
+        throw pausedError;
+      }
     } catch (error) {
       transientFailures += 1;
       if (transientFailures >= 5 || !/fetch|network|连接|Failed to fetch/i.test(String(error))) throw error;
@@ -1956,7 +1971,7 @@ async function resumeRememberedPracticeJob() {
     if (!practiceRecoveryContextIsCurrent(context)) return;
     const navigationChanged = navigationVersion !== practiceNavigationVersion;
     showPracticeRecoveryNotice(initialJob, { navigationChanged });
-    if (["completed", "failed", "cancelled"].includes(String(initialJob.status || ""))) {
+    if (["completed", "failed", "cancelled", "paused"].includes(String(initialJob.status || ""))) {
       rememberPracticeJob("");
       loadTasks({ silent: true, includeLiveDetails: true }).catch(() => {});
       return;
@@ -9094,6 +9109,27 @@ function completedGenerationTaskMessage(task = {}) {
   return "题目已生成并保存";
 }
 
+function generationNetworkSummary(task = {}) {
+  if (!task.is_generation_job || !["queued", "running", "paused"].includes(task.status)) return "";
+  const attempts = Math.max(0, Number(task.network_attempted_count || 0));
+  const phaseLabels = {
+    waiting: "等待派发",
+    provider_connect_timeout: "连接超时",
+    provider_first_byte_timeout: "首字节超时",
+    provider_read_idle_timeout: "读取空闲超时",
+    provider_call_deadline_exceeded: "单次调用截止",
+    provider_network_connection_failed: "网络连接中断",
+    succeeded: "最近调用成功"
+  };
+  const phase = String(task.network_phase || "");
+  const phaseText = phaseLabels[phase] || (phase ? `网络阶段 ${phase}` : "");
+  const remaining = task.deadline_remaining_seconds;
+  const timeText = Number.isFinite(Number(remaining))
+    ? `剩余等待上限 ${Math.floor(Math.max(0, Number(remaining)) / 60)} 分 ${Math.max(0, Number(remaining)) % 60} 秒`
+    : "";
+  return [phaseText, `已发起 ${attempts} 次模型请求`, timeText].filter(Boolean).join("，");
+}
+
 function renderTaskManager(tasks = latestTasks) {
   const list = $("taskManagerList");
   const empty = $("taskManagerEmpty");
@@ -9160,9 +9196,10 @@ function renderTaskManager(tasks = latestTasks) {
       : generationTask
       ? (task.is_generation_job ? (errorMessage || task.progress_message || (normalized === "queued" ? "任务已进入等待队列" : normalized === "needs_input" ? "当前步骤已完成，等待确认后继续" : "任务正在后台执行")) : completedGenerationTaskMessage(task))
       : (errorMessage || (normalized === "queued" ? "等待开始" : stageText));
+    const networkSummary = generationNetworkSummary(task);
     const progressMessage = reviewPending
       ? "当前步骤已完成，等待你确认后继续。"
-      : (isLiveTask(task) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage);
+      : `${isLiveTask(task) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage}${networkSummary ? ` · ${networkSummary}` : ""}`;
     const currentStageText = reviewPending
       ? "等待确认"
       : (generationTask ? (task.is_generation_job ? stageLabel(task.current_stage) : phaseText) : (progress.meta || stageText));
@@ -9596,6 +9633,8 @@ function taskManagerActions(task = {}, reviewPending = false) {
       add(caps.view_quality && task.status === "failed", "job-status", "red-action", "fas fa-triangle-exclamation", "查看原因");
       add(caps.retry && practiceErrorNeedsConfiguration(task.error_presentation), "job-config", "blue-action", "fas fa-key", "检查 API 配置");
       add(caps.retry, "job-retry", "green-action", "fas fa-rotate", "从检查点重试");
+      add(caps.pause, "job-pause", "yellow-action", "fas fa-pause", "暂停");
+      add(caps.resume, "job-resume", "green-action", "fas fa-play", "继续");
       add(caps.cancel, "job-cancel", "red-action", "fas fa-times", "取消任务");
     } else {
       const completion = practiceCompletionContract(task);
@@ -9648,7 +9687,10 @@ function generationTaskManagerActions(task = {}) {
         : "";
       return `<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>查看原因</button>${configAction}<button type="button" class="task-card-button green-action" data-action="job-retry"><i class="fas fa-rotate"></i>重试任务</button>`;
     }
-    return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-spinner fa-spin"></i>查看进度</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
+    if (task.status === "paused") {
+      return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-eye"></i>查看进度</button><button type="button" class="task-card-button green-action" data-action="job-resume"><i class="fas fa-play"></i>继续</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
+    }
+    return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-spinner fa-spin"></i>查看进度</button><button type="button" class="task-card-button yellow-action" data-action="job-pause"><i class="fas fa-pause"></i>暂停</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
   }
   return [
     '<button type="button" class="task-card-button blue-action" data-action="result"><i class="fas fa-eye"></i>查看结果</button>',
@@ -9726,6 +9768,8 @@ async function handleTaskManagerAction(task, action, button = null) {
     if (task.is_generation_job && (action === "job-status" || action === "job-result")) await openGenerationJob(task);
     else if (task.is_generation_job && action === "job-config") goToPage("keys");
     else if (task.is_generation_job && action === "job-retry") await retryGenerationJob(task);
+    else if (task.is_generation_job && action === "job-pause") await controlGenerationJob(task, "pause");
+    else if (task.is_generation_job && action === "job-resume") await controlGenerationJob(task, "resume");
     else if (task.is_generation_job && action === "job-cancel") await cancelGenerationJob(task);
     else if (!task.is_generation_job && action === "history-config") goToPage("keys");
     else if (!task.is_generation_job && action === "history-continue") await continuePracticeHistory(task.task_id, null, task.task_kind);
@@ -9757,6 +9801,20 @@ async function handleTaskManagerAction(task, action, button = null) {
   if (action === "delete") {
     await deleteTaskFromManager(task);
   }
+}
+
+async function controlGenerationJob(task, action) {
+  const result = await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}/${action}`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+  if (result?.ok === false && result?.message) {
+    await platformAlert(result.message, {
+      title: result.code === "generation_deadline_expired" ? "需要从检查点重试" : "当前操作无法完成",
+      tone: "warning"
+    });
+  }
+  await loadTasks({ silent: true, includeLiveDetails: true });
 }
 
 async function renameGenerationTask(task) {
@@ -9930,6 +9988,17 @@ async function openGenerationJob(task) {
       });
       if (nextAction && configurationRequired) goToPage("keys");
       else if (nextAction) await retryGenerationJob(task);
+      return;
+    }
+    if (job.status === "paused") {
+      const remaining = Number(job.deadline_remaining_seconds);
+      const remainingText = Number.isFinite(remaining)
+        ? `${Math.floor(Math.max(0, remaining) / 60)} 分 ${Math.max(0, remaining) % 60} 秒`
+        : "暂无法计算";
+      await platformAlert(
+        `任务已暂停派发新请求。已发起 ${Number(job.network_attempted_count || 0)} 次模型请求，本批次剩余等待上限 ${remainingText}。可在任务管理中点击“继续”，仅补齐未完成题目。`,
+        { title: "任务已暂停", tone: "warning" }
+      );
       return;
     }
     latestPracticeRequest = job.payload || latestPracticeRequest;
@@ -10946,7 +11015,9 @@ function maybeOpenActiveReviewDecision(task) {
 }
 
 async function hydrateLiveTaskDetails(tasks) {
-  const liveTasks = (tasks || []).filter((task) => task?.task_id && isLiveTask(task));
+  const liveTasks = (tasks || []).filter(
+    (task) => task?.task_id && isLiveTask(task) && !task.is_generation_job
+  );
   await Promise.all(liveTasks.map(async (task) => {
     try {
       const data = await api(`/api/tasks/${encodeURIComponent(task.task_id)}`);
