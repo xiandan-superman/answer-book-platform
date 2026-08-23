@@ -23,6 +23,15 @@ def test_final_acceptance_figure_failure_gets_figure_specific_recovery() -> None
     assert all("文档工具链正常" not in item for item in recommendations)
 
 
+def test_missing_required_inline_figure_does_not_recommend_generic_docx_repair() -> None:
+    issues = [{"message": "figure_size: no inline figure images were found in answer_book.docx"}]
+
+    recommendations = _recommendations("final_acceptance", "", issues)
+
+    assert any("配图阶段" in item for item in recommendations)
+    assert all("Word 生成审计" not in item for item in recommendations)
+
+
 def test_hybrid_header_encoding_failure_is_explained_without_exposing_python_error() -> None:
     error = _error_label("'latin-1' codec can't encode characters in position 0-3")
 

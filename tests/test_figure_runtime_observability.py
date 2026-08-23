@@ -134,6 +134,56 @@ class FigureRuntimeObservabilityTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(any("too small" in issue or "too short" in issue for issue in report["issues"]))
 
+    def test_no_figure_question_skips_empty_word_figure_warning(self) -> None:
+        from app.figure_size_audit import audit_docx_figure_sizes
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            docx_path = Path(raw_tmp) / "answer_book.docx"
+            Document().save(docx_path)
+            report = audit_docx_figure_sizes(
+                docx_path,
+                structured_exam={
+                    "items": [
+                        {
+                            "question_id": "q_text",
+                            "stem": "说明二元反应扩散中不存在两相区的原因。",
+                            "answer_figure_required": False,
+                            "source_image_required": False,
+                        }
+                    ]
+                },
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["applicable"])
+        self.assertEqual("no_figure_required", report["skipped_reason"])
+        self.assertEqual([], report["warnings"])
+        self.assertEqual([], report["required_question_ids"])
+
+    def test_required_figure_question_keeps_empty_word_figure_warning(self) -> None:
+        from app.figure_size_audit import audit_docx_figure_sizes
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            docx_path = Path(raw_tmp) / "answer_book.docx"
+            Document().save(docx_path)
+            report = audit_docx_figure_sizes(
+                docx_path,
+                structured_exam={
+                    "items": [
+                        {
+                            "question_id": "q_draw",
+                            "stem": "请画出二元相图并标出两相区。",
+                            "answer_figure_required": True,
+                        }
+                    ]
+                },
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["applicable"])
+        self.assertEqual(["q_draw"], report["required_question_ids"])
+        self.assertTrue(any("no inline figure images" in item for item in report["warnings"]))
+
     def test_wide_figure_uses_near_page_width(self) -> None:
         from app.docx_v4 import add_figure_picture
         from app.figure_size_audit import audit_docx_figure_sizes

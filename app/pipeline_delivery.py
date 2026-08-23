@@ -111,7 +111,10 @@ def complete_pipeline_delivery(
             },
         )
         raise RuntimeError("answer_book.docx was not generated")
-    figure_size_audit = audit_docx_figure_sizes(docx_path)
+    figure_size_audit = audit_docx_figure_sizes(
+        docx_path,
+        structured_exam=structured_exam,
+    )
     write_json(stage_dir / "figure_size_audit.json", figure_size_audit)
     build_shadow_quality_report(stage_dir)
     mark(
@@ -119,6 +122,8 @@ def complete_pipeline_delivery(
         "passed" if figure_size_audit["ok"] else "failed",
         {
             "figure_count": len(figure_size_audit.get("figures", [])),
+            "applicable": figure_size_audit.get("applicable", True),
+            "required_question_ids": figure_size_audit.get("required_question_ids", []),
             "issues": figure_size_audit.get("issues", [])[:20],
             "warnings": figure_size_audit.get("warnings", [])[:20],
         },
