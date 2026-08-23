@@ -55,7 +55,7 @@ def _public_job(record: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in record.items()
-        if key not in {"cache_path", "payload"}
+        if key not in {"cache_path", "payload", "diagnostic_context"}
     }
 
 
@@ -315,6 +315,21 @@ def load_practice_export_job(job_id: str) -> dict[str, Any]:
         return _public_job(dict(record))
 
 
+def retry_practice_export_job(job_id: str) -> dict[str, Any]:
+    """Retry from the server-owned request snapshot without exposing it to the browser."""
+    with _LOCK:
+        record = dict(_load_job_record(job_id))
+        status = str(record.get("status") or "")
+        cache_path = Path(str(record.get("cache_path") or ""))
+        if status in {"queued", "running"} or (status == "completed" and cache_path.is_file()):
+            return _public_job(record)
+        payload = record.get("payload")
+        filename = str(record.get("filename") or "专项练习-题目.docx")
+    if not isinstance(payload, dict):
+        raise ValueError("Word 导出请求快照不可用，请返回原练习重新下载。")
+    return create_or_reuse_practice_export_job(payload, filename)
+
+
 def practice_export_download(job_id: str) -> tuple[Path, str]:
     with _LOCK:
         record = _load_job_record(job_id)
@@ -323,7 +338,13 @@ def practice_export_download(job_id: str) -> tuple[Path, str]:
         path = Path(str(record.get("cache_path") or ""))
         filename = str(record.get("filename") or "专项练习-题目.docx")
     if not path.is_file():
-        raise FileNotFoundError("Word 缓存文件不存在，请重新生成。")
+        _update_job(
+            job_id,
+            status="failed",
+            current_operation="Word 文件已不可用",
+            error="Word 文件已过期或不可用，请重新生成。",
+        )
+        raise FileNotFoundError("Word 文件已过期或不可用，请重新生成。")
     return path, filename
 
 

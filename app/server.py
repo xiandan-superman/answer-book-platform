@@ -56,6 +56,7 @@ from .practice_export_jobs import (
     load_practice_export_job,
     practice_export_download,
     recover_practice_export_jobs,
+    retry_practice_export_job,
 )
 from .practice_jobs import (
     cancel_practice_job,
@@ -1116,6 +1117,13 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json({"profile": body.get("profile"), "settings": normalized, "message": "已设为该标准的永久默认"})
                 return
             parts = [unquote(x) for x in parsed.path.strip("/").split("/") if x]
+            if len(parts) == 5 and parts[:3] == ["api", "practice", "export-jobs"] and parts[4] == "retry":
+                export_job = retry_practice_export_job(parts[3])
+                self.send_json(
+                    {"ok": True, "job": export_job},
+                    status=200 if export_job.get("status") == "completed" else 202,
+                )
+                return
             if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "apply":
                 try:
                     result = apply_word_format_task(parts[3])

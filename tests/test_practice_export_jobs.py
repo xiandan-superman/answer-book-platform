@@ -99,9 +99,63 @@ class PracticeExportJobTests(unittest.TestCase):
 
         self.assertEqual("failed", failed["status"])
         self.assertIn("未通过完整性校验", failed["error"])
-        self.assertEqual("ValueError", failed["diagnostic_context"]["exception_type"])
-        self.assertIn("未通过完整性校验", failed["diagnostic_context"]["traceback"])
+        self.assertNotIn("diagnostic_context", failed)
+        internal = practice_export_jobs._load_job_record(created["job_id"])
+        self.assertEqual("ValueError", internal["diagnostic_context"]["exception_type"])
+        self.assertIn("未通过完整性校验", internal["diagnostic_context"]["traceback"])
         self.assertEqual([], cached_files)
+
+    def test_failed_export_can_retry_from_server_snapshot_without_browser_content(self) -> None:
+        original_build = practice_export_jobs.build_practice_question_docx
+        build_calls = 0
+
+        def fail_once(data, progress_callback=None):
+            nonlocal build_calls
+            build_calls += 1
+            if build_calls == 1:
+                raise RuntimeError("temporary document builder failure")
+            return original_build(data, progress_callback=progress_callback)
+
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
+            practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)
+        ), patch.object(practice_export_jobs, "append_runtime_log"), patch.object(
+            practice_export_jobs, "build_practice_question_docx", fail_once
+        ):
+            created = practice_export_jobs.create_or_reuse_practice_export_job(_sample_data(), "恢复重试.docx")
+            failed = self._wait_for_terminal_job(created["job_id"])
+            retried = practice_export_jobs.retry_practice_export_job(created["job_id"])
+            completed = self._wait_for_terminal_job(created["job_id"])
+
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual(created["job_id"], retried["job_id"])
+        self.assertIn(retried["status"], {"queued", "running"})
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual(2, build_calls)
+        self.assertNotIn("payload", completed)
+        self.assertNotIn("diagnostic_context", completed)
+
+    def test_retry_reuses_completed_job_without_regenerating_document(self) -> None:
+        build_calls = 0
+        original_build = practice_export_jobs.build_practice_question_docx
+
+        def counted_build(data, progress_callback=None):
+            nonlocal build_calls
+            build_calls += 1
+            return original_build(data, progress_callback=progress_callback)
+
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
+            practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)
+        ), patch.object(practice_export_jobs, "append_runtime_log"), patch.object(
+            practice_export_jobs, "build_practice_question_docx", counted_build
+        ):
+            created = practice_export_jobs.create_or_reuse_practice_export_job(_sample_data(), "确定性导出.docx")
+            completed = self._wait_for_terminal_job(created["job_id"])
+            retried = practice_export_jobs.retry_practice_export_job(created["job_id"])
+
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual("completed", retried["status"])
+        self.assertEqual(created["job_id"], retried["job_id"])
+        self.assertEqual(1, build_calls)
 
     def test_repeated_export_clicks_share_one_active_build(self) -> None:
         original_build = practice_export_jobs.build_practice_question_docx
@@ -167,6 +221,27 @@ class PracticeExportJobTests(unittest.TestCase):
         self.assertEqual("completed", restored["status"])
         self.assertTrue(download_exists)
         self.assertEqual("测试题目.docx", filename)
+
+    def test_missing_completed_file_becomes_retryable_instead_of_staying_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
+            practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)
+        ), patch.object(practice_export_jobs, "append_runtime_log"):
+            created = practice_export_jobs.create_or_reuse_practice_export_job(_sample_data(), "缓存失效.docx")
+            completed = self._wait_for_terminal_job(created["job_id"])
+            cache_path = next(Path(raw_tmp).glob("*.docx"))
+            cache_path.unlink()
+
+            with self.assertRaisesRegex(FileNotFoundError, "已过期或不可用"):
+                practice_export_jobs.practice_export_download(created["job_id"])
+            failed = practice_export_jobs.load_practice_export_job(created["job_id"])
+            retried = practice_export_jobs.retry_practice_export_job(created["job_id"])
+            rebuilt = self._wait_for_terminal_job(created["job_id"])
+
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual("failed", failed["status"])
+        self.assertIn("重新生成", failed["error"])
+        self.assertEqual(created["job_id"], retried["job_id"])
+        self.assertEqual("completed", rebuilt["status"])
 
     def test_interrupted_export_is_requeued_from_persisted_request(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp, patch.object(

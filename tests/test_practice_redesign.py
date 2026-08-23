@@ -206,7 +206,7 @@ class PracticeRedesignTests(unittest.TestCase):
 
     def test_word_export_progress_survives_practice_page_rerender(self) -> None:
         self.assertIn("const activePracticeWordExports = new Map()", self.js)
-        self.assertIn("function practiceWordExportKey(data)", self.js)
+        self.assertIn("function practiceWordExportKey(data, filename", self.js)
         self.assertIn("function syncPracticeWordExportUi()", self.js)
         self.assertIn('data-practice-word-export-key="${escapeHtml(wordExportKey)}"', self.js)
         self.assertIn("正在生成 ${count} 份题目 Word；可切换页面，返回后会继续显示进度。", self.js)

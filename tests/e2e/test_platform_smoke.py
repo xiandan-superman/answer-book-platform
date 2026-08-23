@@ -91,6 +91,207 @@ def test_primary_desktop_workflows_have_safe_initial_state() -> None:
         browser.close()
 
 
+def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_download() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
+        page = context.new_page()
+        job_id = "practice_word_aaaaaaaaaaaaaaaaaaaaaaaa"
+        calls = {"status": 0, "download": 0}
+
+        def export_route(route):
+            if route.request.url.endswith("/download"):
+                calls["download"] += 1
+                route.fulfill(
+                    status=200,
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    body=b"word-export-fixture",
+                )
+                return
+            calls["status"] += 1
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "ok": True,
+                    "job": {
+                        "job_id": job_id,
+                        "status": "completed",
+                        "completed_count": 1,
+                        "total_count": 1,
+                        "filename": "服务端默认名.docx",
+                    },
+                }, ensure_ascii=False),
+            )
+
+        context.route("**/api/practice/export-jobs/**", export_route)
+        page.goto(f"{base_url.rstrip('/')}?page=keys", wait_until="networkidle")
+        page.evaluate(
+            """(jobId) => {
+              rememberPracticeWordExportPointer('history-a:1:独立文件A.docx', jobId, '独立文件A.docx');
+              rememberPracticeWordExportPointer('history-a:1:独立文件B.docx', jobId, '独立文件B.docx');
+            }""",
+            job_id,
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#practiceWordRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").wait_for()
+        page.locator(".practice-word-recovery-item").filter(has_text="独立文件B.docx").wait_for()
+
+        assert page.locator("#page-keys.active").is_visible()
+        assert calls["status"] == 1
+        assert calls["download"] == 0
+        assert page.locator(".practice-word-recovery-item").count() == 2
+        raw_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
+        assert '"schema_version":1' in raw_storage
+        assert "question_text" not in raw_storage
+        assert "exercises" not in raw_storage
+        assert "word-export-fixture" not in raw_storage
+
+        page.evaluate(
+            """() => showPracticeRecoveryNotice({
+              job_id: 'practice-generation-independent',
+              status: 'running',
+              title: '独立的生题恢复任务',
+              progress_message: '生题任务仍在后台运行'
+            })"""
+        )
+        assert page.locator("#practiceRecoveryNotice").is_visible()
+        assert page.locator("#practiceWordRecoveryNotice").is_visible()
+
+        first = page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx")
+        with page.expect_download() as download_info:
+            first.get_by_role("button", name="下载 Word").click()
+        assert download_info.value.suggested_filename == "独立文件A.docx"
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        page.locator("#platformDialogConfirm").click()
+        page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").wait_for(state="detached")
+        assert page.locator(".practice-word-recovery-item").filter(has_text="独立文件B.docx").is_visible()
+        assert calls["download"] == 1
+
+        remaining_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
+        assert "独立文件A.docx" not in remaining_storage
+        assert "独立文件B.docx" in remaining_storage
+        browser.close()
+
+
+def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
+        page = context.new_page()
+        job_id = "practice_word_bbbbbbbbbbbbbbbbbbbbbbbb"
+        state = {"status": "missing", "download_fails": True, "retry_calls": 0, "download_calls": 0}
+
+        def export_route(route):
+            if route.request.method == "POST" and route.request.url.endswith("/retry"):
+                state["retry_calls"] += 1
+                state["status"] = "completed"
+                route.fulfill(
+                    status=202,
+                    content_type="application/json",
+                    body=json.dumps({"ok": True, "job": {"job_id": job_id, "status": "queued"}}),
+                )
+                return
+            if route.request.url.endswith("/download"):
+                state["download_calls"] += 1
+                if state["download_fails"]:
+                    route.fulfill(
+                        status=503,
+                        content_type="application/json",
+                        body=json.dumps({"error": '{"internal":"storage failed","request_id":"SECRET-123"}'}),
+                    )
+                else:
+                    route.fulfill(status=200, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", body=b"retried-word")
+                return
+            if state["status"] == "missing":
+                route.fulfill(status=404, content_type="application/json", body=json.dumps({"error": "missing"}))
+                return
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "ok": True,
+                    "job": {
+                        "job_id": job_id,
+                        "status": state["status"],
+                        "error": '{"provider":"internal","request_id":"SECRET-123"}',
+                        "completed_count": 1,
+                        "total_count": 1,
+                    },
+                }),
+            )
+
+        context.route("**/api/practice/export-jobs/**", export_route)
+        page.goto(base_url, wait_until="networkidle")
+        page.evaluate(
+            """(jobId) => {
+              localStorage.setItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY, JSON.stringify({
+                schema_version: 1,
+                updated_at: new Date().toISOString(),
+                records: [{
+                  export_key: 'expired', job_id: jobId, filename: '过期.docx',
+                  created_at: new Date(Date.now() - 9 * 86400000).toISOString(),
+                  expires_at: new Date(Date.now() - 2 * 86400000).toISOString()
+                }]
+              }));
+            }""",
+            job_id,
+        )
+        page.reload(wait_until="networkidle")
+        assert page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)") is None
+        assert page.locator("#practiceWordRecoveryNotice").is_hidden()
+
+        page.evaluate("(jobId) => rememberPracticeWordExportPointer('missing', jobId, '不存在.docx')", job_id)
+        page.evaluate("resumeRememberedPracticeWordExports()")
+        page.wait_for_function("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY) === null")
+        assert page.locator("#practiceWordRecoveryNotice").is_hidden()
+
+        state["status"] = "failed"
+        page.evaluate("(jobId) => rememberPracticeWordExportPointer('retry', jobId, '失败后重试.docx')", job_id)
+        page.evaluate("resumeRememberedPracticeWordExports()")
+        failed_item = page.locator(".practice-word-recovery-item").filter(has_text="失败后重试.docx")
+        failed_item.get_by_role("button", name="重新生成").wait_for(timeout=4000)
+        assert "SECRET-123" not in failed_item.inner_text()
+        assert "Word 生成未完成" in failed_item.inner_text()
+
+        failed_item.get_by_role("button", name="重新生成").click()
+        completed_item = page.locator(".practice-word-recovery-item").filter(has_text="失败后重试.docx")
+        completed_item.get_by_role("button", name="下载 Word").wait_for(timeout=5000)
+        assert state["retry_calls"] == 1
+        assert state["download_calls"] == 0
+
+        completed_item.get_by_role("button", name="下载 Word").click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogTitle").inner_text() == "Word 下载失败"
+        assert "SECRET-123" not in page.locator("#platformDialogMessage").inner_text()
+        page.locator("#platformDialogConfirm").click()
+        assert "失败后重试.docx" in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
+
+        state["download_fails"] = False
+        completed_item = page.locator(".practice-word-recovery-item").filter(has_text="失败后重试.docx")
+        with page.expect_download() as download_info:
+            completed_item.get_by_role("button", name="下载 Word").click()
+        assert download_info.value.suggested_filename == "失败后重试.docx"
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        page.locator("#platformDialogConfirm").click()
+        assert page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)") is None
+        assert state["download_calls"] == 2
+        browser.close()
+
+
 def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> None:
     base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
     if not base_url:

@@ -44,6 +44,14 @@ let latestPracticeRequest = null;
 let latestPracticeSet = null;
 const selectedPracticeExerciseIndexes = new Set();
 const activePracticeWordExports = new Map();
+const practiceWordRecoveryJobs = new Map();
+const PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY = "answerBook.practiceWordExportPointers.v1";
+const PRACTICE_WORD_EXPORT_POINTER_SCHEMA_VERSION = 1;
+const PRACTICE_WORD_EXPORT_POINTER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PRACTICE_WORD_EXPORT_POINTER_LIMIT = 24;
+let practiceWordRecoveryPollTimer = null;
+let practiceWordRecoveryRefreshInFlight = false;
+let practiceWordRecoveryRefreshVersion = 0;
 // 蓝图页按 plan_item_id 保存的题目草案：{ [plan_item_id]: { draft, adopted } }
 const practicePlanDrafts = {};
 const practicePlanRevisionReceipts = {};
@@ -3513,7 +3521,8 @@ function renderPracticeResults(data) {
     const variantLabel = parentPlanItemId && variantIndex
       ? `蓝图 ${blueprintItemNumber || "-"} · 变式 ${variantIndex}/${variantCount || "-"}${item.variant_role ? ` · ${item.variant_role}` : ""}`
       : "";
-    const wordExportKey = practiceWordExportKey({ ...data, exercises: [item] });
+    const wordExportFilename = `专项练习-第${item.number || ""}题.docx`;
+    const wordExportKey = practiceWordExportKey({ ...data, exercises: [item] }, wordExportFilename);
     return `
     <article class="practice-exercise${generationFailed ? " practice-exercise--generation-failed" : ""}${variantIndex === 1 ? " practice-exercise--variant-start" : ""}" data-exercise-index="${idx}" data-exercise-type="${escapeHtml(item.question_type || "")}" data-exercise-difficulty="${escapeHtml(item.difficulty || "")}" data-exercise-tags="${escapeHtml(tagsArr.join("|"))}" data-variant-parent="${escapeHtml(parentPlanItemId)}">
       ${sourceCaption ? `<div class="practice-source-link"><i class="fas fa-link"></i>${escapeHtml(sourceCaption)}</div>` : ""}
@@ -5527,12 +5536,307 @@ function practiceWordButton() {
   return $("practiceDownloadSelectedBtn");
 }
 
-function practiceWordExportKey(data) {
+function practiceWordExportKey(data, filename = "") {
   const historyId = String(data?.history_id || latestPracticeSet?.history_id || "current");
   const exerciseIds = (data?.exercises || []).map((item, index) => String(
     item?.plan_item_id || item?.question_id || item?.id || item?.number || index + 1
   ));
-  return `${historyId}:${exerciseIds.join(",") || "all"}`;
+  return `${historyId}:${exerciseIds.join(",") || "all"}:${String(filename || "default")}`;
+}
+
+function normalizePracticeWordExportPointer(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const exportKey = String(raw.export_key || "").trim();
+  const jobId = String(raw.job_id || "").trim();
+  const filename = String(raw.filename || "专项练习-题目.docx").split(/[\\/]/).pop().slice(0, 200);
+  const createdAtMs = Date.parse(String(raw.created_at || ""));
+  const expiresAtMs = Date.parse(String(raw.expires_at || ""));
+  if (!exportKey || exportKey.length > 600) return null;
+  if (!/^practice_word_[a-zA-Z0-9_-]{8,96}$/.test(jobId)) return null;
+  if (!Number.isFinite(createdAtMs) || !Number.isFinite(expiresAtMs)) return null;
+  if (expiresAtMs <= Date.now() || expiresAtMs <= createdAtMs) return null;
+  return {
+    export_key: exportKey,
+    job_id: jobId,
+    filename: filename || "专项练习-题目.docx",
+    created_at: new Date(createdAtMs).toISOString(),
+    expires_at: new Date(expiresAtMs).toISOString(),
+  };
+}
+
+function writePracticeWordExportPointers(records = []) {
+  const deduplicated = new Map();
+  (Array.isArray(records) ? records : []).forEach((raw) => {
+    const pointer = normalizePracticeWordExportPointer(raw);
+    if (!pointer) return;
+    deduplicated.set(`${pointer.export_key}\u0000${pointer.job_id}`, pointer);
+  });
+  const normalized = [...deduplicated.values()]
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
+    .slice(0, PRACTICE_WORD_EXPORT_POINTER_LIMIT);
+  try {
+    if (!normalized.length) {
+      localStorage.removeItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY);
+      return [];
+    }
+    localStorage.setItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY, JSON.stringify({
+      schema_version: PRACTICE_WORD_EXPORT_POINTER_SCHEMA_VERSION,
+      updated_at: new Date().toISOString(),
+      records: normalized,
+    }));
+  } catch (_) {
+    // Export continues even when browser storage is unavailable.
+  }
+  return normalized;
+}
+
+function readPracticeWordExportPointers() {
+  let parsed;
+  try {
+    parsed = JSON.parse(localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY) || "null");
+  } catch (_) {
+    parsed = null;
+  }
+  if (!parsed || parsed.schema_version !== PRACTICE_WORD_EXPORT_POINTER_SCHEMA_VERSION || !Array.isArray(parsed.records)) {
+    try { localStorage.removeItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY); } catch (_) {}
+    return [];
+  }
+  return writePracticeWordExportPointers(parsed.records);
+}
+
+function rememberPracticeWordExportPointer(exportKey, jobId, filename, createdAt = new Date().toISOString()) {
+  const createdAtMs = Number.isFinite(Date.parse(createdAt)) ? Date.parse(createdAt) : Date.now();
+  const pointer = normalizePracticeWordExportPointer({
+    export_key: exportKey,
+    job_id: jobId,
+    filename,
+    created_at: new Date(createdAtMs).toISOString(),
+    expires_at: new Date(createdAtMs + PRACTICE_WORD_EXPORT_POINTER_TTL_MS).toISOString(),
+  });
+  if (!pointer) return null;
+  const records = readPracticeWordExportPointers().filter((item) => item.export_key !== pointer.export_key);
+  writePracticeWordExportPointers([pointer, ...records]);
+  return pointer;
+}
+
+function forgetPracticeWordExportPointer(exportKey) {
+  const normalizedKey = String(exportKey || "");
+  writePracticeWordExportPointers(readPracticeWordExportPointers().filter((item) => item.export_key !== normalizedKey));
+  practiceWordRecoveryJobs.delete(normalizedKey);
+  activePracticeWordExports.delete(normalizedKey);
+}
+
+function practiceWordRecoveryError(job = {}) {
+  const raw = String(job?.error || "").trim();
+  if (!raw) return "Word 生成未完成，请重新尝试。";
+  if (/^[\[{]/.test(raw) || /traceback|request[_ -]?id|stack trace|internal[_ -]?server/i.test(raw)) {
+    return "Word 生成未完成，请重新尝试；如持续失败可反馈问题。";
+  }
+  const firstLine = raw.split(/\r?\n/)[0].replace(/\s+/g, " ").trim();
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+}
+
+function practiceWordRecoveryMeta(job = {}) {
+  const status = String(job.status || "checking");
+  if (status === "completed") return {
+    tone: "success",
+    message: "Word 已生成，等待你确认下载。",
+    action: "download",
+    actionLabel: "下载 Word",
+  };
+  if (status === "failed") return {
+    tone: "danger",
+    message: practiceWordRecoveryError(job),
+    action: "retry",
+    actionLabel: "重新生成",
+  };
+  if (status === "unavailable") return {
+    tone: "warning",
+    message: "暂时无法连接服务，任务标识已保留，将自动继续查询。",
+    action: "refresh",
+    actionLabel: "刷新状态",
+  };
+  if (["queued", "running"].includes(status)) {
+    const completed = Number(job.completed_count || 0);
+    const total = Number(job.total_count || 0);
+    return {
+      tone: "progress",
+      message: total > 0 ? `后台生成中 · 已处理 ${completed}/${total} 题，不会切换当前页面。` : "后台生成中，不会切换当前页面。",
+      action: "refresh",
+      actionLabel: "刷新状态",
+    };
+  }
+  return {
+    tone: "progress",
+    message: "正在向服务端确认导出状态。",
+    action: "refresh",
+    actionLabel: "刷新状态",
+  };
+}
+
+function renderPracticeWordRecoveryNotice() {
+  const notice = $("practiceWordRecoveryNotice");
+  const list = $("practiceWordRecoveryList");
+  if (!notice || !list) return;
+  const pointers = readPracticeWordExportPointers();
+  if (!pointers.length) {
+    notice.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  notice.classList.remove("hidden");
+  list.innerHTML = pointers.map((pointer, index) => {
+    const entry = practiceWordRecoveryJobs.get(pointer.export_key);
+    const job = entry?.job || { status: "checking" };
+    const meta = practiceWordRecoveryMeta(job);
+    return `
+      <section class="practice-word-recovery-item" data-tone="${escapeHtml(meta.tone)}">
+        <div class="practice-word-recovery-item__copy">
+          <strong title="${escapeHtml(pointer.filename)}">${escapeHtml(pointer.filename)}</strong>
+          <p>${escapeHtml(meta.message)}</p>
+        </div>
+        <div class="practice-word-recovery-item__actions">
+          <button class="${meta.action === "download" ? "primary-button" : "ghost-button"}" type="button" data-practice-word-recovery-action="${escapeHtml(meta.action)}" data-practice-word-recovery-index="${index}">${escapeHtml(meta.actionLabel)}</button>
+          <button class="text-button" type="button" data-practice-word-recovery-action="dismiss" data-practice-word-recovery-index="${index}">关闭提示</button>
+        </div>
+      </section>`;
+  }).join("");
+  list.querySelectorAll("[data-practice-word-recovery-action]").forEach((button) => {
+    button.addEventListener("click", () => handlePracticeWordRecoveryAction(
+      button.dataset.practiceWordRecoveryAction,
+      pointers[Number(button.dataset.practiceWordRecoveryIndex)],
+      button
+    ));
+  });
+}
+
+function schedulePracticeWordRecoveryRefresh(delayMs = 1500) {
+  if (practiceWordRecoveryPollTimer) window.clearTimeout(practiceWordRecoveryPollTimer);
+  if (!readPracticeWordExportPointers().length) {
+    practiceWordRecoveryPollTimer = null;
+    return;
+  }
+  practiceWordRecoveryPollTimer = window.setTimeout(() => {
+    practiceWordRecoveryPollTimer = null;
+    resumeRememberedPracticeWordExports().catch(() => {});
+  }, delayMs);
+}
+
+async function loadPracticeWordRecoveryJob(pointer) {
+  const response = await fetch(`/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}`, { cache: "no-store" });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("export_job_unavailable");
+  const payload = await response.json();
+  return payload?.job && typeof payload.job === "object" ? payload.job : null;
+}
+
+async function resumeRememberedPracticeWordExports() {
+  if (practiceWordRecoveryRefreshInFlight) return;
+  const pointers = readPracticeWordExportPointers();
+  if (!pointers.length) {
+    renderPracticeWordRecoveryNotice();
+    return;
+  }
+  const refreshVersion = ++practiceWordRecoveryRefreshVersion;
+  practiceWordRecoveryRefreshInFlight = true;
+  pointers.forEach((pointer) => {
+    if (!practiceWordRecoveryJobs.has(pointer.export_key)) {
+      practiceWordRecoveryJobs.set(pointer.export_key, { pointer, job: { status: "checking" } });
+    }
+  });
+  renderPracticeWordRecoveryNotice();
+  try {
+    const jobRequests = new Map();
+    pointers.forEach((pointer) => {
+      if (!jobRequests.has(pointer.job_id)) {
+        jobRequests.set(pointer.job_id, loadPracticeWordRecoveryJob(pointer));
+      }
+    });
+    const results = await Promise.all(pointers.map(async (pointer) => {
+      try {
+        return { pointer, job: await jobRequests.get(pointer.job_id) };
+      } catch (_) {
+        return { pointer, job: { status: "unavailable" } };
+      }
+    }));
+    if (refreshVersion !== practiceWordRecoveryRefreshVersion) return;
+    let shouldPoll = false;
+    results.forEach(({ pointer, job }) => {
+      if (!job) {
+        forgetPracticeWordExportPointer(pointer.export_key);
+        return;
+      }
+      practiceWordRecoveryJobs.set(pointer.export_key, { pointer, job });
+      if (["queued", "running"].includes(job.status)) {
+        activePracticeWordExports.set(pointer.export_key, {
+          filename: pointer.filename,
+          jobId: pointer.job_id,
+          completed: Number(job.completed_count || 0),
+          total: Number(job.total_count || 0),
+          restored: true,
+        });
+        shouldPoll = true;
+      } else {
+        activePracticeWordExports.delete(pointer.export_key);
+        if (job.status === "unavailable") shouldPoll = true;
+      }
+    });
+    syncPracticeWordExportUi();
+    renderPracticeWordRecoveryNotice();
+    if (shouldPoll) schedulePracticeWordRecoveryRefresh(results.some(({ job }) => job?.status === "unavailable") ? 4000 : 1200);
+  } finally {
+    practiceWordRecoveryRefreshInFlight = false;
+  }
+}
+
+async function downloadRememberedPracticeWord(pointer, button) {
+  button.disabled = true;
+  const response = await fetch(`/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/download`, { cache: "no-store" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    window.setTimeout(() => resumeRememberedPracticeWordExports().catch(() => {}), 0);
+    throw new Error(practiceWordRecoveryError({ error: payload.error || "Word 下载失败，请稍后重试。" }));
+  }
+  const blob = await response.blob();
+  downloadPracticeWord(blob, pointer.filename);
+  forgetPracticeWordExportPointer(pointer.export_key);
+  renderPracticeWordRecoveryNotice();
+  await platformAlert("Word 已开始下载，恢复提示已清理。", { title: "题目 Word 已下载", tone: "success" });
+}
+
+async function retryRememberedPracticeWord(pointer, button) {
+  button.disabled = true;
+  const payload = await api(`/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/retry`, {
+    method: "POST",
+    body: "{}",
+  });
+  const job = payload?.job || {};
+  const refreshed = rememberPracticeWordExportPointer(pointer.export_key, job.job_id || pointer.job_id, pointer.filename, pointer.created_at) || pointer;
+  practiceWordRecoveryJobs.set(refreshed.export_key, { pointer: refreshed, job });
+  renderPracticeWordRecoveryNotice();
+  schedulePracticeWordRecoveryRefresh(500);
+}
+
+async function handlePracticeWordRecoveryAction(action, pointer, button) {
+  if (!pointer) return;
+  if (action === "dismiss") {
+    practiceWordRecoveryRefreshVersion += 1;
+    forgetPracticeWordExportPointer(pointer.export_key);
+    renderPracticeWordRecoveryNotice();
+    return;
+  }
+  try {
+    if (action === "download") await downloadRememberedPracticeWord(pointer, button);
+    else if (action === "retry") await retryRememberedPracticeWord(pointer, button);
+    else await resumeRememberedPracticeWordExports();
+  } catch (error) {
+    await platformAlert(practiceWordRecoveryError({ error: String(error).replace(/^Error:\s*/, "") }), {
+      title: action === "download" ? "Word 下载失败" : "Word 任务未能继续",
+      tone: "danger",
+    });
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
 }
 
 function practiceExerciseExportId(item, index = 0) {
@@ -5634,7 +5938,7 @@ async function waitForPracticeWordExportJob(initialJob, exportKey) {
 
 async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = practiceWordButton(), filename = `${data?.source_mode === "knowledge" ? "知识点模拟题" : "按题出题"}-题目.docx`) {
   if (!data || !button) return;
-  const exportKey = practiceWordExportKey(data);
+  const exportKey = practiceWordExportKey(data, filename);
   if (activePracticeWordExports.has(exportKey)) {
     syncPracticeWordExportUi();
     return;
@@ -5648,7 +5952,12 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
       method: "POST",
       body: JSON.stringify(practiceExportRequestPayload(data))
     });
-    const job = await waitForPracticeWordExportJob(prepared.job, exportKey);
+    const preparedJob = prepared?.job || {};
+    const pointer = rememberPracticeWordExportPointer(exportKey, preparedJob.job_id, filename);
+    if (!pointer) throw new Error("Word 导出任务未返回有效标识，请重新尝试。");
+    practiceWordRecoveryJobs.set(exportKey, { pointer, job: preparedJob });
+    renderPracticeWordRecoveryNotice();
+    const job = await waitForPracticeWordExportJob(preparedJob, exportKey);
     if (!job) {
       setPracticeStatusBanner("已返回处理，未下载 Word。", "info");
       return;
@@ -5659,9 +5968,11 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
       throw new Error(errorData.error || "Word 下载失败");
     }
     const blob = await downloadResponse.blob();
-    const downloadedFilename = job.filename || filename;
+    const downloadedFilename = filename || job.filename || "专项练习-题目.docx";
     downloadPracticeWord(blob, downloadedFilename);
+    forgetPracticeWordExportPointer(exportKey);
     activePracticeWordExports.delete(exportKey);
+    renderPracticeWordRecoveryNotice();
     syncPracticeWordExportUi();
     const reviewCandidate = job.release_level === "review_candidate";
     setPracticeStatusBanner(reviewCandidate ? "待复核题目 Word 已生成；可继续修改，但不要作为正式版发布。" : "题目 Word 已生成，浏览器已开始下载。", reviewCandidate ? "warning" : "done");
@@ -5671,7 +5982,8 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
     });
   } catch (error) {
     setPracticeStatusBanner("题目 Word 生成失败，请查看提示后重试。", "error");
-    throw error;
+    window.setTimeout(() => resumeRememberedPracticeWordExports().catch(() => {}), 0);
+    throw new Error(practiceWordRecoveryError({ error: String(error).replace(/^Error:\s*/, "") }));
   } finally {
     activePracticeWordExports.delete(exportKey);
     syncPracticeWordExportUi();
@@ -5715,7 +6027,7 @@ function updatePracticeSelectionActions() {
   }
   syncPracticeWordExportButton(
     $("practiceDownloadSelectedBtn"),
-    data ? practiceWordExportKey(data) : "",
+    data ? practiceWordExportKey(data, `专项练习-已选${exportableCount}题.docx`) : "",
     exportableCount > 0,
     "下载 Word"
   );
@@ -11357,6 +11669,7 @@ $("thinkingModeSelect")?.addEventListener("change", markExamModelPresetCustom);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopSystemMonitorPolling();
   if (!document.hidden) resumeRememberedPracticeJob().catch(() => {});
+  if (!document.hidden) resumeRememberedPracticeWordExports().catch(() => {});
   if (!document.hidden && currentPage === "tasks") {
     loadTasks({ silent: true, includeLiveDetails: true }).catch(() => {});
   }
@@ -12158,6 +12471,9 @@ function initSiteEnhancements() {
   // Restore a durable practice job after refresh. The browser only observes
   // the job; it does not own or cancel the backend worker.
   resumeRememberedPracticeJob().catch(() => {});
+  // Word export recovery is independent from practice generation recovery.
+  // Only minimal job pointers live in browser storage; the server owns state.
+  resumeRememberedPracticeWordExports().catch(() => {});
   // 首屏立即显示
   requestAnimationFrame(() => {
     document.querySelectorAll(".page.active .reveal,.page.active .reveal-scale").forEach((el) => {

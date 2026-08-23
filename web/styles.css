@@ -240,6 +240,113 @@ p {
   color: #b45309;
 }
 
+.practice-word-recovery-notice {
+  position: fixed;
+  top: 82px;
+  right: 24px;
+  z-index: 44;
+  width: min(460px, calc(100vw - 32px));
+  max-height: min(620px, calc(100vh - 106px));
+  overflow: hidden;
+  border: 1px solid #bfdbfe;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 50px rgba(30, 64, 175, 0.16);
+  backdrop-filter: blur(18px) saturate(160%);
+}
+
+.practice-word-recovery-notice__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.practice-word-recovery-notice__header > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.practice-word-recovery-notice__icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #e8efff;
+  color: #3157c8;
+}
+
+.practice-word-recovery-notice__eyebrow {
+  color: #3157c8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.practice-word-recovery-notice__header strong {
+  color: #172554;
+  font-size: 15px;
+}
+
+.practice-word-recovery-notice__list {
+  display: grid;
+  max-height: min(520px, calc(100vh - 180px));
+  overflow: auto;
+}
+
+.practice-word-recovery-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.practice-word-recovery-item:last-child {
+  border-bottom: 0;
+}
+
+.practice-word-recovery-item__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.practice-word-recovery-item__copy strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.practice-word-recovery-item__copy p {
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.practice-word-recovery-item[data-tone="success"] .practice-word-recovery-item__copy p {
+  color: #166534;
+}
+
+.practice-word-recovery-item[data-tone="danger"] .practice-word-recovery-item__copy p {
+  color: #b91c1c;
+}
+
+.practice-word-recovery-item__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.practice-word-recovery-item__actions button {
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
 @media (max-width: 640px) {
   .practice-recovery-notice {
     right: 16px;
@@ -249,6 +356,13 @@ p {
 
   .practice-recovery-notice__actions {
     grid-column: 1 / -1;
+  }
+
+  .practice-word-recovery-notice {
+    top: 74px;
+    right: 16px;
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 98px);
   }
 }
 
