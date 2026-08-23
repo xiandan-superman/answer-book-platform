@@ -203,7 +203,7 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn("downloadPracticeWord(blob, filename)", self.js)
         self.assertIn("浏览器已开始下载", self.js)
         self.assertIn("function downloadPracticeWord", self.js)
-        self.assertIn('title: "题目 Word 生成失败"', self.js)
+        self.assertIn('title: "题目 Word 操作未完成"', self.js)
         self.assertNotIn("practiceSolutionWordBtn", self.js)
 
     def test_word_export_progress_survives_practice_page_rerender(self) -> None:

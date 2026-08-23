@@ -71,3 +71,25 @@ def test_readiness_rejects_a_different_local_backend(monkeypatch) -> None:
         expected_launch_id="expected-instance",
         timeout=1,
     )
+
+
+def test_desktop_window_enables_downloads_and_exposes_controlled_word_bridge() -> None:
+    captured = {}
+    fake_window = object()
+
+    class FakeWebview:
+        settings = {"ALLOW_DOWNLOADS": False}
+        FileDialog = SimpleNamespace(SAVE=30)
+
+        @staticmethod
+        def create_window(title, url, **kwargs):
+            captured.update({"title": title, "url": url, **kwargs})
+            return fake_window
+
+    window = desktop_launcher._create_desktop_window(FakeWebview, "http://127.0.0.1:18766")
+
+    assert window is fake_window
+    assert FakeWebview.settings["ALLOW_DOWNLOADS"] is True
+    assert captured["url"] == "http://127.0.0.1:18766/?desktop_app=1"
+    assert captured["js_api"].__class__.__name__ == "DesktopWordSaveBridge"
+    assert captured["js_api"]._window is fake_window

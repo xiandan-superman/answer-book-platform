@@ -13,7 +13,12 @@ def test_frontend_prepares_polls_and_downloads_background_word_job() -> None:
     assert "/api/practice/export/prepare?kind=questions" in export_flow
     assert 'await api("/api/practice/export/prepare?kind=questions"' in export_flow
     assert "waitForPracticeWordExportJob" in export_flow
-    assert "/api/practice/export-jobs/${encodeURIComponent(job.job_id)}/download" in export_flow
+    assert "downloadRememberedPracticeWord(completedPointer, button)" in export_flow
+    assert "practiceWordDesktopSaveApi" in APP_JS
+    assert "practiceWordDesktopRuntimeExpected" in APP_JS
+    assert "waitForPracticeWordDesktopSaveApi" in APP_JS
+    assert "desktopApi.save_practice_word(pointer.job_id, pointer.filename)" in APP_JS
+    assert "/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/download" in APP_JS
 
 
 def test_server_keeps_sync_export_and_adds_background_job_routes() -> None:
@@ -50,3 +55,9 @@ def test_export_recovery_is_explicit_and_independent_from_generation_recovery() 
     recovery_flow = APP_JS[recovery_start:recovery_end]
     assert "goToPage(" not in recovery_flow
     assert "downloadPracticeWord(" in recovery_flow
+    delivery_start = APP_JS.index("async function downloadRememberedPracticeWord")
+    delivery_end = APP_JS.index("async function retryRememberedPracticeWord", delivery_start)
+    delivery_flow = APP_JS[delivery_start:delivery_end]
+    assert "forgetPracticeWordExportPointer(pointer.export_key)" not in delivery_flow
+    assert "已开始下载：${pointer.filename}" in delivery_flow
+    assert "已保存到：${result.path}" in delivery_flow

@@ -170,14 +170,17 @@ def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_dow
             first.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "独立文件A.docx"
         page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
+        assert "本页无法确认最终保存路径" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogConfirm").click()
-        page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").wait_for(state="detached")
+        page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").get_by_role("button", name="再次下载").wait_for()
         assert page.locator(".practice-word-recovery-item").filter(has_text="独立文件B.docx").is_visible()
         assert calls["download"] == 1
 
         remaining_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
-        assert "独立文件A.docx" not in remaining_storage
+        assert "独立文件A.docx" in remaining_storage
         assert "独立文件B.docx" in remaining_storage
+        assert "last_download_triggered_at" in remaining_storage
         browser.close()
 
 
@@ -277,6 +280,7 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
         assert page.locator("#platformDialogTitle").inner_text() == "Word 下载失败"
         assert "SECRET-123" not in page.locator("#platformDialogMessage").inner_text()
+        assert "未能获取 失败后重试.docx" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogConfirm").click()
         assert "失败后重试.docx" in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
 
@@ -286,9 +290,108 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
             completed_item.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "失败后重试.docx"
         page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
         page.locator("#platformDialogConfirm").click()
-        assert page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)") is None
+        remaining_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
+        assert "失败后重试.docx" in remaining_storage
+        assert "last_download_triggered_at" in remaining_storage
         assert state["download_calls"] == 2
+        browser.close()
+
+
+def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path_after_save() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        context.add_init_script(
+            """
+              window.desktopBridgeState = {saveCalls: 0, openCalls: 0, next: 'cancelled'};
+              window.pywebview = {api: {
+                save_practice_word: async (jobId, filename) => {
+                  window.desktopBridgeState.saveCalls += 1;
+                  if (window.desktopBridgeState.next === 'cancelled') {
+                    return {status: 'cancelled', message: '已取消保存。Word 仍保留，可点击“重新保存”。'};
+                  }
+                  if (window.desktopBridgeState.next === 'error') {
+                    return {status: 'error', code: 'permission_denied', message: '没有权限写入所选位置，请选择其他文件夹。'};
+                  }
+                  return {
+                    status: 'saved', job_id: jobId, filename,
+                    path: 'C:\\\\Users\\\\Charlotte\\\\Downloads\\\\桌面保存.docx',
+                    size_bytes: 4096, sha256: 'a'.repeat(64),
+                    saved_at: '2026-08-23T22:30:00+08:00'
+                  };
+                },
+                open_practice_word_folder: async () => {
+                  window.desktopBridgeState.openCalls += 1;
+                  return {status: 'opened'};
+                }
+              }};
+            """
+        )
+        page = context.new_page()
+        job_id = "practice_word_cccccccccccccccccccccccc"
+        download_calls = {"count": 0}
+
+        def export_route(route):
+            if route.request.url.endswith("/download"):
+                download_calls["count"] += 1
+                route.fulfill(status=500, body="desktop must not fetch browser download")
+                return
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"ok": True, "job": {"job_id": job_id, "status": "completed", "filename": "桌面保存.docx"}}, ensure_ascii=False),
+            )
+
+        context.route("**/api/practice/export-jobs/**", export_route)
+        page.goto(f"{base_url.rstrip('/')}?desktop_app=1", wait_until="networkidle")
+        page.evaluate("(jobId) => rememberPracticeWordExportPointer('desktop-save', jobId, '桌面保存.docx')", job_id)
+        page.evaluate("resumeRememberedPracticeWordExports()")
+        item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        item.get_by_role("button", name="保存 Word").wait_for(timeout=4000)
+
+        item.get_by_role("button", name="保存 Word").click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogTitle").inner_text() == "已取消保存"
+        page.locator("#platformDialogConfirm").click()
+        assert "桌面保存.docx" in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
+        assert download_calls["count"] == 0
+
+        page.evaluate("window.desktopBridgeState.next = 'error'")
+        item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        item.get_by_role("button", name="保存 Word").click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogTitle").inner_text() == "Word 保存失败"
+        assert "没有权限" in page.locator("#platformDialogMessage").inner_text()
+        page.locator("#platformDialogConfirm").click()
+        assert "desktop_saved_path" not in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
+
+        page.evaluate("window.desktopBridgeState.next = 'saved'")
+        item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        item.get_by_role("button", name="保存 Word").click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogTitle").inner_text() == "Word 已保存"
+        assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in page.locator("#platformDialogMessage").inner_text()
+        page.locator("#platformDialogConfirm").click()
+
+        saved_item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in saved_item.inner_text()
+        saved_item.get_by_role("button", name="重新保存").wait_for()
+        saved_item.get_by_role("button", name="打开所在文件夹").click()
+        page.wait_for_function("window.desktopBridgeState.openCalls === 1")
+        assert download_calls["count"] == 0
+
+        page.reload(wait_until="networkidle")
+        restored = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        restored.get_by_role("button", name="重新保存").wait_for(timeout=4000)
+        assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in restored.inner_text()
         browser.close()
 
 

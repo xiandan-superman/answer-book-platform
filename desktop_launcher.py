@@ -114,6 +114,32 @@ def _wait_until_ready(
     raise RuntimeError("桌面服务启动超时")
 
 
+def _create_desktop_window(webview: object, local_url: str) -> object:
+    from app.desktop_word_save import DesktopWordSaveBridge
+
+    # Keep ordinary pywebview downloads available for compatibility, but Word
+    # exports use the native bridge below and never infer save success from a
+    # browser download event.
+    webview.settings["ALLOW_DOWNLOADS"] = True
+    file_dialog = getattr(webview, "FileDialog", None)
+    save_dialog_type = getattr(file_dialog, "SAVE", None)
+    if save_dialog_type is None:
+        save_dialog_type = webview.SAVE_DIALOG
+    bridge = DesktopWordSaveBridge(save_dialog_type=int(save_dialog_type))
+    desktop_url = f"{local_url.rstrip('/')}/?desktop_app=1"
+    window = webview.create_window(
+        "真题解析与生题平台",
+        desktop_url,
+        width=1440,
+        height=920,
+        min_size=(1100, 720),
+        text_select=True,
+        js_api=bridge,
+    )
+    bridge.bind_window(window)
+    return window
+
+
 def main() -> int:
     if _run_frozen_python_helper():
         return 0
@@ -143,14 +169,7 @@ def main() -> int:
             webbrowser.open(local_url)
             server_process.wait()
             return 0
-        webview.create_window(
-            "真题解析与生题平台",
-            local_url,
-            width=1440,
-            height=920,
-            min_size=(1100, 720),
-            text_select=True,
-        )
+        _create_desktop_window(webview, local_url)
         webview.start(private_mode=False)
         return 0
     finally:

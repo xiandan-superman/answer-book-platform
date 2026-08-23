@@ -222,6 +222,23 @@ class PracticeExportJobTests(unittest.TestCase):
         self.assertTrue(download_exists)
         self.assertEqual("测试题目.docx", filename)
 
+    def test_desktop_download_refreshes_cross_process_job_state_from_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
+            practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)
+        ), patch.object(practice_export_jobs, "append_runtime_log"):
+            created = practice_export_jobs.create_or_reuse_practice_export_job(_sample_data(), "跨进程刷新.docx")
+            completed = self._wait_for_terminal_job(created["job_id"])
+            practice_export_jobs._JOBS[created["job_id"]]["status"] = "queued"
+
+            download, filename = practice_export_jobs.practice_export_download(
+                created["job_id"], refresh_from_disk=True
+            )
+            download_exists = download.is_file()
+
+        self.assertEqual("completed", completed["status"])
+        self.assertTrue(download_exists)
+        self.assertEqual("跨进程刷新.docx", filename)
+
     def test_missing_completed_file_becomes_retryable_instead_of_staying_completed(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
             practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)

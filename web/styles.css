@@ -326,6 +326,13 @@ p {
   color: #4b5563;
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.practice-word-recovery-item__copy small {
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .practice-word-recovery-item[data-tone="success"] .practice-word-recovery-item__copy p {

@@ -3848,7 +3848,7 @@ function renderPracticeResults(data) {
     button.addEventListener("click", () => {
       const item = latestPracticeSet?.exercises?.[Number(button.dataset.practiceDownload)];
       if (item && latestPracticeSet) prepareOrDownloadPracticeWord({ ...latestPracticeSet, exercises: [item] }, button, `专项练习-第${item.number || ""}题.docx`).catch((error) => {
-        platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "题目 Word 生成失败", tone: "danger" });
+        platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "题目 Word 操作未完成", tone: "danger" });
       });
     });
   });
@@ -5832,13 +5832,29 @@ function normalizePracticeWordExportPointer(raw) {
   if (!/^practice_word_[a-zA-Z0-9_-]{8,96}$/.test(jobId)) return null;
   if (!Number.isFinite(createdAtMs) || !Number.isFinite(expiresAtMs)) return null;
   if (expiresAtMs <= Date.now() || expiresAtMs <= createdAtMs) return null;
-  return {
+  const normalized = {
     export_key: exportKey,
     job_id: jobId,
     filename: filename || "专项练习-题目.docx",
     created_at: new Date(createdAtMs).toISOString(),
     expires_at: new Date(expiresAtMs).toISOString(),
   };
+  const downloadTriggeredAtMs = Date.parse(String(raw.last_download_triggered_at || ""));
+  if (Number.isFinite(downloadTriggeredAtMs)) {
+    normalized.last_download_triggered_at = new Date(downloadTriggeredAtMs).toISOString();
+    normalized.download_trigger_count = Math.max(0, Math.floor(Number(raw.download_trigger_count || 0)));
+  }
+  const desktopSavedAtMs = Date.parse(String(raw.desktop_saved_at || ""));
+  const desktopSavedPath = String(raw.desktop_saved_path || "").trim().slice(0, 2000);
+  if (Number.isFinite(desktopSavedAtMs) && desktopSavedPath) {
+    normalized.desktop_saved_at = new Date(desktopSavedAtMs).toISOString();
+    normalized.desktop_saved_path = desktopSavedPath;
+    normalized.desktop_saved_size = Math.max(0, Math.floor(Number(raw.desktop_saved_size || 0)));
+    if (/^[a-f0-9]{64}$/i.test(String(raw.desktop_saved_sha256 || ""))) {
+      normalized.desktop_saved_sha256 = String(raw.desktop_saved_sha256).toLowerCase();
+    }
+  }
+  return normalized;
 }
 
 function writePracticeWordExportPointers(records = []) {
@@ -5883,7 +5899,9 @@ function readPracticeWordExportPointers() {
 
 function rememberPracticeWordExportPointer(exportKey, jobId, filename, createdAt = new Date().toISOString()) {
   const createdAtMs = Number.isFinite(Date.parse(createdAt)) ? Date.parse(createdAt) : Date.now();
+  const previous = readPracticeWordExportPointers().find((item) => item.export_key === String(exportKey || "") && item.job_id === String(jobId || ""));
   const pointer = normalizePracticeWordExportPointer({
+    ...(previous || {}),
     export_key: exportKey,
     job_id: jobId,
     filename,
@@ -5894,6 +5912,16 @@ function rememberPracticeWordExportPointer(exportKey, jobId, filename, createdAt
   const records = readPracticeWordExportPointers().filter((item) => item.export_key !== pointer.export_key);
   writePracticeWordExportPointers([pointer, ...records]);
   return pointer;
+}
+
+function updatePracticeWordExportPointer(exportKey, changes = {}) {
+  const normalizedKey = String(exportKey || "");
+  const records = readPracticeWordExportPointers();
+  const index = records.findIndex((item) => item.export_key === normalizedKey);
+  if (index < 0) return null;
+  records[index] = { ...records[index], ...changes };
+  const updated = writePracticeWordExportPointers(records);
+  return updated.find((item) => item.export_key === normalizedKey) || null;
 }
 
 function forgetPracticeWordExportPointer(exportKey) {
@@ -5913,14 +5941,65 @@ function practiceWordRecoveryError(job = {}) {
   return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
 }
 
-function practiceWordRecoveryMeta(job = {}) {
+function practiceWordDownloadError(rawError, filename) {
+  const raw = String(rawError || "").trim();
+  const safeFilename = String(filename || "Word 文件");
+  if (!raw || /^[\[{]/.test(raw) || /traceback|request[_ -]?id|stack trace|internal[_ -]?server/i.test(raw)) {
+    return `未能获取 ${safeFilename}。Word 生成结果仍已保留，可点击“重新下载”。`;
+  }
+  const firstLine = raw.split(/\r?\n/)[0].replace(/\s+/g, " ").trim();
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+}
+
+function practiceWordDesktopSaveApi() {
+  const desktopApi = window.pywebview?.api;
+  return desktopApi && typeof desktopApi.save_practice_word === "function" ? desktopApi : null;
+}
+
+function practiceWordDesktopRuntimeExpected() {
+  return new URLSearchParams(window.location.search).get("desktop_app") === "1" || Boolean(window.pywebview);
+}
+
+async function waitForPracticeWordDesktopSaveApi(timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let desktopApi = practiceWordDesktopSaveApi();
+  while (!desktopApi && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    desktopApi = practiceWordDesktopSaveApi();
+  }
+  if (!desktopApi) throw new Error("桌面保存桥尚未就绪，Word 仍已保留，请稍后点击“保存 Word”。");
+  return desktopApi;
+}
+
+function practiceWordRecoveryMeta(job = {}, pointer = {}) {
   const status = String(job.status || "checking");
-  if (status === "completed") return {
-    tone: "success",
-    message: "Word 已生成，等待你确认下载。",
-    action: "download",
-    actionLabel: "下载 Word",
-  };
+  if (status === "completed") {
+    if (pointer.desktop_saved_path) return {
+      tone: "success",
+      message: `已保存到：${pointer.desktop_saved_path}`,
+      action: "download",
+      actionLabel: "重新保存",
+      canOpenFolder: true,
+    };
+    if (pointer.last_download_triggered_at) return {
+      tone: "success",
+      message: `已开始下载：${pointer.filename}。请查看浏览器下载记录或默认下载文件夹。`,
+      action: "download",
+      actionLabel: "再次下载",
+    };
+    if (practiceWordDesktopRuntimeExpected()) return {
+      tone: "success",
+      message: "Word 已生成，等待你选择保存位置。",
+      action: "download",
+      actionLabel: "保存 Word",
+    };
+    return {
+      tone: "success",
+      message: "Word 已生成，等待你确认下载。",
+      action: "download",
+      actionLabel: "下载 Word",
+    };
+  }
   if (status === "failed") return {
     tone: "danger",
     message: practiceWordRecoveryError(job),
@@ -5965,16 +6044,19 @@ function renderPracticeWordRecoveryNotice() {
   list.innerHTML = pointers.map((pointer, index) => {
     const entry = practiceWordRecoveryJobs.get(pointer.export_key);
     const job = entry?.job || { status: "checking" };
-    const meta = practiceWordRecoveryMeta(job);
+    const meta = practiceWordRecoveryMeta(job, pointer);
+    const latestTime = pointer.desktop_saved_at || pointer.last_download_triggered_at || pointer.created_at;
     return `
       <section class="practice-word-recovery-item" data-tone="${escapeHtml(meta.tone)}">
         <div class="practice-word-recovery-item__copy">
           <strong title="${escapeHtml(pointer.filename)}">${escapeHtml(pointer.filename)}</strong>
           <p>${escapeHtml(meta.message)}</p>
+          <small>${escapeHtml(pointer.desktop_saved_at ? "保存于" : pointer.last_download_triggered_at ? "最近触发于" : "创建于")} ${escapeHtml(formatTaskTimestamp(latestTime))}</small>
         </div>
         <div class="practice-word-recovery-item__actions">
           <button class="${meta.action === "download" ? "primary-button" : "ghost-button"}" type="button" data-practice-word-recovery-action="${escapeHtml(meta.action)}" data-practice-word-recovery-index="${index}">${escapeHtml(meta.actionLabel)}</button>
-          <button class="text-button" type="button" data-practice-word-recovery-action="dismiss" data-practice-word-recovery-index="${index}">关闭提示</button>
+          ${meta.canOpenFolder ? `<button class="ghost-button" type="button" data-practice-word-recovery-action="open_folder" data-practice-word-recovery-index="${index}">打开所在文件夹</button>` : ""}
+          <button class="text-button" type="button" data-practice-word-recovery-action="dismiss" data-practice-word-recovery-index="${index}">关闭记录</button>
         </div>
       </section>`;
   }).join("");
@@ -6068,17 +6150,53 @@ async function resumeRememberedPracticeWordExports() {
 
 async function downloadRememberedPracticeWord(pointer, button) {
   button.disabled = true;
+  const desktopApi = practiceWordDesktopSaveApi()
+    || (practiceWordDesktopRuntimeExpected() ? await waitForPracticeWordDesktopSaveApi() : null);
+  if (desktopApi) {
+    const result = await desktopApi.save_practice_word(pointer.job_id, pointer.filename);
+    if (result?.status === "cancelled") {
+      renderPracticeWordRecoveryNotice();
+      await platformAlert(result.message || "已取消保存。Word 仍保留，可点击“重新保存”。", { title: "已取消保存", tone: "info" });
+      return result;
+    }
+    if (result?.status !== "saved") {
+      throw new Error(result?.message || "Word 保存未完成，请重新选择位置。");
+    }
+    updatePracticeWordExportPointer(pointer.export_key, {
+      filename: result.filename || pointer.filename,
+      desktop_saved_path: result.path,
+      desktop_saved_at: result.saved_at || new Date().toISOString(),
+      desktop_saved_size: result.size_bytes,
+      desktop_saved_sha256: result.sha256,
+    });
+    renderPracticeWordRecoveryNotice();
+    await platformAlert(`已保存到：${result.path}`, { title: "Word 已保存", tone: "success" });
+    return result;
+  }
   const response = await fetch(`/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/download`, { cache: "no-store" });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     window.setTimeout(() => resumeRememberedPracticeWordExports().catch(() => {}), 0);
-    throw new Error(practiceWordRecoveryError({ error: payload.error || "Word 下载失败，请稍后重试。" }));
+    throw new Error(practiceWordDownloadError(payload.error, pointer.filename));
   }
   const blob = await response.blob();
   downloadPracticeWord(blob, pointer.filename);
-  forgetPracticeWordExportPointer(pointer.export_key);
+  updatePracticeWordExportPointer(pointer.export_key, {
+    last_download_triggered_at: new Date().toISOString(),
+    download_trigger_count: Number(pointer.download_trigger_count || 0) + 1,
+  });
   renderPracticeWordRecoveryNotice();
-  await platformAlert("Word 已开始下载，恢复提示已清理。", { title: "题目 Word 已下载", tone: "success" });
+  await platformAlert(`已开始下载：${pointer.filename}。请查看浏览器下载记录或默认下载文件夹；本页无法确认最终保存路径或磁盘写入是否完成。`, { title: "Word 已开始下载", tone: "success" });
+  return { status: "download_started", filename: pointer.filename };
+}
+
+async function openRememberedPracticeWordFolder(pointer) {
+  const desktopApi = practiceWordDesktopSaveApi();
+  if (!desktopApi || typeof desktopApi.open_practice_word_folder !== "function") {
+    throw new Error("当前不是可打开本地文件夹的桌面环境。请按页面显示的路径查找。");
+  }
+  const result = await desktopApi.open_practice_word_folder(pointer.job_id);
+  if (result?.status !== "opened") throw new Error(result?.message || "无法打开所在文件夹。");
 }
 
 async function retryRememberedPracticeWord(pointer, button) {
@@ -6104,11 +6222,12 @@ async function handlePracticeWordRecoveryAction(action, pointer, button) {
   }
   try {
     if (action === "download") await downloadRememberedPracticeWord(pointer, button);
+    else if (action === "open_folder") await openRememberedPracticeWordFolder(pointer);
     else if (action === "retry") await retryRememberedPracticeWord(pointer, button);
     else await resumeRememberedPracticeWordExports();
   } catch (error) {
     await platformAlert(practiceWordRecoveryError({ error: String(error).replace(/^Error:\s*/, "") }), {
-      title: action === "download" ? "Word 下载失败" : "Word 任务未能继续",
+      title: action === "download" ? (practiceWordDesktopRuntimeExpected() ? "Word 保存失败" : "Word 下载失败") : action === "open_folder" ? "无法打开文件夹" : "Word 任务未能继续",
       tone: "danger",
     });
   } finally {
@@ -6224,6 +6343,7 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
   activePracticeWordExports.set(exportKey, { filename, startedAt: Date.now() });
   syncPracticeWordExportButton(button, exportKey, true, label);
   syncPracticeWordExportUi();
+  let wordReady = false;
   try {
     const prepared = await api("/api/practice/export/prepare?kind=questions", {
       method: "POST",
@@ -6239,26 +6359,22 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
       setPracticeStatusBanner("已返回处理，未下载 Word。", "info");
       return;
     }
-    const downloadResponse = await fetch(`/api/practice/export-jobs/${encodeURIComponent(job.job_id)}/download`);
-    if (!downloadResponse.ok) {
-      const errorData = await downloadResponse.json().catch(() => ({}));
-      throw new Error(errorData.error || "Word 下载失败");
-    }
-    const blob = await downloadResponse.blob();
+    wordReady = true;
     const downloadedFilename = filename || job.filename || "专项练习-题目.docx";
-    downloadPracticeWord(blob, downloadedFilename);
-    forgetPracticeWordExportPointer(exportKey);
-    activePracticeWordExports.delete(exportKey);
-    renderPracticeWordRecoveryNotice();
-    syncPracticeWordExportUi();
+    const completedPointer = readPracticeWordExportPointers().find((item) => item.export_key === exportKey)
+      || rememberPracticeWordExportPointer(exportKey, job.job_id, downloadedFilename);
+    practiceWordRecoveryJobs.set(exportKey, { pointer: completedPointer, job });
+    const delivery = await downloadRememberedPracticeWord(completedPointer, button);
     const reviewCandidate = job.release_level === "review_candidate";
-    setPracticeStatusBanner(reviewCandidate ? "待复核题目 Word 已生成；可继续修改，但不要作为正式版发布。" : "题目 Word 已生成，浏览器已开始下载。", reviewCandidate ? "warning" : "done");
-    await platformAlert(reviewCandidate ? "Word 已生成并标记为待复核；可用于查看和继续修改，复核通过后再正式使用。" : "题目 Word 已生成，浏览器已开始下载。", {
-      title: reviewCandidate ? "已下载待复核 Word" : "题目 Word 已下载",
-      tone: reviewCandidate ? "warning" : "success"
-    });
+    if (delivery?.status === "saved") {
+      setPracticeStatusBanner(reviewCandidate ? `待复核题目 Word 已保存到：${delivery.path}` : `题目 Word 已保存到：${delivery.path}`, reviewCandidate ? "warning" : "done");
+    } else if (delivery?.status === "cancelled") {
+      setPracticeStatusBanner("Word 已生成但尚未保存，可在全局恢复区重新保存。", "info");
+    } else {
+      setPracticeStatusBanner(reviewCandidate ? "待复核题目 Word 已生成，浏览器已开始下载；请检查下载记录。" : "题目 Word 已生成，浏览器已开始下载；请检查下载记录。", reviewCandidate ? "warning" : "done");
+    }
   } catch (error) {
-    setPracticeStatusBanner("题目 Word 生成失败，请查看提示后重试。", "error");
+    setPracticeStatusBanner(wordReady ? (practiceWordDesktopRuntimeExpected() ? "题目 Word 已生成但保存未完成，可在全局恢复区重新保存。" : "题目 Word 已生成但下载未开始，可在全局恢复区重新下载。") : "题目 Word 生成失败，请查看提示后重试。", "error");
     window.setTimeout(() => resumeRememberedPracticeWordExports().catch(() => {}), 0);
     throw new Error(practiceWordRecoveryError({ error: String(error).replace(/^Error:\s*/, "") }));
   } finally {
@@ -12294,7 +12410,7 @@ $("practiceDownloadSelectedBtn")?.addEventListener("click", () => {
   const data = selectedPracticeSet();
   if (!data) return;
   prepareOrDownloadPracticeWord(data, $("practiceDownloadSelectedBtn"), `专项练习-已选${data.exercises.length}题.docx`).catch((error) => {
-    platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "题目 Word 生成失败", tone: "danger" });
+    platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "题目 Word 操作未完成", tone: "danger" });
   });
 });
 $("practiceClearSelectedBtn")?.addEventListener("click", () => {
@@ -12887,3 +13003,7 @@ if (document.readyState === "loading") {
 } else {
   initSiteEnhancements();
 }
+
+window.addEventListener("pywebviewready", () => {
+  renderPracticeWordRecoveryNotice();
+});

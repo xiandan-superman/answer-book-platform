@@ -330,9 +330,13 @@ def retry_practice_export_job(job_id: str) -> dict[str, Any]:
     return create_or_reuse_practice_export_job(payload, filename)
 
 
-def practice_export_download(job_id: str) -> tuple[Path, str]:
+def practice_export_download(job_id: str, *, refresh_from_disk: bool = False) -> tuple[Path, str]:
     with _LOCK:
-        record = _load_job_record(job_id)
+        record = _load_persisted_job(job_id) if refresh_from_disk else _load_job_record(job_id)
+        if record is None:
+            raise FileNotFoundError("Word 导出任务不存在，请重新点击下载。")
+        if refresh_from_disk:
+            _JOBS[job_id] = record
         if record.get("status") != "completed":
             raise ValueError("Word 尚未生成完成。")
         path = Path(str(record.get("cache_path") or ""))
