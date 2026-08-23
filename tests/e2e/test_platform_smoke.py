@@ -576,3 +576,154 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         page.locator("#platformDialogCancel").click()
 
         browser.close()
+
+
+def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_actions_available() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+
+        configuration_presentation = {
+            "kind": "provider_authentication",
+            "title": "模型服务认证失败",
+            "message": "API Key 可能无效、已过期，或模型服务未通过认证。",
+            "retry_hint": "请打开 API 配置检查 Key。",
+            "support_id": "PJ-MIXCONFIG",
+        }
+        workflow_presentation = {
+            "kind": "workflow_failed",
+            "title": "任务执行未完成",
+            "message": "任务未完成。",
+            "retry_hint": "请从检查点重试。",
+            "support_id": "PJ-MIXUNKNOWN",
+        }
+
+        def job_task(task_id: str, title: str, status: str, presentation, capabilities: dict) -> dict:
+            return {
+                "task_id": task_id,
+                "task_kind": "knowledge",
+                "practice_batch_id": f"batch-{task_id}",
+                "is_generation_task": True,
+                "is_generation_job": True,
+                "operation": "analyze",
+                "display_title": f"知识点出题 · {title}",
+                "description": title,
+                "exam_path": title,
+                "status": status,
+                "current_stage": status,
+                "created_at": "2026-08-23T10:00:00+08:00",
+                "updated_at": "2026-08-23T10:01:00+08:00",
+                "error": "用于混合列表回归的终态说明",
+                "error_presentation": presentation,
+                "progress_percent": 100,
+                "steps": [{"operation": "analyze", "status": status}],
+                "health": {"health_status": "error", "warning_reason": "终态记录"},
+                "capabilities": capabilities,
+            }
+
+        tasks = [
+            job_task("cancelled-mixed", "已取消记录", "cancelled", None, {"retry": True, "delete": True}),
+            job_task("config-mixed", "配置错误记录", "failed", configuration_presentation, {"view_quality": True, "retry": True, "delete": True}),
+            job_task("unknown-mixed", "未知错误记录", "failed", workflow_presentation, {"view_quality": True, "retry": True, "delete": True}),
+            job_task("malformed-mixed", "异常字段记录", "failed", "malformed", {"view_quality": True, "retry": True, "delete": True}),
+            {
+                "task_id": "issues-mixed",
+                "task_kind": "knowledge",
+                "is_generation_task": True,
+                "is_generation_job": False,
+                "display_title": "知识点出题 · 完成待复核记录",
+                "description": "完成待复核记录",
+                "exam_path": "完成待复核记录",
+                "status": "completed_with_issues",
+                "current_stage": "completed",
+                "created_at": "2026-08-23T09:00:00+08:00",
+                "updated_at": "2026-08-23T09:01:00+08:00",
+                "error": "",
+                "error_presentation": None,
+                "progress_percent": 100,
+                "capabilities": {"view_result": True, "reuse": True, "delete": True},
+            },
+        ]
+        deleted_ids: set[str] = set()
+
+        def route_tasks(route) -> None:
+            if route.request.method == "POST":
+                payload = json.loads(route.request.post_data or "{}")
+                deleted_ids.update(str(item) for item in payload.get("task_ids") or [])
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"ok": True, "deleted": len(deleted_ids), "failed": 0, "results": []}),
+                )
+                return
+            visible = [task for task in tasks if task["task_id"] not in deleted_ids]
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"tasks": visible, "schema_version": 1}, ensure_ascii=False),
+            )
+
+        cancelled_job = _practice_recovery_job("cancelled-mixed", "cancelled", "已取消记录")
+        context.route("**/api/tasks", route_tasks)
+        context.route("**/api/tasks/bulk-delete", route_tasks)
+        context.route(
+            "**/api/practice/jobs/cancelled-mixed?detail=1",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(cancelled_job, ensure_ascii=False),
+            ),
+        )
+
+        page.goto(base_url, wait_until="networkidle")
+        assert page.evaluate(
+            """() => [
+              practiceErrorNeedsConfiguration(null),
+              practiceErrorNeedsConfiguration(undefined),
+              practiceErrorNeedsConfiguration({}),
+              practiceErrorNeedsConfiguration({kind: 'provider_authentication'}),
+              practiceErrorNeedsConfiguration({kind: 'cancelled'}),
+              practiceErrorNeedsConfiguration({kind: 'workflow_failed'}),
+              practiceErrorNeedsConfiguration('malformed')
+            ]"""
+        ) == [False, False, False, True, False, False, False]
+
+        page.evaluate("openTaskManager('knowledge')")
+        page.locator("#page-tasks.active").wait_for(timeout=4000)
+        cards = page.locator("#taskManagerList .task-manager-item")
+        assert cards.count() == 5
+
+        cancelled_card = cards.filter(has_text="已取消记录")
+        config_card = cards.filter(has_text="配置错误记录")
+        malformed_card = cards.filter(has_text="异常字段记录")
+        assert cancelled_card.locator('[data-action="job-retry"]').is_visible()
+        assert cancelled_card.locator('[data-action="job-config"]').count() == 0
+        assert config_card.locator('[data-action="job-config"]').is_visible()
+        assert malformed_card.locator('[data-action="job-config"]').count() == 0
+
+        cancelled_card.locator('[data-action="job-retry"]').click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogConfirm").inner_text() == "确认重试"
+        page.locator("#platformDialogCancel").click()
+
+        page.locator("#taskBulkModeBtn").click()
+        cancelled_card = page.locator("#taskManagerList .task-manager-item").filter(has_text="已取消记录")
+        cancelled_card.click()
+        assert cancelled_card.locator('[data-task-select="cancelled-mixed"]').is_checked()
+        page.locator("#taskBulkDeleteBtn").click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        page.locator("#platformDialogConfirm").click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        page.locator("#platformDialogConfirm").click()
+        page.locator("#taskManagerList .task-manager-item").filter(has_text="已取消记录").wait_for(state="detached", timeout=4000)
+        assert page.locator("#taskManagerList .task-manager-item").count() == 4
+        assert config_card.locator('[data-action="job-config"]').is_visible()
+
+        browser.close()

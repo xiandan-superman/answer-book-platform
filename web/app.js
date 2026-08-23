@@ -1580,7 +1580,7 @@ function practiceErrorNeedsConfiguration(presentation = {}) {
     "provider_permission",
     "provider_target_not_found",
     "provider_configuration",
-  ].includes(String(presentation.kind || ""));
+  ].includes(String(presentation?.kind || ""));
 }
 
 function practicePublicErrorText(presentation = {}, fallback = "任务执行失败。", { includeAction = true } = {}) {
