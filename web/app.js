@@ -835,6 +835,9 @@ function switchTextbookTab(tab) {
     loadLibraryFiles().catch((err) => {
       $("libraryResult").textContent = `刷新教材列表失败：${String(err).replace(/^Error:\s*/, "")}`;
     });
+  } else {
+    renderUploadSelection("textbook");
+    resetUploadFeedback("textbook");
   }
 }
 
@@ -851,6 +854,10 @@ function switchExamTab(tab) {
   $("exam-upload")?.classList.toggle("hidden", tab !== "upload");
   $("tab-exam-existing")?.classList.toggle("active", tab === "existing");
   $("tab-exam-upload")?.classList.toggle("active", tab === "upload");
+  if (tab === "upload") {
+    renderUploadSelection("exam");
+    resetUploadFeedback("exam");
+  }
 }
 
 function switchResultTab(tab) {
@@ -6218,6 +6225,28 @@ function renderUploadSelection(kind, progress = {}) {
   });
 }
 
+function resetUploadFeedback(kind) {
+  const { input } = uploadElements(kind);
+  const count = Array.from(input?.files || []).length;
+  if (kind === "exam") {
+    $("taskResult").textContent = count ? `已选择 ${count} 个待上传真题。` : "等待选择真题 DOCX 文件。";
+    setVisual(
+      "taskVisualResult",
+      count ? "待上传真题已更新" : "等待选择真题",
+      count ? "确认文件无误后点击上传真题。" : "请选择一个 DOCX 文件后再上传。",
+      "info"
+    );
+    return;
+  }
+  $("libraryResult").textContent = count ? `已选择 ${count} 个待上传教材文件。` : "等待选择教材文件。";
+  setVisual(
+    "libraryVisualResult",
+    count ? "待上传教材已更新" : "等待选择教材",
+    count ? "确认文件无误后点击上传教材。" : "请选择教材文件后再上传。",
+    "info"
+  );
+}
+
 function removePendingUpload(kind, removeIndex) {
   const { input } = uploadElements(kind);
   if (!input) return;
@@ -6228,6 +6257,7 @@ function removePendingUpload(kind, removeIndex) {
   });
   input.files = transfer.files;
   renderUploadSelection(kind);
+  resetUploadFeedback(kind);
 }
 
 async function deleteLibraryFile(kind, paths, label) {
@@ -6315,7 +6345,10 @@ function setupUploadInput(kind) {
   const { input } = uploadElements(kind);
   if (!input) return;
   const zone = input.closest(".upload-zone");
-  input.addEventListener("change", () => renderUploadSelection(kind));
+  input.addEventListener("change", () => {
+    renderUploadSelection(kind);
+    resetUploadFeedback(kind);
+  });
   if (!zone) return;
   ["dragenter", "dragover"].forEach((eventName) => {
     zone.addEventListener(eventName, (event) => {
@@ -6341,6 +6374,7 @@ function setupUploadInput(kind) {
     }
     input.files = transfer.files;
     renderUploadSelection(kind);
+    resetUploadFeedback(kind);
   });
 }
 

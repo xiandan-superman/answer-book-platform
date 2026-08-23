@@ -74,6 +74,13 @@ def test_runtime_monitor_exposes_an_explicit_default_off_hybrid_switch() -> None
     assert "任务材料不上传到混合云服务器" in INDEX_HTML
 
 
+def test_upload_feedback_resets_when_files_or_upload_tabs_change() -> None:
+    assert "function resetUploadFeedback(kind)" in APP_JS
+    assert 'renderUploadSelection("textbook");\n    resetUploadFeedback("textbook");' in APP_JS
+    assert 'renderUploadSelection("exam");\n    resetUploadFeedback("exam");' in APP_JS
+    assert 'input.addEventListener("change", () => {\n    renderUploadSelection(kind);\n    resetUploadFeedback(kind);' in APP_JS
+
+
 def test_frontend_displays_formal_app_version_without_legacy_internal_label() -> None:
     assert 'version.app_version || versionParts[0]' in APP_JS
     assert '$("platformVersion").textContent = `v${appVersion}`;' in APP_JS

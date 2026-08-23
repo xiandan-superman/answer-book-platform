@@ -28,6 +28,10 @@ STAGE_LABELS = {
     "final_acceptance": "最终验收",
     "acceptance": "交付验收",
     "pipeline": "生产流程",
+    "uploading": "上传任务到混合云",
+    "hybrid_upload": "上传任务到混合云",
+    "cloud_queue": "等待混合云执行",
+    "cloud_pipeline": "混合云解析流程",
     "completed": "已完成",
 }
 
@@ -98,7 +102,13 @@ def _stage_label(stage: str) -> str:
 
 
 def _error_label(error: str) -> str:
-    return ERROR_LABELS.get(error, error)
+    normalized = str(error or "").strip()
+    if (
+        ("latin-1" in normalized and "encode" in normalized)
+        or "上传请求头编码失败" in normalized
+    ):
+        return "上传任务标识编码失败；请更新客户端与混合云服务端后重试。"
+    return ERROR_LABELS.get(normalized, normalized)
 
 
 def _compact_issue(raw: Any, *, default_stage: str, severity: str) -> dict[str, Any]:
@@ -213,7 +223,13 @@ def _question_summary(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _recommendations(stage: str, error: str, issues: list[dict[str, Any]]) -> list[str]:
     recs: list[str] = []
-    if stage == "extract_exam":
+    if stage in {"uploading", "hybrid_upload"}:
+        if "任务标识编码失败" in error or "请求头编码失败" in error:
+            recs.append("这是上传协议编码问题；请同步更新客户端和混合云服务端，然后从检查点重跑。")
+            recs.append("无需修改中文任务名，也无需重新上传或重新建立教材索引。")
+        else:
+            recs.append("检查混合云地址、访问令牌和网络连通性，然后从检查点重跑。")
+    elif stage == "extract_exam":
         recs.append("检查真题 DOCX 是否包含异常标题、分栏、题号缺失或扫描图片题。")
         recs.append("打开 structured_exam.json 和 exam_structure_audit.json，确认题目切分数量与原卷一致。")
     elif stage == "textbook_index":
@@ -309,6 +325,18 @@ def build_task_diagnostics(task_id: str) -> dict[str, Any]:
     if isinstance(primary, dict):
         issues.extend(_collect_detail_issues(stage, primary.get("detail")))
     issues.extend(_collect_file_issues(sdir, stage))
+    if error and not any(item.get("severity") != "warning" for item in issues):
+        issues.append(
+            _compact_issue(
+                {
+                    "code": "task_runtime_failure",
+                    "message": error,
+                    "severity": "issue",
+                },
+                default_stage=stage,
+                severity="issue",
+            )
+        )
     issues = _dedupe_issues(issues)
     issue_count = sum(1 for x in issues if x.get("severity") != "warning")
     warning_count = sum(1 for x in issues if x.get("severity") == "warning")

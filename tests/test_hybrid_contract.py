@@ -10,7 +10,7 @@ import pytest
 from app import hybrid_client, hybrid_contract, task_store
 from app.hybrid_contract import HybridContractError
 from app.task_store import TaskRecord
-from scripts.hybrid_cloud_server import JobStore
+from scripts.hybrid_cloud_server import JobStore, decode_metadata_header
 
 
 def _record(task_id: str) -> TaskRecord:
@@ -25,6 +25,88 @@ def _record(task_id: str) -> TaskRecord:
         updated_at="2026-08-22 12:00:00",
         selected_textbooks=["/private/textbook.pdf"],
     )
+
+
+def test_hybrid_metadata_headers_round_trip_chinese_as_ascii(tmp_path, monkeypatch) -> None:
+    class Response:
+        status = 202
+
+        @staticmethod
+        def read(_limit: int) -> bytes:
+            return b'{"ok": true, "job": {"job_id": "job-1"}}'
+
+    class Connection:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+        @staticmethod
+        def putrequest(_method: str, _path: str) -> None:
+            return None
+
+        def putheader(self, key: str, value: str) -> None:
+            value.encode("latin-1")
+            self.headers[key] = value
+
+        @staticmethod
+        def endheaders() -> None:
+            return None
+
+        @staticmethod
+        def send(_chunk: bytes) -> None:
+            return None
+
+        @staticmethod
+        def getresponse() -> Response:
+            return Response()
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    archive = tmp_path / "input.zip"
+    archive.write_bytes(b"bundle")
+    connection = Connection()
+    client = hybrid_client.HybridHttpClient(
+        {
+            "base_url": "http://127.0.0.1:8781",
+            "token": "token",
+            "client_id": "测试客户端",
+        }
+    )
+    monkeypatch.setattr(client, "connection", lambda: connection)
+
+    key = hybrid_client._idempotency_key("2025真题_单题", "a" * 64)
+    result = client.upload("2025真题_单题", archive, idempotency_key=key)
+
+    assert result["job"]["job_id"] == "job-1"
+    assert all(value.isascii() for value in connection.headers.values())
+    encoding = connection.headers["X-Metadata-Encoding"]
+    assert decode_metadata_header(connection.headers["X-Task-ID"], encoding) == "2025真题_单题"
+    assert decode_metadata_header(connection.headers["X-Client-ID"], encoding) == "测试客户端"
+    assert decode_metadata_header(connection.headers["X-Idempotency-Key"], encoding) == key
+
+
+def test_hybrid_idempotency_key_is_stable_ascii_and_migrates_legacy_unicode() -> None:
+    input_sha = "b" * 64
+    expected = hybrid_client._idempotency_key("中文任务", input_sha)
+
+    assert expected == hybrid_client._idempotency_key("中文任务", input_sha)
+    assert len(expected) == 64
+    assert expected.isascii()
+    assert hybrid_client._stored_idempotency_key(
+        f"中文任务:{input_sha}", task_id="中文任务", input_sha256=input_sha
+    ) == expected
+    assert hybrid_client._stored_idempotency_key(
+        "safe-existing-key", task_id="中文任务", input_sha256=input_sha
+    ) == "safe-existing-key"
+
+
+def test_server_only_decodes_metadata_when_encoding_version_is_declared() -> None:
+    encoded = hybrid_client._encode_metadata_header("中文任务 / q1")
+
+    assert encoded.isascii()
+    assert decode_metadata_header(encoded, hybrid_client.METADATA_HEADER_ENCODING) == "中文任务 / q1"
+    assert decode_metadata_header("plain%20legacy", "") == "plain%20legacy"
 
 
 def test_hybrid_config_merges_build_time_bundle_and_local_override(tmp_path, monkeypatch) -> None:

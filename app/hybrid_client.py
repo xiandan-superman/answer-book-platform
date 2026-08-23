@@ -10,7 +10,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from .hybrid_contract import create_input_bundle, import_result_bundle, sha256_file
 from .hybrid_local import complete_hybrid_local_delivery, prepare_hybrid_input
@@ -22,10 +22,35 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "hybrid_cloud.example.json"
 BUNDLED_CONFIG_PATH = CONFIG_DIR / "hybrid_cloud.json"
 LOCAL_CONFIG_PATH = LOCAL_CONFIG_DIR / "hybrid_cloud.json"
 CHUNK_BYTES = 1024 * 1024
+METADATA_HEADER_ENCODING = "percent-utf8-v1"
 
 
 class HybridClientError(RuntimeError):
     pass
+
+
+def _encode_metadata_header(value: object) -> str:
+    """Encode user-controlled metadata into an ASCII-only HTTP header value."""
+
+    return quote(str(value or ""), safe="-._~", encoding="utf-8", errors="strict")
+
+
+def _idempotency_key(task_id: str, input_sha256: str) -> str:
+    source = f"{task_id}\n{input_sha256}".encode("utf-8")
+    return hashlib.sha256(source).hexdigest()
+
+
+def _stored_idempotency_key(value: object, *, task_id: str, input_sha256: str) -> str:
+    """Reuse safe submissions while migrating legacy non-ASCII task keys."""
+
+    candidate = str(value or "").strip()
+    try:
+        candidate.encode("ascii")
+    except UnicodeEncodeError:
+        return _idempotency_key(task_id, input_sha256)
+    if not candidate or len(candidate) > 200:
+        return _idempotency_key(task_id, input_sha256)
+    return candidate
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -169,14 +194,18 @@ class HybridHttpClient:
                 **self.headers(),
                 "Content-Type": "application/zip",
                 "Content-Length": str(archive.stat().st_size),
-                "X-Task-ID": task_id,
-                "X-Client-ID": self.client_id,
-                "X-Idempotency-Key": idempotency_key,
+                "X-Metadata-Encoding": METADATA_HEADER_ENCODING,
+                "X-Task-ID": _encode_metadata_header(task_id),
+                "X-Client-ID": _encode_metadata_header(self.client_id),
+                "X-Idempotency-Key": _encode_metadata_header(idempotency_key),
                 "X-Content-SHA256": sha256_file(archive),
             }
             connection.putrequest("POST", self.base_path + "/api/v1/jobs")
-            for key, value in headers.items():
-                connection.putheader(key, value)
+            try:
+                for key, value in headers.items():
+                    connection.putheader(key, value)
+            except UnicodeEncodeError as exc:
+                raise HybridClientError("上传请求头编码失败，请更新客户端与混合云服务端后重试。") from exc
             connection.endheaders()
             with archive.open("rb") as stream:
                 while chunk := stream.read(CHUNK_BYTES):
@@ -235,7 +264,11 @@ def _submit_job(task_id: str, client: HybridHttpClient, transfer_dir: Path) -> d
     )
     if reusable_upload:
         input_sha = str(submission["input_sha256"])
-        idempotency_key = str(submission["idempotency_key"])
+        idempotency_key = _stored_idempotency_key(
+            submission["idempotency_key"],
+            task_id=task_id,
+            input_sha256=input_sha,
+        )
         size_bytes = input_bundle.stat().st_size
         _event(task_id, "upload_resumed", input_sha256=input_sha)
     else:
@@ -248,7 +281,7 @@ def _submit_job(task_id: str, client: HybridHttpClient, transfer_dir: Path) -> d
             client_id=client.client_id,
         )
         input_sha = str(bundle["sha256"])
-        idempotency_key = f"{task_id}:{input_sha}"
+        idempotency_key = _idempotency_key(task_id, input_sha)
         size_bytes = int(bundle["size_bytes"])
         submission_path.write_text(
             json.dumps(

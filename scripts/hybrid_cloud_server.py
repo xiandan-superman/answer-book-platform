@@ -20,13 +20,14 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 MAX_UPLOAD_BYTES = 768 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
 DEFAULT_QUOTA_BYTES = 30 * 1024 * 1024 * 1024
 TERMINAL = {"completed", "failed", "cancelled"}
+METADATA_HEADER_ENCODING = "percent-utf8-v1"
 
 
 def utc_now() -> str:
@@ -60,6 +61,16 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def decode_metadata_header(value: object, encoding: object = "") -> str:
+    raw = str(value or "").strip()
+    if str(encoding or "").strip() != METADATA_HEADER_ENCODING:
+        return raw
+    try:
+        return unquote(raw, encoding="utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("invalid_job_header_encoding") from exc
 
 
 class JobStore:
@@ -557,9 +568,14 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_UPLOAD_BYTES:
             self.json_response(413, {"ok": False, "error": "invalid_upload_size"})
             return
-        task_id = str(self.headers.get("X-Task-ID") or "").strip()
-        client_id = str(self.headers.get("X-Client-ID") or "").strip()
-        key = str(self.headers.get("X-Idempotency-Key") or "").strip()
+        metadata_encoding = self.headers.get("X-Metadata-Encoding") or ""
+        try:
+            task_id = decode_metadata_header(self.headers.get("X-Task-ID"), metadata_encoding)
+            client_id = decode_metadata_header(self.headers.get("X-Client-ID"), metadata_encoding)
+            key = decode_metadata_header(self.headers.get("X-Idempotency-Key"), metadata_encoding)
+        except ValueError:
+            self.json_response(400, {"ok": False, "error": "invalid_job_header_encoding"})
+            return
         expected_sha = str(self.headers.get("X-Content-SHA256") or "").strip().lower()
         if not task_id or not client_id or not key or len(key) > 200 or len(expected_sha) != 64:
             self.json_response(400, {"ok": False, "error": "missing_job_headers"})
