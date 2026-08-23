@@ -135,6 +135,22 @@ def test_completed_generation_message_distinguishes_warnings_from_failures() -> 
     assert 'task.status === "completed_with_issues" ? "部分题目生成失败"' not in APP_JS
 
 
+def test_blueprint_audit_failed_question_has_explicit_local_review_retry() -> None:
+    assert 'item.generation_error?.code === "blueprint_audit_failed"' in APP_JS
+    assert '"复审并生成本题"' in APP_JS
+    assert "系统只修复并复审这一蓝图项" in APP_JS
+    assert "response.practice_updates" in APP_JS
+    assert "practice_updates: practiceUpdates" in APP_JS
+    assert "hasAuditReviewFailures" in APP_JS
+    assert "完成待复核 · 已生成" in APP_JS
+    assert 'auditNeedsReview ? "存在未完成项（需复核）"' in APP_JS
+
+
+def test_partial_practice_status_does_not_claim_everything_completed() -> None:
+    assert "存在未完成项（需复核）" in (ROOT / "app" / "task_contracts.py").read_text(encoding="utf-8")
+    assert 'completed_with_issues: { icon: "fas fa-triangle-exclamation", label: "完成待复核" }' in APP_JS
+
+
 def test_review_candidate_download_prefers_explicit_candidate_filename() -> None:
     assert 'file.name === "answer_book_review_candidate.docx"' in APP_JS
 

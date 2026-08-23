@@ -93,7 +93,9 @@ def test_exam_and_practice_warning_labels_preserve_workflow_semantics() -> None:
     assert exam["status"] == "completed"
     assert exam["quality_presentation"]["label"] == "正式交付通过 · 含诊断提示"
     assert exam["capabilities"]["download"] is True
-    assert practice["quality_presentation"]["label"] == "已完成"
+    assert practice["status"] == "completed_with_issues"
+    assert practice["quality_presentation"]["label"] == "存在未完成项（需复核）"
+    assert practice["quality_presentation"]["class_name"] == "warning"
 
 
 def test_exam_visual_semantic_risk_is_downloadable_but_not_formally_accepted() -> None:
@@ -412,5 +414,6 @@ def test_partial_practice_history_remains_distinct_from_review() -> None:
 
     assert run["status"] == "completed_with_issues"
     assert run["quality_status"] == QualityStatus.WARNING.value
+    assert run["quality_presentation"]["label"] == "存在未完成项（需复核）"
     assert run["capabilities"]["view_result"] is True
     assert run["capabilities"]["download"] is False

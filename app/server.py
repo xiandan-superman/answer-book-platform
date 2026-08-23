@@ -1292,6 +1292,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
                             if isinstance(body.get("semantic_review"), dict)
                             else None
                         ),
+                        practice_updates=(
+                            body.get("practice_updates")
+                            if isinstance(body.get("practice_updates"), dict)
+                            else None
+                        ),
                         expected_edit_version=str(body.get("expected_edit_version") or ""),
                     )
                 except PracticeEditConflict as exc:

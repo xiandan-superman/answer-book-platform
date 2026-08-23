@@ -426,10 +426,16 @@ def test_blueprint_audit_isolates_cross_source_design_leakage_as_review_warning(
 
     assert audit["status"] == "warning"
     assert audit["errors"] == []
-    assert audit["blocking_scope"] == "none"
+    assert audit["blocking_scope"] == "items"
     assert audit["review_item_ids"] == ["p1"]
-    assert any("继续处理整批" in warning for warning in audit["warnings"])
-    assert audit["findings"] == [{
+    assert audit["local_blocking_item_ids"] == ["p1"]
+    assert any("暂停这些项" in warning and "保留其余可用项" in warning for warning in audit["warnings"])
+    assert len(audit["findings"]) == 1
+    finding = dict(audit["findings"][0])
+    signature = finding.pop("finding_signature")
+    assert '"code":"cross_source_design_leak"' in signature
+    assert '"plan_item_id":"p1"' in signature
+    assert finding == {
         "code": "cross_source_design_leak",
         "severity": "warning",
         "requires_review": True,
@@ -452,7 +458,7 @@ def test_blueprint_audit_isolates_cross_source_design_leakage_as_review_warning(
                 "knowledge_point": "晶面指数标定步骤",
             }],
         }],
-    }]
+    }
 
 
 def test_blueprint_audit_does_not_treat_negated_foreign_topic_as_assessed_scope():
@@ -503,6 +509,128 @@ def test_blueprint_audit_does_not_treat_negated_foreign_topic_as_assessed_scope(
     assert audit["review_item_ids"] == []
     assert not any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
     assert any(finding.get("code") == "cross_source_context_reference" for finding in audit["findings"])
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "本题不要求晶面指数，仅考查精馏原理。",
+        "本题不涉及晶面指数，仅考查精馏原理。",
+        "本题不考查晶面指数，仅考查精馏原理。",
+        "本题无需计算晶面指数，仅说明精馏原理。",
+        "避免考查晶面指数，只考查精馏原理。",
+        "排除晶面指数相关要求，只考查精馏原理。",
+        "禁止将晶面指数作为考点，只考查精馏原理。",
+        "晶面指数不作为考点，只考查精馏原理。",
+    ],
+)
+@pytest.mark.parametrize(
+    "field",
+    ["target_skill", "variation_type", "design_intent", "difficulty_rationale", "difficulty_levers"],
+)
+def test_blueprint_audit_applies_negation_scope_to_every_design_field(field, phrase):
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {"source_question_id": "source_a", "title": "精馏", "knowledge_points": ["精馏原理"]},
+            {"source_question_id": "source_b", "title": "晶体", "knowledge_points": ["晶面指数标定步骤"]},
+        ],
+        "blueprint": {
+            "generation_strategy": "knowledge_item_wise",
+            "training_goal": "精馏专项",
+            "progression": ["范围辨析"],
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_a",
+                "source_refs": ["source_a"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "说明精馏原理",
+                "variation_type": "限定范围辨析",
+                "design_intent": "仅考查精馏原理",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "按绑定范围作答。",
+                "required_knowledge_points": ["精馏原理"],
+            }, {
+                "number": 2,
+                "plan_item_id": "p2",
+                "source_question_id": "source_b",
+                "source_refs": ["source_b"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "晶面指数标定",
+                "variation_type": "步骤说明",
+                "design_intent": "考查晶面指数标定步骤",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "按顺序作答。",
+                "required_knowledge_points": ["晶面指数标定步骤"],
+            }],
+        },
+    }
+    plan["blueprint"]["exercise_plan"][0][field] = [phrase] if field == "difficulty_levers" else phrase
+
+    audit = exercise_generation.audit_practice_blueprint(plan)
+
+    assert audit["local_blocking_item_ids"] == []
+    assert not any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
+    assert any(finding.get("code") == "cross_source_context_reference" for finding in audit["findings"])
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "本题需要计算晶面指数。",
+        "本题不要求晶面指数，但仍需计算晶面指数。",
+        "本题禁止绕过晶面指数的考查。",
+    ],
+)
+def test_blueprint_audit_keeps_real_or_reintroduced_foreign_topic_local_blocking(phrase):
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {"source_question_id": "source_a", "title": "精馏", "knowledge_points": ["精馏原理"]},
+            {"source_question_id": "source_b", "title": "晶体", "knowledge_points": ["晶面指数标定步骤"]},
+        ],
+        "blueprint": {
+            "generation_strategy": "knowledge_item_wise",
+            "training_goal": "精馏专项",
+            "progression": ["范围辨析"],
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_a",
+                "source_refs": ["source_a"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "说明精馏原理",
+                "variation_type": "限定范围辨析",
+                "design_intent": phrase,
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "按绑定范围作答。",
+                "required_knowledge_points": ["精馏原理"],
+            }, {
+                "number": 2,
+                "plan_item_id": "p2",
+                "source_question_id": "source_b",
+                "source_refs": ["source_b"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "晶面指数标定",
+                "variation_type": "步骤说明",
+                "design_intent": "考查晶面指数标定步骤",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "按顺序作答。",
+                "required_knowledge_points": ["晶面指数标定步骤"],
+            }],
+        },
+    }
+
+    audit = exercise_generation.audit_practice_blueprint(plan)
+
+    assert audit["blocking_scope"] == "items"
+    assert audit["local_blocking_item_ids"] == ["p1"]
+    assert any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
 
 
 def test_blueprint_audit_accepts_bound_scope_expressed_with_synonyms_and_constraints():
@@ -667,7 +795,97 @@ def test_blueprint_audit_cross_source_leak_gets_one_item_local_repair(monkeypatc
     assert repair["attempted_item_ids"] == ["p1"]
     assert repair["repaired_item_ids"] == ["p1"]
     assert repair["call_count"] == 1
+    assert repair["attempts"][0]["status"] == "repaired"
+    assert repair["attempts"][0]["after_finding_signatures"] == []
     assert final["status"] != "blocked", final
+
+
+def test_blueprint_repair_does_not_claim_success_when_finding_persists(monkeypatch):
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {"source_question_id": "source_a", "knowledge_points": ["精馏原理"]},
+            {"source_question_id": "source_b", "knowledge_points": ["晶面指数标定步骤"]},
+        ],
+        "blueprint": {
+            "generation_strategy": "targeted_set",
+            "training_goal": "范围审计",
+            "progression": ["边界辨析"],
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_a",
+                "source_refs": ["source_a"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "精馏原理",
+                "variation_type": "直接辨析",
+                "design_intent": "需要计算晶面指数",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "按绑定范围作答。",
+                "required_knowledge_points": ["精馏原理"],
+            }],
+        },
+    }
+    initial = exercise_generation.audit_practice_blueprint(plan)
+    monkeypatch.setattr(
+        exercise_generation,
+        "_refine_blueprint_batch",
+        lambda _plan, batch, **_kwargs: [dict(batch[0])],
+    )
+
+    repair = exercise_generation.repair_blueprint_audit_findings(plan, {}, initial)
+
+    assert repair["repaired_item_ids"] == []
+    assert repair["unresolved_item_ids"] == ["p1"]
+    assert repair["call_count"] == 1
+    assert repair["attempts"][0]["status"] == "finding_persisted"
+    assert repair["attempts"][0]["before_finding_signatures"] == repair["attempts"][0]["after_finding_signatures"]
+    assert repair["failures"][0]["retryable"] is True
+
+
+def test_blueprint_repair_records_retryable_service_failure_without_claiming_success(monkeypatch):
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {"source_question_id": "source_a", "knowledge_points": ["精馏原理"]},
+            {"source_question_id": "source_b", "knowledge_points": ["晶面指数标定步骤"]},
+        ],
+        "blueprint": {
+            "generation_strategy": "targeted_set",
+            "training_goal": "范围审计",
+            "progression": ["边界辨析"],
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "p1",
+                "source_question_id": "source_a",
+                "source_refs": ["source_a"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "精馏原理",
+                "variation_type": "直接辨析",
+                "design_intent": "需要计算晶面指数",
+                "difficulty_levers": ["条件直接程度"],
+                "difficulty_rationale": "按绑定范围作答。",
+                "required_knowledge_points": ["精馏原理"],
+            }],
+        },
+    }
+    initial = exercise_generation.audit_practice_blueprint(plan)
+    monkeypatch.setattr(
+        exercise_generation,
+        "_refine_blueprint_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("局部修复服务不可用")),
+    )
+
+    repair = exercise_generation.repair_blueprint_audit_findings(plan, {}, initial)
+
+    assert repair["repaired_item_ids"] == []
+    assert repair["unresolved_item_ids"] == ["p1"]
+    assert repair["attempts"] == repair["failures"]
+    assert repair["failures"][0]["status"] == "repair_request_failed"
+    assert repair["failures"][0]["retryable"] is True
+    assert repair["failures"][0]["before_finding_signatures"] == repair["failures"][0]["after_finding_signatures"]
 
 
 def test_mode_contract_blocks_wrong_per_source_question_counts():

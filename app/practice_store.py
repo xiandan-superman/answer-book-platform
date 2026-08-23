@@ -535,6 +535,7 @@ def update_practice_exercise(
     *,
     change_reason: str = "regenerate_question",
     semantic_review: dict[str, Any] | None = None,
+    practice_updates: dict[str, Any] | None = None,
     expected_edit_version: str = "",
 ) -> dict[str, Any]:
     """Atomically patch one question without accepting a stale full-set copy."""
@@ -603,6 +604,49 @@ def update_practice_exercise(
             "error": "题目内容已修改，原语义复核结论已失效。",
         }
     updated_data = {**data, "exercises": exercises, "history_id": history_id}
+    practice_updates = practice_updates if isinstance(practice_updates, dict) else {}
+    incoming_blueprint_item = (
+        practice_updates.get("blueprint_item")
+        if isinstance(practice_updates.get("blueprint_item"), dict)
+        else None
+    )
+    if incoming_blueprint_item:
+        target_plan_item_id = str(current.get("parent_plan_item_id") or current.get("plan_item_id") or "").strip()
+        incoming_plan_item_id = str(incoming_blueprint_item.get("plan_item_id") or "").strip()
+        blueprint = dict(data.get("blueprint") or {})
+        plan_items = [dict(item) for item in (blueprint.get("exercise_plan") or []) if isinstance(item, dict)]
+        target_index = next(
+            (
+                index for index, item in enumerate(plan_items)
+                if str(item.get("plan_item_id") or "").strip() == target_plan_item_id
+            ),
+            -1,
+        )
+        if not target_plan_item_id or incoming_plan_item_id != target_plan_item_id or target_index < 0:
+            raise ValueError("局部复审返回的蓝图项与当前题目不一致，本次未保存。")
+        existing_item = plan_items[target_index]
+        merged_item = {**existing_item, **incoming_blueprint_item}
+        for field in (
+            "plan_item_id",
+            "number",
+            "source_question_id",
+            "source_refs",
+            "required_knowledge_points",
+            "required_constraints",
+        ):
+            if field in existing_item:
+                merged_item[field] = existing_item[field]
+        plan_items[target_index] = merged_item
+        blueprint["exercise_plan"] = plan_items
+        updated_data["blueprint"] = blueprint
+        from .exercise_generation import audit_practice_blueprint
+
+        verified_audit = audit_practice_blueprint(updated_data)
+        if target_plan_item_id in set(verified_audit.get("local_blocking_item_ids") or []):
+            raise ValueError("局部复审未清除该蓝图项的问题，本次未覆盖原记录。")
+        updated_data["blueprint_audit"] = verified_audit
+        if isinstance(practice_updates.get("blueprint_audit_repair"), dict):
+            updated_data["blueprint_audit_repair"] = practice_updates["blueprint_audit_repair"]
     if isinstance(updated_semantic_review, dict):
         updated_data["semantic_review"] = updated_semantic_review
     updated = _with_current_quality(updated_data)

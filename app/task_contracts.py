@@ -73,10 +73,17 @@ def quality_presentation(
     workflow: WorkflowType,
     quality: QualityStatus,
     *,
+    status: RunStatus | None = None,
     final_acceptance: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     if quality == QualityStatus.UNKNOWN:
         return None
+    if workflow != WorkflowType.EXAM_ANALYSIS and status == RunStatus.COMPLETED_WITH_ISSUES:
+        return {
+            "label": "存在未完成项（需复核）",
+            "class_name": "warning",
+            "icon": "fas fa-triangle-exclamation",
+        }
     if quality == QualityStatus.BLOCKED and workflow != WorkflowType.EXAM_ANALYSIS:
         return {"label": "部分题目生成失败", "class_name": "warning", "icon": "fas fa-triangle-exclamation"}
     if quality == QualityStatus.BLOCKED:
@@ -317,6 +324,7 @@ def enrich_contract(
         "quality_presentation": quality_presentation(
             workflow,
             quality,
+            status=status,
             final_acceptance=final_acceptance,
         ),
         "capabilities": asdict(capabilities),

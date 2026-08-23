@@ -1054,36 +1054,85 @@ def _source_evidence_covers_anchor(anchor: str, evidence: str) -> bool:
     return len(terms) >= 2 and all(term in canonical_evidence for term in terms)
 
 
-def _is_non_assessment_bridge(field: str, value: str, anchor: str) -> bool:
-    """Recognise wording that mentions, but explicitly does not assess, another topic."""
-    if field != "design_intent":
-        return False
-    for sentence in re.split(r"[。！？;；\n]", value):
-        if anchor not in sentence:
-            continue
-        anchor_index = sentence.find(anchor)
-        prefix = sentence[max(0, anchor_index - 12) : anchor_index]
-        if (
-            ("为后续" in sentence and "基础" in sentence)
-            or "作为后续" in sentence
-            or "用于衔接" in sentence
-            or "形成呼应" in sentence
-            or any(
-                marker in prefix
-                for marker in (
-                    "不要求",
-                    "不考查",
-                    "不涉及",
-                    "不讨论",
-                    "无需",
-                    "不得",
-                    "避免",
-                    "排除",
-                )
-            )
-        ):
-            return True
+_BLUEPRINT_CONTRAST_SPLIT = re.compile(
+    r"[。！？;；\n，,]|(?:但(?:是)?|然而|不过|却|转而|反而)"
+)
+
+
+def _anchor_occurrence_is_contextual(clause: str, anchor: str, start: int, end: int) -> bool:
+    """Return whether one anchor occurrence is governed by an exclusion/bridge.
+
+    The check is deliberately occurrence-scoped.  A field such as
+    ``不要求晶面指数，但仍需计算晶面指数`` contains one excluded mention and
+    one assessed mention; splitting at the contrast keeps the latter visible to
+    the gate instead of turning a single negative token into a broad whitelist.
+    """
+    compact_clause = re.sub(r"\s+", "", clause)
+    escaped_anchor = re.escape(re.sub(r"\s+", "", anchor))
+    bridge_patterns = (
+        rf"为后续.{{0,12}}{escaped_anchor}.{{0,12}}基础",
+        rf"作为后续.{{0,12}}{escaped_anchor}",
+        rf"用于衔接.{{0,12}}{escaped_anchor}",
+        rf"{escaped_anchor}.{{0,12}}形成呼应",
+    )
+    if any(re.search(pattern, compact_clause) for pattern in bridge_patterns):
+        return True
+
+    # Match the governing phrase itself and require it to span this occurrence.
+    # This avoids broad rules such as “a 禁止 token appears somewhere before the
+    # anchor”, which would incorrectly exempt “禁止绕过晶面指数的考查”.
+    compact_start = len(re.sub(r"\s+", "", clause[:start]))
+    compact_end = len(re.sub(r"\s+", "", clause[:end]))
+    exclusion_patterns = (
+        rf"(?:不要求|不涉及|不考查|不讨论|无需|不纳入|不列入).{{0,14}}{escaped_anchor}",
+        rf"(?:避免|禁止)(?:对|将|把)?(?:考查|涉及|要求|引入|讨论|使用|采用|计算|分析).{{0,8}}{escaped_anchor}",
+        rf"(?:避免|排除).{{0,8}}{escaped_anchor}.{{0,8}}(?:相关)?(?:内容|要求|考点|考查范围|训练范围)",
+        rf"排除(?:对)?{escaped_anchor}(?:的)?(?:考查|要求|内容|范围)",
+        rf"(?:禁止|不把|不将)(?:将|把)?{escaped_anchor}.{{0,8}}(?:作为|列为|纳入)(?:考点|考查范围|训练范围)",
+        rf"{escaped_anchor}.{{0,8}}(?:不作为|不列为|不纳入)(?:考点|考查范围|训练范围|要求)?",
+    )
+    for pattern in exclusion_patterns:
+        for match in re.finditer(pattern, compact_clause):
+            if match.start() <= compact_start and match.end() >= compact_end:
+                return True
     return False
+
+
+def _is_non_assessment_bridge(field: str, value: str, anchor: str) -> bool:
+    """Recognise only fields whose every anchor mention is non-assessing."""
+    del field  # Every audited design field follows the same sentence semantics.
+    occurrences = 0
+    for clause in _BLUEPRINT_CONTRAST_SPLIT.split(value):
+        if anchor not in clause:
+            continue
+        for match in re.finditer(re.escape(anchor), clause):
+            occurrences += 1
+            if not _anchor_occurrence_is_contextual(
+                clause,
+                anchor,
+                match.start(),
+                match.end(),
+            ):
+                return False
+    return occurrences > 0
+
+
+def _blueprint_finding_signature(finding: dict[str, Any]) -> str:
+    """Build a stable signature from the finding identity, not mutable prose."""
+    matches = []
+    for match in finding.get("matches") or []:
+        if not isinstance(match, dict):
+            continue
+        matches.append({
+            "anchor": _clean(match.get("anchor"), 100),
+            "fields": sorted(_unique_strings(match.get("matched_fields"), limit=20, item_limit=80)),
+        })
+    payload = {
+        "code": _clean(finding.get("code"), 100),
+        "plan_item_id": _clean(finding.get("plan_item_id"), 120),
+        "matches": sorted(matches, key=lambda row: (row["anchor"], row["fields"])),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _blueprint_boundary_change_evidence(
@@ -1260,7 +1309,6 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 _unique_strings(item.get("difficulty_levers"), limit=12, item_limit=200)
             ),
         }
-        design_text = " ".join(design_fields.values())
         own_source_text = " ".join(_scope_evidence_text(source_by_id.get(ref, {})) for ref in refs)
         foreign_anchors: dict[str, list[dict[str, str]]] = {}
         for source_id, other_source in source_by_id.items():
@@ -1304,7 +1352,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         if anchor_matches:
             item_number = str(item.get("number") or index)
             cross_source_leak_items.append(item_number)
-            findings.append({
+            finding = {
                 "code": "cross_source_design_leak",
                 "severity": "warning",
                 "requires_review": True,
@@ -1313,7 +1361,9 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 "bound_source_refs": refs,
                 "design_fields": design_fields,
                 "matches": anchor_matches,
-            })
+            }
+            finding["finding_signature"] = _blueprint_finding_signature(finding)
+            findings.append(finding)
         if bridge_matches:
             item_number = str(item.get("number") or index)
             cross_source_reference_items.append(item_number)
@@ -1357,7 +1407,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     if cross_source_leak_items:
         warnings.append(
             f"第 {','.join(dict.fromkeys(cross_source_leak_items))} 项的目标、设计意图或难度说明可能混入未绑定来源的子主题；"
-            "系统会继续处理整批，并在正式生成时仅提供该项绑定来源，完成后请复核这些题目。"
+            "系统会暂停这些项的题目生成并保留其余可用项，请局部修复并复审后再生成。"
         )
     if cross_source_reference_items:
         warnings.append(
@@ -1419,17 +1469,19 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 warnings.append("蓝图未逐项覆盖全部来源单元。请在蓝图审查中确认是否需要补充来源。")
         else:
             errors.append("蓝图未覆盖全部已确认来源单元。")
+    review_item_ids = list(dict.fromkeys(
+        _clean(finding.get("plan_item_id"), 120)
+        for finding in findings
+        if finding.get("requires_review") is True and _clean(finding.get("plan_item_id"), 120)
+    ))
     return {
         "status": "blocked" if errors else ("warning" if warnings else "passed"),
         "errors": list(dict.fromkeys(errors)),
         "warnings": list(dict.fromkeys(warnings)),
         "findings": findings,
-        "review_item_ids": list(dict.fromkeys(
-            _clean(finding.get("plan_item_id"), 120)
-            for finding in findings
-            if finding.get("requires_review") is True and _clean(finding.get("plan_item_id"), 120)
-        )),
-        "blocking_scope": "global" if errors else "none",
+        "review_item_ids": review_item_ids,
+        "local_blocking_item_ids": review_item_ids,
+        "blocking_scope": "global" if errors else ("items" if review_item_ids else "none"),
         "metrics": {
             "plan_count": len(items),
             "unique_plan_item_count": len(set(ids)),
@@ -3041,6 +3093,13 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
                 "message": _clean(error.get("message"), 500) or "上游模型未返回本题。",
                 "retryable": error.get("retryable") is not False,
                 "detail": _clean(error.get("detail"), 800),
+                "audit_status": _clean(item.get("audit_status"), 40),
+                "review_status": _clean(item.get("review_status"), 40),
+                "finding_signatures": _unique_strings(
+                    error.get("finding_signatures"),
+                    limit=20,
+                    item_limit=2000,
+                ),
             })
     generation = dict(data.get("generation") or {})
     generation.update({
@@ -3194,6 +3253,7 @@ def _failed_exercise_placeholder(
 ) -> dict[str, Any]:
     plan_item_id = _clean(planned_item.get("plan_item_id"), 80) or f"plan_item_{index:02d}"
     message = _clean(error.get("message"), 500) or "上游模型未返回本题。"
+    audit_failed = _clean(error.get("code"), 100) == "blueprint_audit_failed"
     result = {
         "plan_item_id": plan_item_id,
         "parent_plan_item_id": _clean(planned_item.get("parent_plan_item_id"), 80),
@@ -3211,8 +3271,12 @@ def _failed_exercise_placeholder(
         "question_type": _clean(planned_item.get("question_type"), 20) or "综合题",
         "difficulty": _clean(planned_item.get("difficulty"), 12) or "进阶",
         "target_skill": _clean(planned_item.get("target_skill"), 500) or _clean(planned_item.get("title"), 500),
-        "variation_type": "生成失败占位",
-        "stem": f"本题生成失败：{message}已保留蓝图位置，可在页面点击“重新生成本题”补齐。",
+        "variation_type": "蓝图待复核占位" if audit_failed else "生成失败占位",
+        "stem": (
+            f"本题蓝图待复核：{message}已保留蓝图位置，可在页面点击“复审并生成本题”继续。"
+            if audit_failed
+            else f"本题生成失败：{message}已保留蓝图位置，可在页面点击“重新生成本题”补齐。"
+        ),
         "options": [],
         "knowledge_points": _string_list(
             planned_item.get("required_knowledge_points") or planned_item.get("knowledge_points"),
@@ -3231,11 +3295,18 @@ def _failed_exercise_placeholder(
             "repair_error": "",
         },
         "generation_status": "failed",
+        "audit_status": "audit_failed" if audit_failed else "",
+        "review_status": "needs_review" if audit_failed else "",
         "generation_error": {
             "code": _clean(error.get("code"), 100) or "provider_generation_failed",
             "message": message,
             "retryable": bool(error.get("retryable", True)),
             "detail": _clean(error.get("detail"), 800),
+            "finding_signatures": _unique_strings(
+                error.get("finding_signatures"),
+                limit=20,
+                item_limit=2000,
+            ),
         },
     }
     return result
@@ -3431,6 +3502,11 @@ def normalize_practice_set(
                     "message": _clean((item.get("generation_error") or {}).get("message"), 500),
                     "retryable": bool((item.get("generation_error") or {}).get("retryable", True)),
                     "detail": _clean((item.get("generation_error") or {}).get("detail"), 800),
+                    "finding_signatures": _unique_strings(
+                        (item.get("generation_error") or {}).get("finding_signatures"),
+                        limit=20,
+                        item_limit=2000,
+                    ),
                 }
                 if model_marked_failed
                 else {}
@@ -3499,6 +3575,8 @@ def normalize_practice_set(
                 } if isinstance(item.get("figure_generation"), dict) else {},
                 "generation_status": "failed" if model_marked_failed or markup_issue else "completed",
                 "generation_error": generation_error,
+                "audit_status": _clean(item.get("audit_status"), 40),
+                "review_status": _clean(item.get("review_status"), 40),
             }
         )
 
@@ -5347,6 +5425,7 @@ def repair_blueprint_audit_findings(
     audit: dict[str, Any],
     *,
     max_items: int = 6,
+    target_item_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Repair only blueprint items proven to contain a foreign assessed topic."""
     blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
@@ -5362,16 +5441,44 @@ def repair_blueprint_audit_findings(
         for finding in findings
         if _clean(finding.get("plan_item_id"), 80)
     }
-    target_ids = list(finding_by_id)[: max(0, int(max_items))]
+    requested_ids = {
+        _clean(item_id, 80)
+        for item_id in (target_item_ids or [])
+        if _clean(item_id, 80)
+    }
+    eligible_ids = [
+        item_id for item_id in finding_by_id
+        if not requested_ids or item_id in requested_ids
+    ]
+    target_ids = eligible_ids[: max(0, int(max_items))]
     repaired: list[str] = []
     failures: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
     call_count = 0
+
+    def item_findings(current_audit: dict[str, Any], item_id: str) -> list[dict[str, Any]]:
+        return [
+            finding for finding in (current_audit.get("findings") or [])
+            if isinstance(finding, dict)
+            and finding.get("code") == "cross_source_design_leak"
+            and _clean(finding.get("plan_item_id"), 80) == item_id
+        ]
+
+    def signatures(current_findings: list[dict[str, Any]]) -> list[str]:
+        return sorted({
+            _clean(finding.get("finding_signature"), 2000)
+            or _blueprint_finding_signature(finding)
+            for finding in current_findings
+        })
+
     for item_id in target_ids:
         ensure_practice_generation_active(payload)
         item = by_id.get(item_id)
         finding = finding_by_id[item_id]
         if not item:
             continue
+        before_findings = item_findings(audit, item_id)
+        before_signatures = signatures(before_findings)
         forbidden = [
             _clean(match.get("anchor"), 100)
             for match in (finding.get("matches") or [])
@@ -5380,7 +5487,7 @@ def repair_blueprint_audit_findings(
         call_count += 1
         try:
             occupied = [row for pid, row in by_id.items() if pid != item_id]
-            by_id[item_id] = _refine_blueprint_batch(
+            candidate = _refine_blueprint_batch(
                 plan,
                 [item],
                 payload=payload,
@@ -5392,23 +5499,58 @@ def repair_blueprint_audit_findings(
                     "并严格限制在本项绑定来源、必考知识点与约束内；不要用未绑定主题作考查要求。"
                 ),
             )[0]
-            repaired.append(item_id)
+            by_id[item_id] = candidate
+            blueprint["exercise_plan"] = [
+                by_id.get(_clean(row.get("plan_item_id"), 80), row)
+                for row in items
+            ]
+            plan["blueprint"] = blueprint
+            after_audit = audit_practice_blueprint(plan)
+            after_findings = item_findings(after_audit, item_id)
+            after_signatures = signatures(after_findings)
+            cleared = not after_findings
+            attempt = {
+                "plan_item_id": item_id,
+                "attempt": 1,
+                "status": "repaired" if cleared else "finding_persisted",
+                "before_finding_signatures": before_signatures,
+                "after_finding_signatures": after_signatures,
+                "retryable": not cleared,
+            }
+            attempts.append(attempt)
+            if cleared:
+                repaired.append(item_id)
+            else:
+                failures.append({
+                    **attempt,
+                    "code": "blueprint_audit_finding_persisted",
+                    "error": "局部修复后跨来源问题仍存在，本项已暂停生成并等待复核。",
+                })
         except PracticeGenerationStopped:
             raise
         except Exception as exc:
-            failures.append({
+            failure = {
                 "plan_item_id": item_id,
+                "attempt": 1,
+                "status": "repair_request_failed",
+                "code": "blueprint_audit_repair_failed",
                 "error": _clean(exc, 600),
-                "retryable": False,
-            })
+                "before_finding_signatures": before_signatures,
+                "after_finding_signatures": before_signatures,
+                "retryable": True,
+            }
+            failures.append(failure)
+            attempts.append(failure)
     blueprint["exercise_plan"] = [by_id.get(_clean(item.get("plan_item_id"), 80), item) for item in items]
     plan["blueprint"] = blueprint
     return {
         "enabled": bool(target_ids),
         "attempted_item_ids": target_ids,
         "repaired_item_ids": repaired,
-        "unattempted_item_ids": list(finding_by_id)[len(target_ids):],
+        "unresolved_item_ids": [item_id for item_id in target_ids if item_id not in repaired],
+        "unattempted_item_ids": [item_id for item_id in finding_by_id if item_id not in target_ids],
         "call_count": call_count,
+        "attempts": attempts,
         "failures": failures,
     }
 
@@ -6646,6 +6788,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if plan_audit["status"] == "blocked":
         raise ValueError("确认后的蓝图未通过生成门禁：" + "；".join(plan_audit["errors"]))
+    audit_failed_root_ids = {
+        _clean(item_id, 80)
+        for item_id in (plan_audit.get("local_blocking_item_ids") or plan_audit.get("review_item_ids") or [])
+        if _clean(item_id, 80)
+    }
     reviewed_blueprint = copy.deepcopy(blueprint)
     reviewed_exercise_plan = [
         copy.deepcopy(item)
@@ -6673,6 +6820,22 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         multi_question_config,
     )
     count = len(exercise_plan)
+    audit_failed_plan_ids = {
+        _clean(item.get("plan_item_id"), 80)
+        for item in exercise_plan
+        if isinstance(item, dict)
+        and (
+            _clean(item.get("plan_item_id"), 80) in audit_failed_root_ids
+            or _clean(item.get("parent_plan_item_id"), 80) in audit_failed_root_ids
+        )
+    }
+    audit_findings_by_item: dict[str, list[dict[str, Any]]] = {}
+    for finding in plan_audit.get("findings") or []:
+        if not isinstance(finding, dict) or finding.get("code") != "cross_source_design_leak":
+            continue
+        finding_item_id = _clean(finding.get("plan_item_id"), 80)
+        if finding_item_id:
+            audit_findings_by_item.setdefault(finding_item_id, []).append(finding)
     blueprint = {**copy.deepcopy(reviewed_blueprint), "exercise_plan": exercise_plan}
     plan = {**plan, "blueprint": blueprint}
     planned_types = [
@@ -6712,7 +6875,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(item, dict)
             ],
         )
-        all_exercises = [dict(item) for item in checkpoint.exercises]
+        all_exercises = [
+            dict(item) for item in checkpoint.exercises
+            if _clean(item.get("plan_item_id"), 80) not in audit_failed_plan_ids
+        ]
     if job_id:
         try:
             from .practice_jobs import update_practice_job
@@ -6731,6 +6897,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         injected_ids = {str(item.get("plan_item_id") or "") for item in all_exercises}
         for idx, item in enumerate(exercise_plan[:count]):
             pid = str(item.get("plan_item_id") or f"plan_item_{idx + 1:02d}")
+            if pid in audit_failed_plan_ids:
+                continue
             parent_pid = _clean(item.get("parent_plan_item_id"), 80)
             draft = plan_drafts.get(pid) or (
                 plan_drafts.get(parent_pid)
@@ -7296,12 +7464,71 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     pending_batches: list[tuple[int, list[dict[str, Any]]]] = []
     batch_failures: dict[str, dict[str, Any]] = {}
     generation_batch_diagnostics: list[dict[str, Any]] = []
+    for index, planned_item in enumerate(exercise_plan[:count]):
+        if not isinstance(planned_item, dict):
+            continue
+        plan_item_id = _clean(planned_item.get("plan_item_id"), 80) or f"plan_item_{index + 1:02d}"
+        if plan_item_id not in audit_failed_plan_ids:
+            continue
+        root_item_id = _clean(planned_item.get("parent_plan_item_id"), 80) or plan_item_id
+        findings = audit_findings_by_item.get(root_item_id, [])
+        anchors = sorted({
+            _clean(match.get("anchor"), 100)
+            for finding in findings
+            for match in (finding.get("matches") or [])
+            if isinstance(match, dict) and _clean(match.get("anchor"), 100)
+        })
+        signatures = sorted({
+            _clean(finding.get("finding_signature"), 2000)
+            or _blueprint_finding_signature(finding)
+            for finding in findings
+        })
+        batch_failures[plan_item_id] = {
+            "code": "blueprint_audit_failed",
+            "message": "蓝图项仍包含未绑定主题，已暂停本题生成并等待复核。",
+            "retryable": True,
+            "detail": "待复核主题：" + "、".join(anchors[:6]) if anchors else "请重新设计本蓝图项并复审。",
+            "audit_status": "audit_failed",
+            "review_status": "needs_review",
+            "finding_signatures": signatures,
+        }
+        generation_batch_diagnostics.append({
+            "batch_start": index + 1,
+            "batch_end": index + 1,
+            "expected_indexes": [],
+            "response_attempts": [],
+            "recovery_attempt_count": 0,
+            "final_accepted_indexes": [],
+            "failed_plan_item_ids": [plan_item_id],
+            "status": "blueprint_audit_failed",
+            "error_code": "blueprint_audit_failed",
+            "model_call_count": 0,
+        })
     completed_ids = {str(item.get("plan_item_id") or "") for item in all_exercises}
-    for batch_start in range(0, count, batch_size):
-        batch_plan = [item for item in exercise_plan[batch_start : batch_start + batch_size] if isinstance(item, dict)]
-        expected_ids = [str(item.get("plan_item_id") or f"plan_item_{batch_start + index + 1:02d}") for index, item in enumerate(batch_plan)]
-        if batch_plan and not all(item in completed_ids for item in expected_ids):
-            pending_batches.append((batch_start, batch_plan))
+    pending_run_start: int | None = None
+    pending_run: list[dict[str, Any]] = []
+
+    def flush_pending_run() -> None:
+        nonlocal pending_run_start, pending_run
+        if pending_run_start is not None and pending_run:
+            pending_batches.append((pending_run_start, pending_run))
+        pending_run_start = None
+        pending_run = []
+
+    for plan_index, item in enumerate(exercise_plan[:count]):
+        if not isinstance(item, dict):
+            flush_pending_run()
+            continue
+        plan_item_id = _clean(item.get("plan_item_id"), 80) or f"plan_item_{plan_index + 1:02d}"
+        if plan_item_id in audit_failed_plan_ids or plan_item_id in completed_ids:
+            flush_pending_run()
+            continue
+        if pending_run_start is None:
+            pending_run_start = plan_index
+        pending_run.append(item)
+        if len(pending_run) >= batch_size:
+            flush_pending_run()
+    flush_pending_run()
 
     def run_pending_batch(
         pending: tuple[int, list[dict[str, Any]]],
@@ -7551,6 +7778,69 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     blueprint = practice.get("blueprint") if isinstance(practice.get("blueprint"), dict) else {}
     parent_plan_item_id = _clean(current.get("parent_plan_item_id"), 80)
     current_plan_item_id = _clean(current.get("plan_item_id"), 80)
+    root_plan_item_id = parent_plan_item_id or current_plan_item_id
+    blueprint_repair_updates: dict[str, Any] = {}
+    current_error = current.get("generation_error") if isinstance(current.get("generation_error"), dict) else {}
+    if _clean(current_error.get("code"), 100) == "blueprint_audit_failed":
+        review_plan = ensure_practice_blueprint_defaults({
+            "source_mode": practice.get("source_mode"),
+            "source_analysis": copy.deepcopy(practice.get("source_analysis") or {}),
+            "source_scope": copy.deepcopy(practice.get("source_scope") or {}),
+            "selected_source_questions": copy.deepcopy(practice.get("selected_source_questions") or []),
+            "blueprint": copy.deepcopy(blueprint),
+        })
+        before_audit = audit_practice_blueprint(review_plan)
+        repair = {
+            "enabled": False,
+            "attempted_item_ids": [],
+            "repaired_item_ids": [],
+            "unresolved_item_ids": [],
+            "unattempted_item_ids": [],
+            "call_count": 0,
+            "attempts": [],
+            "failures": [],
+        }
+        if root_plan_item_id in set(before_audit.get("local_blocking_item_ids") or []):
+            repair = repair_blueprint_audit_findings(
+                review_plan,
+                payload,
+                before_audit,
+                max_items=1,
+                target_item_ids=[root_plan_item_id],
+            )
+        after_audit = audit_practice_blueprint(review_plan)
+        if root_plan_item_id in set(after_audit.get("local_blocking_item_ids") or []):
+            error = ValueError(
+                "本蓝图项复审后仍包含未绑定主题，已继续暂停本题；"
+                "其他题目不受影响，请调整本项要求后再次局部重试。"
+            )
+            error.failure_context = {
+                "schema_version": 1,
+                "failure_type": "blueprint_item_review",
+                "plan_item_id": root_plan_item_id,
+                "blueprint_audit": after_audit,
+                "blueprint_audit_repair": repair,
+            }
+            raise error
+        blueprint = review_plan["blueprint"]
+        practice = {
+            **practice,
+            "blueprint": blueprint,
+            "blueprint_audit": after_audit,
+            "blueprint_audit_repair": repair,
+        }
+        blueprint_repair_updates = {
+            "blueprint_item": next(
+                (
+                    copy.deepcopy(row)
+                    for row in blueprint.get("exercise_plan") or []
+                    if isinstance(row, dict) and _clean(row.get("plan_item_id"), 80) == root_plan_item_id
+                ),
+                {},
+            ),
+            "blueprint_audit": after_audit,
+            "blueprint_audit_repair": repair,
+        }
     planned_item = next(
         (row for row in blueprint.get("exercise_plan") or []
          if isinstance(row, dict) and _clean(row.get("plan_item_id"), 80) == (parent_plan_item_id or current_plan_item_id)),
@@ -7629,7 +7919,10 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         "variant_mode": _clean(current.get("variant_mode"), 30),
         "variant_role": _clean(current.get("variant_role"), 100),
         "difficulty": _clean(current.get("difficulty"), 20) or item_for_generation.get("difficulty"),
-        "variation_type": _clean(current.get("variation_type"), 200) or item_for_generation.get("variation_type"),
+        "variation_type": (
+            "" if current.get("generation_status") == "failed"
+            else _clean(current.get("variation_type"), 200)
+        ) or item_for_generation.get("variation_type"),
     })
     context_plan = ensure_practice_blueprint_defaults({
         "source_mode": practice.get("source_mode"),
@@ -7902,6 +8195,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             "include_source_content_in_generation": include_source_content,
         },
         "regeneration": {"exercise_index": index, "context": generation_context},
+        "practice_updates": blueprint_repair_updates,
     }
 
 
