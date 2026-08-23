@@ -4921,6 +4921,8 @@ function practiceRegenerationPayload(index, instruction) {
     selected_source_questions: latestPracticeSet?.selected_source_questions || latestPracticeRequest?.selected_source_questions || [],
     source_scope: latestPracticeSet?.source_scope || latestPracticeRequest?.source_scope || {},
     include_source_content_in_generation: latestPracticeRequest?.include_source_content_in_generation !== false,
+    semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled !== false,
+    formal_quality_review: latestPracticeRequest?.formal_quality_review === true,
     question_types: latestPracticeRequest?.question_types || [],
     question_text: latestPracticeRequest?.question_text || "",
     source_files: latestPracticeRequest?.source_files || practiceSourceFiles || [],

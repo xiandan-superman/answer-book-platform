@@ -4610,7 +4610,7 @@ def _merge_incremental_semantic_review(
             if key not in {"items", "missing_numbers", "set_summary", "status", "review_scope"}
         },
         "status": "failed" if failed else ("warning" if actionable else "passed"),
-        "triggered": True,
+        "triggered": replacement_report.get("triggered") is not False,
         "review_scope": "incremental_set",
         "items": items,
         "risk_count": sum(len(item.get("risks") or []) for item in items),
@@ -7542,10 +7542,13 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
     ]
     source_refs = _unique_strings(
-        planned_item.get("source_refs") or [current.get("source_question_id")],
+        planned_item.get("source_refs")
+        or current.get("source_refs")
+        or [current.get("source_question_id")],
         limit=3,
         item_limit=80,
     )
+    primary_source_id = source_refs[0] if source_refs else _clean(current.get("source_question_id"), 80)
     peer_patterns = []
     for peer_index, peer in enumerate(exercises):
         if peer_index == index or not isinstance(peer, dict) or peer.get("generation_status") == "failed":
@@ -7726,7 +7729,8 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(raw_item, dict):
             restored = dict(raw_item)
             restored["plan_item_id"] = _clean(current.get("plan_item_id"), 80) or f"plan_item_{index + 1:02d}"
-            restored["source_question_id"] = _clean(current.get("source_question_id"), 80)
+            restored["source_question_id"] = primary_source_id
+            restored["source_refs"] = list(source_refs)
             _complete_generated_figure(restored, item_for_generation)
             raw_exercises.append(restored)
     normalized = normalize_practice_set(
@@ -7738,11 +7742,13 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         requested_count=1,
         subject="",
         planned_types=[target_type] if target_type in ALLOWED_TYPES else ["综合题"],
-        planned_source_ids=[_clean(current.get("source_question_id"), 80)],
+        planned_source_ids=[primary_source_id],
         planned_plan_ids=[_clean(current.get("plan_item_id"), 80) or f"plan_item_{index + 1:02d}"],
         planned_difficulties=[_clean(current.get("difficulty"), 20) or "进阶"],
     )
     exercise = normalized["exercises"][0]
+    exercise["source_question_id"] = primary_source_id
+    exercise["source_refs"] = list(source_refs)
     for field in (
         "parent_plan_item_id",
         "variant_id",
@@ -7818,12 +7824,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     updated_practice = {**practice, "exercises": merged, "quality": {}}
     semantic_review = practice.get("semantic_review") if isinstance(practice.get("semantic_review"), dict) else {}
     review_enabled = payload.get("semantic_review_enabled") is True or payload.get("formal_quality_review") is True
-    review_required = (
-        _effective_question_type(exercise, item_for_generation) in {"综合题", "作图题"}
-        or _clean(exercise.get("difficulty"), 20) == "挑战"
-        or _plan_requires_stem_figure(item_for_generation)
-    )
-    if review_enabled and review_required:
+    if review_enabled:
         single_review_practice = {
             **updated_practice,
             "requested_count": 1,
@@ -7848,21 +7849,20 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             replacement_review,
             target_number=index + 1,
         )
-    elif review_required:
-        # Never retain a green semantic verdict for content that has changed
-        # without being re-reviewed. The usable question remains available.
-        semantic_review = {
-            **semantic_review,
-            "status": "failed",
-            "review_scope": "stale_after_regeneration",
-            "items": [
-                ({"number": index + 1, "status": "not_reviewed", "risks": []}
-                 if str(item.get("number") or "") == str(index + 1) else item)
-                for item in (semantic_review.get("items") or [])
-                if isinstance(item, dict)
-            ],
-            "error": "本题已重生成，原语义复核结论已失效。",
-        }
+    else:
+        # Every regenerated question invalidates its previous verdict. Keep
+        # unchanged questions' latest valid reviews, but never reuse the
+        # changed question's old green state when review is disabled.
+        semantic_review = _merge_incremental_semantic_review(
+            updated_practice,
+            {
+                "status": "failed",
+                "triggered": False,
+                "items": [{"number": index + 1, "status": "not_reviewed", "risks": []}],
+                "error": "本题已重生成，但本次未启用语义复核；原结论已失效。",
+            },
+            target_number=index + 1,
+        )
     updated_practice["semantic_review"] = semantic_review
     quality = recompute_practice_quality(updated_practice)
     return {

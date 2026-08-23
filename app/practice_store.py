@@ -14,7 +14,16 @@ from uuid import uuid4
 from .paths import DATA_ROOT
 
 PRACTICE_HISTORY_DIR = DATA_ROOT / "practice_history"
-_PRACTICE_ANSWER_FIELDS = {"answer", "answer_summary", "solution_steps", "solution", "solutions", "verification_note"}
+_PRACTICE_ANSWER_FIELDS = {
+    "answer",
+    "answer_summary",
+    "analysis",
+    "explanation",
+    "solution_steps",
+    "solution",
+    "solutions",
+    "verification_note",
+}
 _DERIVED_HISTORY_SUFFIXES = ("_repaired", "_semantic_candidate")
 _MAX_REVISIONS = 20
 _STORE_LOCK = threading.RLock()
@@ -100,6 +109,36 @@ def strip_practice_answer_content(data: dict[str, Any]) -> dict[str, Any]:
                 item.pop(field, None)
             item.pop("_edit_version", None)
     return copied
+
+
+def _stable_practice_source_refs(data: dict[str, Any], exercise: dict[str, Any]) -> list[str]:
+    """Resolve immutable source bindings from the matching blueprint item."""
+    plan_item_id = str(exercise.get("parent_plan_item_id") or exercise.get("plan_item_id") or "").strip()
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    planned_item = next(
+        (
+            item
+            for item in (blueprint.get("exercise_plan") or [])
+            if isinstance(item, dict)
+            and str(item.get("plan_item_id") or "").strip() == plan_item_id
+        ),
+        {},
+    )
+    candidates = (
+        planned_item.get("source_refs")
+        or exercise.get("source_refs")
+        or [planned_item.get("source_question_id") or exercise.get("source_question_id")]
+    )
+    if not isinstance(candidates, list):
+        candidates = [candidates]
+    refs: list[str] = []
+    for value in candidates or []:
+        source_ref = str(value or "").strip()[:80]
+        if source_ref and source_ref not in refs:
+            refs.append(source_ref)
+        if len(refs) >= 3:
+            break
+    return refs
 
 
 def _now() -> str:
@@ -521,6 +560,7 @@ def update_practice_exercise(
             f"第 {exercise_index + 1} 题已在另一个页面或窗口中修改，本次未覆盖较新内容。"
         )
     patched = strip_practice_answer_content({"exercises": [{**exercise}]})["exercises"][0]
+    stable_source_refs = _stable_practice_source_refs(data, current)
     for field in (
         "exercise_id",
         "number",
@@ -535,6 +575,9 @@ def update_practice_exercise(
     ):
         if current.get(field) not in (None, ""):
             patched[field] = current.get(field)
+    if stable_source_refs:
+        patched["source_question_id"] = stable_source_refs[0]
+        patched["source_refs"] = stable_source_refs
     exercises[exercise_index] = patched
     updated_semantic_review = semantic_review
     if updated_semantic_review is None and isinstance(data.get("semantic_review"), dict):
