@@ -1,5 +1,7 @@
 """Content capability contracts and the application-wide registry."""
 
+from typing import TYPE_CHECKING, Any
+
 from .academic_expressions import AcademicExpression, ExpressionKind, audit_academic_expressions
 from .contracts import CapabilityManifest, ExpressionRule, KeywordRule
 from .expression_rendering import (
@@ -22,7 +24,6 @@ from .quality_budget import QualityExecutionBudget
 from .quality_governance import ActionCeiling, EvidenceClass, RuleGovernance, governance_for
 from .registry import CapabilityRegistry
 from .rendering import RendererRegistry, assemble_renderer_registry, renderer_binding_issues
-from .selective_review import collect_selective_review_candidates, review_selective_quality
 from .shadow_quality import build_shadow_quality_report
 from .text_expression_rendering import (
     TextExpressionRenderPlan,
@@ -31,6 +32,30 @@ from .text_expression_rendering import (
     reaction_text_to_latex,
     repair_json_escaped_latex,
 )
+
+if TYPE_CHECKING:
+    from .selective_review import collect_selective_review_candidates, review_selective_quality
+
+_LAZY_SELECTIVE_REVIEW_EXPORTS = frozenset(
+    {
+        "collect_selective_review_candidates",
+        "review_selective_quality",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _LAZY_SELECTIVE_REVIEW_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import selective_review
+
+    value = getattr(selective_review, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _LAZY_SELECTIVE_REVIEW_EXPORTS)
 
 __all__ = [
     "CapabilityManifest",
