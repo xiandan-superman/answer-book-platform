@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from .paths import DATA_ROOT
+from .redaction import redact_credentials
 
 MODEL_DIAGNOSTICS_DIR = DATA_ROOT / "model_diagnostics"
 PER_TASK_LIMIT_BYTES = 25 * 1024 * 1024
@@ -53,10 +54,7 @@ def _safe_id(value: Any, fallback: str = "unscoped") -> str:
 
 
 def _redact_text(value: Any, limit: int = MAX_TEXT_BYTES) -> str:
-    text = str(value or "")
-    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1***", text)
-    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "***", text)
-    text = re.sub(r"(?i)(api[_-]?key|password|secret|access[_-]?token)(\s*[:=]\s*)[^\s,;]+", r"\1\2***", text)
+    text = redact_credentials(value)
     home = str(Path.home())
     if home:
         text = text.replace(home, "<user-home>")

@@ -6,7 +6,6 @@ import json
 import os
 import platform
 import random
-import re
 import tempfile
 import threading
 import time
@@ -19,6 +18,7 @@ from uuid import uuid4
 
 from .model_diagnostics import diagnostic_attachments, relevant_model_diagnostics
 from .paths import DATA_ROOT, LOCAL_CONFIG_DIR, PROJECT_ROOT
+from .redaction import redact_credentials
 from .runtime_monitor import ERROR_TRACE_LOG, MODEL_CALL_LEDGER, RUNTIME_LOG
 from .task_store import load_task, task_dir
 from .version import get_app_version, get_source_revision
@@ -142,10 +142,7 @@ def _config() -> dict[str, str]:
 
 
 def _redact(value: Any, limit: int = 20000) -> str:
-    text = str(value or "")
-    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1***", text)
-    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "***", text)
-    text = re.sub(r"(?i)(api[_-]?key|password|secret|access[_-]?token)(\s*[:=]\s*)[^\s,;]+", r"\1\2***", text)
+    text = redact_credentials(value)
     home = str(Path.home())
     if home:
         text = text.replace(home, "<user-home>")
@@ -484,6 +481,7 @@ def _practice_job_content(job_id: str) -> dict[str, Any]:
         "started_at": _sanitize(record.get("started_at")),
         "completed_at": _sanitize(record.get("completed_at")),
         "elapsed_seconds": _sanitize(record.get("elapsed_seconds")),
+        "support_id": _sanitize(record.get("support_id")),
         "error": _sanitize(record.get("error")),
         "progress_message": _sanitize(record.get("progress_message")),
         "model_usage": _sanitize(record.get("model_usage") or {}),

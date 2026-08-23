@@ -50,6 +50,31 @@ def test_practice_job_records_worker_failure(tmp_path, monkeypatch):
     assert failed["diagnostic_context"]["pinned_model_traces"] == 2
     assert failed["diagnostic_context"]["exception_type"] == "RuntimeError"
     assert "raise error" in failed["diagnostic_context"]["traceback"]
+    assert failed["support_id"].startswith("PJ-")
+
+
+def test_practice_failure_diagnostics_redact_credentials_but_keep_provider_response(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(practice_jobs, "pin_model_diagnostics_for_failure", lambda _job_id: 1)
+    created = practice_jobs.create_practice_job("analyze", {"source_mode": "knowledge"})
+    secret = "ark-12345678-1234-1234-1234-123456789abc-secret"
+
+    def fail(_operation, _payload):
+        error = RuntimeError(
+            f'Provider HTTP 404: {{"code":"InvalidEndpointOrModel.NotFound","api_key":"{secret}","request_id":"req-kept"}}'
+        )
+        error.failure_context = {"provider_response": {"request_id": "req-kept", "api_key": secret}}
+        raise error
+
+    practice_jobs.run_practice_job(created["job_id"], fail)
+    failed = practice_jobs.load_practice_job(created["job_id"])
+    serialized = str(failed)
+
+    assert secret not in serialized
+    assert "InvalidEndpointOrModel.NotFound" in serialized
+    assert "req-kept" in serialized
+    assert failed["failure_context"]["provider_response"]["api_key"] == "***"
+    assert failed["support_id"].startswith("PJ-")
 
 
 def test_interrupted_jobs_can_be_requeued_after_server_restart(tmp_path, monkeypatch):

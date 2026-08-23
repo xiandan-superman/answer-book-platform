@@ -214,6 +214,63 @@ def test_low_level_failures_are_presented_as_actionable_user_messages() -> None:
     assert document and document.kind == "document_failed" and "Word" in document.message
 
 
+def test_provider_configuration_failures_are_specific_but_do_not_expose_raw_responses() -> None:
+    cases = [
+        (
+            'Provider HTTP 401: {"error":{"code":"Unauthorized","message":"invalid api key","request_id":"req-401"}}',
+            "provider_authentication",
+            "可能无效、已过期",
+        ),
+        (
+            'Provider HTTP 403: {"error":{"code":"Forbidden","message":"access denied","request_id":"req-403"}}',
+            "provider_permission",
+            "权限",
+        ),
+        (
+            'Provider HTTP 404: {"error":{"code":"InvalidEndpointOrModel.NotFound","message":"model not found","request_id":"req-404"}}',
+            "provider_target_not_found",
+            "Endpoint",
+        ),
+    ]
+
+    for raw, kind, expected in cases:
+        presentation = present_error(raw, support_id="PJ-SAFE123456")
+        assert presentation is not None
+        assert presentation.kind == kind
+        assert expected in presentation.message
+        assert presentation.support_id == "PJ-SAFE123456"
+        public = f"{presentation.title} {presentation.message} {presentation.retry_hint}"
+        assert "request_id" not in public
+        assert "req-" not in public
+        assert "InvalidEndpointOrModel" not in public
+
+
+def test_unknown_provider_failure_and_timeout_have_sanitized_public_copy() -> None:
+    unknown = present_error(
+        'Provider exploded: {"internal_code":"opaque-77","request_id":"req-secret"}',
+        support_id="PJ-UNKNOWN01",
+    )
+    timeout = present_error(
+        "Provider request failed: The read operation timed out; request_id=req-timeout",
+        support_id="PJ-TIMEOUT01",
+    )
+    image_response = present_error(
+        "Unexpected image response shape: {'request_id': 'req-image', 'internal_code': 'opaque-image'}",
+        support_id="PJ-IMAGE001",
+    )
+
+    assert unknown and unknown.kind == "provider_error"
+    assert "opaque-77" not in unknown.message
+    assert "req-secret" not in unknown.message
+    assert unknown.support_id == "PJ-UNKNOWN01"
+    assert timeout and timeout.kind == "provider_timeout"
+    assert "req-timeout" not in timeout.message
+    assert timeout.support_id == "PJ-TIMEOUT01"
+    assert image_response and image_response.kind == "provider_error"
+    assert "req-image" not in image_response.message
+    assert "opaque-image" not in image_response.message
+
+
 def test_practice_job_api_includes_public_error_presentation() -> None:
     from app.server import _practice_job_api_payload
 
@@ -222,11 +279,23 @@ def test_practice_job_api_includes_public_error_presentation() -> None:
         "status": "failed",
         "current_stage": "analyze",
         "error": "Provider request failed: The read operation timed out",
+        "support_id": "PJ-API000001",
+        "warning_reason": "Provider request failed: The read operation timed out; request_id=req-hidden",
+        "suggested_action": "raw retry hint",
+        "diagnostic_context": {"traceback": "raw provider traceback"},
+        "failure_context": {"provider_response": "raw provider response"},
     })
 
     assert payload["error"]
     assert payload["error_presentation"]["kind"] == "provider_timeout"
     assert payload["error_presentation"]["message"] == "模型服务在规定时间内没有返回完整结果。"
+    assert payload["error_presentation"]["support_id"] == "PJ-API000001"
+    assert payload["error"] == "模型服务在规定时间内没有返回完整结果。"
+    assert "diagnostic_context" not in payload
+    assert "failure_context" not in payload
+    assert "req-hidden" not in str(payload)
+    assert payload["warning_reason"] == payload["error_presentation"]["message"]
+    assert payload["suggested_action"] == payload["error_presentation"]["retry_hint"]
 
 
 def test_provider_timeout_has_scenario_specific_recovery_copy() -> None:
@@ -269,6 +338,33 @@ def test_practice_batch_is_one_run_with_multiple_steps() -> None:
     assert runs[0]["task_id"] == "generation_plan"
     assert runs[0]["status"] == "failed"
     assert [step["operation"] for step in runs[0]["steps"]] == ["analyze", "plan"]
+
+
+def test_practice_task_center_contract_never_exposes_raw_provider_errors() -> None:
+    raw = 'Provider HTTP 404: {"code":"InvalidEndpointOrModel.NotFound","request_id":"req-private"}'
+    runs = build_practice_runs(
+        [{
+            "job_id": "generation_provider_failure",
+            "practice_batch_id": "batch-provider-failure",
+            "task_kind": "knowledge",
+            "operation": "analyze",
+            "status": "failed",
+            "current_stage": "failed",
+            "created_at": "2026-08-23T10:00:00+08:00",
+            "updated_at": "2026-08-23T10:01:00+08:00",
+            "support_id": "PJ-TASKCENTER",
+            "error": raw,
+        }],
+        [],
+    )
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["error_presentation"]["kind"] == "provider_target_not_found"
+    assert run["error_presentation"]["support_id"] == "PJ-TASKCENTER"
+    assert "InvalidEndpointOrModel" not in run["error"]
+    assert "req-private" not in str(run)
+    assert run["steps"][0]["error"] == run["error"]
 
 
 def test_legacy_completed_background_steps_do_not_pollute_task_center() -> None:

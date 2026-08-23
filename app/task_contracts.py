@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
@@ -53,6 +55,18 @@ class ErrorPresentation:
     title: str
     message: str
     retry_hint: str
+    support_id: str = ""
+
+
+def public_support_id(value: str = "", *, task_id: str = "") -> str:
+    existing = str(value or "").strip()[:80]
+    if existing:
+        return existing
+    stable_task_id = str(task_id or "").strip()
+    if not stable_task_id:
+        return ""
+    digest = hashlib.sha256(stable_task_id.encode("utf-8")).hexdigest()[:10].upper()
+    return f"PJ-{digest}"
 
 
 def quality_presentation(
@@ -126,28 +140,77 @@ def quality_from_practice(data: dict[str, Any] | None) -> QualityStatus:
     return QualityStatus.UNKNOWN
 
 
-def present_error(error: str, *, stage: str = "") -> ErrorPresentation | None:
+def present_error(error: str, *, stage: str = "", support_id: str = "") -> ErrorPresentation | None:
     text = str(error or "").strip()
     lowered = text.lower()
     if not text:
         return None
+    public_support_id = str(support_id or "").strip()[:80]
+
+    def public(kind: str, title: str, message: str, retry_hint: str) -> ErrorPresentation:
+        return ErrorPresentation(kind, title, message, retry_hint, public_support_id)
+
     if "用户拒绝" in text or "user reject" in lowered:
-        return ErrorPresentation("review_rejected", "等待修正后重新确认", "本次结构确认已被拒绝，任务没有进入后续生成。", "修正题目结构后，从结构确认阶段继续。")
+        return public("review_rejected", "等待修正后重新确认", "本次结构确认已被拒绝，任务没有进入后续生成。", "修正题目结构后，从结构确认阶段继续。")
     if "524" in lowered or "timeout" in lowered or "timed out" in lowered or "超时" in text:
-        return ErrorPresentation("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。")
+        return public("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。")
+    if re.search(r"\b401\b", lowered) or any(marker in lowered for marker in ("unauthorized", "authentication failed", "invalid api key", "invalid_api_key")):
+        return public(
+            "provider_authentication",
+            "模型服务认证失败",
+            "API Key 可能无效、已过期，或模型服务未通过认证。",
+            "请打开 API 配置，检查并重新测试对应平台的 Key；验证成功后再重试。",
+        )
+    if re.search(r"\b403\b", lowered) or any(marker in lowered for marker in ("permission denied", "forbidden", "access denied")):
+        return public(
+            "provider_permission",
+            "模型服务权限不足",
+            "当前账号或 API Key 可能没有所选模型、Endpoint 或区域的访问权限。",
+            "请检查账号和模型权限，或在 API 配置中改用已获授权的模型后再重试。",
+        )
+    if re.search(r"\b404\b", lowered) or any(marker in lowered for marker in ("invalidendpointormodel", "model or endpoint", "endpoint not found", "model not found")):
+        return public(
+            "provider_target_not_found",
+            "模型服务配置不匹配",
+            "所选模型名称、Endpoint 或可用区域可能不匹配，模型服务未找到可用目标。",
+            "请打开 API 配置，核对模型名称、Endpoint 和可用区域；连接验证成功后再重试。",
+        )
+    provider_markers = (
+        "provider", "api key", "apikey", "endpoint", "model service", "llmerror",
+        "model returned", "model content", "image response", "streaming response", "dashscope",
+        "模型服务", "模型连接", "模型调用", "供应商",
+    )
+    configuration_markers = (
+        "configuration", "configured", "credential", "endpoint", "api key", "apikey",
+        "配置", "凭据", "认证", "权限",
+    )
+    if any(marker in lowered for marker in provider_markers) and any(marker in lowered for marker in configuration_markers):
+        return public(
+            "provider_configuration",
+            "模型服务配置不可用",
+            "当前模型服务配置不可用，具体原因尚不能确定。",
+            "请打开 API 配置，检查平台、Key、模型和 Endpoint，连接验证成功后再重试。",
+        )
     if ("strategy" in lowered and "plan" in lowered) or "策略" in text and "一致" in text:
-        return ErrorPresentation("strategy_mismatch", "出题策略与蓝图不一致", "任务请求的出题策略和已确认蓝图不匹配。", "重新校验蓝图策略后再生成，不应直接沿用冲突参数。")
+        return public("strategy_mismatch", "出题策略与蓝图不一致", "任务请求的出题策略和已确认蓝图不匹配。", "重新校验蓝图策略后再生成，不应直接沿用冲突参数。")
     if "json" in lowered:
-        return ErrorPresentation("invalid_model_output", "模型返回格式无效", "模型返回内容无法通过结构化格式校验。", "可重试当前模型步骤；已确认的范围和蓝图不需要重新生成。")
+        return public("invalid_model_output", "模型返回格式无效", "模型返回内容无法通过结构化格式校验。", "可重试当前模型步骤；已确认的范围和蓝图不需要重新生成。")
     if "重启" in text or "interrupt" in lowered or "interpreter shutdown" in lowered or "cannot schedule new futures" in lowered:
-        return ErrorPresentation("interrupted", "任务因服务重启中断", "服务停止时该任务仍在运行，当前引擎无法自动续接。", "从已保存的检查点重新运行，并保留原任务记录用于对照。")
+        return public("interrupted", "任务因服务重启中断", "服务停止时该任务仍在运行，当前引擎无法自动续接。", "从已保存的检查点重新运行，并保留原任务记录用于对照。")
     if stage == "final_acceptance" or "final acceptance" in lowered or "最终验收" in text:
-        return ErrorPresentation("final_acceptance_failed", "最终验收未通过", "交付产物存在阻断问题，当前结果不能作为正式交付。", "查看具体阻断项，修复对应阶段后重新验收。")
+        return public("final_acceptance_failed", "最终验收未通过", "交付产物存在阻断问题，当前结果不能作为正式交付。", "查看具体阻断项，修复对应阶段后重新验收。")
     if stage == "figures" or "figure" in lowered or "图件" in text:
-        return ErrorPresentation("figure_failed", "图件生成或审查未通过", "至少一个题目图件未正确生成或未通过专业规则审查。", "定位具体题号和图件，从图件阶段修复。")
+        return public("figure_failed", "图件生成或审查未通过", "至少一个题目图件未正确生成或未通过专业规则审查。", "定位具体题号和图件，从图件阶段修复。")
     if stage in {"docx", "render"} or "docx audit" in lowered:
-        return ErrorPresentation("document_failed", "文档生成或格式校验未通过", "解析内容已保留，但 Word 生成、格式或渲染检查存在阻断问题。", "查看文档诊断后从已保存的内容重新生成，无需重做已通过的解析。")
-    return ErrorPresentation("workflow_failed", "任务执行未完成", text, "查看失败阶段和诊断记录后，从匹配的检查点重试。")
+        return public("document_failed", "文档生成或格式校验未通过", "解析内容已保留，但 Word 生成、格式或渲染检查存在阻断问题。", "查看文档诊断后从已保存的内容重新生成，无需重做已通过的解析。")
+    if any(marker in lowered for marker in provider_markers):
+        return public(
+            "provider_error",
+            "模型服务暂时不可用",
+            "模型服务返回异常，本次任务没有完整完成。",
+            "请先检查 API 配置和模型服务状态；确认配置可用后，再从当前检查点重试。",
+        )
+    return public("workflow_failed", "任务执行未完成", text, "查看失败阶段和诊断记录后，从匹配的检查点重试。")
 
 
 def exam_run_status(row: dict[str, Any]) -> RunStatus:
@@ -231,9 +294,10 @@ def enrich_contract(
     stage: str,
     operation: str = "",
     error: str = "",
+    support_id: str = "",
     final_acceptance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    presentation = None if status == RunStatus.CANCELLED else present_error(error, stage=stage)
+    presentation = None if status == RunStatus.CANCELLED else present_error(error, stage=stage, support_id=support_id)
     capabilities = capabilities_for(
         workflow,
         status,
@@ -244,6 +308,7 @@ def enrich_contract(
     )
     return {
         **row,
+        "error": presentation.message if presentation else str(row.get("error") or ""),
         "record_type": "run",
         "workflow_type": workflow.value,
         "engine_status": row.get("status") or "",

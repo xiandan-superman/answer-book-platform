@@ -48,7 +48,7 @@ def test_model_diagnostic_keeps_relevant_content_and_redacts_credentials() -> No
         image = base64.b64encode(b"small-image").decode("ascii")
         call = {"task_id": "task-1", "call_id": "1", "stage": "answer_generation", "active_item": "q1"}
         request = {
-            "api_key": "sk-secret-value",
+            "api_key": "ark-12345678-1234-1234-1234-123456789abc-secret",
             "messages": [{"role": "user", "content": "请回答这道题"}],
             "image_url": f"data:image/png;base64,{image}",
         }
@@ -61,7 +61,7 @@ def test_model_diagnostic_keeps_relevant_content_and_redacts_credentials() -> No
         text = json.dumps(traces, ensure_ascii=False)
         assert "请回答这道题" in text
         assert "模型原始答案" in text
-        assert "sk-secret-value" not in text
+        assert "ark-12345678-1234-1234-1234-123456789abc-secret" not in text
         assert '"api_key": "***"' in text
         assert len(attachments) == 1
         assert attachments[0].read_bytes() == b"small-image"

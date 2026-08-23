@@ -108,7 +108,7 @@ from .shared_textbook_library import (
     sync_shared_textbook_library,
 )
 from .support_reporting import start_support_retry_worker, stop_support_retry_worker, submit_support_report, support_status
-from .task_contracts import present_error
+from .task_contracts import present_error, public_support_id
 from .task_control import delete_task
 from .task_diagnostics import build_task_diagnostics
 from .task_read_model import build_exam_run, build_practice_runs
@@ -478,14 +478,26 @@ def _practice_job_task_row(record: dict) -> dict:
 
 
 def _practice_job_api_payload(record: dict) -> dict:
+    support_id = public_support_id(
+        str(record.get("support_id") or ""),
+        task_id=str(record.get("job_id") or ""),
+    )
     presentation = present_error(
         str(record.get("error") or ""),
         stage=str(record.get("current_stage") or ""),
+        support_id=support_id,
     )
-    return {
+    payload = {
         **record,
+        "error": presentation.message if presentation else "",
+        "support_id": support_id if presentation else "",
+        "warning_reason": presentation.message if presentation else str(record.get("warning_reason") or ""),
+        "suggested_action": presentation.retry_hint if presentation else str(record.get("suggested_action") or ""),
         "error_presentation": asdict(presentation) if presentation else None,
     }
+    payload.pop("diagnostic_context", None)
+    payload.pop("failure_context", None)
+    return payload
 
 
 def _start_practice_job(operation: str, payload: dict) -> dict:

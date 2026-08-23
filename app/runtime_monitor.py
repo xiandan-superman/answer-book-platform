@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import re
 import shutil
 import threading
 import time
@@ -15,9 +14,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from .concurrency import model_request_context, model_request_snapshot
 from .capabilities.quality_budget import QualityExecutionBudget
+from .concurrency import model_request_context, model_request_snapshot
 from .paths import DATA_ROOT, LOGS_DIR, PROJECT_ROOT, TASKS_DIR, ensure_project_dirs
+from .redaction import redact_credentials
 from .resource_ids import bounded_resource_path
 from .task_store import list_tasks, load_task
 from .version import get_version
@@ -43,9 +43,7 @@ def _now() -> str:
 
 
 def _safe_text(value: Any, limit: int = MAX_TEXT_LENGTH) -> str:
-    text = str(value or "")
-    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1***", text)
-    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "***", text)
+    text = redact_credentials(value)
     return text if len(text) <= limit else f"{text[:limit]}..."
 
 

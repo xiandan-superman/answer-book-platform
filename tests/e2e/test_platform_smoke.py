@@ -465,3 +465,114 @@ def test_terminal_recovery_and_stale_callbacks_preserve_the_current_page() -> No
             assert "任务未完成测试说明" in page.locator("#knowledgeError").inner_text()
 
         browser.close()
+
+
+def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_actions() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+        job_id = "generation_provider_config_failure"
+        raw_error = (
+            'Provider HTTP 404: {"code":"InvalidEndpointOrModel.NotFound",'
+            '"request_id":"req-must-not-be-visible"}'
+        )
+        presentation = {
+            "kind": "provider_target_not_found",
+            "title": "模型服务配置不匹配",
+            "message": "所选模型名称、Endpoint 或可用区域可能不匹配，模型服务未找到可用目标。",
+            "retry_hint": "请打开 API 配置，核对模型名称、Endpoint 和可用区域；连接验证成功后再重试。",
+            "support_id": "PJ-E2ESAFE001",
+        }
+        job = _practice_recovery_job(job_id, "failed", "配置恢复测试")
+        job.update({
+            "error": raw_error,
+            "error_presentation": presentation,
+            "support_id": presentation["support_id"],
+        })
+        task = {
+            "task_id": job_id,
+            "task_kind": "knowledge",
+            "practice_batch_id": "batch-provider-config",
+            "is_generation_task": True,
+            "is_generation_job": True,
+            "operation": "analyze",
+            "display_title": "知识点出题 · 配置恢复测试",
+            "description": "配置恢复测试",
+            "exam_path": "配置恢复测试",
+            "provider": "ark",
+            "model": "invalid-model",
+            "status": "failed",
+            "current_stage": "failed",
+            "created_at": "2026-08-23T10:00:00+08:00",
+            "updated_at": "2026-08-23T10:01:00+08:00",
+            "error": presentation["message"],
+            "error_presentation": presentation,
+            "support_id": presentation["support_id"],
+            "progress_percent": 100,
+            "steps": [{"operation": "analyze", "status": "failed"}],
+            "health": {"health_status": "error", "warning_reason": presentation["message"]},
+            "capabilities": {"view_detail": True, "view_quality": True, "retry": True},
+        }
+
+        context.route(
+            "**/api/practice/jobs/**",
+            lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(job, ensure_ascii=False)),
+        )
+        context.route(
+            "**/api/tasks",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"tasks": [task], "schema_version": 1}, ensure_ascii=False),
+            ),
+        )
+
+        page.goto(base_url, wait_until="networkidle")
+        page.evaluate("jobId => localStorage.setItem('activePracticeJobId', jobId)", job_id)
+        page.reload(wait_until="networkidle")
+        page.locator("#practiceRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        recovery_copy = page.locator("#practiceRecoveryNotice").inner_text()
+        assert presentation["message"] in recovery_copy
+        assert presentation["retry_hint"] in recovery_copy
+        assert presentation["support_id"] in recovery_copy
+        assert "InvalidEndpointOrModel" not in recovery_copy
+        assert "req-must-not-be-visible" not in recovery_copy
+        assert page.locator("#page-home.active").is_visible()
+
+        page.locator("#practiceRecoveryOpenBtn").click()
+        page.locator("#page-knowledge.active").wait_for(timeout=4000)
+        detail_copy = page.locator("#knowledgeError").inner_text()
+        assert presentation["message"] in detail_copy
+        assert presentation["retry_hint"] in detail_copy
+        assert presentation["support_id"] in detail_copy
+        assert "InvalidEndpointOrModel" not in detail_copy
+
+        page.evaluate("openTaskManager('knowledge')")
+        page.locator("#page-tasks.active").wait_for(timeout=4000)
+        card = page.locator("#taskManagerList .task-manager-item").filter(has_text="配置恢复测试")
+        task_copy = card.inner_text()
+        assert presentation["message"] in task_copy
+        assert presentation["retry_hint"] in task_copy
+        assert presentation["support_id"] in task_copy
+        assert "InvalidEndpointOrModel" not in task_copy
+        assert card.locator('[data-action="job-config"]').is_visible()
+        assert card.locator('[data-action="job-retry"]').is_visible()
+
+        card.locator('[data-action="job-config"]').click()
+        page.locator("#page-keys.active").wait_for(timeout=4000)
+        page.evaluate("openTaskManager('knowledge')")
+        card = page.locator("#taskManagerList .task-manager-item").filter(has_text="配置恢复测试")
+        card.locator('[data-action="job-retry"]').click()
+        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        assert page.locator("#platformDialogConfirm").inner_text() == "确认重试"
+        assert "连接验证成功后再重试" in page.locator("#platformDialogMessage").inner_text()
+        page.locator("#platformDialogCancel").click()
+
+        browser.close()

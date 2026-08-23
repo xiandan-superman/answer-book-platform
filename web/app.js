@@ -1574,6 +1574,26 @@ function practiceRecoveryNoticeKey(job = {}) {
   return `${String(job.job_id || "")}:${String(job.status || "unknown")}`;
 }
 
+function practiceErrorNeedsConfiguration(presentation = {}) {
+  return [
+    "provider_authentication",
+    "provider_permission",
+    "provider_target_not_found",
+    "provider_configuration",
+  ].includes(String(presentation.kind || ""));
+}
+
+function practicePublicErrorText(presentation = {}, fallback = "任务执行失败。", { includeAction = true } = {}) {
+  const message = String(presentation.message || fallback || "任务执行失败。").trim();
+  const action = String(presentation.retry_hint || "").trim();
+  const supportId = String(presentation.support_id || "").trim();
+  return [
+    message,
+    includeAction && action ? `建议：${action}` : "",
+    supportId ? `诊断编号：${supportId}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 function hidePracticeRecoveryNotice({ dismiss = false } = {}) {
   const notice = $("practiceRecoveryNotice");
   if (dismiss && practiceRecoveryNoticeJob) {
@@ -1605,10 +1625,11 @@ function practiceRecoveryNoticeMeta(job = {}, { navigationChanged = false } = {}
     };
   }
   if (status === "failed") {
+    const presentation = job.error_presentation || {};
     return {
       eyebrow: "后台任务未完成",
       title: taskName,
-      message: job.error_presentation?.message || job.error || "任务执行失败，当前页面和已有任务记录均已保留。",
+      message: practicePublicErrorText(presentation, job.error || "任务执行失败，当前页面和已有任务记录均已保留。"),
       action: "查看详情",
       tone: "danger",
     };
@@ -1680,9 +1701,9 @@ function renderStoppedPracticeRecoveryJob(job = {}) {
   }
   const errorBox = $(stoppedKnowledgeAnalyze ? "knowledgeError" : "practiceError");
   if (errorBox) {
-    errorBox.textContent = job.error_presentation?.message
-      || job.error
-      || (job.status === "cancelled" ? "后台出题任务已取消。" : "后台出题任务失败。");
+    errorBox.textContent = job.status === "cancelled"
+      ? (job.error_presentation?.message || job.error || "后台出题任务已取消。")
+      : practicePublicErrorText(job.error_presentation || {}, job.error || "后台出题任务失败。");
     errorBox.classList.remove("hidden");
   }
 }
@@ -8365,7 +8386,9 @@ function renderTaskManager(tasks = latestTasks) {
       className: contractQuality.class_name,
       icon: contractQuality.icon,
     } : null;
-    const errorMessage = task.error_presentation?.message || task.error || "";
+    const errorMessage = task.error_presentation
+      ? practicePublicErrorText(task.error_presentation, task.error || "")
+      : (task.error || "");
     const defaultProgressMessage = formatTask
       ? (errorMessage || task.progress_message || "格式审查任务已保存")
       : generationTask
@@ -8805,6 +8828,7 @@ function taskManagerActions(task = {}, reviewPending = false) {
       add(caps.view_result, "job-result", "blue-action", "fas fa-eye", task.operation === "plan" ? "审查蓝图" : task.operation === "analyze" ? "审查范围" : "查看题目");
       add(caps.view_progress && !caps.view_result, "job-status", "blue-action", task.status === "running" ? "fas fa-spinner fa-spin" : "fas fa-eye", task.status === "failed" ? "查看原因" : "查看进度");
       add(caps.view_quality && task.status === "failed", "job-status", "red-action", "fas fa-triangle-exclamation", "查看原因");
+      add(caps.retry && practiceErrorNeedsConfiguration(task.error_presentation), "job-config", "blue-action", "fas fa-key", "检查 API 配置");
       add(caps.retry, "job-retry", "green-action", "fas fa-rotate", "从检查点重试");
       add(caps.cancel, "job-cancel", "red-action", "fas fa-times", "取消任务");
     } else {
@@ -8846,7 +8870,12 @@ function generationTaskManagerActions(task = {}) {
       const resultLabel = task.operation === "plan" ? "查看蓝图" : (task.operation === "analyze" ? "查看范围" : "查看题目");
       return `<button type="button" class="task-card-button blue-action" data-action="job-result"><i class="fas fa-eye"></i>${resultLabel}</button>`;
     }
-    if (task.status === "failed") return '<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>查看原因</button><button type="button" class="task-card-button green-action" data-action="job-retry"><i class="fas fa-rotate"></i>重试任务</button>';
+    if (task.status === "failed") {
+      const configAction = practiceErrorNeedsConfiguration(task.error_presentation)
+        ? '<button type="button" class="task-card-button blue-action" data-action="job-config"><i class="fas fa-key"></i>检查 API 配置</button>'
+        : "";
+      return `<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>查看原因</button>${configAction}<button type="button" class="task-card-button green-action" data-action="job-retry"><i class="fas fa-rotate"></i>重试任务</button>`;
+    }
     return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-spinner fa-spin"></i>查看进度</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
   }
   return [
@@ -8923,6 +8952,7 @@ async function handleTaskManagerAction(task, action, button = null) {
   }
   if (task.is_generation_task) {
     if (task.is_generation_job && (action === "job-status" || action === "job-result")) await openGenerationJob(task);
+    else if (task.is_generation_job && action === "job-config") goToPage("keys");
     else if (task.is_generation_job && action === "job-retry") await retryGenerationJob(task);
     else if (task.is_generation_job && action === "job-cancel") await cancelGenerationJob(task);
     else if (action === "result") await openGenerationTaskResult(task);
@@ -9029,7 +9059,7 @@ async function retryGenerationJob(task) {
     plan: "将复用原始材料和已确认范围，重新设计蓝图。",
     generate_from_plan: "将复用已确认蓝图和可用的部分题目，只对缺失或失败内容继续调用模型。"
   };
-  const presentation = task.error_presentation || {};
+  const presentation = failed.error_presentation || task.error_presentation || {};
   const confirmed = await platformConfirm({
     eyebrow: "任务恢复",
     title: presentation.title || "重试出题任务？",
@@ -9071,16 +9101,18 @@ async function openGenerationJob(task) {
     const job = await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}?detail=1`);
     if (sessionVersion !== practiceSessionVersion) return;
     if (job.status === "failed") {
-      const presentation = task.error_presentation || {};
-      const retryNow = await platformConfirm({
+      const presentation = job.error_presentation || task.error_presentation || {};
+      const configurationRequired = practiceErrorNeedsConfiguration(presentation);
+      const nextAction = await platformConfirm({
         eyebrow: "任务未完成",
         title: presentation.title || "出题失败",
-        message: `${presentation.message || job.error || "后台出题任务失败。"}${presentation.retry_hint ? `\n\n恢复方式：${presentation.retry_hint}` : ""}`,
+        message: practicePublicErrorText(presentation, job.error || "后台出题任务失败。"),
         tone: "danger",
-        confirmText: "从检查点重试",
+        confirmText: configurationRequired ? "检查 API 配置" : "从检查点重试",
         cancelText: "暂不处理"
       });
-      if (retryNow) await retryGenerationJob(task);
+      if (nextAction && configurationRequired) goToPage("keys");
+      else if (nextAction) await retryGenerationJob(task);
       return;
     }
     latestPracticeRequest = job.payload || latestPracticeRequest;

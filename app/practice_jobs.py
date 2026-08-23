@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .model_diagnostics import delete_model_diagnostics, pin_model_diagnostics_for_failure
 from .paths import DATA_ROOT
+from .redaction import redact_credentials, redact_diagnostic_value
 from .runtime_capacity import bounded_env_int, practice_job_max_concurrency
 from .runtime_monitor import model_call_context, model_call_cost_summary
 
@@ -120,6 +121,10 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _new_support_id() -> str:
+    return f"PJ-{uuid4().hex[:10].upper()}"
+
+
 def _path(job_id: str) -> Path:
     if not job_id.startswith("generation_") or "/" in job_id or ".." in job_id:
         raise ValueError("出题任务 ID 无效。")
@@ -218,6 +223,7 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         "payload": payload,
         "result": None,
         "failure_context": {},
+        "support_id": "",
         "history_id": "",
         "error": "",
         "request_fingerprint": practice_job_fingerprint(operation, payload),
@@ -485,6 +491,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             job_id,
             status="running",
             error="",
+            support_id="",
             last_heartbeat_at=_now(),
             last_progress_at=_now(),
             health_status="normal",
@@ -518,6 +525,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     last_heartbeat_at=_now(),
                     status="failed",
                     current_stage="failed",
+                    support_id=_new_support_id(),
                     error=f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待，可直接重试。",
                     model_usage=model_call_cost_summary(job_id),
                     diagnostic_context={"pinned_model_traces": pinned_model_traces},
@@ -578,12 +586,13 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             )
     except BaseException as exc:
         if load_practice_job(job_id).get("status") == "running":
-            exception_traceback = traceback.format_exc()
+            exception_text = redact_credentials(str(exc) or exc.__class__.__name__)
+            exception_traceback = redact_credentials(traceback.format_exc())
             try:
                 pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
             except Exception:
                 pinned_model_traces = 0
-            failure_context = getattr(exc, "failure_context", {})
+            failure_context = redact_diagnostic_value(getattr(exc, "failure_context", {}))
             if not isinstance(failure_context, dict):
                 failure_context = {}
             failed_record = update_practice_job(
@@ -591,7 +600,8 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 expected_status="running",
                 status="failed",
                 current_stage="failed",
-                error=str(exc) or exc.__class__.__name__,
+                support_id=_new_support_id(),
+                error=exception_text,
                 failure_context=failure_context,
                 diagnostic_context={
                     "pinned_model_traces": pinned_model_traces,
@@ -602,7 +612,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 progress_message="后台任务异常结束。",
                 last_heartbeat_at=_now(),
                 health_status="error",
-                warning_reason=str(exc) or exc.__class__.__name__,
+                warning_reason=exception_text,
                 suggested_action="可重新运行任务。",
                 completed_at=_now(),
                 elapsed_seconds=max(0, int(time.monotonic() - started)),
@@ -639,6 +649,7 @@ def recover_practice_jobs(*, fail_interrupted: bool = True) -> list[dict[str, An
                 expected_status=str(record.get("status") or ""),
                 status="failed",
                 current_stage="failed",
+                support_id=_new_support_id(),
                 error="服务重启导致任务中断，请重新发起。",
                 model_usage=model_call_cost_summary(job_id),
                 diagnostic_context={"pinned_model_traces": pinned_model_traces},
@@ -669,6 +680,7 @@ def _queue_automatic_failure_report(record: dict[str, Any]) -> None:
             "task_model": str(record.get("model") or payload.get("model") or ""),
             "practice_batch_id": str(record.get("practice_batch_id") or ""),
             "operation": str(record.get("operation") or ""),
+            "support_id": str(record.get("support_id") or ""),
             "error": str(record.get("error") or ""),
         })
     except Exception:

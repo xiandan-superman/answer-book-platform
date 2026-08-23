@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
@@ -10,6 +11,8 @@ from .task_contracts import (
     enrich_contract,
     exam_run_status,
     practice_run_status,
+    present_error,
+    public_support_id,
     quality_from_practice,
     quality_from_summary,
     workflow_for_kind,
@@ -133,6 +136,10 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
     status = practice_run_status(engine_status, operation=operation, quality=QualityStatus.UNKNOWN)
     kind_label = "知识点出题" if task_kind == "knowledge" else "按题出题"
     task_title = str(record.get("title") or (record.get("payload") or {}).get("task_title") or "未命名材料").strip()
+    support_id = public_support_id(
+        str(record.get("support_id") or ""),
+        task_id=str(record.get("job_id") or ""),
+    )
     row = {
         "task_id": record.get("job_id"),
         "task_kind": task_kind,
@@ -152,6 +159,7 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         "created_at": min((step.get("created_at") for step in steps if step.get("created_at")), default=record.get("created_at")),
         "updated_at": record.get("updated_at"),
         "error": record.get("error") or "",
+        "support_id": support_id,
         "progress_message": record.get("progress_message") or "",
         "elapsed_seconds": elapsed,
         "duration_text": "后台生成中" if engine_status in {"queued", "running"} else ("生成失败" if engine_status == "failed" else "等待下一步确认"),
@@ -165,8 +173,13 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         stage=str(row["current_stage"]),
         operation=operation,
         error=str(row["error"]),
+        support_id=support_id,
     )
-    result["health"] = task_health_summary(record, kind="practice")
+    public_health_record = dict(record)
+    if result.get("error_presentation"):
+        public_health_record["error"] = result["error"]
+        public_health_record["warning_reason"] = result["error"]
+    result["health"] = task_health_summary(public_health_record, kind="practice")
     return result
 
 
@@ -197,17 +210,27 @@ def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, An
             reverse=True,
         )
         current = ordered[0]
-        steps = [
-            {
+        steps = []
+        for item in sorted(group, key=lambda item: (operation_order.get(str(item.get("operation") or ""), -1), _time_key(item.get("created_at")))):
+            step_support_id = public_support_id(
+                str(item.get("support_id") or ""),
+                task_id=str(item.get("job_id") or ""),
+            )
+            step_presentation = present_error(
+                str(item.get("error") or ""),
+                stage=str(item.get("current_stage") or ""),
+                support_id=step_support_id,
+            )
+            steps.append({
                 "step_id": item.get("job_id"),
                 "operation": item.get("operation"),
                 "status": item.get("status"),
                 "current_stage": item.get("current_stage"),
                 "created_at": item.get("created_at"),
                 "updated_at": item.get("updated_at"),
-                "error": item.get("error") or "",
-            }
-            for item in sorted(group, key=lambda item: (operation_order.get(str(item.get("operation") or ""), -1), _time_key(item.get("created_at"))))
-        ]
+                "error": step_presentation.message if step_presentation else "",
+                "support_id": step_support_id if step_presentation else "",
+                "error_presentation": asdict(step_presentation) if step_presentation else None,
+            })
         job_runs.append(_practice_job_run(current, steps))
     return sorted(history_runs + job_runs, key=lambda row: _time_key(row.get("updated_at")), reverse=True)

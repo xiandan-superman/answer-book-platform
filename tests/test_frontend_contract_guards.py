@@ -141,6 +141,10 @@ def test_review_candidate_download_prefers_explicit_candidate_filename() -> None
 
 def test_resumed_practice_job_uses_public_error_presentation() -> None:
     assert "job.error_presentation?.message" in APP_JS
+    assert "function practicePublicErrorText" in APP_JS
+    assert "诊断编号：${supportId}" in APP_JS
+    assert 'action === "job-config"' in APP_JS
+    assert 'confirmText: configurationRequired ? "检查 API 配置" : "从检查点重试"' in APP_JS
 
 
 def test_stale_practice_job_callbacks_cannot_replace_a_newer_workspace() -> None:
