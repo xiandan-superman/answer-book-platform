@@ -58,6 +58,214 @@ class ErrorPresentation:
     support_id: str = ""
 
 
+PRACTICE_COMPLETION_ISSUES_SCHEMA = "answer_book.practice_completion_issues.v1"
+_PRACTICE_ISSUE_PRESENTATION = {
+    "configuration_blocked": {
+        "priority": 400,
+        "label": "需要检查 API 配置",
+        "action": "check_configuration",
+        "action_label": "检查 API 配置",
+        "class_name": "blocked",
+        "icon": "fas fa-key",
+    },
+    "generation_incomplete": {
+        "priority": 300,
+        "label": "存在未完成题目",
+        "action": "continue_incomplete",
+        "action_label": "继续未完成项",
+        "class_name": "warning",
+        "icon": "fas fa-triangle-exclamation",
+    },
+    "review_required": {
+        "priority": 200,
+        "label": "题目已生成 · 待复核",
+        "action": "review_result",
+        "action_label": "查看并处理复核",
+        "class_name": "warning",
+        "icon": "fas fa-triangle-exclamation",
+    },
+    "warning_only": {
+        "priority": 100,
+        "label": "已完成 · 有提示",
+        "action": "view_warnings",
+        "action_label": "查看提示",
+        "class_name": "warning",
+        "icon": "fas fa-circle-info",
+    },
+}
+
+
+def _nonnegative_int(*values: Any) -> int | None:
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _practice_issue_reasons(values: Any, *, fallback: str = "", limit: int = 20) -> list[str]:
+    rows = values if isinstance(values, list) else []
+    reasons: list[str] = []
+    for value in rows:
+        if isinstance(value, dict):
+            text = str(value.get("message") or value.get("summary") or value.get("code") or "").strip()
+        else:
+            text = str(value or "").strip()
+        text = " ".join(text.split())[:300]
+        if text and text not in reasons:
+            reasons.append(text)
+        if len(reasons) >= limit:
+            break
+    if not reasons and fallback:
+        reasons.append(fallback)
+    return reasons
+
+
+def practice_completion_issue_contract(data: dict[str, Any] | None) -> dict[str, Any]:
+    """Build the single public truth for terminal practice-result semantics.
+
+    Multiple issue types may coexist. The first item is always the primary
+    presentation according to the explicit priority table above.
+    """
+    data = data if isinstance(data, dict) else {}
+    existing_contract = data.get("completion_issues") if isinstance(data.get("completion_issues"), dict) else {}
+    existing_issues = [item for item in existing_contract.get("issues") or [] if isinstance(item, dict)]
+    generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
+    quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
+    exercises = data.get("exercises") if isinstance(data.get("exercises"), list) else []
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    exercise_plan = blueprint.get("exercise_plan") if isinstance(blueprint.get("exercise_plan"), list) else []
+
+    failed_slots = [
+        item for item in exercises
+        if isinstance(item, dict) and (
+            item.get("generation_status") == "failed"
+            or isinstance(item.get("generation_error"), dict)
+        )
+    ]
+    total_count = _nonnegative_int(
+        data.get("total_count"), generation.get("total_count"), quality.get("total_count"),
+        len(exercise_plan) if exercise_plan else None,
+        len(exercises) if exercises else None,
+    ) or 0
+    failed_count = _nonnegative_int(
+        data.get("failed_count"), generation.get("failed_count"), quality.get("failed_count"),
+        len(failed_slots) if failed_slots else None,
+    ) or 0
+    generated_count_value = _nonnegative_int(
+        data.get("generated_count"), generation.get("generated_count"), quality.get("generated_count"),
+    )
+    generated_count = generated_count_value if generated_count_value is not None else max(0, len(exercises) - len(failed_slots))
+    unfinished_value = _nonnegative_int(data.get("unfinished_count"), generation.get("unfinished_count"), quality.get("unfinished_count"))
+    inferred_unfinished = max(failed_count, total_count - generated_count) if total_count else failed_count
+    unfinished_count = max(failed_count, unfinished_value if unfinished_value is not None else inferred_unfinished)
+
+    batch_errors = [item for item in generation.get("batch_errors") or [] if isinstance(item, dict)]
+    configuration_blocked = bool(
+        data.get("configuration_blocked") is True
+        or data.get("requires_configuration") is True
+        or generation.get("configuration_blocked") is True
+        or generation.get("status") == "configuration_blocked"
+        or any(item.get("requires_configuration") is True for item in batch_errors)
+        or any(
+            isinstance(item, dict)
+            and isinstance(item.get("generation_error"), dict)
+            and item["generation_error"].get("requires_configuration") is True
+            for item in exercises
+        )
+    )
+
+    review_reasons = _practice_issue_reasons(quality.get("blocking_issues"))
+    if not review_reasons:
+        review_reasons = _practice_issue_reasons(next(
+            (item.get("reasons") for item in existing_issues if item.get("code") == "review_required"),
+            [],
+        ))
+    audit_count = 0
+    for item in exercises:
+        if not isinstance(item, dict):
+            continue
+        error = item.get("generation_error") if isinstance(item.get("generation_error"), dict) else {}
+        if item.get("audit_status") == "audit_failed" or error.get("code") == "blueprint_audit_failed":
+            audit_count += 1
+    audit_count = max(audit_count, sum(item.get("code") == "blueprint_audit_failed" for item in batch_errors))
+    if audit_count:
+        review_reasons.append(f"{audit_count} 题蓝图需要复核")
+    semantic = data.get("semantic_review") if isinstance(data.get("semantic_review"), dict) else {}
+    semantic_status = str(semantic.get("status") or "").lower()
+    semantic_risks = [
+        risk
+        for item in semantic.get("items") or [] if isinstance(item, dict)
+        for risk in item.get("risks") or [] if isinstance(risk, dict)
+        and str(risk.get("severity") or "").lower() in {"medium", "high"}
+    ]
+    if semantic and semantic_status not in {"passed", "warning"}:
+        review_reasons.append("语义审查未完成，需人工复核")
+    if semantic_risks:
+        review_reasons.extend(_practice_issue_reasons(semantic_risks, fallback="语义审查发现需复核风险"))
+    if str(quality.get("release_level") or "") == "review_candidate" and not review_reasons:
+        review_reasons.append("当前成果需复核后使用")
+    review_reasons = list(dict.fromkeys(review_reasons))[:20]
+    warning_reasons = _practice_issue_reasons(quality.get("warnings"))
+    if not warning_reasons:
+        warning_reasons = _practice_issue_reasons(next(
+            (item.get("reasons") for item in existing_issues if item.get("code") == "warning_only"),
+            [],
+        ))
+
+    issues: list[dict[str, Any]] = []
+
+    def add_issue(code: str, reasons: list[str], count: int = 0) -> None:
+        presentation = _PRACTICE_ISSUE_PRESENTATION[code]
+        issues.append({"code": code, "count": max(0, int(count)), "reasons": reasons, **presentation})
+
+    if configuration_blocked:
+        add_issue("configuration_blocked", ["模型服务配置不可用，修正配置后可继续未完成项"], unfinished_count)
+    # A legacy partial flag without a trustworthy positive count is not enough
+    # to claim that questions are unfinished. This enforces the public count invariant.
+    if unfinished_count > 0 or failed_count > 0:
+        add_issue("generation_incomplete", [f"{max(unfinished_count, failed_count)} 题尚未完成"], max(unfinished_count, failed_count))
+    if review_reasons:
+        add_issue("review_required", review_reasons, len(review_reasons))
+    if warning_reasons and not review_reasons:
+        add_issue("warning_only", warning_reasons, len(warning_reasons))
+    elif not issues and (
+        generation.get("partial_success") is True
+        or generation.get("status") == "partial_success"
+        or str(quality.get("status") or "").lower() in {"warning", "warn"}
+    ):
+        add_issue("warning_only", warning_reasons or ["旧记录含质量提示，请查看结果"], max(1, len(warning_reasons)))
+
+    issues.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
+    primary = dict(issues[0]) if issues else {
+        "code": "completed",
+        "priority": 0,
+        "label": "已完成",
+        "action": "view_result",
+        "action_label": "查看结果",
+        "class_name": "passed",
+        "icon": "fas fa-check",
+        "count": 0,
+        "reasons": [],
+    }
+    return {
+        "schema_version": PRACTICE_COMPLETION_ISSUES_SCHEMA,
+        "issues": issues,
+        "primary": primary,
+        "primary_code": primary["code"],
+        "display_label": primary["label"],
+        "action": primary["action"],
+        "action_label": primary["action_label"],
+        "generated_count": generated_count,
+        "total_count": total_count,
+        "unfinished_count": unfinished_count,
+        "failed_count": failed_count,
+    }
+
+
 def public_support_id(value: str = "", *, task_id: str = "") -> str:
     existing = str(value or "").strip()[:80]
     if existing:
@@ -75,19 +283,22 @@ def quality_presentation(
     *,
     status: RunStatus | None = None,
     final_acceptance: dict[str, Any] | None = None,
+    completion_issues: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
+    if workflow != WorkflowType.EXAM_ANALYSIS and status in {RunStatus.COMPLETED, RunStatus.COMPLETED_WITH_ISSUES}:
+        primary = completion_issues.get("primary") if isinstance(completion_issues, dict) else {}
+        if isinstance(primary, dict) and primary.get("label"):
+            return {
+                "label": str(primary["label"]),
+                "class_name": str(primary.get("class_name") or "warning"),
+                "icon": str(primary.get("icon") or "fas fa-triangle-exclamation"),
+            }
     if quality == QualityStatus.UNKNOWN:
         return None
     if workflow != WorkflowType.EXAM_ANALYSIS and status == RunStatus.FAILED:
         return {
             "label": "生成未完成",
             "class_name": "blocked",
-            "icon": "fas fa-triangle-exclamation",
-        }
-    if workflow != WorkflowType.EXAM_ANALYSIS and status == RunStatus.COMPLETED_WITH_ISSUES:
-        return {
-            "label": "存在未完成项（需复核）",
-            "class_name": "warning",
             "icon": "fas fa-triangle-exclamation",
         }
     if quality == QualityStatus.BLOCKED and workflow != WorkflowType.EXAM_ANALYSIS:
@@ -311,6 +522,7 @@ def enrich_contract(
     error: str = "",
     support_id: str = "",
     final_acceptance: dict[str, Any] | None = None,
+    completion_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     presentation = None if status == RunStatus.CANCELLED else present_error(error, stage=stage, support_id=support_id)
     capabilities = capabilities_for(
@@ -320,6 +532,11 @@ def enrich_contract(
         operation=operation,
         quality=quality,
         error_kind=presentation.kind if presentation else "",
+    )
+    completion_issues = (
+        practice_completion_issue_contract(completion_source if isinstance(completion_source, dict) else row)
+        if workflow != WorkflowType.EXAM_ANALYSIS and status in {RunStatus.COMPLETED, RunStatus.COMPLETED_WITH_ISSUES}
+        else None
     )
     return {
         **row,
@@ -334,7 +551,9 @@ def enrich_contract(
             quality,
             status=status,
             final_acceptance=final_acceptance,
+            completion_issues=completion_issues,
         ),
+        "completion_issues": completion_issues,
         "capabilities": asdict(capabilities),
         "error_presentation": asdict(presentation) if presentation else None,
         "schema_version": 1,

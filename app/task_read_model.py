@@ -127,6 +127,7 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         "requires_configuration": configuration_blocked,
         "generation": generation,
         "quality": record.get("quality") or data.get("quality") or {},
+        "completion_issues": record.get("completion_issues") or data.get("completion_issues") or {},
         "duration_seconds": 0,
         "duration_text": "已完成",
         "progress_percent": 100,
@@ -139,9 +140,17 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         stage="configuration" if configuration_blocked else "completed",
         operation="generate_from_plan",
         error=config_error,
+        completion_source=data or row,
     )
     if configuration_blocked:
         result["capabilities"]["view_result"] = True
+        result["capabilities"]["retry"] = True
+        result["capabilities"]["reuse"] = False
+    if any(
+        item.get("code") == "generation_incomplete"
+        for item in (result.get("completion_issues") or {}).get("issues") or []
+        if isinstance(item, dict)
+    ):
         result["capabilities"]["retry"] = True
         result["capabilities"]["reuse"] = False
     result["health"] = task_health_summary(row, kind="practice")

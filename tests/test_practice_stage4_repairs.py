@@ -334,6 +334,6 @@ def test_frontend_renders_knowledge_source_refs_and_semantic_review_state():
     assert 'data.source_mode === "knowledge" ? "来源知识单元" : "来源原题"' in script
     assert "item.source_refs" in script
     assert "semanticReviewIncomplete" in script
-    assert 'data.quality?.release_level === "review_candidate"' in script
+    assert 'quality.release_level === "review_candidate"' in script
     assert "项需复核" in script
     assert "task.is_generation_task && task.status === \"completed_with_issues\"" not in task_contract

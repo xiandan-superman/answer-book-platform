@@ -939,7 +939,87 @@ function taskFilterStatus(status, currentStage = "") {
 }
 
 function taskDisplayStatus(task = {}) {
-  return window.TaskContractUI.displayStatus(task);
+  const base = window.TaskContractUI.displayStatus(task);
+  if (task.is_generation_task && !task.is_generation_job && ["completed", "completed_with_issues"].includes(base)) {
+    return practiceCompletionContract(task).issues.length ? "completed_with_issues" : "completed";
+  }
+  return base;
+}
+
+const PRACTICE_COMPLETION_ISSUES_SCHEMA = "answer_book.practice_completion_issues.v1";
+const PRACTICE_COMPLETION_PRESENTATION = {
+  configuration_blocked: { priority: 400, label: "需要检查 API 配置", action: "check_configuration", action_label: "检查 API 配置", class_name: "blocked", icon: "fas fa-key" },
+  generation_incomplete: { priority: 300, label: "存在未完成题目", action: "continue_incomplete", action_label: "继续未完成项", class_name: "warning", icon: "fas fa-triangle-exclamation" },
+  review_required: { priority: 200, label: "题目已生成 · 待复核", action: "review_result", action_label: "查看并处理复核", class_name: "warning", icon: "fas fa-triangle-exclamation" },
+  warning_only: { priority: 100, label: "已完成 · 有提示", action: "view_warnings", action_label: "查看提示", class_name: "warning", icon: "fas fa-circle-info" },
+  completed: { priority: 0, label: "已完成", action: "view_result", action_label: "查看结果", class_name: "passed", icon: "fas fa-check" }
+};
+
+function practiceCompletionContract(subject = {}) {
+  const supplied = subject?.completion_issues;
+  if (supplied?.schema_version === PRACTICE_COMPLETION_ISSUES_SCHEMA && Array.isArray(supplied.issues) && supplied.primary) {
+    return supplied;
+  }
+  const generation = subject?.generation || {};
+  const quality = subject?.quality || {};
+  const exercises = Array.isArray(subject?.exercises) ? subject.exercises : [];
+  const explicitFailed = Number(subject?.failed_count ?? generation.failed_count ?? quality.failed_count);
+  const failedSlots = exercises.filter((item) => item?.generation_status === "failed" || item?.generation_error).length;
+  const failedCount = Number.isFinite(explicitFailed) ? Math.max(0, explicitFailed) : failedSlots;
+  const explicitGenerated = Number(subject?.generated_count ?? generation.generated_count ?? quality.generated_count);
+  const generatedCount = Number.isFinite(explicitGenerated) ? Math.max(0, explicitGenerated) : Math.max(0, exercises.length - failedSlots);
+  const plannedCount = Array.isArray(subject?.blueprint?.exercise_plan) ? subject.blueprint.exercise_plan.length : 0;
+  const explicitTotal = Number(subject?.total_count ?? generation.total_count ?? quality.total_count);
+  const totalCount = Number.isFinite(explicitTotal) ? Math.max(0, explicitTotal) : (plannedCount || exercises.length);
+  const explicitUnfinished = Number(subject?.unfinished_count ?? generation.unfinished_count ?? quality.unfinished_count);
+  const unfinishedCount = Math.max(failedCount, Number.isFinite(explicitUnfinished) ? Math.max(0, explicitUnfinished) : Math.max(0, totalCount - generatedCount));
+  const batchErrors = Array.isArray(generation.batch_errors) ? generation.batch_errors : [];
+  const configurationBlocked = Boolean(
+    subject?.configuration_blocked || subject?.requires_configuration || generation.configuration_blocked
+    || generation.status === "configuration_blocked" || batchErrors.some((item) => item?.requires_configuration)
+    || exercises.some((item) => item?.generation_error?.requires_configuration)
+  );
+  const reviewReasons = Array.isArray(quality.blocking_issues) ? quality.blocking_issues.filter(Boolean).map(String) : [];
+  const auditCount = Math.max(
+    exercises.filter((item) => item?.audit_status === "audit_failed" || item?.generation_error?.code === "blueprint_audit_failed").length,
+    batchErrors.filter((item) => item?.code === "blueprint_audit_failed").length
+  );
+  if (auditCount) reviewReasons.push(`${auditCount} 题蓝图需要复核`);
+  const semantic = subject?.semantic_review && typeof subject.semantic_review === "object" ? subject.semantic_review : null;
+  const semanticRisks = (semantic?.items || []).flatMap((item) => item?.risks || []).filter((risk) => ["medium", "high"].includes(String(risk?.severity || "").toLowerCase()));
+  const semanticReviewIncomplete = Boolean(semantic) && !["passed", "warning"].includes(String(semantic.status || "").toLowerCase());
+  if (semanticReviewIncomplete) reviewReasons.push("语义审查未完成，需人工复核");
+  if (semanticRisks.length) reviewReasons.push(...semanticRisks.map((risk) => String(risk.message || risk.summary || "语义风险需要复核")));
+  if (quality.release_level === "review_candidate" && !reviewReasons.length) reviewReasons.push("当前成果需复核后使用");
+  const warningReasons = Array.isArray(quality.warnings) ? quality.warnings.filter(Boolean).map(String) : [];
+  const issues = [];
+  const add = (code, reasons, count = 0) => issues.push({ code, reasons: Array.from(new Set(reasons)).slice(0, 20), count: Math.max(0, Number(count) || 0), ...PRACTICE_COMPLETION_PRESENTATION[code] });
+  if (configurationBlocked) add("configuration_blocked", ["模型服务配置不可用，修正配置后可继续未完成项"], unfinishedCount);
+  if (unfinishedCount > 0 || failedCount > 0) add("generation_incomplete", [`${Math.max(unfinishedCount, failedCount)} 题尚未完成`], Math.max(unfinishedCount, failedCount));
+  if (reviewReasons.length) add("review_required", reviewReasons, reviewReasons.length);
+  if (warningReasons.length && !reviewReasons.length) add("warning_only", warningReasons, warningReasons.length);
+  else if (!issues.length && (generation.partial_success || generation.status === "partial_success" || ["warning", "warn"].includes(String(quality.status || "").toLowerCase()))) {
+    add("warning_only", warningReasons.length ? warningReasons : ["旧记录含质量提示，请查看结果"], Math.max(1, warningReasons.length));
+  }
+  issues.sort((left, right) => right.priority - left.priority);
+  const primary = issues[0] || { code: "completed", count: 0, reasons: [], ...PRACTICE_COMPLETION_PRESENTATION.completed };
+  return {
+    schema_version: PRACTICE_COMPLETION_ISSUES_SCHEMA,
+    issues,
+    primary,
+    primary_code: primary.code,
+    display_label: primary.label,
+    action: primary.action,
+    action_label: primary.action_label,
+    generated_count: generatedCount,
+    total_count: totalCount,
+    unfinished_count: unfinishedCount,
+    failed_count: failedCount
+  };
+}
+
+function practiceCompletionHas(subject, code) {
+  return practiceCompletionContract(subject).issues.some((item) => item.code === code);
 }
 
 function isReviewDecisionTask(task) {
@@ -1621,15 +1701,15 @@ function invalidatePracticeRecoveryObserver({ hideNotice = true } = {}) {
 function practiceRecoveryNoticeMeta(job = {}, { navigationChanged = false } = {}) {
   const status = String(job.status || "unknown");
   const taskName = String(job.title || job.payload?.knowledge_title || "模拟出题任务");
-  if (status === "completed") {
+  if (["completed", "completed_with_issues"].includes(status)) {
+    const completion = practiceCompletionContract(job.result || job);
     return {
-      eyebrow: "后台任务已完成",
+      eyebrow: completion.display_label,
       title: taskName,
-      message: navigationChanged
-        ? "结果已保留，当前页面不会被打断。需要时可进入工作区继续。"
-        : "结果已保留。点击查看结果后再进入对应工作区。",
-      action: "查看结果",
-      tone: "success",
+      message: `${completedGenerationTaskMessage(job.result || job)}。${navigationChanged ? "当前页面不会被打断。" : "结果已保留。"}`,
+      action: completion.action_label,
+      completionAction: completion.action,
+      tone: completion.primary_code === "completed" ? "success" : "warning",
     };
   }
   if (status === "failed") {
@@ -1685,6 +1765,7 @@ function showPracticeRecoveryNotice(job = {}, options = {}) {
   setText("practiceRecoveryMessage", meta.message);
   setText("practiceRecoveryOpenBtn", meta.action);
   notice.dataset.status = String(job.status || "unknown");
+  notice.dataset.completionAction = String(meta.completionAction || "");
   notice.dataset.tone = meta.tone;
   notice.classList.remove("hidden");
 }
@@ -1722,6 +1803,18 @@ async function openPracticeRecoveryNoticeJob() {
   invalidatePracticeRecoveryObserver();
   rememberPracticeJob("");
   const job = await api(`/api/practice/jobs/${encodeURIComponent(remembered.job_id)}?detail=1`);
+  const completion = practiceCompletionContract(job.result || job);
+  if (["completed", "completed_with_issues"].includes(String(job.status || "")) && completion.action === "check_configuration") {
+    goToPage("keys");
+    return;
+  }
+  if (["completed", "completed_with_issues"].includes(String(job.status || "")) && completion.action === "continue_incomplete") {
+    const historyId = String(job.result?.history_id || job.history_id || "");
+    if (historyId) {
+      await continuePracticeHistory(historyId, null, job.task_kind);
+      return;
+    }
+  }
   if (["failed", "cancelled"].includes(String(job.status || ""))) {
     practiceSessionVersion += 1;
     renderStoppedPracticeRecoveryJob(job);
@@ -3139,24 +3232,9 @@ function updatePracticeAsideSummary(data) {
   setText("practiceResultModeAside", labels[data.generation_strategy] || "专项练习");
   setText("practiceTrainingGoalAside", data.blueprint?.training_goal || "训练目标");
   setText("practiceSummaryCount", String(data.exercises?.length || 0));
-  const warnings = Array.isArray(data.quality?.warnings) ? [...data.quality.warnings] : [];
-  const semanticReview = data.semantic_review && typeof data.semantic_review === "object" ? data.semantic_review : null;
-  const semanticReviewStatus = String(semanticReview?.status || "").toLowerCase();
-  const semanticReviewActionable = (semanticReview?.items || []).some((reviewItem) =>
-    (reviewItem?.risks || []).some((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()))
-  );
-  const semanticReviewIncomplete = Boolean(semanticReview) && !["passed", "warning"].includes(semanticReviewStatus);
-  const semanticNeedsReview = semanticReviewIncomplete || semanticReviewActionable;
-  const auditNeedsReview = (data.exercises || []).some((item) =>
-    item?.audit_status === "audit_failed" || item?.generation_error?.code === "blueprint_audit_failed"
-  );
-  const needsReview = warnings.length > 0 || data.quality?.release_level === "review_candidate" || semanticNeedsReview || auditNeedsReview;
-  setText("practiceSummaryQuality", "已完成");
-  setText("practiceSummaryStatus", "已生成 · 完成");
-  if (needsReview) {
-    setText("practiceSummaryQuality", auditNeedsReview ? "存在未完成项（需复核）" : "待复核");
-    setText("practiceSummaryStatus", auditNeedsReview ? "完成待复核" : "已生成 · 待复核");
-  }
+  const completion = practiceCompletionContract(data);
+  setText("practiceSummaryQuality", completion.display_label);
+  setText("practiceSummaryStatus", completion.primary_code === "completed" ? "已生成 · 完成" : completion.display_label);
 }
 
 function renderPracticeBlueprintSummary(data) {
@@ -3433,76 +3511,39 @@ function renderPracticeResults(data) {
   $("practiceKnowledgeTags").innerHTML = visibleAnalysisTags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")
     + (analysisTags.length > visibleAnalysisTags.length ? `<span class="practice-tag-count">其余 ${analysisTags.length - visibleAnalysisTags.length} 项见下方筛选</span>` : "");
   $("practiceStrategy").innerHTML = (analysis.solution_strategy || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const warnings = Array.isArray(data.quality?.warnings) ? [...data.quality.warnings] : [];
-  const semanticReview = data.semantic_review && typeof data.semantic_review === "object" ? data.semantic_review : null;
-  const semanticReviewStatus = String(semanticReview?.status || "").toLowerCase();
-  const semanticReviewActionable = (semanticReview?.items || []).some((reviewItem) =>
-    (reviewItem?.risks || []).some((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()))
-  );
-  const semanticReviewIncomplete = Boolean(semanticReview) && !["passed", "warning"].includes(semanticReviewStatus);
-  const semanticNeedsReview = semanticReviewIncomplete || semanticReviewActionable;
-  const failedCount = Number(data.quality?.failed_count || 0);
-  const configurationBlockedItems = (data.exercises || []).filter((item) => item?.generation_error?.requires_configuration === true);
-  const configurationBlockedCount = configurationBlockedItems.length;
-  const configurationBlocked = configurationBlockedCount > 0 || data.generation?.configuration_blocked === true;
-  const auditReviewFailedCount = (data.exercises || []).filter((item) => item?.audit_status === "audit_failed" || item?.generation_error?.code === "blueprint_audit_failed").length;
-  const successfulCount = Number(data.quality?.generated_count ?? Math.max(0, (data.exercises?.length || 0) - failedCount));
-  const blockingIssues = Array.isArray(data.quality?.blocking_issues) ? data.quality.blocking_issues : [];
-  const resultCount = (data.exercises || []).length;
-  const hasGeneratedResults = resultCount > 0;
-  const hasAuditReviewFailures = auditReviewFailedCount > 0 && hasGeneratedResults;
-  const isComplete = failedCount === 0 && blockingIssues.length === 0 && hasGeneratedResults;
-  const hasRepairableResults = failedCount === 0 && blockingIssues.length > 0 && hasGeneratedResults;
-  const needsReview = isComplete && (
-    warnings.length > 0
-    || data.quality?.release_level === "review_candidate"
-    || semanticNeedsReview
-  );
-  const isPassed = isComplete && !needsReview;
+  const completion = practiceCompletionContract(data);
+  const primaryIssue = completion.primary;
+  const issueCodes = new Set(completion.issues.map((item) => item.code));
+  const configurationBlocked = issueCodes.has("configuration_blocked");
+  const generationIncomplete = issueCodes.has("generation_incomplete");
+  const successfulCount = completion.generated_count;
+  const resultCount = completion.total_count;
+  const unfinishedCount = completion.unfinished_count;
+  const isPassed = primaryIssue.code === "completed" && successfulCount > 0;
   $("practiceQuality").className = `practice-quality ${isPassed ? "passed" : "warning"}`;
-  const visibleWarnings = warnings.slice(0, 4);
-  const warningSummary = visibleWarnings.length
-    ? `${visibleWarnings.join("；")}${warnings.length > visibleWarnings.length ? `；另有 ${warnings.length - visibleWarnings.length} 项。` : ""}`
-    : semanticNeedsReview
-      ? "语义质量审查尚未完成或仍有学科风险，题目已保留并标记为待复核。"
-      : "题目已生成并保存。";
-  const reviewIssueCount = Math.max(warnings.length, semanticNeedsReview ? 1 : 0);
-  $("practiceQuality").innerHTML = isPassed
-    ? `<i class="fas fa-circle-check"></i><span><strong>题目生成完成</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，可直接查看、编辑或导出。</span>`
-    : configurationBlocked
-      ? `<i class="fas fa-key"></i><span><strong>${successfulCount > 0 ? "完成待复核" : "模型配置阻断"}</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，${Math.max(0, resultCount - successfulCount)} 题待配置。请先检查 API 配置，再继续未完成项。</span><button type="button" class="secondary-btn" data-practice-config><i class="fas fa-key"></i>检查 API 配置</button>${data.history_id ? '<button type="button" class="secondary-btn" data-practice-continue><i class="fas fa-play"></i>继续未完成项</button>' : ""}`
-    : needsReview
-      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>题目已生成，仍有 ${reviewIssueCount} 项需复核</strong>${escapeHtml(warningSummary)} 结果已保留，可查看、编辑或导出草稿。</span>`
-      : hasRepairableResults
-        ? `<i class="fas fa-triangle-exclamation"></i><span><strong>已生成 ${resultCount} 题，${blockingIssues.length} 项需修复</strong>${escapeHtml(blockingIssues.slice(0, 4).join("；"))} 其余结果已保留，可继续查看和编辑。</span>`
-      : `<i class="fas fa-triangle-exclamation"></i><span><strong>${failedCount ? `${hasAuditReviewFailures ? "完成待复核 · " : ""}已生成 ${successfulCount} 题，${auditReviewFailedCount ? `${auditReviewFailedCount} 题蓝图待复核${failedCount > auditReviewFailedCount ? `，${failedCount - auditReviewFailedCount} 题生成失败` : ""}` : `${failedCount} 题生成失败`}` : "题目尚未生成完成"}</strong>${escapeHtml(failedCount ? "可逐题复审或重新生成，其他题目已保留。" : (blockingIssues.join("；") || warningSummary))}</span>`;
+  const secondaryIssues = completion.issues.filter((item) => item.code !== primaryIssue.code);
+  const secondarySummary = secondaryIssues.length
+    ? `另有：${secondaryIssues.map((item) => item.label).join("；")}。`
+    : "";
+  const primaryReasons = (primaryIssue.reasons || []).slice(0, 4).join("；");
+  $("practiceQuality").innerHTML = primaryIssue.code === "completed"
+    ? `<i class="fas fa-circle-check"></i><span><strong>已完成</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，可直接查看、编辑或导出。</span>`
+    : primaryIssue.code === "configuration_blocked"
+      ? `<i class="fas fa-key"></i><span><strong>需要检查 API 配置</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题待配置。${escapeHtml(secondarySummary)}</span><button type="button" class="secondary-btn" data-practice-config><i class="fas fa-key"></i>检查 API 配置</button>${data.history_id && generationIncomplete ? '<button type="button" class="secondary-btn" data-practice-continue><i class="fas fa-play"></i>继续未完成项</button>' : ""}`
+    : primaryIssue.code === "generation_incomplete"
+      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>存在未完成题目</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题未完成。${escapeHtml(secondarySummary)}</span>${data.history_id ? '<button type="button" class="secondary-btn" data-practice-continue><i class="fas fa-play"></i>继续未完成项</button>' : ""}`
+    : primaryIssue.code === "review_required"
+      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>题目已生成 · 待复核</strong>${escapeHtml(primaryReasons || "结果已保留，请复核后使用。")} 结果可继续查看和编辑。</span>`
+    : `<i class="fas fa-circle-info"></i><span><strong>已完成 · 有提示</strong>${escapeHtml(primaryReasons || "结果含非阻断提示，请查看后使用。")} 题目已完整保留。</span>`;
   const badge = $("practiceQualityBadge");
   if (badge) {
     badge.className = `practice-quality-badge ${isPassed ? "passed" : "warning"}`;
-    badge.innerHTML = isPassed
-      ? '<i class="fas fa-circle-check"></i>题目已完成'
-      : configurationBlocked
-        ? `<i class="fas fa-key"></i>${successfulCount > 0 ? "完成待复核" : "配置阻断"}`
-      : needsReview
-        ? '<i class="fas fa-triangle-exclamation"></i>题目已生成 · 待复核'
-        : hasAuditReviewFailures
-          ? '<i class="fas fa-triangle-exclamation"></i>完成待复核'
-        : hasRepairableResults
-          ? '<i class="fas fa-triangle-exclamation"></i>题目已生成 · 待修复'
-        : '<i class="fas fa-triangle-exclamation"></i>生成未完成';
+    badge.innerHTML = `<i class="${escapeHtml(primaryIssue.icon)}"></i>${escapeHtml(primaryIssue.label)}`;
   }
-  setPracticeStatusBanner(isPassed
-    ? `共 ${resultCount} 题：已生成 ${successfulCount} 题`
-    : configurationBlocked
-      ? `共 ${resultCount} 题：已生成 ${successfulCount} 题，${Math.max(0, resultCount - successfulCount)} 题待配置`
-    : needsReview
-      ? `已生成 ${data.exercises?.length || 0} 题 · ${reviewIssueCount} 项需复核`
-      : hasAuditReviewFailures
-        ? `完成待复核 · 已生成 ${successfulCount} 题 · ${auditReviewFailedCount} 题蓝图待复核`
-      : hasRepairableResults
-        ? `已生成 ${resultCount} 题 · ${blockingIssues.length} 项需修复`
-      : (failedCount ? `已生成 ${successfulCount} 题 · ${auditReviewFailedCount ? `${auditReviewFailedCount} 题蓝图待复核` : `${failedCount} 题生成失败`}` : `题目生成未完成`),
-    isPassed ? "done" : (needsReview || hasAuditReviewFailures || (configurationBlocked && successfulCount > 0)) ? "warning" : "error");
+  const statusCountText = generationIncomplete || configurationBlocked
+    ? `共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题${configurationBlocked ? "待配置" : "未完成"}`
+    : `共 ${resultCount} 题：已生成 ${successfulCount} 题`;
+  setPracticeStatusBanner(`${primaryIssue.label} · ${statusCountText}`, isPassed ? "done" : (successfulCount > 0 ? "warning" : "error"));
   renderPracticeBlueprintSummary(data);
   renderPracticeFilters(data);
   const practiceSourceLookup = new Map((data.selected_source_questions || []).map((item) => [String(item.source_question_id), item]));
@@ -4849,12 +4890,14 @@ async function loadPracticeHistory() {
   if (!container) return;
   const data = await api("/api/practice/history");
   const rows = data.records || [];
-  container.innerHTML = rows.length ? rows.map((row) => `
+  container.innerHTML = rows.length ? rows.map((row) => {
+    const completion = practiceCompletionContract(row);
+    return `
     <button type="button" data-practice-history="${escapeHtml(row.history_id)}">
       <strong>${escapeHtml(row.title || "研究生专项练习")}</strong>
-      <span>共 ${row.total_count ?? row.question_count ?? 0} 题：已生成 ${row.generated_count ?? row.question_count ?? 0} 题 · ${escapeHtml(String(row.updated_at || "").replace("T", " ").slice(0, 16))}</span>
+      <span>${escapeHtml(completion.display_label)} · 共 ${completion.total_count} 题：已生成 ${completion.generated_count} 题 · ${escapeHtml(String(row.updated_at || "").replace("T", " ").slice(0, 16))}</span>
     </button>
-  `).join("") : "<p>暂无历史记录</p>";
+  `; }).join("") : "<p>暂无历史记录</p>";
   container.querySelectorAll("[data-practice-history]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
@@ -8663,28 +8706,14 @@ function renderTaskManagerPagination(total) {
 }
 
 function completedGenerationTaskMessage(task = {}) {
-  const generation = task.generation || {};
-  const quality = task.quality || {};
-  const failedCount = Number(generation.failed_count ?? quality.failed_count ?? 0);
-  const generatedCount = Number(generation.generated_count ?? quality.generated_count ?? task.question_count ?? 0);
-  const totalCount = Number(task.total_count ?? generation.total_count ?? quality.total_count ?? (generatedCount + failedCount));
-  const unfinishedCount = Math.max(0, Number(task.unfinished_count ?? (totalCount - generatedCount)));
-  if (task.configuration_blocked || generation.configuration_blocked) {
-    return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${unfinishedCount} 题待配置`;
-  }
-  const auditReviewCount = (generation.batch_errors || []).filter((error) => error?.code === "blueprint_audit_failed").length;
-  if (auditReviewCount > 0) {
-    const otherFailures = Math.max(0, failedCount - auditReviewCount);
-    return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${auditReviewCount} 题蓝图待复核${otherFailures ? `，${otherFailures} 题未完成` : ""}`;
-  }
-  if (failedCount > 0) return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${unfinishedCount} 题未完成`;
-  const blockers = Array.isArray(quality.blocking_issues) ? quality.blocking_issues.length : 0;
-  if (blockers > 0) return `题目已生成，但有 ${blockers} 项结构问题需要处理`;
-  const warnings = Array.isArray(quality.warnings) ? quality.warnings.length : 0;
-  if (quality.release_level === "review_candidate") {
-    return `题目已生成，${Math.max(1, warnings)} 项需复核`;
-  }
-  if (warnings > 0) return `题目已生成，含 ${warnings} 项非阻断提示`;
+  const completion = practiceCompletionContract(task);
+  const { generated_count: generatedCount, total_count: totalCount, unfinished_count: unfinishedCount } = completion;
+  if (practiceCompletionHas(task, "configuration_blocked")) return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${unfinishedCount} 题待配置`;
+  if (practiceCompletionHas(task, "generation_incomplete")) return `共 ${totalCount} 题：已生成 ${generatedCount} 题，${unfinishedCount} 题未完成`;
+  const review = completion.issues.find((item) => item.code === "review_required");
+  if (review) return `题目已生成，${Math.max(1, review.count)} 项需复核`;
+  const warning = completion.issues.find((item) => item.code === "warning_only");
+  if (warning) return `题目已生成，含 ${Math.max(1, warning.count)} 项非阻断提示`;
   return "题目已生成并保存";
 }
 
@@ -8709,7 +8738,7 @@ function renderTaskManager(tasks = latestTasks) {
     const normalized = taskDisplayStatus(task);
     const reviewPending = isActionRequiredTask(task);
     const approvalText = task.error_presentation?.kind === "review_rejected" ? "结构被拒绝 · 待修正" : (isExamStructureReviewTask(task) ? "需确认题目结构" : "需要人工处理");
-    const meta = taskStatusMeta(normalized);
+    const baseStatusMeta = taskStatusMeta(normalized);
     const progress = taskProgressSummary(task);
     const percent = progress.percent;
     const taskHealth = task.health || {};
@@ -8720,6 +8749,10 @@ function renderTaskManager(tasks = latestTasks) {
     const kind = task.task_kind || "exam";
     const generationTask = Boolean(task.is_generation_task);
     const formatTask = Boolean(task.is_format_task);
+    const completion = generationTask && !task.is_generation_job ? practiceCompletionContract(task) : null;
+    const meta = completion && ["completed", "completed_with_issues"].includes(normalized)
+      ? { icon: completion.primary.icon, label: completion.display_label }
+      : baseStatusMeta;
     const kindMeta = {
       exam: { label: "真题解析", icon: "fas fa-book-open" },
       practice: { label: "按题出题", icon: "fas fa-layer-group" },
@@ -8775,7 +8808,7 @@ function renderTaskManager(tasks = latestTasks) {
             <span class="task-kind-chip"><i class="${kindMeta.icon}"></i>${kindMeta.label}</span>
             <span class="task-status-chip status-${normalized}"><i class="${meta.icon}"></i>${escapeHtml(meta.label)}</span>
             ${isLiveTask(task) && taskHealth.health_status ? `<span class="task-health-chip health-${escapeHtml(taskHealthState)}"><i class="${taskHealthMeta.icon}"></i>${escapeHtml(taskHealthMeta.label)}</span>` : ""}
-            ${qualityMeta && !reviewPending ? `<span class="task-quality-chip quality-${qualityMeta.className}"><i class="${qualityMeta.icon}"></i>${qualityMeta.label}</span>` : ""}
+            ${qualityMeta && !reviewPending && qualityMeta.label !== meta.label ? `<span class="task-quality-chip quality-${qualityMeta.className}"><i class="${qualityMeta.icon}"></i>${qualityMeta.label}</span>` : ""}
             <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制完整ID"><i class="fas fa-hashtag"></i><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
             <span title="任务开始时间"><i class="far fa-clock"></i>开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}</span>
             ${generationTask ? "" : `<span><i class="fas fa-hourglass-half"></i>运行 ${escapeHtml(taskDurationText(task))}</span>`}
@@ -9188,10 +9221,14 @@ function taskManagerActions(task = {}, reviewPending = false) {
       add(caps.retry, "job-retry", "green-action", "fas fa-rotate", "从检查点重试");
       add(caps.cancel, "job-cancel", "red-action", "fas fa-times", "取消任务");
     } else {
-      add(caps.view_result, "result", "blue-action", "fas fa-eye", "查看结果");
-      add(task.configuration_blocked, "history-config", "blue-action", "fas fa-key", "检查 API 配置");
-      add(task.configuration_blocked && caps.retry, "history-continue", "green-action", "fas fa-play", "继续未完成项");
-      add(caps.reuse && !task.configuration_blocked, "reuse", "green-action", "fas fa-rotate", "再次出题");
+      const completion = practiceCompletionContract(task);
+      const configurationBlocked = completion.issues.some((item) => item.code === "configuration_blocked");
+      const generationIncomplete = completion.issues.some((item) => item.code === "generation_incomplete");
+      const resultLabel = ["review_result", "view_warnings"].includes(completion.action) ? completion.action_label : "查看结果";
+      add(caps.view_result, "result", "blue-action", "fas fa-eye", resultLabel);
+      add(configurationBlocked, "history-config", "blue-action", "fas fa-key", "检查 API 配置");
+      add(generationIncomplete && caps.retry, "history-continue", "green-action", "fas fa-play", "继续未完成项");
+      add(caps.reuse && !configurationBlocked && !generationIncomplete, "reuse", "green-action", "fas fa-rotate", "再次出题");
       add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
     }
   } else {

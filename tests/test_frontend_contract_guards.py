@@ -130,7 +130,7 @@ def test_practice_status_banner_tracks_blueprint_confirmation_stage() -> None:
 
 def test_completed_generation_message_distinguishes_warnings_from_failures() -> None:
     assert "function completedGenerationTaskMessage(task = {})" in APP_JS
-    assert "if (failedCount > 0)" in APP_JS
+    assert 'practiceCompletionHas(task, "generation_incomplete")' in APP_JS
     assert "项非阻断提示" in APP_JS
     assert 'task.status === "completed_with_issues" ? "部分题目生成失败"' not in APP_JS
 
@@ -141,14 +141,25 @@ def test_blueprint_audit_failed_question_has_explicit_local_review_retry() -> No
     assert "系统只修复并复审这一蓝图项" in APP_JS
     assert "response.practice_updates" in APP_JS
     assert "practice_updates: practiceUpdates" in APP_JS
-    assert "hasAuditReviewFailures" in APP_JS
-    assert "完成待复核 · 已生成" in APP_JS
-    assert 'auditNeedsReview ? "存在未完成项（需复核）"' in APP_JS
+    assert 'issueCodes.has("review_required")' not in APP_JS
+    assert 'item.code === "review_required"' in APP_JS
+    assert "题目已生成 · 待复核" in APP_JS
 
 
 def test_partial_practice_status_does_not_claim_everything_completed() -> None:
-    assert "存在未完成项（需复核）" in (ROOT / "app" / "task_contracts.py").read_text(encoding="utf-8")
+    contracts = (ROOT / "app" / "task_contracts.py").read_text(encoding="utf-8")
+    assert '"generation_incomplete"' in contracts
+    assert '"label": "存在未完成题目"' in contracts
     assert 'completed_with_issues: { icon: "fas fa-triangle-exclamation", label: "完成待复核" }' in APP_JS
+
+
+def test_practice_completion_contract_drives_all_public_surfaces() -> None:
+    assert 'const PRACTICE_COMPLETION_ISSUES_SCHEMA = "answer_book.practice_completion_issues.v1"' in APP_JS
+    assert "function practiceCompletionContract(subject = {})" in APP_JS
+    assert "completion.display_label" in APP_JS
+    assert "completion.action_label" in APP_JS
+    assert "completion.primary.icon" in APP_JS
+    assert "完成有待处理项" in (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
 
 def test_review_candidate_download_prefers_explicit_candidate_filename() -> None:

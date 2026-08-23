@@ -77,23 +77,26 @@ def _material_task_title(request: dict[str, Any], fallback: Any = "") -> str:
 def _with_current_quality(data: dict[str, Any]) -> dict[str, Any]:
     """Apply the current deterministic gate without rewriting audit history."""
     from .exercise_generation import reconcile_practice_generation
+    from .task_contracts import practice_completion_issue_contract
 
-    return _with_edit_versions(strip_practice_answer_content(reconcile_practice_generation(data)))
+    current = strip_practice_answer_content(reconcile_practice_generation(data))
+    current.pop("completion_issues", None)
+    current["completion_issues"] = practice_completion_issue_contract(current)
+    return _with_edit_versions(current)
 
 
 def _status_for_data(data: dict[str, Any]) -> str:
+    from .task_contracts import practice_completion_issue_contract
+
     quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
-    generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
-    generated_count = int(quality.get("generated_count") or 0)
-    if generated_count == 0 and generation.get("configuration_blocked") is True:
+    completion = practice_completion_issue_contract(data)
+    generated_count = int(completion.get("generated_count") or quality.get("generated_count") or 0)
+    if generated_count == 0 and any(
+        item.get("code") == "configuration_blocked"
+        for item in completion.get("issues") or [] if isinstance(item, dict)
+    ):
         return "failed"
-    return (
-        "completed_with_issues"
-        if quality.get("blocking_issues")
-        or str(generation.get("status") or "") == "partial_success"
-        or bool(generation.get("partial_success"))
-        else "completed"
-    )
+    return "completed_with_issues" if completion.get("issues") else "completed"
 
 
 def strip_practice_answer_content(data: dict[str, Any]) -> dict[str, Any]:
@@ -161,7 +164,7 @@ def _path(history_id: str) -> Path:
 
 def _content_fingerprint(data: dict[str, Any] | None) -> str:
     copied = strip_practice_answer_content(data if isinstance(data, dict) else {})
-    for field in ("history_id", "quality", "generation"):
+    for field in ("history_id", "quality", "generation", "completion_issues"):
         copied.pop(field, None)
     encoded = json.dumps(copied, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -351,9 +354,15 @@ def find_completed_by_plan(payload: dict[str, Any] | None) -> dict[str, Any] | N
             data = _with_current_quality(record["data"])
             exercises = data.get("exercises") if isinstance(data.get("exercises"), list) else []
             quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
+            completion = data.get("completion_issues") if isinstance(data.get("completion_issues"), dict) else {}
+            completion_codes = {
+                str(item.get("code") or "")
+                for item in completion.get("issues") or []
+                if isinstance(item, dict)
+            }
             reusable = (
                 bool(exercises)
-                and _status_for_data(data) == "completed"
+                and not completion_codes.intersection({"configuration_blocked", "generation_incomplete"})
                 and not any(
                     isinstance(item, dict) and item.get("generation_status") == "failed"
                     for item in exercises
@@ -387,6 +396,9 @@ def save_practice_record(
         path = _path(history_id)
     created_at = str(existing.get("created_at") or _now())
     public_data = strip_practice_answer_content(data)
+    from .task_contracts import practice_completion_issue_contract
+    public_data.pop("completion_issues", None)
+    public_data["completion_issues"] = practice_completion_issue_contract(public_data)
     revisions = existing.get("revisions") if isinstance(existing.get("revisions"), list) else []
     previous_data = existing.get("data") if isinstance(existing.get("data"), dict) else {}
     if previous_data and _content_fingerprint(previous_data) != _content_fingerprint(public_data):
@@ -704,8 +716,9 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
         source_mode = str(request.get("source_mode") or "exam")
         quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
         generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
-        total_count = int(quality.get("total_count") or len(data.get("exercises") or []))
-        generated_count = int(quality.get("generated_count") or 0)
+        completion = data.get("completion_issues") if isinstance(data.get("completion_issues"), dict) else {}
+        total_count = int(completion.get("total_count") or quality.get("total_count") or len(data.get("exercises") or []))
+        generated_count = int(completion.get("generated_count") or quality.get("generated_count") or 0)
         rows.append(
             {
                 "history_id": record.get("history_id"),
@@ -716,11 +729,13 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
                 "question_count": generated_count,
                 "generated_count": generated_count,
                 "total_count": total_count,
-                "unfinished_count": max(0, total_count - generated_count),
+                "unfinished_count": int(completion.get("unfinished_count") or max(0, total_count - generated_count)),
+                "failed_count": int(completion.get("failed_count") or quality.get("failed_count") or 0),
                 "configuration_blocked": generation.get("configuration_blocked") is True,
                 "requires_configuration": generation.get("requires_configuration") is True,
                 "generation": generation,
                 "quality": quality,
+                "completion_issues": completion,
                 "generation_strategy": data.get("generation_strategy") or request.get("generation_strategy") or "",
                 "status": _status_for_data(data),
                 "generation_phases": record.get("generation_phases") or [],

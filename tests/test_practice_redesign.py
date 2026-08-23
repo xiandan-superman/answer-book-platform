@@ -146,19 +146,18 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn("generationErrorDetail", self.js)
         self.assertIn('题${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : "生成失败"}', self.js)
         self.assertIn("本题尚未调用生成模型", self.js)
-        self.assertIn("hasAuditReviewFailures", self.js)
-        self.assertIn("完成待复核 · 已生成", self.js)
+        self.assertIn('issueCodes.has("generation_incomplete")', self.js)
+        self.assertIn("存在未完成题目", self.js)
         self.assertIn("已保留蓝图位置", self.js)
         self.assertIn("setPracticeExportButtonsEnabled(isPassed, data)", self.js)
-        self.assertIn("题生成失败", self.js)
+        self.assertIn("题未完成", self.js)
         self.assertIn(".practice-exercise--generation-failed", self.styles)
         self.assertIn(".practice-generation-error", self.styles)
 
     def test_complete_question_set_with_quality_defect_keeps_results_visible_as_repairable(self) -> None:
-        self.assertIn("const hasRepairableResults", self.js)
-        self.assertIn("题，${blockingIssues.length} 项需修复", self.js)
-        self.assertIn("其余结果已保留，可继续查看和编辑", self.js)
-        self.assertIn("题目已生成 · 待修复", self.js)
+        self.assertIn('primaryIssue.code === "review_required"', self.js)
+        self.assertIn("题目已生成 · 待复核", self.js)
+        self.assertIn("结果可继续查看和编辑", self.js)
 
     def test_blueprint_multi_question_switch_is_optional_and_only_advises_on_large_totals(self) -> None:
         self.assertIn('id="practiceBlueprintMultiQuestionEnabled"', self.html)
@@ -252,9 +251,9 @@ class PracticeRedesignTests(unittest.TestCase):
     def test_practice_generation_exposes_conditional_subject_review_signal(self) -> None:
         self.assertIn("blocking_issues", (ROOT / "app" / "exercise_generation.py").read_text(encoding="utf-8"))
         self.assertIn('"subject_matter_review_required": subject_review_required', (ROOT / "app" / "exercise_generation.py").read_text(encoding="utf-8"))
-        self.assertIn('setText("practiceSummaryQuality", "已完成")', self.js)
+        self.assertIn('setText("practiceSummaryQuality", completion.display_label)', self.js)
         self.assertIn("题目已生成 · 待复核", self.js)
-        self.assertIn("结果已保留，可查看、编辑或导出草稿", self.js)
+        self.assertIn("结果可继续查看和编辑", self.js)
 
     def test_practice_result_uses_compact_disclosure_layout(self) -> None:
         self.assertIn('id="practiceResultContext"', self.html)
