@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +17,7 @@ from typing import Any, Protocol
 
 from .concurrency import ModelRequestAborted, ensure_model_request_active, model_request_slot
 from .model_diagnostics import model_diagnostic_hint, record_model_diagnostic
+from .redaction import redact_credentials
 from .runtime_monitor import record_model_call_usage, track_model_call
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 
@@ -134,6 +136,7 @@ class _LayeredHTTPHandler(urllib.request.HTTPHandler):
 
 class _LayeredHTTPSHandler(urllib.request.HTTPSHandler):
     def __init__(self, *, connect_timeout: float, first_byte_timeout: float, hard_deadline_monotonic: float) -> None:
+        self._context: ssl.SSLContext
         super().__init__()
         self._connection_options = {
             "connect_timeout": connect_timeout,
@@ -146,7 +149,7 @@ class _LayeredHTTPSHandler(urllib.request.HTTPSHandler):
             kwargs.pop("timeout", None)
             return _LayeredHTTPSConnection(host, **self._connection_options, **kwargs)
 
-        return self.do_open(factory, req, context=self._context, check_hostname=self._check_hostname)
+        return self.do_open(factory, req, context=self._context)
 
 
 def _open_provider_response(
@@ -244,8 +247,9 @@ def _http_retry_after_seconds(value: Any) -> float | None:
 
 
 def _http_llm_error(exc: urllib.error.HTTPError, body: str) -> LLMError:
+    safe_body = redact_credentials(body[:800])
     return LLMError(
-        f"Provider HTTP {exc.code}: {body[:800]}",
+        f"Provider HTTP {exc.code}: {safe_body}",
         status_code=int(exc.code),
         retry_after_seconds=_http_retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None),
     )
