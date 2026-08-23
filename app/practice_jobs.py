@@ -151,7 +151,7 @@ def practice_job_fingerprint(operation: str, payload: dict[str, Any]) -> str:
     canonical_payload = {
         key: value
         for key, value in payload.items()
-        if key not in {"_job_id", "client_request_id", "task_title"}
+        if key not in {"_job_id", "client_request_id", "continuation_attempt_id", "task_title"}
     }
     encoded = json.dumps(
         {"operation": operation, "payload": canonical_payload},
@@ -188,11 +188,30 @@ def find_active_practice_job(operation: str, payload: dict[str, Any]) -> dict[st
     return None
 
 
+def _continuation_jobs(continuation_key: str) -> list[dict[str, Any]]:
+    if not continuation_key:
+        return []
+    rows: list[dict[str, Any]] = []
+    PRACTICE_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    for path in sorted(PRACTICE_JOB_DIR.glob("generation_*.json"), reverse=True):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        stored_key = str(record.get("continuation_key") or payload.get("continuation_key") or "")
+        if stored_key == continuation_key:
+            rows.append(record)
+    return rows
+
+
 def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
     if operation not in {"analyze", "plan", "generate_from_plan", "generate_from_contract"}:
         raise ValueError("不支持的出题任务类型。")
     payload = dict(payload)
     batch_id = str(payload.get("practice_batch_id") or "")
+    continuation_key = str(payload.get("continuation_key") or "").strip()[:120]
+    continuation_attempt_id = str(payload.get("continuation_attempt_id") or "").strip()[:120]
     payload["task_title"] = _batch_task_title(batch_id) or _default_task_title(payload)
     now = _now()
     job_id = f"generation_{datetime.now():%Y%m%d%H%M%S}_{uuid4().hex[:8]}"
@@ -202,6 +221,8 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         "operation": operation,
         "task_kind": "knowledge" if source_mode == "knowledge" else "practice",
         "practice_batch_id": batch_id,
+        "continuation_key": continuation_key,
+        "continuation_attempt_id": continuation_attempt_id,
         "title": payload["task_title"],
         "provider": str(payload.get("provider") or ""),
         "model": str(payload.get("model") or ""),
@@ -237,6 +258,28 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
 def create_or_reuse_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Reuse a repeated request in the same batch or create a new user task."""
     with _LOCK:
+        continuation_key = str(payload.get("continuation_key") or "").strip()[:120]
+        continuation_attempt_id = str(payload.get("continuation_attempt_id") or "").strip()[:120]
+        if continuation_key:
+            continuation_jobs = _continuation_jobs(continuation_key)
+            active = next(
+                (record for record in continuation_jobs if record.get("status") in {"queued", "running"}),
+                None,
+            )
+            if active:
+                return {**active, "deduplicated": True}
+            if continuation_attempt_id:
+                replayed = next(
+                    (
+                        record
+                        for record in continuation_jobs
+                        if str(record.get("continuation_attempt_id") or (record.get("payload") or {}).get("continuation_attempt_id") or "")
+                        == continuation_attempt_id
+                    ),
+                    None,
+                )
+                if replayed:
+                    return {**replayed, "deduplicated": True, "replayed_terminal": True}
         existing = find_active_practice_job(operation, payload)
         if existing:
             return {**existing, "deduplicated": True}

@@ -167,6 +167,52 @@ def _content_fingerprint(data: dict[str, Any] | None) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _blueprint_fingerprint(blueprint: dict[str, Any] | None) -> str:
+    """Hash only the normalized confirmed blueprint, never provider credentials."""
+    normalized = blueprint if isinstance(blueprint, dict) else {}
+    encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _successful_exercises_by_plan_id(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    successful: dict[str, dict[str, Any]] = {}
+    for item in data.get("exercises") or []:
+        if not isinstance(item, dict) or item.get("generation_status") == "failed":
+            continue
+        plan_item_id = str(item.get("plan_item_id") or "").strip()
+        if plan_item_id and plan_item_id not in successful:
+            successful[plan_item_id] = item
+    return successful
+
+
+def _unfinished_plan_item_ids(data: dict[str, Any], blueprint: dict[str, Any]) -> list[str]:
+    successful = _successful_exercises_by_plan_id(data)
+    planned = {
+        str(item.get("plan_item_id") or "").strip()
+        for item in blueprint.get("exercise_plan") or []
+        if isinstance(item, dict) and str(item.get("plan_item_id") or "").strip()
+    }
+    return sorted(plan_item_id for plan_item_id in planned if plan_item_id not in successful)
+
+
+def _continuation_snapshot(record: dict[str, Any], data: dict[str, Any], blueprint: dict[str, Any]) -> dict[str, Any]:
+    revisions = [item for item in record.get("revisions") or [] if isinstance(item, dict)]
+    return {
+        "schema_version": "answer_book.practice_continuation.v1",
+        "history_id": str(record.get("history_id") or ""),
+        "history_updated_at": str(record.get("updated_at") or ""),
+        "history_record_version": int(record.get("record_version") or 1),
+        "revision_count": len(revisions),
+        "blueprint_fingerprint": _blueprint_fingerprint(blueprint),
+        "unfinished_plan_item_ids": _unfinished_plan_item_ids(data, blueprint),
+    }
+
+
+def _continuation_key(snapshot: dict[str, Any]) -> str:
+    encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"practice_continuation_v1_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
 def _with_edit_versions(data: dict[str, Any]) -> dict[str, Any]:
     exercises = data.get("exercises") if isinstance(data.get("exercises"), list) else []
     for item in exercises:
@@ -359,11 +405,13 @@ def save_practice_record(
         if isinstance(request, dict) and (isinstance(request.get("plan"), dict) or isinstance(request.get("generation_contract"), dict))
         else str(existing.get("plan_fingerprint") or "")
     )
+    content_changed = not previous_data or _content_fingerprint(previous_data) != _content_fingerprint(public_data)
     record = {
         "history_id": history_id,
         "status": _status_for_data(public_data),
         "created_at": created_at,
         "updated_at": _now(),
+        "record_version": int(existing.get("record_version") or 0) + (1 if content_changed else 0),
         "title": _material_task_title(request or {}, existing.get("title")) or str((data.get("blueprint") or {}).get("training_goal") or "研究生专项练习")[:120],
         "source_excerpt": str((request or existing.get("request") or {}).get("question_text") or "")[:240],
         "request": _compact_request(request) if request is not None else existing.get("request", {}),
@@ -412,6 +460,13 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
     source_status = "ready" if source_files and not missing_sources else ("blocked" if source_files or request.get("source_file_names") else "not_required")
     return {
         "practice_batch_id": str(request.get("practice_batch_id") or "")[:100],
+        "continuation_key": str(request.get("continuation_key") or "")[:120],
+        "continuation_attempt_id": str(request.get("continuation_attempt_id") or "")[:120],
+        "continuation_snapshot": (
+            copy_request(request.get("continuation_snapshot"))
+            if isinstance(request.get("continuation_snapshot"), dict)
+            else {}
+        ),
         "task_title": _clean_task_title(request.get("task_title")),
         "source_mode": str(request.get("source_mode") or "exam")[:30],
         "knowledge_title": str(request.get("knowledge_title") or "")[:300],
@@ -467,7 +522,7 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
 
 
 @_store_synchronized
-def build_practice_continuation_payload(history_id: str) -> dict[str, Any]:
+def build_practice_continuation_payload(history_id: str, *, attempt_id: str = "") -> dict[str, Any]:
     """Build a trusted request that reuses successes and generates only unfinished slots."""
     path = _path(history_id)
     if not path.exists():
@@ -475,15 +530,16 @@ def build_practice_continuation_payload(history_id: str) -> dict[str, Any]:
     record = json.loads(path.read_text(encoding="utf-8"))
     data = _with_current_quality(record.get("data") if isinstance(record.get("data"), dict) else {})
     request = record.get("request") if isinstance(record.get("request"), dict) else {}
-    quality = data.get("quality") if isinstance(data.get("quality"), dict) else {}
-    total_count = int(quality.get("total_count") or len(data.get("exercises") or []))
-    generated_count = int(quality.get("generated_count") or 0)
-    if total_count <= 0 or generated_count >= total_count:
-        raise ValueError("这份练习没有未完成题目，无需继续生成。")
     blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
     exercise_plan = blueprint.get("exercise_plan") if isinstance(blueprint.get("exercise_plan"), list) else []
     if not exercise_plan:
         raise ValueError("历史记录缺少已确认蓝图，无法安全继续未完成项。")
+    snapshot = _continuation_snapshot(record, data, blueprint)
+    unfinished_ids = snapshot["unfinished_plan_item_ids"]
+    if not unfinished_ids:
+        raise ValueError("这份练习没有未完成题目，无需继续生成。")
+    total_count = len(exercise_plan)
+    continuation_key = _continuation_key(snapshot)
     source_scope = data.get("source_scope") if isinstance(data.get("source_scope"), dict) else request.get("source_scope_checkpoint") or {}
     source_analysis = data.get("source_analysis") if isinstance(data.get("source_analysis"), dict) else request.get("source_analysis") or {}
     selected = data.get("selected_source_questions") if isinstance(data.get("selected_source_questions"), list) else request.get("selected_source_questions") or []
@@ -515,7 +571,10 @@ def build_practice_continuation_payload(history_id: str) -> dict[str, Any]:
         "resume_from_history_id": history_id,
         "reset_generation_retry_state": True,
         "fresh_generation": True,
-        "practice_batch_id": f"continue_{history_id}_{uuid4().hex[:8]}",
+        "continuation_key": continuation_key,
+        "continuation_attempt_id": str(attempt_id or "").strip()[:120],
+        "continuation_snapshot": snapshot,
+        "practice_batch_id": f"continue_{continuation_key.rsplit('_', 1)[-1][:24]}",
         "task_title": _material_task_title(request, record.get("title")),
     }
 
@@ -523,6 +582,117 @@ def build_practice_continuation_payload(history_id: str) -> dict[str, Any]:
 def copy_request(request: dict[str, Any]) -> dict[str, Any]:
     """JSON-safe copy kept local so continuation never mutates stored input."""
     return json.loads(json.dumps(request, ensure_ascii=False))
+
+
+def _merge_continuation_semantic_review(
+    latest: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    latest_success_ids: set[str],
+    merged_exercises: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    latest_review = latest.get("semantic_review") if isinstance(latest.get("semantic_review"), dict) else None
+    incoming_review = incoming.get("semantic_review") if isinstance(incoming.get("semantic_review"), dict) else None
+    if not latest_review and not incoming_review:
+        return None
+    latest_by_number = {
+        str(item.get("number") or ""): item
+        for item in (latest_review or {}).get("items") or []
+        if isinstance(item, dict)
+    }
+    incoming_by_number = {
+        str(item.get("number") or ""): item
+        for item in (incoming_review or {}).get("items") or []
+        if isinstance(item, dict)
+    }
+    items: list[dict[str, Any]] = []
+    for index, exercise in enumerate(merged_exercises, start=1):
+        if exercise.get("generation_status") == "failed":
+            continue
+        number = str(exercise.get("number") or index)
+        plan_item_id = str(exercise.get("plan_item_id") or "")
+        selected = (
+            latest_by_number.get(number)
+            if plan_item_id in latest_success_ids
+            else incoming_by_number.get(number)
+        ) or incoming_by_number.get(number) or latest_by_number.get(number)
+        items.append(dict(selected) if isinstance(selected, dict) else {"number": exercise.get("number") or index, "status": "not_reviewed", "risks": []})
+    all_passed = bool(items) and all(str(item.get("status") or "") == "passed" for item in items)
+    base = incoming_review or latest_review or {}
+    return {
+        **base,
+        "status": "passed" if all_passed else "failed",
+        "review_scope": "merged_continuation",
+        "items": items,
+        **({} if all_passed else {"error": str(base.get("error") or "合并后的题目包含尚未完成语义复核的内容。")}),
+    }
+
+
+@_store_synchronized
+def save_practice_continuation_record(
+    data: dict[str, Any],
+    *,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge a continuation result without replacing newer successful questions."""
+    history_id = str(request.get("resume_from_history_id") or data.get("history_id") or "").strip()
+    if not history_id:
+        raise ValueError("继续任务缺少历史记录 ID，已阻止覆盖保存。")
+    path = _path(history_id)
+    if not path.exists():
+        raise FileNotFoundError("练习记录不存在。")
+    existing = json.loads(path.read_text(encoding="utf-8"))
+    latest = existing.get("data") if isinstance(existing.get("data"), dict) else {}
+    latest_blueprint = latest.get("blueprint") if isinstance(latest.get("blueprint"), dict) else {}
+    snapshot = request.get("continuation_snapshot") if isinstance(request.get("continuation_snapshot"), dict) else {}
+    expected_blueprint = str(snapshot.get("blueprint_fingerprint") or "")
+    if not expected_blueprint or expected_blueprint != _blueprint_fingerprint(latest_blueprint):
+        raise PracticeEditConflict("继续任务的蓝图已被修改，本次结果未覆盖较新的历史内容。")
+
+    latest_success = _successful_exercises_by_plan_id(latest)
+    incoming_by_id = {
+        str(item.get("plan_item_id") or "").strip(): item
+        for item in data.get("exercises") or []
+        if isinstance(item, dict) and str(item.get("plan_item_id") or "").strip()
+    }
+    latest_by_id = {
+        str(item.get("plan_item_id") or "").strip(): item
+        for item in latest.get("exercises") or []
+        if isinstance(item, dict) and str(item.get("plan_item_id") or "").strip()
+    }
+    merged_exercises: list[dict[str, Any]] = []
+    for item in latest_blueprint.get("exercise_plan") or []:
+        if not isinstance(item, dict):
+            continue
+        plan_item_id = str(item.get("plan_item_id") or "").strip()
+        selected = latest_success.get(plan_item_id) or incoming_by_id.get(plan_item_id) or latest_by_id.get(plan_item_id)
+        if isinstance(selected, dict):
+            merged_exercises.append(copy_request(selected))
+
+    merged = {
+        **copy_request(data),
+        "history_id": history_id,
+        "blueprint": copy_request(latest_blueprint),
+        "exercises": merged_exercises,
+    }
+    semantic_review = _merge_continuation_semantic_review(
+        latest,
+        merged,
+        latest_success_ids=set(latest_success),
+        merged_exercises=merged_exercises,
+    )
+    if semantic_review is not None:
+        merged["semantic_review"] = semantic_review
+    generation = merged.get("generation") if isinstance(merged.get("generation"), dict) else {}
+    merged["generation"] = {
+        **generation,
+        "continuation_merge": {
+            "base_updated_at": str(snapshot.get("history_updated_at") or ""),
+            "committed_over_updated_at": str(existing.get("updated_at") or ""),
+            "latest_successes_preserved": len(latest_success),
+        },
+    }
+    return save_practice_record(merged, request=request, change_reason="continue_unfinished")
 
 
 def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:

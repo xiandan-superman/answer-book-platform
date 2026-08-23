@@ -9466,6 +9466,11 @@ async function continuePracticeHistory(historyId, button = null, taskKind = "") 
   if (!confirmed || requestedSessionVersion !== practiceSessionVersion) return;
   if (button) button.disabled = true;
   try {
+    // This ID identifies one explicit user attempt. Replaying the same HTTP
+    // request reuses its terminal result, while a new confirmed click after a
+    // failure gets a fresh attempt. Server-side continuation_key still owns
+    // cross-tab and concurrent active-job deduplication.
+    const continuationAttemptId = newPracticeBatchId();
     beginNewPracticeSession();
     const sessionVersion = practiceSessionVersion;
     setPracticeWorkspaceMode(taskKind === "knowledge" || latestPracticeSet?.source_mode === "knowledge" ? "knowledge" : "exam");
@@ -9473,7 +9478,7 @@ async function continuePracticeHistory(historyId, button = null, taskKind = "") 
     showPracticeOperationLoading("正在继续未完成题目", "generate_from_plan");
     const started = await api(`/api/practice/history/${encodeURIComponent(targetHistoryId)}/continue`, {
       method: "POST",
-      body: JSON.stringify({})
+      body: JSON.stringify({ continuation_attempt_id: continuationAttemptId })
     });
     if (sessionVersion !== practiceSessionVersion) return;
     rememberPracticeJob(started.job_id);

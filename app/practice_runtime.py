@@ -99,11 +99,15 @@ def load_practice_generation_checkpoint(
     resume_job_id = str(payload.get("resume_from_job_id") or "").strip()[:100]
     resume_history_id = str(payload.get("resume_from_history_id") or "").strip()[:100]
     if resume_history_id:
-        from .practice_store import load_practice_record
+        from .practice_store import _blueprint_fingerprint, load_practice_record
 
         record = load_practice_record(resume_history_id)
         data = record.get("data") if isinstance(record.get("data"), dict) else {}
         blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+        continuation_snapshot = payload.get("continuation_snapshot") if isinstance(payload.get("continuation_snapshot"), dict) else {}
+        expected_blueprint_fingerprint = str(continuation_snapshot.get("blueprint_fingerprint") or "")
+        if expected_blueprint_fingerprint and expected_blueprint_fingerprint != _blueprint_fingerprint(blueprint):
+            raise ValueError("历史记录的蓝图已在继续任务创建后发生变化，已停止旧任务以保护较新成果。")
         stored_plan_ids = [
             str(item.get("plan_item_id") or "").strip()
             for item in blueprint.get("exercise_plan") or []
