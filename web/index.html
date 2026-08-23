@@ -495,7 +495,8 @@
           }
           /* Dynamic result containers (driven by app.js) */
           .practice-loading, .practice-plan-review, .practice-results { display: flex; flex-direction: column; gap: 16px; }
-          .practice-error { padding: 10px 12px; border-radius: 9px; background: var(--state-error-bg); color: var(--state-error); font-size: 12px; }
+          .practice-error { padding: 10px 12px; border-radius: 9px; background: var(--state-error-bg); color: var(--state-error); font-size: 12px; white-space: pre-line; }
+          .practice-error.practice-upload-note { background: var(--state-info-bg); color: var(--brand-primary); }
         </style>
 
         <div class="workbench-grid">
@@ -1933,6 +1934,7 @@
   <script src="/support-telemetry.js"></script>
   <script src="/platform-api.js"></script>
   <script src="/task-contract-ui.js"></script>
+  <script src="/upload-file-selection.js"></script>
   <script src="/app.js?v=20260730-readable-density-11"></script>
 </body>
 </html>

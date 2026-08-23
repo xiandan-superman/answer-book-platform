@@ -32,10 +32,13 @@ let modelQuestionTypeTab = "text";
 let modelConnectionTests = loadStoredModelConnectionTests();
 let practiceSourceFiles = [];
 let knowledgeSourceFiles = [];
+const uploadFileReadChains = { practice: Promise.resolve(), knowledge: Promise.resolve() };
+const uploadFileReadPending = { practice: 0, knowledge: 0 };
 let currentPracticeSourceMode = "exam";
 const practiceWorkspaceDrafts = { exam: null, knowledge: null };
 const practiceWorkspaceDraftTimers = { exam: null, knowledge: null };
 const practiceWorkspaceWriteChains = { exam: Promise.resolve(), knowledge: Promise.resolve() };
+const practiceWorkspaceRestorePromises = { exam: Promise.resolve(false), knowledge: Promise.resolve(false) };
 let practiceWorkspaceRestoreInProgress = false;
 let latestPracticeSourceScope = null;
 let latestPracticeSourceAnalysis = null;
@@ -467,10 +470,22 @@ function capturePracticeWorkspaceDraft(mode) {
   };
 }
 
+function normalizeSourceFileList(files) {
+  const seenIds = new Set();
+  return Array.from(files || []).filter((file) => file && typeof file === "object").map((file) => {
+    const normalized = { ...file };
+    let itemId = String(normalized.upload_item_id || "").trim();
+    if (!itemId || seenIds.has(itemId)) itemId = newUploadItemId();
+    normalized.upload_item_id = itemId;
+    seenIds.add(itemId);
+    return normalized;
+  });
+}
+
 function restorePracticeWorkspaceDraft(mode) {
   const draft = practiceWorkspaceDrafts[mode] || {};
   if ($("practiceQuestionText")) $("practiceQuestionText").value = draft.question_text || "";
-  practiceSourceFiles = Array.isArray(draft.source_files) ? draft.source_files.map((file) => ({ ...file })) : [];
+  practiceSourceFiles = normalizeSourceFileList(draft.source_files);
   if ($("practiceCount")) $("practiceCount").value = draft.count || "5";
   if ($("practiceDifficulty")) $("practiceDifficulty").value = draft.difficulty || "基础到进阶";
   if ($("practiceFocus")) $("practiceFocus").value = draft.focus || "";
@@ -587,7 +602,7 @@ function captureKnowledgeInputWorkspace() {
 function restoreKnowledgeInputWorkspace(input = {}) {
   if ($("knowledgeTitleInput")) $("knowledgeTitleInput").value = input.title || "";
   if ($("knowledgeTextInput")) $("knowledgeTextInput").value = input.text || "";
-  knowledgeSourceFiles = Array.isArray(input.source_files) ? input.source_files.map((file) => ({ ...file })) : [];
+  knowledgeSourceFiles = normalizeSourceFileList(input.source_files);
   if ($("knowledgeFocusInput")) $("knowledgeFocusInput").value = input.focus || "";
   const types = new Set(input.question_types || []);
   document.querySelectorAll('input[name="knowledgeQuestionType"]').forEach((item) => { item.checked = types.has(item.value); });
@@ -668,6 +683,16 @@ function flushScheduledPracticeWorkspaceDraft(mode = currentPracticeSourceMode) 
   persistPracticeWorkspaceDraft(normalizedMode);
 }
 
+function persistUploadSelectionDraft(mode = currentPracticeSourceMode) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  if (practiceWorkspaceDraftTimers[normalizedMode]) {
+    clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
+    practiceWorkspaceDraftTimers[normalizedMode] = null;
+  }
+  const record = capturePersistentPracticeWorkspace(normalizedMode);
+  return persistPracticeWorkspaceDraft(normalizedMode, record);
+}
+
 async function restorePersistentPracticeWorkspace(mode, sessionVersion) {
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
   let record;
@@ -686,6 +711,7 @@ async function restorePersistentPracticeWorkspace(mode, sessionVersion) {
         practiceWorkspaceDrafts[normalizedMode] = record.input || {};
         restorePracticeWorkspaceDraft(normalizedMode);
       }
+      await persistPracticeWorkspaceDraft(normalizedMode, capturePersistentPracticeWorkspace(normalizedMode));
       showPracticeWorkspaceDraftNotice(normalizedMode, normalizedMode === "knowledge" ? "已恢复上次未提交的知识材料、文件和参数。" : "已恢复上次未提交的题目、文件和参数。");
       syncPracticeSubmitAvailability();
       return true;
@@ -745,7 +771,7 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
 function syncKnowledgeRequestToPracticeWorkspace(request = {}) {
   if (request.source_mode !== "knowledge") return;
   if ($("practiceQuestionText")) $("practiceQuestionText").value = request.question_text || "";
-  practiceSourceFiles = Array.isArray(request.source_files) ? request.source_files.map((file) => ({ ...file })) : [];
+  practiceSourceFiles = normalizeSourceFileList(request.source_files);
   if ($("practiceCount") && request.count) $("practiceCount").value = String(request.count);
   if ($("practiceDifficulty") && request.difficulty) $("practiceDifficulty").value = request.difficulty;
   if ($("practiceFocus")) $("practiceFocus").value = request.focus || "";
@@ -786,7 +812,7 @@ function openPracticeEntry(mode = "exam", openModelSettings = false) {
   setPracticeWorkspaceMode(mode);
   goToPage("practice");
   const sessionVersion = practiceSessionVersion;
-  restorePersistentPracticeWorkspace(mode, sessionVersion).catch(() => {});
+  practiceWorkspaceRestorePromises[mode] = restorePersistentPracticeWorkspace(mode, sessionVersion).catch(() => false);
 }
 
 function openKnowledgeEntry() {
@@ -801,7 +827,7 @@ function openKnowledgeEntry() {
   $("knowledgeError")?.classList.add("hidden");
   goToPage("knowledge");
   const sessionVersion = practiceSessionVersion;
-  restorePersistentPracticeWorkspace("knowledge", sessionVersion).catch(() => {});
+  practiceWorkspaceRestorePromises.knowledge = restorePersistentPracticeWorkspace("knowledge", sessionVersion).catch(() => false);
 }
 
 function newPracticeBatchId() {
@@ -2081,13 +2107,122 @@ function practiceFileLabel(file) {
   return `${file.name} · ${(file.size / 1024).toFixed(file.size > 1024 * 1024 ? 0 : 1)} KB`;
 }
 
+function uploadFileSelectionApi() {
+  if (!globalThis.UploadFileSelection) throw new Error("文件选择组件加载失败，请刷新页面后重试。");
+  return globalThis.UploadFileSelection;
+}
+
+function uploadFeedbackBox(mode) {
+  return $(mode === "knowledge" ? "knowledgeError" : "practiceError");
+}
+
+function showUploadFeedback(mode, message, tone = "error") {
+  const box = uploadFeedbackBox(mode);
+  if (!box) return;
+  box.textContent = String(message || "");
+  box.dataset.uploadFeedback = "true";
+  box.classList.toggle("practice-upload-note", tone === "info");
+  box.classList.toggle("hidden", !message);
+}
+
+function clearUploadFeedback(mode) {
+  const box = uploadFeedbackBox(mode);
+  if (!box || box.dataset.uploadFeedback !== "true") return;
+  box.textContent = "";
+  delete box.dataset.uploadFeedback;
+  box.classList.remove("practice-upload-note");
+  box.classList.add("hidden");
+}
+
 async function fileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => reject(new Error(`${file.name} 读取失败。`));
+    reader.onabort = () => reject(new Error(`${file.name} 读取已取消。`));
     reader.readAsDataURL(file);
   });
+}
+
+async function fileSha256(file) {
+  if (!globalThis.crypto?.subtle) throw new Error(`${file.name} 无法计算内容摘要，请使用最新版浏览器。`);
+  const bytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function newUploadItemId() {
+  const seed = globalThis.crypto?.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `upload_${seed}`;
+}
+
+async function prepareUploadFile(file) {
+  const dataUrl = await fileAsDataUrl(file);
+  const sha256 = await fileSha256(file);
+  return {
+    upload_item_id: newUploadItemId(),
+    sha256,
+    name: file.name,
+    type: file.type || "application/octet-stream",
+    size: file.size,
+    data_url: dataUrl
+  };
+}
+
+async function readUploadFilesAtomically(fileList, currentFiles, canCommit) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return { files: currentFiles(), added: [], duplicates: [] };
+  if (!canCommit()) throw new Error("本次选择未加入；页面已切换，请在当前页面重新选择文件。");
+  const selection = uploadFileSelectionApi();
+  const initialValidation = selection.validateSelection(currentFiles(), files);
+  if (!initialValidation.ok) throw new Error(selection.formatValidationError(initialValidation.rejected));
+
+  const prepared = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    try {
+      prepared.push(await prepareUploadFile(file));
+    } catch (error) {
+      const rejected = files.map((candidate, candidateIndex) => ({
+        name: candidate.name || `未命名文件 ${candidateIndex + 1}`,
+        reasons: candidateIndex === index
+          ? [String(error).replace(/^Error:\s*/, "")]
+          : ["同批次有文件读取失败，本文件也未加入"]
+      }));
+      throw new Error(selection.formatValidationError(rejected));
+    }
+  }
+  if (!canCommit()) throw new Error("本次选择未加入；页面已切换，请在当前页面重新选择文件。");
+  const latestFiles = currentFiles();
+  const commitValidation = selection.validateSelection(latestFiles, files);
+  if (!commitValidation.ok) throw new Error(selection.formatValidationError(commitValidation.rejected));
+  return selection.mergePreparedFiles(latestFiles, prepared);
+}
+
+function queueUploadFileRead(kind, operation) {
+  const queued = uploadFileReadChains[kind].catch(() => {}).then(operation);
+  uploadFileReadChains[kind] = queued.catch(() => {});
+  return queued;
+}
+
+function uploadDisplayName(file, files) {
+  return uploadFileSelectionApi().displayName(file, files);
+}
+
+function duplicateUploadMessage(duplicates) {
+  if (!duplicates?.length) return "";
+  const names = duplicates.map(({ file, duplicateOf }) => `${file.name}（与 ${duplicateOf.name} 内容相同）`);
+  return `重复文件未再次加入：${names.join("、")}`;
+}
+
+function uploadItemKey(file, index) {
+  return String(file?.upload_item_id || `legacy-${index}`);
+}
+
+function uploadItemIndex(files, itemKey) {
+  return files.findIndex((file, index) => uploadItemKey(file, index) === itemKey);
 }
 
 function renderPracticeFilePreview() {
@@ -2099,43 +2234,50 @@ function renderPracticeFilePreview() {
     return;
   }
   preview.innerHTML = practiceSourceFiles.map((file, index) => `
-    <div class="practice-source-file">
+    <div class="practice-source-file" data-upload-item-id="${escapeHtml(uploadItemKey(file, index))}">
       ${String(file.type || "").startsWith("image/")
         ? `<img src="${file.data_url}" alt="">`
-        : `<i class="fas ${file.type === "application/pdf" ? "fa-file-pdf" : file.name.endsWith(".docx") ? "fa-file-word" : "fa-file-lines"}"></i>`}
-      <span class="practice-source-file__meta"><strong>${escapeHtml(file.name)}</strong><small>${(Number(file.size || 0) / 1024).toFixed(1)} KB</small></span>
+        : `<i class="fas ${file.type === "application/pdf" ? "fa-file-pdf" : String(file.name || "").toLowerCase().endsWith(".docx") ? "fa-file-word" : "fa-file-lines"}"></i>`}
+      <span class="practice-source-file__meta"><strong>${escapeHtml(uploadDisplayName(file, practiceSourceFiles))}</strong><small>${(Number(file.size || 0) / 1024).toFixed(1)} KB</small></span>
       <span class="practice-source-file__actions">
-        ${practiceSourceFiles.length > 1 ? `<button class="practice-file-action" type="button" data-practice-file-up="${index}" title="上移" aria-label="上移文件" ${index === 0 ? "disabled" : ""}><i class="fas fa-arrow-up"></i></button>
-        <button class="practice-file-action" type="button" data-practice-file-down="${index}" title="下移" aria-label="下移文件" ${index === practiceSourceFiles.length - 1 ? "disabled" : ""}><i class="fas fa-arrow-down"></i></button>` : ""}
-        <button class="practice-file-action practice-file-action--remove" type="button" data-practice-file-remove="${index}" title="删除" aria-label="删除文件"><i class="fas fa-xmark"></i></button>
+        ${practiceSourceFiles.length > 1 ? `<button class="practice-file-action" type="button" data-practice-file-up="${escapeHtml(uploadItemKey(file, index))}" title="上移" aria-label="上移文件" ${index === 0 ? "disabled" : ""}><i class="fas fa-arrow-up"></i></button>
+        <button class="practice-file-action" type="button" data-practice-file-down="${escapeHtml(uploadItemKey(file, index))}" title="下移" aria-label="下移文件" ${index === practiceSourceFiles.length - 1 ? "disabled" : ""}><i class="fas fa-arrow-down"></i></button>` : ""}
+        <button class="practice-file-action practice-file-action--remove" type="button" data-practice-file-remove="${escapeHtml(uploadItemKey(file, index))}" title="删除" aria-label="删除文件"><i class="fas fa-xmark"></i></button>
       </span>
     </div>
   `).join("");
   preview.querySelectorAll("[data-practice-file-remove]").forEach((button) => {
     button.addEventListener("click", () => {
-      practiceSourceFiles.splice(Number(button.dataset.practiceFileRemove), 1);
+      const index = uploadItemIndex(practiceSourceFiles, button.dataset.practiceFileRemove || "");
+      if (index < 0) return;
+      practiceSourceFiles.splice(index, 1);
       renderPracticeFilePreview();
+      clearUploadFeedback("practice");
       setText("practiceSourceStatus", practiceSourceFiles.length ? `已读取 ${practiceSourceFiles.length} 个文件` : "等待输入");
+      persistUploadSelectionDraft(currentPracticeSourceMode);
     });
   });
-  const move = (index, offset) => {
+  const move = (itemKey, offset) => {
+    const index = uploadItemIndex(practiceSourceFiles, itemKey);
+    if (index < 0) return;
     const target = index + offset;
     if (target < 0 || target >= practiceSourceFiles.length) return;
     [practiceSourceFiles[index], practiceSourceFiles[target]] = [practiceSourceFiles[target], practiceSourceFiles[index]];
     renderPracticeFilePreview();
+    persistUploadSelectionDraft(currentPracticeSourceMode);
   };
   preview.querySelectorAll("[data-practice-file-up]").forEach((button) => {
-    button.addEventListener("click", () => move(Number(button.dataset.practiceFileUp), -1));
+    button.addEventListener("click", () => move(button.dataset.practiceFileUp || "", -1));
   });
   preview.querySelectorAll("[data-practice-file-down]").forEach((button) => {
-    button.addEventListener("click", () => move(Number(button.dataset.practiceFileDown), 1));
+    button.addEventListener("click", () => move(button.dataset.practiceFileDown || "", 1));
   });
   syncPracticeSubmitAvailability();
 }
 
 function syncPracticeSubmitAvailability() {
   const hasText = Boolean($("practiceQuestionText")?.value.trim());
-  const ready = hasText || practiceSourceFiles.length > 0;
+  const ready = (hasText || practiceSourceFiles.length > 0) && uploadFileReadPending.practice === 0;
   for (const button of [$("practiceGenerateBtn"), $("practiceRailGenerateBtn")]) {
     if (!button) continue;
     button.disabled = !ready;
@@ -2145,26 +2287,42 @@ function syncPracticeSubmitAvailability() {
   return ready;
 }
 
+function syncKnowledgeUploadAvailability() {
+  const button = $("knowledgePlanBtn");
+  if (button && uploadFileReadPending.knowledge > 0) button.disabled = true;
+}
+
 async function readPracticeFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) {
     renderPracticeFilePreview();
-    return;
+    return { files: practiceSourceFiles, added: [], duplicates: [] };
   }
-  if (files.length + practiceSourceFiles.length > 12) throw new Error("一次最多上传 12 个文件。");
-  const total = files.reduce((sum, file) => sum + file.size, practiceSourceFiles.reduce((sum, file) => sum + Number(file.size || 0), 0));
-  if (total > 36 * 1024 * 1024) throw new Error("上传文件总大小不能超过 36 MB。");
-  for (const file of files) {
-    if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name} 超过 12 MB。`);
-    practiceSourceFiles.push({
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-      data_url: await fileAsDataUrl(file)
+  const sessionVersion = practiceSessionVersion;
+  const sourceMode = currentPracticeSourceMode;
+  uploadFileReadPending.practice += 1;
+  syncPracticeSubmitAvailability();
+  try {
+    await practiceWorkspaceRestorePromises[sourceMode];
+    return await queueUploadFileRead("practice", async () => {
+      const result = await readUploadFilesAtomically(
+        files,
+        () => practiceSourceFiles,
+        () => sessionVersion === practiceSessionVersion && sourceMode === currentPracticeSourceMode
+      );
+      practiceSourceFiles = result.files;
+      renderPracticeFilePreview();
+      setText("practiceSourceStatus", `已读取 ${practiceSourceFiles.length} 个文件`);
+      const duplicateMessage = duplicateUploadMessage(result.duplicates);
+      if (duplicateMessage) showUploadFeedback("practice", duplicateMessage, "info");
+      else clearUploadFeedback("practice");
+      await persistUploadSelectionDraft(sourceMode);
+      return result;
     });
+  } finally {
+    uploadFileReadPending.practice = Math.max(0, uploadFileReadPending.practice - 1);
+    syncPracticeSubmitAvailability();
   }
-  renderPracticeFilePreview();
-  setText("practiceSourceStatus", `已读取 ${practiceSourceFiles.length} 个文件`);
 }
 
 function renderKnowledgeFilePreview() {
@@ -2175,35 +2333,49 @@ function renderKnowledgeFilePreview() {
     return;
   }
   preview.innerHTML = knowledgeSourceFiles.map((file, index) => `
-    <div>
-      <span><i class="fas ${file.type === "application/pdf" ? "fa-file-pdf" : file.name.endsWith(".docx") ? "fa-file-word" : file.type.startsWith("image/") ? "fa-file-image" : "fa-file-lines"}"></i> ${escapeHtml(file.name)} · ${(Number(file.size || 0) / 1024).toFixed(1)} KB</span>
-      <button class="knowledge-file-remove" type="button" data-knowledge-file-remove="${index}" title="移除此文件" aria-label="移除 ${escapeHtml(file.name)}"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+    <div data-upload-item-id="${escapeHtml(uploadItemKey(file, index))}">
+      <span><i class="fas ${file.type === "application/pdf" ? "fa-file-pdf" : String(file.name || "").toLowerCase().endsWith(".docx") ? "fa-file-word" : String(file.type || "").startsWith("image/") ? "fa-file-image" : "fa-file-lines"}"></i> ${escapeHtml(uploadDisplayName(file, knowledgeSourceFiles))} · ${(Number(file.size || 0) / 1024).toFixed(1)} KB</span>
+      <button class="knowledge-file-remove" type="button" data-knowledge-file-remove="${escapeHtml(uploadItemKey(file, index))}" title="移除此文件" aria-label="移除 ${escapeHtml(uploadDisplayName(file, knowledgeSourceFiles))}"><i class="fas fa-xmark" aria-hidden="true"></i></button>
     </div>
   `).join("");
   preview.querySelectorAll("[data-knowledge-file-remove]").forEach((button) => {
     button.addEventListener("click", () => {
-      knowledgeSourceFiles.splice(Number(button.dataset.knowledgeFileRemove), 1);
+      const index = uploadItemIndex(knowledgeSourceFiles, button.dataset.knowledgeFileRemove || "");
+      if (index < 0) return;
+      knowledgeSourceFiles.splice(index, 1);
       renderKnowledgeFilePreview();
+      clearUploadFeedback("knowledge");
+      persistUploadSelectionDraft("knowledge");
     });
   });
 }
 
 async function readKnowledgeFiles(fileList) {
   const files = Array.from(fileList || []);
-  if (!files.length) return;
-  if (files.length + knowledgeSourceFiles.length > 12) throw new Error("一次最多上传 12 个文件。");
-  const total = files.reduce((sum, file) => sum + file.size, knowledgeSourceFiles.reduce((sum, file) => sum + Number(file.size || 0), 0));
-  if (total > 36 * 1024 * 1024) throw new Error("上传文件总大小不能超过 36 MB。");
-  for (const file of files) {
-    if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name} 超过 12 MB。`);
-    knowledgeSourceFiles.push({
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-      data_url: await fileAsDataUrl(file)
+  if (!files.length) return { files: knowledgeSourceFiles, added: [], duplicates: [] };
+  const sessionVersion = practiceSessionVersion;
+  uploadFileReadPending.knowledge += 1;
+  syncKnowledgeUploadAvailability();
+  try {
+    await practiceWorkspaceRestorePromises.knowledge;
+    return await queueUploadFileRead("knowledge", async () => {
+      const result = await readUploadFilesAtomically(
+        files,
+        () => knowledgeSourceFiles,
+        () => sessionVersion === practiceSessionVersion && currentPage === "knowledge"
+      );
+      knowledgeSourceFiles = result.files;
+      renderKnowledgeFilePreview();
+      const duplicateMessage = duplicateUploadMessage(result.duplicates);
+      if (duplicateMessage) showUploadFeedback("knowledge", duplicateMessage, "info");
+      else clearUploadFeedback("knowledge");
+      await persistUploadSelectionDraft("knowledge");
+      return result;
     });
+  } finally {
+    uploadFileReadPending.knowledge = Math.max(0, uploadFileReadPending.knowledge - 1);
+    if (uploadFileReadPending.knowledge === 0) $("knowledgePlanBtn").disabled = false;
   }
-  renderKnowledgeFilePreview();
 }
 
 async function pastePracticeImages(event) {
@@ -2225,8 +2397,8 @@ async function pastePracticeImages(event) {
     .filter(Boolean);
   if (!imageFiles.length) return;
   event.preventDefault();
-  await readPracticeFiles(imageFiles);
-  setText("practiceSourceStatus", `已粘贴 ${imageFiles.length} 张截图`);
+  const result = await readPracticeFiles(imageFiles);
+  setText("practiceSourceStatus", `已粘贴 ${result.added.length} 张截图`);
 }
 
 async function pasteKnowledgeImages(event) {
@@ -2245,8 +2417,6 @@ async function pasteKnowledgeImages(event) {
   if (!imageFiles.length) return;
   event.preventDefault();
   await readKnowledgeFiles(imageFiles);
-  const errorBox = $("knowledgeError");
-  if (errorBox) errorBox.classList.add("hidden");
 }
 
 function practicePlainText(data) {
@@ -3418,9 +3588,7 @@ function renderPracticeRecentHistory(records) {
         latestPracticeRequest = record.request || null;
         restorePracticePreferenceOrders(latestPracticeRequest);
         syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
-        practiceSourceFiles = Array.isArray(latestPracticeRequest?.source_files)
-          ? latestPracticeRequest.source_files.filter((file) => file?.data_url)
-          : [];
+        practiceSourceFiles = normalizeSourceFileList(latestPracticeRequest?.source_files).filter((file) => file?.data_url);
         currentPracticeSourceMode = latestPracticeRequest?.source_mode === "knowledge" ? "knowledge" : "exam";
         renderPracticeFilePreview();
         const savedData = record.data || {};
@@ -3746,7 +3914,7 @@ function practiceRequestPayload() {
     source_mode: knowledgeMode ? "knowledge" : "exam",
     knowledge_title: knowledgeMode ? (latestPracticeRequest?.knowledge_title || "") : undefined,
     question_text: $("practiceQuestionText").value.trim(),
-    source_files: practiceSourceFiles,
+    source_files: practiceSourceFiles.map((file) => ({ ...file })),
     blueprint_review_enabled: blueprintReviewEnabled(),
     semantic_review_enabled: true,
     include_source_content_in_generation: includeSourceContentInGeneration(),
@@ -3774,7 +3942,7 @@ function knowledgeRequestPayload() {
     source_mode: "knowledge",
     knowledge_title: title,
     question_text: questionText,
-    source_files: knowledgeSourceFiles,
+    source_files: knowledgeSourceFiles.map((file) => ({ ...file })),
     blueprint_review_enabled: $("knowledgeBlueprintReviewEnabled")?.checked !== false,
     semantic_review_enabled: true,
     include_source_content_in_generation: $("knowledgeIncludeSourceContent")?.checked !== false,
@@ -3849,7 +4017,11 @@ function enforceKnowledgeQuestionTypeMode(event) {
 async function planKnowledgePractice(event) {
   event.preventDefault();
   const sessionVersion = practiceSessionVersion;
+  await practiceWorkspaceRestorePromises.knowledge;
+  await uploadFileReadChains.knowledge;
+  if (sessionVersion !== practiceSessionVersion || currentPage !== "knowledge") return;
   const request = knowledgeRequestPayload();
+  clearUploadFeedback("knowledge");
   const errorBox = $("knowledgeError");
   if (!request.question_text && !request.source_files.length) {
     errorBox.textContent = "请填写知识点名称、粘贴知识材料，或上传至少一个文件。";
@@ -4683,7 +4855,12 @@ function keepOriginalPracticePlan() {
 async function planPractice(event) {
   event.preventDefault();
   const sessionVersion = practiceSessionVersion;
+  const sourceMode = currentPracticeSourceMode;
+  await practiceWorkspaceRestorePromises[sourceMode];
+  await uploadFileReadChains.practice;
+  if (sessionVersion !== practiceSessionVersion || sourceMode !== currentPracticeSourceMode || currentPage !== "practice") return;
   const request = practiceRequestPayload();
+  clearUploadFeedback("practice");
   const errorBox = $("practiceError");
   if (!request.question_text && !request.source_files.length) {
     errorBox.textContent = currentPracticeSourceMode === "knowledge" ? "请粘贴知识材料或上传知识点文件。" : "请粘贴题目文字或上传题目文件。";
@@ -4927,9 +5104,7 @@ async function loadPracticeHistory() {
         latestPracticeRequest = record.request || null;
         restorePracticePreferenceOrders(latestPracticeRequest);
         syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
-        practiceSourceFiles = Array.isArray(latestPracticeRequest?.source_files)
-          ? latestPracticeRequest.source_files.filter((file) => file?.data_url)
-          : [];
+        practiceSourceFiles = normalizeSourceFileList(latestPracticeRequest?.source_files).filter((file) => file?.data_url);
         renderPracticeFilePreview();
         latestPracticePlan = null;
         currentPracticeHistoryId = String(record.history_id || record.data?.history_id || "");
@@ -9673,18 +9848,24 @@ async function reuseGenerationTask(task) {
     const request = record.request || {};
     if (task.task_kind === "knowledge") {
       openKnowledgeEntry();
+      const reuseSessionVersion = practiceSessionVersion;
+      await practiceWorkspaceRestorePromises.knowledge;
+      if (reuseSessionVersion !== practiceSessionVersion) return;
       syncPracticeSourceContentPreference(request.include_source_content_in_generation !== false);
       if ($("knowledgeTitleInput")) $("knowledgeTitleInput").value = request.knowledge_title || "";
       const source = String(request.question_text || "").replace(/^# 知识点名称[\\s\\S]*?# 知识材料\\s*/m, "");
       if ($("knowledgeTextInput")) $("knowledgeTextInput").value = source;
-      knowledgeSourceFiles = Array.isArray(request.source_files) ? request.source_files.map((file) => ({ ...file })) : [];
+      knowledgeSourceFiles = normalizeSourceFileList(request.source_files);
       renderKnowledgeFilePreview();
       setText("knowledgeError", "");
     } else {
       openPracticeEntry("exam");
+      const reuseSessionVersion = practiceSessionVersion;
+      await practiceWorkspaceRestorePromises.exam;
+      if (reuseSessionVersion !== practiceSessionVersion) return;
       syncPracticeSourceContentPreference(request.include_source_content_in_generation !== false);
       if ($("practiceQuestionText")) $("practiceQuestionText").value = request.question_text || "";
-      practiceSourceFiles = Array.isArray(request.source_files) ? request.source_files.map((file) => ({ ...file })) : [];
+      practiceSourceFiles = normalizeSourceFileList(request.source_files);
       renderPracticeFilePreview();
     }
   } catch (err) {
@@ -11859,27 +12040,23 @@ $("knowledgeCount")?.addEventListener("change", updateKnowledgeDifficultyControl
 document.querySelectorAll('input[name="knowledgeQuestionType"]').forEach((input) => input.addEventListener("change", enforceKnowledgeQuestionTypeMode));
 updateKnowledgeDifficultyControl();
 $("knowledgeFileInput")?.addEventListener("change", (event) => {
-  readKnowledgeFiles(event.target.files).then(() => schedulePracticeWorkspaceDraftSave("knowledge")).catch((error) => {
-    $("knowledgeError").textContent = String(error).replace(/^Error:\s*/, "");
-    $("knowledgeError").classList.remove("hidden");
+  readKnowledgeFiles(event.target.files).catch((error) => {
+    showUploadFeedback("knowledge", String(error).replace(/^Error:\s*/, ""));
   }).finally(() => { event.target.value = ""; });
 });
 $("knowledgeTextInput")?.addEventListener("paste", (event) => {
-  pasteKnowledgeImages(event).then(() => schedulePracticeWorkspaceDraftSave("knowledge")).catch((error) => {
-    $("knowledgeError").textContent = String(error).replace(/^Error:\s*/, "");
-    $("knowledgeError").classList.remove("hidden");
+  pasteKnowledgeImages(event).catch((error) => {
+    showUploadFeedback("knowledge", String(error).replace(/^Error:\s*/, ""));
   });
 });
 $("practiceFile")?.addEventListener("change", (event) => {
-  readPracticeFiles(event.target.files).then(() => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode)).catch((error) => {
-    $("practiceError").textContent = String(error).replace(/^Error:\s*/, "");
-    $("practiceError").classList.remove("hidden");
+  readPracticeFiles(event.target.files).catch((error) => {
+    showUploadFeedback("practice", String(error).replace(/^Error:\s*/, ""));
   }).finally(() => { event.target.value = ""; });
 });
 $("practiceQuestionText")?.addEventListener("paste", (event) => {
-  pastePracticeImages(event).then(() => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode)).catch((error) => {
-    $("practiceError").textContent = String(error).replace(/^Error:\s*/, "");
-    $("practiceError").classList.remove("hidden");
+  pastePracticeImages(event).catch((error) => {
+    showUploadFeedback("practice", String(error).replace(/^Error:\s*/, ""));
   });
 });
 $("practiceQuestionText")?.addEventListener("input", syncPracticeSubmitAvailability);

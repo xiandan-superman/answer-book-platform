@@ -249,7 +249,7 @@ def test_reusing_knowledge_generation_restores_files_as_a_new_session() -> None:
     end = APP_JS.index("async function deleteGenerationTask", start)
     reuse = APP_JS[start:end]
     assert "openKnowledgeEntry();" in reuse
-    assert "knowledgeSourceFiles = Array.isArray(request.source_files)" in reuse
+    assert "knowledgeSourceFiles = normalizeSourceFileList(request.source_files)" in reuse
 
 
 def test_task_manager_labels_creation_time_and_truncates_only_material_name() -> None:

@@ -466,6 +466,12 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
             "size": int(item.get("size") or 0),
             "data_url": data_url if data_url.startswith("data:") else "",
         }
+        upload_item_id = str(item.get("upload_item_id") or "")[:200]
+        sha256 = str(item.get("sha256") or "").strip().lower()
+        if upload_item_id:
+            row["upload_item_id"] = upload_item_id
+        if re.fullmatch(r"[0-9a-f]{64}", sha256):
+            row["sha256"] = sha256
         if not row["data_url"]:
             missing_sources.append(name)
         source_files.append(row)
