@@ -2,7 +2,56 @@
 
 本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.13。
 
-核心原则：
+## 普通用户安装与使用
+
+不需要安装 Git，也不要直接双击 `web/index.html`。程序需要 Python 3.9 或更高版本，并通过本地启动文件打开网页服务。
+
+### 1. 下载正确的程序包
+
+1. 打开 [最新正式版本下载页面](https://github.com/xiandan-superman/answer-book-platform-releases/releases/latest)。
+2. 展开 **Assets**，下载名为 `answer-book-platform-<版本号>-source.zip` 的附件。例如 0.9.13 对应 `answer-book-platform-0.9.13-source.zip`。
+3. 不要下载 `update-manifest.json`，也不要下载页面底部由 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`；它们不是普通用户启动包。
+4. 解压 ZIP，把解压后的整个程序文件夹放在一个长期保留且可写的位置，例如“文稿/真题解析平台”。不要只复制其中某一个启动文件。
+
+### 2. macOS 首次启动
+
+1. 如果电脑没有 Python 3.9+，先从 [Python macOS 下载页](https://www.python.org/downloads/macos/) 安装，然后重新打开程序文件夹。
+2. 在程序文件夹中双击 `start_platform.command`。如果 macOS 首次阻止打开，请右键该文件，选择“打开”，再确认一次。
+3. 第一次运行会自动创建本平台专用的 Python 环境并安装依赖，所需时间取决于网络速度。安装期间不要关闭终端窗口。
+4. 准备完成后，程序会自动打开浏览器并访问 `http://127.0.0.1:8766`。
+
+### 3. Windows 首次启动
+
+1. 如果电脑没有 Python 3.9+，先从 [Python Windows 下载页](https://www.python.org/downloads/windows/) 安装。安装时建议启用 `Add python.exe to PATH`，完成后重新打开程序文件夹。
+2. 双击 `start_platform_windows.bat`。
+3. 第一次运行会自动创建本平台专用的 Python 环境并安装依赖。安装期间不要关闭命令窗口。
+4. 准备完成后，程序会自动打开浏览器并访问 `http://127.0.0.1:8766`。
+
+### 4. 第一次进入平台
+
+1. 在网页顶部进入“API 配置”。
+2. 选择使用的服务商，填写 API Key，并先执行连接测试。
+3. 测试成功后保存。API Key 只保存在本机用户数据目录，不会上传到 GitHub，也不会在程序更新时被覆盖。
+4. 返回首页后，即可上传题目或教材并使用真题解析、按题生题和知识点生题功能。
+
+### 5. 日常启动、关闭与更新
+
+- 每次使用都双击原程序文件夹中的 `start_platform.command`（macOS）或 `start_platform_windows.bat`（Windows），不要直接打开 HTML 文件。
+- 网页显示后可以关闭浏览器标签页，但这不会停止服务。需要完全退出时，回到启动程序打开的终端或命令窗口，按 `Control-C`，或直接关闭该窗口。
+- 从 0.9.13 开始，网页顶部会静默检查正式更新。发现新版本后点击“检查更新”并确认，程序会校验更新包、备份旧源码、替换程序并重启；任务、教材、输出和 API Key 不会被覆盖。
+
+### 从 0.9.12 或更早的 ZIP 版迁移
+
+旧 ZIP 版只能把 0.9.13 更新包下载并打开，不能自动替换自身，因此需要手动迁移一次：
+
+1. 保留旧程序文件夹，不要删除或覆盖它。
+2. 按上面的下载步骤解压最新正式版，得到一个新的程序文件夹。
+3. 如需保留旧数据，把旧文件夹中的 `tasks`、`outputs`、`textbooks`、`exams`、`practice_history` 等数据目录复制到新程序文件夹的同名位置；把旧 `config/api_keys.json` 和 `config/providers.local.json`（如果存在）复制到新文件夹的 `config` 目录。复制前不要删除旧文件夹，以便恢复。
+4. 双击新文件夹中的启动文件。首次启动会把这些旧数据再复制到系统用户数据目录；确认网页中的任务、教材和 API 配置正常后，再自行归档旧文件夹。
+
+如果旧平台是通过 `git clone` 获取且源码没有本地修改，可以直接在旧网页点击更新，再重新双击启动文件，不需要上述手动复制。
+
+## 核心原则
 
 - 程序主控任务流程，模型只作为局部判断器。
 - 第一版内置 OpenAI 与 DeepSeek，均通过 OpenAI-compatible Chat Completions 接口调用。
@@ -13,23 +62,9 @@
 - 多模态模型直接接收原题图片；文本模型才使用单独的视觉备用模型。模型能力来自本地配置并按“服务商 + 模型 + 能力声明”缓存，不会为了识别能力重复调用或试探模型。
 - 推荐使用 GitHub 源码启动版。首次启动自动创建独立 Python 环境并安装依赖；顶部“检查更新”只接受版本标签发布且通过 SHA256 校验的源码更新。用户数据和 API Key 位于程序目录之外，不会被源码替换覆盖。
 
-## 快速启动
+## 开发者启动
 
-普通用户在 GitHub 下载源码 ZIP 并解压。macOS 双击：
-
-```bash
-./start_platform.command
-```
-
-Windows 可运行：
-
-```bat
-start_platform_windows.bat
-```
-
-启动器会检查 Python 3.9+。若电脑没有 Python，会显示安装提示并打开官方下载页面；安装 Python 后再次双击即可。首次成功启动会在系统用户数据目录创建独立虚拟环境、自动安装依赖、启动 `http://127.0.0.1:8766` 并打开浏览器。
-
-开发者仍可直接运行：
+开发者可直接运行：
 
 ```bash
 python3 scripts/start_platform.py

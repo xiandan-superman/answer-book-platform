@@ -1,5 +1,13 @@
 # 源码分发与更新架构
 
+## 普通用户安装入口
+
+普通用户应从 [最新正式版本发布页](https://github.com/xiandan-superman/answer-book-platform-releases/releases/latest) 的 **Assets** 下载 `answer-book-platform-<版本号>-source.zip`。不要下载 `update-manifest.json`，也不要把 GitHub 自动附加的 `Source code (zip)` 当作程序包。
+
+下载后解压整个目录：macOS 双击 `start_platform.command`，Windows 双击 `start_platform_windows.bat`。启动器检查 Python 3.9+，首次运行创建专用虚拟环境、安装依赖、启动本地服务并打开 `http://127.0.0.1:8766`。API 配置、日常启动、停止服务和旧 ZIP 版迁移的完整用户步骤以仓库根目录 `README.md` 为准。
+
+0.9.12 或更早的无 Git ZIP 版不具备监督器自替换能力：它只能下载并打开新 ZIP。用户必须保留旧目录，解压新版，把需要保留的旧数据目录及本地配置复制到新版同名位置，再首次运行新版启动器。0.9.13 及之后由监督器安装的源码版才进入自动替换链路。
+
 ## 固定决策
 
 - 普通用户主渠道是 GitHub 源码 ZIP，不要求安装 Git，也不要求安装 DMG/EXE。
