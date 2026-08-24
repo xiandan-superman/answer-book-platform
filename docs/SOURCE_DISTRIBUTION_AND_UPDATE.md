@@ -25,7 +25,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 3. 比较 `requirements.txt`、`requirements-windows.txt` 的联合指纹。
 4. 首次运行自动安装依赖；已安装环境异常或指纹变化时请求用户确认。
 5. 启动 `scripts/start_platform.py`，等待 `/api/version` 健康检查通过。
-6. 打开默认浏览器；如果服务已运行，则只打开页面，不启动第二个工作器。
+6. 持续等待 `/api/version` 就绪后只打开一次默认浏览器，不设置会导致慢启动漏开网页的固定 30 秒截止时间；默认浏览器调用失败时使用系统打开命令兜底。如果服务已运行，则只打开页面，不启动第二个工作器。
 7. 服务以退出码 75 请求更新重启时，监督器应用更新、复核依赖并重新启动。
 
 ## 两种源码安装

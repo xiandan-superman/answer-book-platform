@@ -96,6 +96,7 @@ def ensure_dependencies(project_root: Path, data_root: Path, *, approved: bool) 
     command = [str(python), "-m", "pip", "install", "--disable-pip-version-check"]
     for requirements in dependency_files(project_root):
         command.extend(["-r", str(requirements)])
+    print("首次启动需要准备运行环境，正在安装 Python 依赖，请保持此窗口打开……" if first_install else "正在补充或更新 Python 依赖，请保持此窗口打开……", flush=True)
     result = subprocess.run(command, cwd=project_root)
     if result.returncode != 0 or not dependencies_healthy(python):
         raise RuntimeError("Python 依赖安装失败，请检查网络后重新双击启动程序。")
@@ -105,6 +106,7 @@ def ensure_dependencies(project_root: Path, data_root: Path, *, approved: bool) 
         "python": str(python),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Python 依赖准备完成。", flush=True)
     return python
 
 
@@ -166,6 +168,42 @@ def server_ready(url: str) -> bool:
         return False
 
 
+def open_browser(url: str) -> bool:
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception:
+        pass
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        if sys.platform.startswith("win"):
+            startfile = getattr(os, "startfile", None)
+            if startfile is not None:
+                startfile(url)
+                return True
+        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
+def wait_until_ready_and_open(process: subprocess.Popen, url: str, *, poll_seconds: float = 0.5) -> bool:
+    """Keep checking until the service is ready or exits; open the page exactly once."""
+    print(f"正在启动本地服务，准备完成后会自动打开网页：{url}", flush=True)
+    while process.poll() is None:
+        if server_ready(url):
+            opened = open_browser(url)
+            if opened:
+                print("网页已打开。使用平台期间请保持此窗口运行。", flush=True)
+            else:
+                print(f"服务已启动，但系统未能自动打开浏览器，请手动访问：{url}", flush=True)
+            return opened
+        time.sleep(poll_seconds)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -181,7 +219,7 @@ def main() -> int:
     approved = apply_pending_source_update(project_root, data_root)
     url = f"http://{args.host}:{args.port}"
     if server_ready(url):
-        webbrowser.open(url)
+        open_browser(url)
         return 0
     while True:
         python = ensure_dependencies(project_root, data_root, approved=approved)
@@ -194,13 +232,7 @@ def main() -> int:
             cwd=project_root,
             env=env,
         )
-        for _ in range(120):
-            if server_ready(url):
-                webbrowser.open(url)
-                break
-            if process.poll() is not None:
-                break
-            time.sleep(0.25)
+        wait_until_ready_and_open(process, url)
         code = process.wait()
         if code != RESTART_EXIT_CODE:
             return code

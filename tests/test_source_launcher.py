@@ -74,3 +74,28 @@ def test_failed_source_replacement_restores_code_without_touching_user_data(monk
     assert (project / "scripts" / "start_platform.py").read_text(encoding="utf-8") == "old"
     assert user_config.read_text(encoding="utf-8") == "keep me"
     assert plan.exists()
+
+
+def test_delayed_server_readiness_still_opens_browser_once(monkeypatch) -> None:
+    class RunningProcess:
+        def poll(self):
+            return None
+
+    readiness = iter([False] * 125 + [True])
+    opened = []
+    monkeypatch.setattr(source_launcher, "server_ready", lambda _url: next(readiness))
+    monkeypatch.setattr(source_launcher, "open_browser", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(source_launcher.time, "sleep", lambda _seconds: None)
+
+    assert source_launcher.wait_until_ready_and_open(RunningProcess(), "http://127.0.0.1:8766") is True
+    assert opened == ["http://127.0.0.1:8766"]
+
+
+def test_browser_fallback_is_used_when_webbrowser_cannot_open(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(source_launcher.webbrowser, "open", lambda _url: False)
+    monkeypatch.setattr(source_launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(source_launcher.subprocess, "Popen", lambda command, **_kwargs: calls.append(command))
+
+    assert source_launcher.open_browser("http://127.0.0.1:8766") is True
+    assert calls == [["open", "http://127.0.0.1:8766"]]
