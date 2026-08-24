@@ -15,7 +15,11 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-from app.dependency_profiles import runtime_dependency_files, runtime_dependency_fingerprint
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.dependency_profiles import runtime_dependency_files, runtime_dependency_fingerprint  # noqa: E402
 
 MIN_PYTHON = (3, 9)
 RESTART_EXIT_CODE = 75

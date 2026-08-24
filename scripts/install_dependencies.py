@@ -8,9 +8,11 @@ import sys
 from importlib.util import find_spec
 from pathlib import Path
 
-from app.dependency_profiles import runtime_dependency_files
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.dependency_profiles import runtime_dependency_files  # noqa: E402
 
 
 def main() -> int:

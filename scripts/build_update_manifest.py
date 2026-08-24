@@ -4,11 +4,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 
-from app.dependency_profiles import release_dependency_fingerprints
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.dependency_profiles import release_dependency_fingerprints  # noqa: E402
+
 DEFAULT_OUTPUT = ROOT / "dist" / "update-manifest.json"
 SCHEMA_VERSION = "answer_book.update_manifest.v1"
 
