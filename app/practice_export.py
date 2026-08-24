@@ -53,6 +53,14 @@ _SELF_CORRECTION_RE = re.compile(
     r"前文有误|刚才的答案|我刚才|更正如下|纠正(?:如下|为)|抱歉[，,]?)"
 )
 
+_LITERAL_SUBQUESTION_BREAK_RE = re.compile(
+    r"\\n(?=\s*(?:[（(]\s*\d{1,2}\s*[）)]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]))"
+)
+_SOLVED_NUMERIC_FORMULA_RE = re.compile(
+    r"=(?:\s*[-+]?\s*(?:\\frac\s*\{[^{}]+\}\s*\{[^{}]+\}|\d+(?:\.\d+)?))(?:\s*[;,，；]|\s*$)"
+)
+_ANSWER_FORMULA_ROLES = {"answer", "result", "solution", "答案", "结果", "解答"}
+
 
 def _figure_image_path(spec: dict[str, Any]) -> Path | None:
     raw = str(spec.get("image_path") or spec.get("path") or "").strip()
@@ -88,6 +96,29 @@ def practice_export_exercise_id(item: dict[str, Any], index: int = 0) -> str:
         if value:
             return value
     return str(index + 1)
+
+
+def practice_stem_answer_leak_reasons(item: dict[str, Any]) -> list[str]:
+    """Detect structured stem assets that expose what the student must supply."""
+    question_type = str(item.get("question_type") or "").strip()
+    stem = str(item.get("stem") or "")
+    has_blank = bool(re.search(r"_{2,}|[（(]\s*[）)]", stem))
+    reasons: list[str] = []
+    for index, formula in enumerate(item.get("formulas") or [], start=1):
+        if not isinstance(formula, dict) or not _matches_location(formula.get("location"), "stem"):
+            continue
+        latex = str(formula.get("latex") or "").strip()
+        caption = str(formula.get("caption") or "").strip()
+        role = str(formula.get("role") or "relation").strip().lower()
+        if role in _ANSWER_FORMULA_ROLES or re.search(r"答案|最终结果|计算结果|标准结论", caption):
+            reasons.append(f"第 {index} 个题干公式被标记为答案或结果")
+            continue
+        if question_type == "填空题" and has_blank and role != "given":
+            reasons.append(f"第 {index} 个题干公式可能直接给出填空答案")
+            continue
+        if role != "given" and _SOLVED_NUMERIC_FORMULA_RE.search(latex):
+            reasons.append(f"第 {index} 个题干公式包含已求得的数值结果")
+    return reasons
 
 
 def resolve_practice_export_payload(
@@ -180,7 +211,8 @@ def validate_practice_export(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and str(item.get("number") or "").strip()
     }
     review_candidate_numbers: list[str] = []
-    if review:
+    review_status = str(review.get("status") or "").strip().lower()
+    if review and review_status not in {"disabled", "not_required"}:
         for index, item in enumerate(exercises or [], start=1):
             if not isinstance(item, dict) or item.get("generation_status") == "failed":
                 continue
@@ -814,6 +846,10 @@ def normalize_practice_question_text(value: Any, *, limit: int = 12000) -> str:
     normal prose paragraphs.
     """
     source = normalize_practice_markup(value, limit=limit).replace("\r\n", "\n").replace("\r", "\n")
+    # Some providers double-escape a requested paragraph break, leaving
+    # visible ``\\n(1)`` text after JSON decoding. Convert only the safe,
+    # unambiguous subquestion form so LaTeX commands remain untouched.
+    source = _LITERAL_SUBQUESTION_BREAK_RE.sub("\n", source)
     blocks: list[str] = []
     paragraph: list[str] = []
     seen_content = False
@@ -891,6 +927,8 @@ def audit_practice_export_data(data: dict[str, Any]) -> list[str]:
                 issues.append(f"第{question_number}题 {field} 含未渲染 Markdown/LaTeX 标记")
             if _SELF_CORRECTION_RE.search(value):
                 issues.append(f"第{question_number}题 {field} 含自我纠错或模型草稿文本")
+        for reason in practice_stem_answer_leak_reasons(item):
+            issues.append(f"第{question_number}题存在题面答案泄漏：{reason}")
     return list(dict.fromkeys(issues))
 
 

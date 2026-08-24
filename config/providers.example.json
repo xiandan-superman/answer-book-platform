@@ -184,6 +184,28 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "lingsuan_image": {
+      "type": "openai_compatible",
+      "base_url": "https://lingsuan.top/v1",
+      "api_key_env": "LINGSUAN_IMAGE_API_KEY",
+      "api_key": "",
+      "default_model": "gpt-image-2",
+      "supports_text_generation": false,
+      "supports_vision": false,
+      "supports_image_generation": true,
+      "image_model": "gpt-image-2",
+      "image_model_options": ["gpt-image-2"],
+      "image_model_option_labels": {
+        "gpt-image-2": "GPT-Image-2"
+      },
+      "image_size": "1024x1024",
+      "model_options": [],
+      "allow_custom_model": false,
+      "model_hint": "仅用于灵算 OpenAI 图片生成接口；图片 Key 与 GPT 文本模型 Key 独立保存。",
+      "thinking_mode": "high",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
     "lingsuan_google": {
       "type": "openai_compatible",
       "api_protocol": "responses",

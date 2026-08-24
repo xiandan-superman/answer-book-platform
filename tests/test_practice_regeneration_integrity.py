@@ -366,7 +366,7 @@ def test_frontend_regeneration_payload_carries_review_switch_for_single_and_batc
     start = APP_JS.index("function practiceRegenerationPayload(index, instruction)")
     end = APP_JS.index("async function regeneratePracticeExercise", start)
     payload_source = APP_JS[start:end]
-    assert "semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled !== false" in payload_source
+    assert "semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled === true" in payload_source
     assert "formal_quality_review: latestPracticeRequest?.formal_quality_review === true" in payload_source
 
     batch_start = APP_JS.index("async function regenerateSelectedPracticeQuestions(button)")

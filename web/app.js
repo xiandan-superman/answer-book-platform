@@ -24,6 +24,8 @@ let activeTaskKind = "all";
 let activeTaskSort = "smart";
 let taskManagerPage = 1;
 let taskManagerMotionEntrancePending = true;
+let taskManagerLoading = false;
+let taskLoadVersion = 0;
 const taskManagerMotionStatuses = new Map();
 const TASK_MANAGER_PAGE_SIZE = 20;
 const FAILED_TASK_FEEDBACK_STORAGE_KEY = "answerBook.failedTaskFeedback.v1";
@@ -39,6 +41,7 @@ const uploadFileReadPending = { practice: 0, knowledge: 0 };
 let currentPracticeSourceMode = "exam";
 const practiceWorkspaceDrafts = { exam: null, knowledge: null };
 const practiceWorkspaceDraftTimers = { exam: null, knowledge: null };
+const practiceWorkspaceDraftEpochs = { exam: 0, knowledge: 0 };
 const practiceWorkspaceWriteChains = { exam: Promise.resolve(), knowledge: Promise.resolve() };
 const practiceWorkspaceRestorePromises = { exam: Promise.resolve(false), knowledge: Promise.resolve(false) };
 let practiceWorkspaceRestoreInProgress = false;
@@ -47,6 +50,7 @@ let latestPracticeSourceAnalysis = null;
 let latestPracticePlan = null;
 let pendingPracticePlanCandidate = null;
 let latestPracticeRequest = null;
+let practiceMaterialReplacementRequired = false;
 let latestPracticeSet = null;
 const selectedPracticeExerciseIndexes = new Set();
 const activePracticeWordExports = new Map();
@@ -125,7 +129,7 @@ const examModelPresets = {
     answer: ["lingsuan_openai", "gpt-5.6-terra"],
     correctness: ["lingsuan_openai", "gpt-5.6-sol"],
     vision: ["lingsuan_openai", "gpt-5.6-terra"],
-    image: ["bailian", "qwen-image-2.0-pro"],
+    image: ["lingsuan_image", "gpt-image-2"],
   },
   quality: {
     label: "质量优先",
@@ -135,7 +139,7 @@ const examModelPresets = {
     answer: ["lingsuan_openai", "gpt-5.6-sol"],
     correctness: ["lingsuan_openai", "gpt-5.6-sol"],
     vision: ["lingsuan_openai", "gpt-5.6-sol"],
-    image: ["bailian", "qwen-image-2.0-pro"],
+    image: ["lingsuan_image", "gpt-image-2"],
   },
   economy: {
     label: "性价比",
@@ -145,7 +149,7 @@ const examModelPresets = {
     answer: ["lingsuan_google", "gemini-3.6-flash"],
     correctness: ["lingsuan_google", "gemini-3.6-flash"],
     vision: ["lingsuan_google", "gemini-3.6-flash"],
-    image: ["bailian", "qwen-image-2.0"],
+    image: ["lingsuan_image", "gpt-image-2"],
   },
 };
 
@@ -473,6 +477,7 @@ function capturePracticeWorkspaceDraft(mode) {
     count: $("practiceCount")?.value || "5",
     difficulty: $("practiceDifficulty")?.value || "基础到进阶",
     question_types: Array.from(document.querySelectorAll('input[name="practiceQuestionType"]:checked')).map((input) => input.value),
+    semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true,
     focus: $("practiceFocus")?.value || "",
     include_source_content_in_generation: includeSourceContentInGeneration()
   };
@@ -500,6 +505,7 @@ function restorePracticeWorkspaceDraft(mode) {
   syncPracticeSourceContentPreference(draft.include_source_content_in_generation !== false);
   const selectedTypes = new Set(draft.question_types || []);
   document.querySelectorAll('input[name="practiceQuestionType"]').forEach((input) => { input.checked = selectedTypes.has(input.value); });
+  if ($("practiceSemanticReviewEnabled")) $("practiceSemanticReviewEnabled").checked = draft.semantic_review_enabled === true;
   renderPracticeFilePreview();
   updatePracticeConfigSummary();
 }
@@ -528,9 +534,9 @@ async function practiceWorkspaceDatabaseOperation(mode, operation, value = null)
   const database = await openPracticeWorkspaceDatabase();
   try {
     return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(PRACTICE_WORKSPACE_STORE, operation === "get" ? "readonly" : "readwrite");
+      const transaction = database.transaction(PRACTICE_WORKSPACE_STORE, ["get", "getAll"].includes(operation) ? "readonly" : "readwrite");
       const store = transaction.objectStore(PRACTICE_WORKSPACE_STORE);
-      const request = operation === "get" ? store.get(mode) : operation === "delete" ? store.delete(mode) : store.put(value);
+      const request = operation === "get" ? store.get(mode) : operation === "getAll" ? store.getAll() : operation === "delete" ? store.delete(mode) : store.put(value);
       request.onsuccess = () => resolve(request.result || null);
       request.onerror = () => reject(request.error || new Error("工作区草稿操作失败。"));
     });
@@ -603,6 +609,7 @@ function captureKnowledgeInputWorkspace() {
     focus: $("knowledgeFocusInput")?.value || "",
     question_types: Array.from(document.querySelectorAll('input[name="knowledgeQuestionType"]:checked')).map((input) => input.value),
     blueprint_review_enabled: $("knowledgeBlueprintReviewEnabled")?.checked !== false,
+    semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true,
     include_source_content_in_generation: $("knowledgeIncludeSourceContent")?.checked !== false
   };
 }
@@ -615,6 +622,7 @@ function restoreKnowledgeInputWorkspace(input = {}) {
   const types = new Set(input.question_types || []);
   document.querySelectorAll('input[name="knowledgeQuestionType"]').forEach((item) => { item.checked = types.has(item.value); });
   if ($("knowledgeBlueprintReviewEnabled")) $("knowledgeBlueprintReviewEnabled").checked = input.blueprint_review_enabled !== false;
+  if ($("knowledgeSemanticReviewEnabled")) $("knowledgeSemanticReviewEnabled").checked = input.semantic_review_enabled === true;
   if ($("knowledgeIncludeSourceContent")) $("knowledgeIncludeSourceContent").checked = input.include_source_content_in_generation !== false;
   syncPracticeSourceContentPreference(input.include_source_content_in_generation !== false);
   renderKnowledgeFilePreview();
@@ -662,9 +670,10 @@ function capturePersistentPracticeWorkspace(mode = currentPracticeSourceMode) {
   };
 }
 
-async function persistPracticeWorkspaceDraft(mode = currentPracticeSourceMode, capturedRecord = null) {
+async function persistPracticeWorkspaceDraft(mode = currentPracticeSourceMode, capturedRecord = null, expectedEpoch = null) {
   if (practiceWorkspaceRestoreInProgress && !capturedRecord) return;
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  if (expectedEpoch !== null && expectedEpoch !== practiceWorkspaceDraftEpochs[normalizedMode]) return;
   const record = capturedRecord || capturePersistentPracticeWorkspace(normalizedMode);
   try {
     await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", record);
@@ -677,9 +686,10 @@ function schedulePracticeWorkspaceDraftSave(mode = currentPracticeSourceMode) {
   if (practiceWorkspaceRestoreInProgress) return;
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
   if (practiceWorkspaceDraftTimers[normalizedMode]) clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
+  const expectedEpoch = practiceWorkspaceDraftEpochs[normalizedMode];
   practiceWorkspaceDraftTimers[normalizedMode] = setTimeout(() => {
     practiceWorkspaceDraftTimers[normalizedMode] = null;
-    persistPracticeWorkspaceDraft(normalizedMode);
+    persistPracticeWorkspaceDraft(normalizedMode, null, expectedEpoch);
   }, 150);
 }
 
@@ -761,6 +771,9 @@ async function restorePersistentPracticeWorkspace(mode, sessionVersion) {
 
 async function clearPersistentPracticeWorkspace(mode) {
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  practiceWorkspaceDraftEpochs[normalizedMode] += 1;
+  if (practiceWorkspaceDraftTimers[normalizedMode]) clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
+  practiceWorkspaceDraftTimers[normalizedMode] = null;
   try { await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "delete"); } catch (_error) {}
   $("practiceWorkspaceDraftNotice")?.classList.add("hidden");
   $("knowledgeWorkspaceDraftNotice")?.classList.add("hidden");
@@ -771,9 +784,50 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
   if (practiceWorkspaceDraftTimers[normalizedMode]) clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
   practiceWorkspaceDraftTimers[normalizedMode] = null;
+  const currentRecord = capturePersistentPracticeWorkspace(normalizedMode);
+  const archivedAt = Date.now();
+  await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
+    ...currentRecord,
+    mode: `${normalizedMode}:archive:${archivedAt}`,
+    workspace_mode: normalizedMode,
+    archived_at: archivedAt,
+  }).catch(() => {});
   await clearPersistentPracticeWorkspace(mode);
   if (mode === "knowledge" && knowledgeInputPage) openKnowledgeEntry();
   else openPracticeEntry(mode);
+}
+
+async function restorePreviousPracticeWorkspace(mode, knowledgeInputPage = false) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  const records = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "getAll").catch(() => []);
+  const archived = (records || [])
+    .filter((record) => record?.workspace_mode === normalizedMode && record?.schema === "practice_workspace_draft.v1")
+    .sort((left, right) => Number(right.archived_at || 0) - Number(left.archived_at || 0))[0];
+  if (!archived) {
+    await platformAlert("还没有可恢复的历史草稿。", { title: "恢复草稿" });
+    return;
+  }
+  if (practiceWorkspaceDraftTimers[normalizedMode]) clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
+  practiceWorkspaceDraftTimers[normalizedMode] = null;
+  await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
+    ...archived,
+    mode: normalizedMode,
+    workspace_mode: undefined,
+    archived_at: undefined,
+  });
+  if (normalizedMode === "knowledge" && knowledgeInputPage) openKnowledgeEntry();
+  else openPracticeEntry(normalizedMode);
+  await practiceWorkspaceRestorePromises[normalizedMode].catch(() => false);
+  const sessionVersion = practiceSessionVersion;
+  practiceWorkspaceRestorePromises[normalizedMode] = restorePersistentPracticeWorkspace(normalizedMode, sessionVersion).catch(() => false);
+}
+
+async function announceAvailablePracticeWorkspaceDraft(mode, sessionVersion) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  const record = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get").catch(() => null);
+  if (!record || record.schema !== "practice_workspace_draft.v1" || sessionVersion !== practiceSessionVersion) return false;
+  showPracticeWorkspaceDraftNotice(normalizedMode, "发现上次未完成的草稿；当前已保持新任务空白，需要时可主动点击“恢复上一份”。");
+  return true;
 }
 
 function syncKnowledgeRequestToPracticeWorkspace(request = {}) {
@@ -802,6 +856,7 @@ function openPracticeEntry(mode = "exam", openModelSettings = false) {
   latestPracticeSourceAnalysis = null;
   latestPracticePlan = null;
   latestPracticeRequest = null;
+  practiceMaterialReplacementRequired = false;
   latestPracticeSet = null;
   syncPracticeSourceContentPreference(true);
   for (const key of Object.keys(practicePlanRevisionReceipts)) delete practicePlanRevisionReceipts[key];
@@ -816,26 +871,29 @@ function openPracticeEntry(mode = "exam", openModelSettings = false) {
   setPracticeStage("submit");
   setPracticeStageDescription(mode === "knowledge" ? "请先提交知识材料，平台将解析知识单元与范围。" : "请先提交题目材料，平台将解析考点与原题范围。");
   setPracticeStatusBanner("新任务 · 等待提交");
+  if ($("practiceSemanticReviewEnabled")) $("practiceSemanticReviewEnabled").checked = false;
   setText("practiceSourceStatus", "等待输入");
   setPracticeWorkspaceMode(mode);
   goToPage("practice");
   const sessionVersion = practiceSessionVersion;
-  practiceWorkspaceRestorePromises[mode] = restorePersistentPracticeWorkspace(mode, sessionVersion).catch(() => false);
+  practiceWorkspaceRestorePromises[mode] = announceAvailablePracticeWorkspaceDraft(mode, sessionVersion).catch(() => false);
 }
 
 function openKnowledgeEntry() {
   if (currentPage === "knowledge") flushScheduledPracticeWorkspaceDraft("knowledge");
   if (currentPage === "practice") flushScheduledPracticeWorkspaceDraft(currentPracticeSourceMode);
   beginNewPracticeSession();
+  practiceMaterialReplacementRequired = false;
   knowledgeSourceFiles = [];
   syncPracticeSourceContentPreference(true);
   if ($("knowledgeTitleInput")) $("knowledgeTitleInput").value = "";
   if ($("knowledgeTextInput")) $("knowledgeTextInput").value = "";
+  if ($("knowledgeSemanticReviewEnabled")) $("knowledgeSemanticReviewEnabled").checked = false;
   renderKnowledgeFilePreview();
   $("knowledgeError")?.classList.add("hidden");
   goToPage("knowledge");
   const sessionVersion = practiceSessionVersion;
-  practiceWorkspaceRestorePromises.knowledge = restorePersistentPracticeWorkspace("knowledge", sessionVersion).catch(() => false);
+  practiceWorkspaceRestorePromises.knowledge = announceAvailablePracticeWorkspaceDraft("knowledge", sessionVersion).catch(() => false);
 }
 
 function newPracticeBatchId() {
@@ -1022,7 +1080,7 @@ function practiceCompletionContract(subject = {}) {
   if (auditCount) reviewReasons.push(`${auditCount} 题蓝图需要复核`);
   const semantic = subject?.semantic_review && typeof subject.semantic_review === "object" ? subject.semantic_review : null;
   const semanticRisks = (semantic?.items || []).flatMap((item) => item?.risks || []).filter((risk) => ["medium", "high"].includes(String(risk?.severity || "").toLowerCase()));
-  const semanticReviewIncomplete = Boolean(semantic) && !["passed", "warning"].includes(String(semantic.status || "").toLowerCase());
+  const semanticReviewIncomplete = Boolean(semantic) && !["passed", "warning", "disabled", "not_required"].includes(String(semantic.status || "").toLowerCase());
   if (semanticReviewIncomplete) reviewReasons.push("语义审查未完成，需人工复核");
   if (semanticRisks.length) reviewReasons.push(...semanticRisks.map((risk) => String(risk.message || risk.summary || "语义风险需要复核")));
   if (quality.release_level === "review_candidate" && !reviewReasons.length) reviewReasons.push("当前成果需复核后使用");
@@ -1181,6 +1239,7 @@ function providerEnvKey(providerName) {
     ark: "ARK_API_KEY",
     bailian: "DASHSCOPE_API_KEY",
     lingsuan_openai: "LINGSUAN_OPENAI_API_KEY",
+    lingsuan_image: "LINGSUAN_IMAGE_API_KEY",
     lingsuan_google: "LINGSUAN_GOOGLE_API_KEY",
     lingsuan_xai: "LINGSUAN_XAI_API_KEY",
     lingsuan_anthropic: "LINGSUAN_ANTHROPIC_API_KEY"
@@ -1194,6 +1253,7 @@ function displayProviderName(name) {
     ark: "火山方舟",
     bailian: "阿里云百炼",
     lingsuan_openai: "灵算 · OpenAI",
+    lingsuan_image: "灵算 · OpenAI 图片",
     lingsuan_google: "灵算 · Google Gemini",
     lingsuan_xai: "灵算 · xAI",
     lingsuan_anthropic: "灵算 · Anthropic"
@@ -1908,8 +1968,8 @@ function formatPracticeWaitTime(seconds = 0) {
 function practiceWaitExpectation(job = {}) {
   const operation = String(job.operation || "");
   const total = Math.max(0, Number(job.total_count || 0));
-  if (operation === "analyze") return "同类材料通常 1–3 分钟完成范围解析";
-  if (operation === "plan") return total > 12 ? "同类任务通常 2–5 分钟完成蓝图" : "同类任务通常 1–2 分钟完成蓝图";
+  if (operation === "analyze") return "同类材料通常 2–6 分钟完成范围解析，图片和长材料可能更久";
+  if (operation === "plan") return total > 12 ? "同类任务通常 3–8 分钟完成蓝图" : "同类任务通常 2–5 分钟完成蓝图";
   if (["generate_from_plan", "generate_from_contract"].includes(operation)) {
     if (total > 15) return "同类题量通常 4–10 分钟完成生成";
     if (total > 6) return "同类题量通常 2–6 分钟完成生成";
@@ -1934,6 +1994,14 @@ function updatePracticeLoadingProgress(job = {}) {
   setText("practiceLoadingElapsed", `${formatPracticeWaitTime(elapsed)} · ${practiceWaitExpectation(job)}`);
 }
 
+function showPracticeLoadingTaskId(jobId) {
+  const value = String(jobId || "").trim();
+  setText("practiceLoadingTaskId", value);
+  const row = $("practiceLoadingTaskIdRow");
+  row?.classList.toggle("hidden", !value);
+  row?.classList.toggle("flex", Boolean(value));
+}
+
 async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
   let transientFailures = 0;
   while (true) {
@@ -1952,7 +2020,7 @@ async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
       }
       if (job.status === "failed") {
         if (activePracticeJobId === jobId) rememberPracticeJob("");
-        const terminalError = new Error(job.error || "后台出题任务失败。");
+        const terminalError = new Error(`${job.error || "后台出题任务失败。"}\n任务 ID：${jobId}`);
         terminalError.practiceJob = job;
         throw terminalError;
       }
@@ -1984,6 +2052,7 @@ async function submitPracticeJob(operation, payload) {
     method: "POST",
     body: JSON.stringify({ operation, payload: queuedPayload })
   });
+  showPracticeLoadingTaskId(queued.job_id || queued.task_id);
   rememberPracticeJob(queued.job_id);
   return waitForPracticeJob(queued.job_id);
 }
@@ -2056,7 +2125,7 @@ function syncProviderControls(providers) {
   const select = $("providerSelect");
   const previousProvider = select.value;
   select.innerHTML = "";
-  for (const [name, cfg] of Object.entries(providers)) {
+  for (const [name, cfg] of Object.entries(providers).filter(([, cfg]) => cfg.supports_text_generation !== false)) {
     const option = document.createElement("option");
     option.value = name;
     option.textContent = displayProviderName(name);
@@ -2125,17 +2194,22 @@ async function checkPlatformUpdate() {
     }
     const notes = String(status.release_notes || "本次更新包含稳定性与质量改进。").trim();
     const actionText = status.action === "pull_source"
-      ? "程序将仅在源码无未保存修改时执行快进拉取。"
-      : "程序将下载、校验并打开当前系统的安装包。";
+      ? "程序将仅在源码无未保存修改时执行快进拉取，完成后自动重启。"
+      : status.action === "replace_source"
+        ? "程序将下载并校验源码更新包，保留用户数据后替换程序文件并自动重启。"
+        : "程序将下载、校验并打开当前系统的安装包。";
+    const dependencyText = status.dependency_update_required
+      ? "本次更新包含依赖变化；重启时将检查缺失依赖并在安装前提示。"
+      : "本次更新未检测到依赖清单变化。";
     const confirmed = await platformConfirm({
       eyebrow: `当前 ${status.current_version} → 新版 ${status.latest_version}`,
       title: "发现可用更新",
-      message: `${notes.slice(0, 1200)}\n\n${actionText}\nAPI Key、教材、任务和输出不会被覆盖。`,
-      confirmText: status.action === "pull_source" ? "拉取更新" : "下载更新",
+      message: `${notes.slice(0, 1200)}\n\n${actionText}\n${dependencyText}\nAPI Key、教材、任务和输出不会被覆盖。`,
+      confirmText: status.action === "pull_source" ? "拉取更新" : status.action === "replace_source" ? "更新源码" : "下载更新",
       cancelText: "稍后再说"
     });
     if (!confirmed) return;
-    if (label) label.textContent = status.action === "pull_source" ? "拉取中" : "下载中";
+    if (label) label.textContent = status.action === "pull_source" ? "拉取中" : status.action === "replace_source" ? "更新中" : "下载中";
     const result = await api("/api/update/apply", { method: "POST", body: "{}" });
     await platformAlert(result.message || "更新已准备完成。", {
       title: result.restart_required ? "请重启程序" : "更新完成",
@@ -2149,6 +2223,22 @@ async function checkPlatformUpdate() {
   } finally {
     if (button) button.disabled = false;
     if (label) label.textContent = "检查更新";
+  }
+}
+
+async function checkPlatformUpdateSilently() {
+  try {
+    const status = await api("/api/update/status");
+    if (!status?.enabled || !status.update_available) return;
+    const button = $("checkUpdateBtn");
+    const label = button?.querySelector("span");
+    button?.classList.add("update-available");
+    if (label) label.textContent = `可更新 ${status.latest_version || ""}`.trim();
+    if (button) button.title = status.dependency_update_required
+      ? "发现新版本，包含依赖变化；点击查看并确认安装。"
+      : "发现新版本；点击查看更新说明。";
+  } catch (_error) {
+    // 启动检查不打扰用户；手动点击时仍展示明确错误。
   }
 }
 
@@ -2355,6 +2445,16 @@ async function readPracticeFiles(fileList) {
   try {
     await practiceWorkspaceRestorePromises[sourceMode];
     return await queueUploadFileRead("practice", async () => {
+      const replaceFailedTaskMaterial = practiceMaterialReplacementRequired;
+      if (replaceFailedTaskMaterial) {
+        practiceSourceFiles = [];
+        latestPracticeSourceScope = null;
+        latestPracticeSourceAnalysis = null;
+        latestPracticePlan = null;
+        latestPracticeRequest = null;
+        practiceBatchId = newPracticeBatchId();
+        practiceMaterialReplacementRequired = false;
+      }
       const result = await readUploadFilesAtomically(
         files,
         () => practiceSourceFiles,
@@ -2365,6 +2465,7 @@ async function readPracticeFiles(fileList) {
       setText("practiceSourceStatus", `已读取 ${practiceSourceFiles.length} 个文件`);
       const duplicateMessage = duplicateUploadMessage(result.duplicates);
       if (duplicateMessage) showUploadFeedback("practice", duplicateMessage, "info");
+      else if (replaceFailedTaskMaterial) showUploadFeedback("practice", "上次失败任务的材料已自动移出；本次文件已作为新任务材料。", "info");
       else clearUploadFeedback("practice");
       await persistUploadSelectionDraft(sourceMode);
       return result;
@@ -3788,6 +3889,7 @@ function renderPracticeResults(data) {
   renderPracticeFilters(data);
   const practiceSourceLookup = new Map((data.selected_source_questions || []).map((item) => [String(item.source_question_id), item]));
   const practiceBlueprintItemNumbers = new Map((data.blueprint?.exercise_plan || []).map((item, index) => [String(item.plan_item_id || ""), index + 1]));
+  const semanticReviewByNumber = new Map((data.semantic_review?.items || []).map((item) => [String(item?.number || ""), item]));
   const generationErrorDetailCodes = new Set([
     "generation_quality_gate_failed",
     "generation_response_invalid",
@@ -3816,6 +3918,12 @@ function renderPracticeResults(data) {
     const generationErrorDetail = generationErrorDetailCodes.has(String(item.generation_error?.code || ""))
       ? (item.generation_error?.detail || "")
       : "";
+    const semanticRisks = (semanticReviewByNumber.get(String(item.number || idx + 1))?.risks || [])
+      .filter((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()));
+    const semanticFixInstruction = semanticRisks
+      .map((risk) => String(risk.suggested_action || risk.message || "").trim())
+      .filter(Boolean)
+      .join("；");
     const parentPlanItemId = String(item.parent_plan_item_id || "");
     const variantIndex = Number(item.variant_index || 0);
     const variantCount = Number(item.variant_count || 0);
@@ -3857,8 +3965,10 @@ function renderPracticeResults(data) {
       ` : `
         <div class="practice-stem">${practiceMarkdown(item.stem)}</div>
         ${practiceExtrasHtml(item, "stem")}
+        ${item.question_type === "作图题" && !(item.figures || []).length ? `<div class="practice-source-link"><i class="fas fa-pencil-ruler"></i>本题要求学生作图，因此未附完整答案曲线，也不会调用 gpt-image-2 生成答案图。</div>` : ""}
         ${item.options?.length ? `<div class="practice-options">${item.options.map((option) => `<p><b>${escapeHtml(option.label)}</b>${practiceMarkdown(option.text)}</p>`).join("")}</div>` : ""}
         ${tagsArr.length ? `<div class="practice-exercise-tags">${visibleTags.map((t) => `<span>${escapeHtml(t)}</span>`).join("")}${tagsArr.length > visibleTags.length ? `<span class="practice-tag-count">+${tagsArr.length - visibleTags.length}</span>` : ""}</div>` : ""}
+        ${semanticRisks.length ? `<div class="practice-generation-error" role="alert"><i class="fas fa-shield-halved"></i><div><strong>语义复核发现 ${semanticRisks.length} 项需修复</strong><p>${escapeHtml(semanticRisks.slice(0, 2).map((risk) => risk.message || risk.suggested_action || "语义风险").join("；"))}</p><button type="button" class="secondary-btn" data-practice-semantic-fix="${idx}" data-practice-semantic-instruction="${escapeHtml(semanticFixInstruction)}"><i class="fas fa-wand-magic-sparkles"></i>按复核建议修复本题</button></div></div>` : ""}
       `}
     </article>
   `;
@@ -3884,6 +3994,13 @@ function renderPracticeResults(data) {
   document.querySelectorAll("[data-practice-regenerate]").forEach((button) => {
     button.addEventListener("click", () => regeneratePracticeQuestion(Number(button.dataset.practiceRegenerate), button));
   });
+  document.querySelectorAll("[data-practice-semantic-fix]").forEach((button) => {
+    button.addEventListener("click", () => regeneratePracticeQuestion(
+      Number(button.dataset.practiceSemanticFix),
+      button,
+      button.dataset.practiceSemanticInstruction || "按语义复核结论做最小修改，消除事实、边界或歧义风险。"
+    ));
+  });
   document.querySelectorAll("[data-practice-config]").forEach((button) => {
     button.addEventListener("click", () => goToPage("keys"));
   });
@@ -3893,9 +4010,12 @@ function renderPracticeResults(data) {
   document.querySelectorAll("[data-practice-download]").forEach((button) => {
     button.addEventListener("click", () => {
       const item = latestPracticeSet?.exercises?.[Number(button.dataset.practiceDownload)];
-      if (item && latestPracticeSet) prepareOrDownloadPracticeWord({ ...latestPracticeSet, exercises: [item] }, button, `专项练习-第${item.number || ""}题.docx`).catch((error) => {
+      if (item && latestPracticeSet) {
+        const singleData = { ...latestPracticeSet, exercises: [item] };
+        prepareOrDownloadPracticeWord(singleData, button, practiceWordFilename(singleData, `第${item.number || ""}题`)).catch((error) => {
         platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "题目 Word 操作未完成", tone: "danger" });
-      });
+        });
+      }
     });
   });
   document.querySelectorAll("[data-practice-copy]").forEach((button) => {
@@ -3960,13 +4080,15 @@ function initPracticeActionMenus() {
 
 function practiceRequestPayload() {
   const knowledgeMode = currentPracticeSourceMode === "knowledge";
+  const imageConfig = selectedImageProviderConfig();
+  const imageConfigured = Boolean(imageConfig?.api_key_set && selectedImageModel());
   return {
     source_mode: knowledgeMode ? "knowledge" : "exam",
     knowledge_title: knowledgeMode ? (latestPracticeRequest?.knowledge_title || "") : undefined,
     question_text: $("practiceQuestionText").value.trim(),
     source_files: practiceSourceFiles.map((file) => ({ ...file })),
     blueprint_review_enabled: blueprintReviewEnabled(),
-    semantic_review_enabled: true,
+    semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true,
     include_source_content_in_generation: includeSourceContentInGeneration(),
     count: Number($("practiceCount")?.value || 5),
     difficulty: $("practiceDifficulty")?.value || "基础到进阶",
@@ -3976,6 +4098,8 @@ function practiceRequestPayload() {
     model: knowledgeMode ? selectedKnowledgeModel("text") : selectedPracticeModel("text"),
     vision_provider: knowledgeMode ? knowledgeProviderName("vision") : practiceProviderName("vision"),
     vision_model: knowledgeMode ? selectedKnowledgeModel("vision") : selectedPracticeModel("vision"),
+    image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : "",
+    image_model: imageConfigured ? selectedImageModel() : "",
     thinking: selectedThinkingMode()
   };
 }
@@ -3988,13 +4112,15 @@ function knowledgeRequestPayload() {
     material ? `# 知识材料\n\n${material}` : ""
   ].filter(Boolean).join("\n\n");
   const count = Number($("knowledgeCount")?.value || 5);
+  const imageConfig = selectedImageProviderConfig();
+  const imageConfigured = Boolean(imageConfig?.api_key_set && selectedImageModel());
   return {
     source_mode: "knowledge",
     knowledge_title: title,
     question_text: questionText,
     source_files: knowledgeSourceFiles.map((file) => ({ ...file })),
     blueprint_review_enabled: $("knowledgeBlueprintReviewEnabled")?.checked !== false,
-    semantic_review_enabled: true,
+    semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true,
     include_source_content_in_generation: $("knowledgeIncludeSourceContent")?.checked !== false,
     count,
     difficulty_mode: count === 1 ? "single" : "distribution",
@@ -4005,6 +4131,8 @@ function knowledgeRequestPayload() {
     model: selectedKnowledgeModel("text"),
     vision_provider: knowledgeProviderName("vision"),
     vision_model: selectedKnowledgeModel("vision"),
+    image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : "",
+    image_model: imageConfigured ? selectedImageModel() : "",
     thinking: selectedThinkingMode()
   };
 }
@@ -4121,6 +4249,7 @@ function showPracticeLoading(title) {
   setText("practiceLoadingTitle", title);
   setText("practiceLoadingDetail", "任务已在后台开始");
   setText("practiceLoadingElapsed", "刚刚开始");
+  showPracticeLoadingTaskId("");
 }
 
 function showPracticeOperationLoading(title, operation) {
@@ -4129,11 +4258,17 @@ function showPracticeOperationLoading(title, operation) {
 }
 
 function renderPracticeSourceSelection(data) {
+  if (data?.source_snapshot && latestPracticeRequest) {
+    latestPracticeRequest = { ...latestPracticeRequest, source_snapshot: data.source_snapshot };
+  }
   const knowledgeMode = currentPracticeSourceMode === "knowledge" || latestPracticeRequest?.source_mode === "knowledge";
   const reviewEnabled = latestPracticeRequest?.blueprint_review_enabled !== false;
   syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
   if (knowledgeMode && $("knowledgeBlueprintReviewEnabled")) $("knowledgeBlueprintReviewEnabled").checked = reviewEnabled;
   if (!knowledgeMode && $("practiceBlueprintReviewEnabled")) $("practiceBlueprintReviewEnabled").checked = reviewEnabled;
+  const semanticReviewEnabled = latestPracticeRequest?.semantic_review_enabled === true;
+  if (knowledgeMode && $("knowledgeSemanticReviewEnabled")) $("knowledgeSemanticReviewEnabled").checked = semanticReviewEnabled;
+  if (!knowledgeMode && $("practiceSemanticReviewEnabled")) $("practiceSemanticReviewEnabled").checked = semanticReviewEnabled;
   latestPracticeSourceScope = data.source_scope || null;
   latestPracticeSourceAnalysis = data.source_analysis || latestPracticeSourceAnalysis || null;
   latestPracticePlan = null;
@@ -4405,12 +4540,17 @@ function renderPracticeSourceDiagnostics(diagnostics) {
     const formulas = Number(item.omml_formula_count || 0);
     const tables = Number(item.table_count || 0);
     const included = Number(item.image_count_included || 0);
+    const references = Number(item.reference_image_count_included ?? included);
+    const anchored = Number(item.image_anchor_count_included || 0);
     const total = Number(item.embedded_image_count || 0);
     const totalPages = Number(item.page_count_total || 0);
     const usedPages = Array.isArray(item.page_numbers_used) ? item.page_numbers_used.length : 0;
     const omittedPages = Array.isArray(item.page_numbers_omitted) ? item.page_numbers_omitted.length : 0;
     const pageText = totalPages ? ` · PDF 页码 ${usedPages}/${totalPages} 已使用${omittedPages ? `，${omittedPages} 页未使用` : ""}` : "";
-    return `<div class="practice-source-diagnostic"><b>${name}</b><span>公式 ${formulas} · 表格 ${tables} · 图片 ${included}/${total} 已传递${pageText}</span>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>`;
+    const imageText = total
+      ? ` · 图片 ${total} 张 · 可引用 ${references} 张${anchored ? ` · 正文关联 ${anchored} 张` : ""}`
+      : (references ? ` · 可引用图片 ${references} 张` : "");
+    return `<div class="practice-source-diagnostic"><b>${name}</b><span>公式 ${formulas} · 表格 ${tables}${imageText}${pageText}</span>${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>`;
   });
   list.innerHTML = rows.join("");
   box.classList.toggle("hidden", rows.length === 0);
@@ -4929,8 +5069,10 @@ async function planPractice(event) {
     const job = await submitPracticeJob("analyze", request);
     if (sessionVersion !== practiceSessionVersion) return;
     rememberPracticeJob("");
+    practiceMaterialReplacementRequired = false;
     renderPracticeSourceSelection(job.result);
   } catch (error) {
+    practiceMaterialReplacementRequired = request.source_files.length > 0;
     $("practiceLoading")?.classList.add("hidden");
     $("practiceEmpty")?.classList.remove("hidden");
     setPracticeStage("submit");
@@ -4975,19 +5117,26 @@ function renderPracticePlanCoverage(cover) {
         : "var(--brand-danger, #dc2626)";
   }
   if (text) {
+    const strategy = String(latestPracticePlan?.blueprint?.generation_strategy || latestPracticeRequest?.generation_strategy || "");
+    const partialComprehensive = ["targeted_set", "knowledge_overall"].includes(strategy) && !sourceComplete;
     const entries = Object.entries(perUnit);
     const detail = entries.length
       ? `（${entries.map(([id, n]) => `${id}:${n}题`).join("，")}）`
       : "";
-    const sourceText = `${c.selected_units} 个来源单元 / ${c.planned_exercises} 道计划题目${detail}；${sourceComplete ? "来源引用完整。" : "存在未覆盖来源，已拦截生成。请返回范围页编辑、合并、拆分或新增单元后重试。"}`;
+    const sourceText = `${c.selected_units} 个来源单元 / ${c.planned_exercises} 道计划题目${detail}；${sourceComplete ? "来源引用完整。" : partialComprehensive ? "当前综合题量只覆盖部分来源，生成前会再次请你确认。" : "存在未覆盖来源，已拦截生成。请返回范围页编辑、合并、拆分或新增单元后重试。"}`;
     if (!knowledgeApplicable) {
       text.textContent = sourceText;
       return;
     }
     const coveredPoints = Array.isArray(knowledge.covered_points) ? knowledge.covered_points : [];
     const uncoveredPoints = Array.isArray(knowledge.uncovered_points) ? knowledge.uncovered_points : [];
-    const coveredText = coveredPoints.length ? coveredPoints.join("、") : "无";
-    const uncoveredText = uncoveredPoints.length ? uncoveredPoints.join("、") : "无";
+    const summarizePoints = (points, limit = 8) => {
+      if (!points.length) return "无";
+      const visible = points.slice(0, limit).join("、");
+      return points.length > limit ? `${visible}（另 ${points.length - limit} 项）` : visible;
+    };
+    const coveredText = summarizePoints(coveredPoints);
+    const uncoveredText = summarizePoints(uncoveredPoints);
     const knowledgeText = `必考知识点 ${knowledge.covered_count || 0}/${knowledge.expected_count || 0}；本次纳入：${coveredText}；本次未纳入：${uncoveredText}。`;
     const conclusion = contentComplete
       ? "来源单元与必考知识点均覆盖完整，可生成。"
@@ -5005,8 +5154,21 @@ async function generatePracticeFromPlan() {
   }
   const cover = latestPracticePlan?.scope_cover;
   if (cover && cover.counts && cover.counts.selected_units > 0 && cover.complete === false) {
-    showPracticePlanError(`生成被拦截：所选范围有 ${cover.counts.uncovered_units} 个来源单元未被蓝图覆盖（已选 ${cover.counts.selected_units}，已覆盖 ${cover.counts.covered_units}）。请返回调整范围或覆盖后重试。`);
-    return;
+    const strategy = String(latestPracticePlan?.blueprint?.generation_strategy || latestPracticeRequest?.generation_strategy || "");
+    const comprehensive = ["targeted_set", "knowledge_overall"].includes(strategy);
+    if (!comprehensive) {
+      showPracticePlanError(`生成被拦截：所选范围有 ${cover.counts.uncovered_units} 个来源单元未被蓝图覆盖（已选 ${cover.counts.selected_units}，已覆盖 ${cover.counts.covered_units}）。请返回调整范围或覆盖后重试。`);
+      return;
+    }
+    const confirmed = await platformConfirm({
+      eyebrow: "覆盖范围确认",
+      title: "本套题将只覆盖部分来源",
+      message: `当前题量少于所选范围：已选 ${cover.counts.selected_units} 个来源，本套覆盖 ${cover.counts.covered_units} 个，另有 ${cover.counts.uncovered_units} 个留待后续练习。是否按当前综合蓝图继续？`,
+      confirmText: "按当前范围生成",
+      cancelText: "返回调整蓝图",
+      tone: "warning"
+    });
+    if (!confirmed) return;
   }
   const planItems = latestPracticePlan?.blueprint?.exercise_plan || [];
   const planErrors = [];
@@ -5452,7 +5614,7 @@ function practiceRegenerationPayload(index, instruction) {
     selected_source_questions: latestPracticeSet?.selected_source_questions || latestPracticeRequest?.selected_source_questions || [],
     source_scope: latestPracticeSet?.source_scope || latestPracticeRequest?.source_scope || {},
     include_source_content_in_generation: latestPracticeRequest?.include_source_content_in_generation !== false,
-    semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled !== false,
+    semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled === true,
     formal_quality_review: latestPracticeRequest?.formal_quality_review === true,
     question_types: latestPracticeRequest?.question_types || [],
     question_text: latestPracticeRequest?.question_text || "",
@@ -5504,11 +5666,11 @@ async function saveRegeneratedPracticeExercise(index, exercise, changeReason = "
   return latestPracticeSet;
 }
 
-async function regeneratePracticeQuestion(index, button) {
+async function regeneratePracticeQuestion(index, button, instructionOverride = null) {
   if (!latestPracticeSet || practiceRegenerationInProgress) return;
   const auditNeedsReview = latestPracticeSet?.exercises?.[index]?.audit_status === "audit_failed"
     || latestPracticeSet?.exercises?.[index]?.generation_error?.code === "blueprint_audit_failed";
-  const instruction = await platformPrompt({
+  const instruction = instructionOverride !== null ? instructionOverride : await platformPrompt({
     eyebrow: auditNeedsReview ? "局部复审" : "重新生成",
     title: auditNeedsReview ? "复审并生成本题" : "填写本次调整要求",
     message: auditNeedsReview ? "系统只修复并复审这一蓝图项；通过后才生成本题，其他题目不会重跑。" : "留空会保持当前训练目标，仅生成另一种变式。",
@@ -5520,7 +5682,9 @@ async function regeneratePracticeQuestion(index, button) {
   const original = button.innerHTML;
   setPracticeRegenerationBusy(true);
   button.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
-  setPracticeStatusBanner(auditNeedsReview
+  setPracticeStatusBanner(instructionOverride !== null
+    ? `正在按语义复核建议修复第 ${index + 1} 题，完成后会自动重新复核`
+    : auditNeedsReview
     ? `正在复审第 ${index + 1} 题蓝图：通过后只生成本题`
     : `正在重新生成第 ${index + 1} 题：生成后会自动检查并必要时修复配图`, "loading");
   let generatedCandidate = null;
@@ -6273,7 +6437,7 @@ async function downloadRememberedPracticeWord(pointer, button) {
     download_trigger_count: Number(pointer.download_trigger_count || 0) + 1,
   });
   renderPracticeWordRecoveryNotice();
-  await platformAlert(`已开始下载：${pointer.filename}。请查看浏览器下载记录或默认下载文件夹；本页无法确认最终保存路径或磁盘写入是否完成。`, { title: "Word 已开始下载", tone: "success" });
+  await platformAlert(`Word 已生成：${pointer.filename}。下载请求已交给浏览器，可在全局恢复区再次下载；本页不会冒充确认浏览器的最终磁盘落盘结果。`, { title: "Word 已生成", tone: "success" });
   return { status: "download_started", filename: pointer.filename };
 }
 
@@ -6387,6 +6551,20 @@ function clearPreparedPracticeWords() {
   syncPracticeWordExportUi();
 }
 
+function practiceWordFilename(data = latestPracticeSet, scopeLabel = "题目") {
+  const request = data?.request || latestPracticeRequest || {};
+  const rawTitle = data?.knowledge_title || request.knowledge_title || request.task_title
+    || (data?.source_mode === "knowledge" ? "知识点模拟题" : "按题出题");
+  const rawModel = data?.generation?.model || request.model || "model";
+  const safe = (value, fallback) => String(value || fallback)
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, "-")
+    .replace(/\s+/g, " ").trim().slice(0, 48) || fallback;
+  const stampSource = data?.completed_at || data?.generated_at || data?.created_at || new Date();
+  const stampDate = new Date(stampSource);
+  const stamp = Number.isNaN(stampDate.getTime()) ? "" : stampDate.toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  return `${safe(rawTitle, "专项练习")}-${safe(rawModel, "model")}-${stamp || "export"}-${safe(scopeLabel, "题目")}.docx`;
+}
+
 function downloadPracticeWord(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -6416,10 +6594,23 @@ async function waitForPracticeWordExportJob(initialJob, exportKey) {
   }
   if (job.status === "failed") throw new Error(job.error || "Word 生成失败");
   if (job.status !== "completed") throw new Error("Word 生成状态异常，请重试。");
+  const pointer = readPracticeWordExportPointers().find((item) => item.export_key === exportKey);
+  if (pointer) {
+    practiceWordRecoveryJobs.set(exportKey, { pointer, job });
+    renderPracticeWordRecoveryNotice();
+  }
+  activePracticeWordExports.set(exportKey, {
+    ...activePracticeWordExports.get(exportKey),
+    jobId: job.job_id,
+    completed: Number(job.completed_count ?? job.total_count ?? 0),
+    total: Number(job.total_count || 0),
+  });
+  setPracticeStatusBanner("Word 已生成，正在准备保存或下载。", "done");
+  syncPracticeWordExportUi();
   return job;
 }
 
-async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = practiceWordButton(), filename = `${data?.source_mode === "knowledge" ? "知识点模拟题" : "按题出题"}-题目.docx`) {
+async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = practiceWordButton(), filename = practiceWordFilename(data)) {
   if (!data || !button) return;
   const exportKey = practiceWordExportKey(data, filename);
   if (activePracticeWordExports.has(exportKey)) {
@@ -6447,7 +6638,7 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
       return;
     }
     wordReady = true;
-    const downloadedFilename = filename || job.filename || "专项练习-题目.docx";
+    const downloadedFilename = filename || job.filename || practiceWordFilename(data);
     const completedPointer = readPracticeWordExportPointers().find((item) => item.export_key === exportKey)
       || rememberPracticeWordExportPointer(exportKey, job.job_id, downloadedFilename);
     practiceWordRecoveryJobs.set(exportKey, { pointer: completedPointer, job });
@@ -6458,7 +6649,7 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
     } else if (delivery?.status === "cancelled") {
       setPracticeStatusBanner("Word 已生成但尚未保存，可在全局恢复区重新保存。", "info");
     } else {
-      setPracticeStatusBanner(reviewCandidate ? "待复核题目 Word 已生成，浏览器已开始下载；请检查下载记录。" : "题目 Word 已生成，浏览器已开始下载；请检查下载记录。", reviewCandidate ? "warning" : "done");
+      setPracticeStatusBanner(reviewCandidate ? "待复核题目 Word 已生成，下载请求已交给浏览器。" : "题目 Word 已生成，下载请求已交给浏览器。", reviewCandidate ? "warning" : "done");
     }
   } catch (error) {
     setPracticeStatusBanner(wordReady ? (practiceWordDesktopRuntimeExpected() ? "题目 Word 已生成但保存未完成，可在全局恢复区重新保存。" : "题目 Word 已生成但下载未开始，可在全局恢复区重新下载。") : "题目 Word 生成失败，请查看提示后重试。", "error");
@@ -6507,7 +6698,7 @@ function updatePracticeSelectionActions() {
   }
   syncPracticeWordExportButton(
     $("practiceDownloadSelectedBtn"),
-    data ? practiceWordExportKey(data, `专项练习-已选${exportableCount}题.docx`) : "",
+    data ? practiceWordExportKey(data, practiceWordFilename(data, `已选${exportableCount}题`)) : "",
     exportableCount > 0,
     "下载 Word"
   );
@@ -7525,7 +7716,7 @@ function providerEntriesByCapability(kind) {
   const entries = Object.entries(providerConfigs || {});
   if (kind === "vision") return entries.filter(([, cfg]) => providerHasVision(cfg));
   if (kind === "image") return entries.filter(([, cfg]) => providerHasImageModel(cfg));
-  return entries;
+  return entries.filter(([, cfg]) => cfg.supports_text_generation !== false);
 }
 
 function modelLooksVisionCapable(model, cfg = currentProviderConfig()) {
@@ -8213,7 +8404,8 @@ function renderApiKeyFileInfo() {
 }
 
 function keyProviderCapabilityText(cfg) {
-  const items = ["文字模型"];
+  const items = [];
+  if (cfg.supports_text_generation !== false) items.push("文字模型");
   if (cfg.supports_vision) items.push("视觉理解");
   if (cfg.supports_image_generation && cfg.image_model) items.push("图片生成");
   return items.join(" · ");
@@ -8277,7 +8469,7 @@ function renderKeyProviderCards() {
           data-key-input="${escapeHtml(name)}" placeholder="${cfg.api_key_set ? "输入新 Key 可替换已保存配置" : "粘贴此平台的 API Key"}">
         <button type="button" class="key-toggle-button" data-key-toggle="${escapeHtml(name)}" title="显示或隐藏 Key" aria-label="显示或隐藏 ${escapeHtml(displayProviderName(name))} API Key"><i class="fas fa-eye" aria-hidden="true"></i></button>
       </div>
-      <p class="key-test-model">连接测试使用：${escapeHtml(cfg.default_model || "平台默认模型")}</p>
+      <p class="key-test-model">连接测试使用：${escapeHtml(cfg.supports_text_generation === false ? (cfg.image_model || "图片生成模型") : (cfg.default_model || "平台默认模型"))}</p>
       <div class="key-provider-actions">
         <button type="button" class="outline-button" data-key-test="${escapeHtml(name)}"><i class="fas fa-plug"></i>测试连接</button>
         <button type="button" class="secondary-button" data-key-save="${escapeHtml(name)}" disabled><i class="fas fa-floppy-disk"></i>保存</button>
@@ -8363,13 +8555,14 @@ async function testKeyProvider(providerName) {
   }
   button.disabled = true;
   if (save) save.disabled = true;
-  keyProviderStatus(card, "testing", "正在测试连接", cfg.default_model || "平台默认模型");
+  const connectionModel = cfg.supports_text_generation === false ? (cfg.image_model || cfg.default_model) : cfg.default_model;
+  keyProviderStatus(card, "testing", "正在测试连接", connectionModel || "平台默认模型");
   try {
     const data = await api("/api/provider-test", {
       method: "POST",
       body: JSON.stringify({
         provider: providerName,
-        model: cfg.default_model || undefined,
+        model: connectionModel || undefined,
         thinking_mode: cfg.thinking_mode || "auto",
         api_key: key || undefined
       })
@@ -8378,13 +8571,13 @@ async function testKeyProvider(providerName) {
       keyConfigTests[providerName] = key;
       if (save) save.disabled = false;
     }
-    rememberModelConnectionTest(providerName, data.model || cfg.default_model || "", true);
+    rememberModelConnectionTest(providerName, data.model || connectionModel || "", true);
     keyProviderStatus(card, "ok", "连接成功", `${displayProviderName(providerName)} / ${data.model}`);
     setVisual("keyConfigNotice", "连接测试通过", key ? "现在可以保存这个 Key。" : "已保存的 Key 仍可正常使用。", "ok");
   } catch (err) {
     delete keyConfigTests[providerName];
     const message = String(err).replace(/^Error:\s*/, "");
-    rememberModelConnectionTest(providerName, cfg.default_model || "", false, message);
+    rememberModelConnectionTest(providerName, connectionModel || "", false, message);
     const advice = providerErrorAdvice(message);
     keyProviderStatus(card, "error", advice.title, advice.body);
     setVisual("keyConfigNotice", advice.title, advice.body, "error");
@@ -8680,8 +8873,19 @@ function displayThinkingMode(value) {
   return "自动 thinking";
 }
 
+function formatDuration(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor((value % 3600) / 60)}分`;
+  if (value >= 60) return `${Math.floor(value / 60)}分${value % 60}秒`;
+  return `${value}秒`;
+}
+
 function taskDurationText(task) {
   if (task?.duration_text) return task.duration_text;
+  const recordedSeconds = Number(task?.duration_seconds);
+  if (Number.isFinite(recordedSeconds) && recordedSeconds > 0) {
+    return formatDuration(recordedSeconds);
+  }
   const start = Date.parse(String(task?.created_at || "").replace(" ", "T"));
   if (!Number.isFinite(start)) return "暂无";
   const end = task?.status === "running" || task?.status === "queued" || task?.status === "paused"
@@ -9234,7 +9438,20 @@ function renderTaskManager(tasks = latestTasks) {
   const animateAllVisible = currentPage === "tasks" && taskManagerMotionEntrancePending;
   const animatedItems = [];
   list.innerHTML = "";
-  if (empty) empty.classList.toggle("hidden", visible.length > 0);
+  if (empty) {
+    const title = empty.querySelector("h3");
+    const detail = empty.querySelector("p");
+    const action = empty.querySelector("button");
+    if (title) title.textContent = taskManagerLoading ? "正在读取任务" : "暂无任务";
+    if (detail) detail.textContent = taskManagerLoading ? "正在同步任务状态，请稍候…" : "当前筛选条件下没有找到任务";
+    action?.classList.toggle("hidden", taskManagerLoading);
+    empty.classList.toggle("hidden", visible.length > 0);
+  }
+  if (currentPage === "tasks" && taskManagerLoading && visible.length === 0) {
+    // A loading placeholder is already the page entrance. Do not hide the
+    // first real task cards behind a second entrance animation.
+    taskManagerMotionEntrancePending = false;
+  }
   renderTaskManagerPagination(filteredVisible.length);
   for (const [index, task] of visible.entries()) {
     const normalized = taskDisplayStatus(task);
@@ -9248,6 +9465,7 @@ function renderTaskManager(tasks = latestTasks) {
     const taskHealthMeta = healthPresentation(taskHealthState);
     const stageText = progress.label;
     const taskId = task.task_id || "";
+    const practiceBatchId = String(task.practice_batch_id || "");
     const kind = task.task_kind || "exam";
     const generationTask = Boolean(task.is_generation_task);
     const formatTask = Boolean(task.is_format_task);
@@ -9322,9 +9540,12 @@ function renderTaskManager(tasks = latestTasks) {
             <span class="task-status-chip status-${normalized}"><i class="${meta.icon}"></i>${escapeHtml(meta.label)}</span>
             ${["running", "queued"].includes(normalized) && taskHealth.health_status ? `<span class="task-health-chip health-${escapeHtml(taskHealthState)}"><i class="${taskHealthMeta.icon}"></i>${escapeHtml(taskHealthMeta.label)}</span>` : ""}
             ${qualityMeta && !reviewPending && qualityMeta.label !== meta.label ? `<span class="task-quality-chip quality-${qualityMeta.className}"><i class="${qualityMeta.icon}"></i>${qualityMeta.label}</span>` : ""}
-            <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制完整ID"><i class="fas fa-hashtag"></i><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
+            <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制阶段任务 ID"><i class="fas fa-hashtag"></i><span>阶段</span><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
+            ${practiceBatchId ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(practiceBatchId)}" title="复制完整流程批次 ID"><i class="fas fa-diagram-project"></i><span>流程</span><strong>${escapeHtml(compactTaskId(practiceBatchId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
             <span title="任务开始时间"><i class="far fa-clock"></i>开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}</span>
-            ${generationTask ? "" : `<span><i class="fas fa-hourglass-half"></i>运行 ${escapeHtml(taskDurationText(task))}</span>`}
+            <span title="包含排队、模型处理和重试"><i class="fas fa-hourglass-half"></i>总耗时 ${escapeHtml(taskDurationText(task))}</span>
+            ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
+            ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
             <span><i class="fas fa-layer-group"></i>${escapeHtml(displayCurrentStageText)}</span>
           </div>
         </div>
@@ -9836,7 +10057,7 @@ async function copyTextToClipboard(text) {
 }
 
 async function copyTaskId(task, button) {
-  const taskId = task?.task_id || button?.dataset.taskId || "";
+  const taskId = button?.dataset.taskId || task?.task_id || "";
   if (!taskId) return;
   const original = button?.innerHTML || "";
   try {
@@ -10294,6 +10515,7 @@ function filterTaskKind(kind) {
 }
 
 function openTaskManager(kind = "all") {
+  taskManagerLoading = true;
   filterTasks("all");
   filterTaskKind(kind);
   goToPage("tasks");
@@ -11157,11 +11379,16 @@ async function hydrateLiveTaskDetails(tasks) {
 
 async function loadTasks(options = {}) {
   const { silent = false, includeLiveDetails = false } = options;
+  const requestVersion = ++taskLoadVersion;
+  taskManagerLoading = true;
+  if (currentPage === "tasks") renderTaskManager(latestTasks);
   if (!silent) $("runResult").textContent = "读取任务列表中...";
   try {
     const data = await api("/api/tasks");
-    latestTasks = data.tasks || [];
-    if (includeLiveDetails) await hydrateLiveTaskDetails(latestTasks);
+    const loadedTasks = data.tasks || [];
+    if (includeLiveDetails) await hydrateLiveTaskDetails(loadedTasks);
+    if (requestVersion !== taskLoadVersion) return;
+    latestTasks = loadedTasks;
     updateReviewNotificationBadges(latestTasks);
     renderTasks(latestTasks);
     renderTaskManager(latestTasks);
@@ -11178,11 +11405,17 @@ async function loadTasks(options = {}) {
       setVisual("runVisualResult", "任务列表已刷新", `当前共有 ${latestTasks.length} 个任务。请选择一个任务查看进度或文件。`, "info");
     }
   } catch (err) {
+    if (requestVersion !== taskLoadVersion) return;
     if (!silent) {
       $("runResult").textContent = String(err);
       setVisual("runVisualResult", "任务列表读取失败", String(err).replace(/^Error:\s*/, ""), "error");
     } else {
       throw err;
+    }
+  } finally {
+    if (requestVersion === taskLoadVersion) {
+      taskManagerLoading = false;
+      if (currentPage === "tasks") renderTaskManager(latestTasks);
     }
   }
 }
@@ -11759,7 +11992,7 @@ function renderResultQuestionList(questions) {
     button.classList.toggle("active", question.question_id === activeResultQuestionId);
     button.innerHTML = `
       <span>
-        <strong>第 ${escapeHtml(question.number || question.index)} 题</strong>
+        <strong>第 ${escapeHtml(question.display_number || question.number || question.index)} 题</strong>
         <small>${practiceMarkdown((question.stem || "").slice(0, 18))}${(question.stem || "").length > 18 ? "..." : ""}</small>
       </span>
       <div class="result-question-meta">
@@ -11804,7 +12037,7 @@ function renderQuestionDetail(question) {
   const directAnswerHtml = `<section class="answer-section"><h4>答案</h4><p>${practiceMarkdown(question.answer_summary || question.answer || "暂无答案")}</p></section>`;
   detail.innerHTML = `
     <div class="question-detail-header">
-      <h3>第 ${escapeHtml(question.number || question.index)} 题：${escapeHtml(question.type || "题目")}</h3>
+      <h3>第 ${escapeHtml(question.display_number || question.number || question.index)} 题：${escapeHtml(question.type || "题目")}</h3>
       <div class="question-detail-meta">
         ${checkpoint ? `<span class="checkpoint-status ${checkpoint.className}">${checkpoint.label}</span>` : ""}
         ${question.score ? `<span>分值：${escapeHtml(question.score)} 分</span>` : ""}
@@ -12421,11 +12654,26 @@ $("practicePlanReview")?.addEventListener("change", () => schedulePracticeWorksp
 $("practiceWorkspaceDraftClear")?.addEventListener("click", () => {
   clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode).catch(() => {});
 });
+$("practiceLoadingCopyTaskId")?.addEventListener("click", async (event) => {
+  const value = String($("practiceLoadingTaskId")?.textContent || "").trim();
+  if (!value) return;
+  await copyTextToClipboard(value);
+  const button = event.currentTarget;
+  const original = button.textContent;
+  button.textContent = "已复制";
+  setTimeout(() => { button.textContent = original; }, 1200);
+});
 $("practiceWorkspaceDraftClearActive")?.addEventListener("click", () => {
   clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode).catch(() => {});
 });
 $("knowledgeWorkspaceDraftClear")?.addEventListener("click", () => {
   clearAndStartFreshPracticeWorkspace("knowledge", true).catch(() => {});
+});
+$("practiceWorkspaceDraftRestorePrevious")?.addEventListener("click", () => {
+  restorePreviousPracticeWorkspace(currentPracticeSourceMode).catch(() => {});
+});
+$("knowledgeWorkspaceDraftRestorePrevious")?.addEventListener("click", () => {
+  restorePreviousPracticeWorkspace("knowledge", true).catch(() => {});
 });
 $("practicePlanBackBtn")?.addEventListener("click", () => {
   $("practicePlanReview")?.classList.add("hidden");
@@ -12660,7 +12908,7 @@ $("practiceSelectAllBtn")?.addEventListener("click", () => {
 $("practiceDownloadSelectedBtn")?.addEventListener("click", () => {
   const data = selectedPracticeSet();
   if (!data) return;
-  prepareOrDownloadPracticeWord(data, $("practiceDownloadSelectedBtn"), `专项练习-已选${data.exercises.length}题.docx`).catch((error) => {
+  prepareOrDownloadPracticeWord(data, $("practiceDownloadSelectedBtn"), practiceWordFilename(data, `已选${data.exercises.length}题`)).catch((error) => {
     platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "题目 Word 操作未完成", tone: "danger" });
   });
 });
@@ -13248,6 +13496,7 @@ function initSiteEnhancements() {
   // Word export recovery is independent from practice generation recovery.
   // Only minimal job pointers live in browser storage; the server owns state.
   resumeRememberedPracticeWordExports().catch(() => {});
+  window.setTimeout(() => checkPlatformUpdateSilently(), 1500);
   // 首屏立即显示
   requestAnimationFrame(() => {
     document.querySelectorAll(".page.active .reveal,.page.active .reveal-scale").forEach((el) => {

@@ -25,6 +25,16 @@ class VersionTests(unittest.TestCase):
             with patch("app.version.PROJECT_ROOT", project_root):
                 self.assertEqual("7.1 abc1234", get_version())
 
+    def test_version_marks_dirty_source_checkout(self) -> None:
+        from app.version import get_version
+
+        with (
+            patch("app.version.get_base_version", return_value="7.1"),
+            patch("app.version.get_source_revision", return_value="abc1234"),
+            patch("app.version.is_source_dirty", return_value=True),
+        ):
+            self.assertEqual("7.1 abc1234+dirty", get_version())
+
     def test_source_revision_falls_back_to_release_manifest(self) -> None:
         from app.version import get_source_revision
 

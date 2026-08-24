@@ -186,6 +186,24 @@ def test_practice_pass_keeps_structural_not_subject_quality_claim() -> None:
     assert run["quality_presentation"]["label"] == "已完成"
 
 
+def test_disabled_semantic_review_is_a_completed_downloadable_practice_task() -> None:
+    run = build_practice_runs(
+        [],
+        [{
+            "history_id": "practice-gemini-clean",
+            "task_kind": "practice",
+            "quality": {"status": "passed", "release_level": "formal"},
+            "semantic_review": {"status": "disabled", "triggered": False, "items": []},
+            "generation": {"status": "completed", "generated_count": 3, "failed_count": 0},
+            "exercises": [{"stem": "题干", "generation_status": "completed"}] * 3,
+        }],
+    )[0]
+
+    assert run["status"] == "completed"
+    assert run["quality_presentation"]["label"] == "已完成"
+    assert run["capabilities"]["download"] is True
+
+
 def test_control_capabilities_remain_different_between_workflows() -> None:
     exam = capabilities_for(WorkflowType.EXAM_ANALYSIS, RunStatus.RUNNING)
     practice = capabilities_for(WorkflowType.PRACTICE_BY_QUESTION, RunStatus.RUNNING)
@@ -449,3 +467,34 @@ def test_partial_practice_history_remains_distinct_from_review() -> None:
     assert run["quality_presentation"]["label"] == "已完成 · 有提示"
     assert run["capabilities"]["view_result"] is True
     assert run["capabilities"]["download"] is False
+
+
+def test_completed_practice_history_uses_job_lifecycle_for_real_duration() -> None:
+    jobs = [
+        {
+            "job_id": "analyze-1", "practice_batch_id": "batch-duration", "operation": "analyze",
+            "status": "completed", "created_at": "2026-08-01T10:00:00+08:00",
+            "started_at": "2026-08-01T10:02:00+08:00", "completed_at": "2026-08-01T10:07:00+08:00",
+            "updated_at": "2026-08-01T10:07:00+08:00", "elapsed_seconds": 300,
+            "model_usage": {"call_count": 2},
+        },
+        {
+            "job_id": "generate-1", "practice_batch_id": "batch-duration", "operation": "generate_from_plan",
+            "status": "completed", "created_at": "2026-08-01T10:08:00+08:00",
+            "started_at": "2026-08-01T10:08:10+08:00", "completed_at": "2026-08-01T10:10:00+08:00",
+            "updated_at": "2026-08-01T10:10:00+08:00", "elapsed_seconds": 110,
+            "model_usage": {"call_count": 1},
+        },
+    ]
+    histories = [{
+        "history_id": "practice-duration", "task_kind": "practice", "status": "completed",
+        "request": {"practice_batch_id": "batch-duration"}, "quality": {"status": "passed"},
+        "generation": {"status": "completed"},
+    }]
+
+    run = build_practice_runs(jobs, histories)[0]
+
+    assert run["duration_seconds"] == 600
+    assert run["active_duration_seconds"] == 410
+    assert run["queue_duration_seconds"] == 130
+    assert run["model_attempt_count"] == 3

@@ -240,7 +240,7 @@
             <label>知识点简介或教材原文
               <textarea id="knowledgeTextInput" rows="10" placeholder="可粘贴知识点简介、教材原文、公式说明；也可按 Command/Ctrl + V 直接粘贴图片。"></textarea>
             </label>
-            <div id="knowledgeWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的知识点出题工作区。</span><button id="knowledgeWorkspaceDraftClear" type="button" class="text-button">清除并新建</button></div>
+            <div id="knowledgeWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的知识点出题工作区。</span><button id="knowledgeWorkspaceDraftClear" type="button" class="text-button">保留并新建</button><button id="knowledgeWorkspaceDraftRestorePrevious" type="button" class="text-button">恢复上一份</button></div>
             <div class="knowledge-paste-hint"><i class="fas fa-paste"></i><span><strong>支持直接粘贴图片</strong>先点击上方输入框，再按 Command/Ctrl + V；可连续粘贴多张。</span></div>
             <label class="knowledge-file-drop" for="knowledgeFileInput">
               <i class="fas fa-cloud-arrow-up"></i>
@@ -252,6 +252,10 @@
             <label class="practice-blueprint-toggle">
               <span><strong>审查出题蓝图</strong><small>开启后可逐题调整题型、难度和设计意图；关闭后从范围确认直接生题。</small></span>
               <input id="knowledgeBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
+            </label>
+            <label class="practice-blueprint-toggle">
+              <span><strong>严格教研审查</strong><small>默认关闭以快速出题；开启后增加一次模型语义审查，适合正式下发前复核。</small></span>
+              <input id="knowledgeSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
             </label>
             <label class="practice-blueprint-toggle practice-source-content-toggle">
               <span><strong>正式生题时参考来源材料</strong><small>开启后会参考教材原文、公式、图表和上传文件中的相关内容。</small></span>
@@ -545,7 +549,7 @@
                 <textarea id="practiceQuestionText" name="practiceQuestionText" rows="7"
                   class="min-h-[160px] w-full resize-y rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] p-3.5 text-[14px] leading-[1.7] text-[var(--brand-foreground)] outline-none transition focus:border-[var(--brand-primary)] focus:bg-[var(--brand-card)] focus:ring-2 focus:ring-[rgba(30,58,138,0.12)]"
                   placeholder="粘贴题目文字，或在这里按 Command/Ctrl + V 直接粘贴截图。公式可以使用 LaTeX。"></textarea>
-                <div id="practiceWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的出题工作区。</span><button id="practiceWorkspaceDraftClear" type="button" class="text-button">清除并新建</button></div>
+                <div id="practiceWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的出题工作区。</span><button id="practiceWorkspaceDraftClear" type="button" class="text-button">保留并新建</button><button id="practiceWorkspaceDraftRestorePrevious" type="button" class="text-button">恢复上一份</button></div>
 
                 <div class="flex flex-col gap-2">
                   <label class="flex cursor-pointer items-center gap-2 rounded-[var(--brand-radius-md)] border border-dashed border-[var(--brand-border)] bg-[var(--brand-muted)] px-3 py-2 text-[12px] text-[var(--brand-muted-foreground)] hover:border-[var(--brand-primary)] hover:text-[var(--brand-foreground)] transition">
@@ -559,6 +563,10 @@
                 <label class="practice-blueprint-toggle">
                   <span><strong>审查出题蓝图</strong><small>开启后可逐题调整蓝图；关闭后从范围确认直接生题。</small></span>
                   <input id="practiceBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
+                </label>
+                <label class="practice-blueprint-toggle">
+                  <span><strong>严格教研审查</strong><small>默认使用快速模式；开启后生成完成会再调用模型检查语义边界。</small></span>
+                  <input id="practiceSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
                 </label>
                 <label class="practice-blueprint-toggle practice-source-content-toggle">
                   <span><strong>正式生题时参考来源材料</strong><small>开启后会参考原题题面或知识材料中的图文、公式和表格。</small></span>
@@ -695,7 +703,7 @@
               <span id="practiceStatusBanner" class="inline-flex items-center gap-1.5 rounded-full bg-[var(--brand-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--brand-muted-foreground)]">
                 <i data-lucide="circle-dot" class="h-3.5 w-3.5"></i>就绪
               </span>
-              <button id="practiceWorkspaceDraftClearActive" type="button" class="text-button hidden">清除恢复内容并新建</button>
+              <button id="practiceWorkspaceDraftClearActive" type="button" class="text-button hidden">保留当前草稿并新建</button>
             </div>
 
             <!-- Empty State -->
@@ -739,6 +747,10 @@
                 <div>
                   <span><i class="fas fa-clock"></i><b id="practiceLoadingElapsed">刚刚开始</b></span>
                   <span><i class="fas fa-circle-check"></i>当前内容已保留</span>
+                </div>
+                <div id="practiceLoadingTaskIdRow" class="hidden items-center justify-center gap-2 text-[12px]">
+                  <span>任务 ID：<code id="practiceLoadingTaskId"></code></span>
+                  <button id="practiceLoadingCopyTaskId" type="button" class="text-button">复制</button>
                 </div>
                 <p>可以离开当前页面，任务会继续；稍后从任务列表返回即可。</p>
               </div>

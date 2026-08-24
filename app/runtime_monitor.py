@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
+import re
 import shutil
 import threading
 import time
@@ -249,6 +251,92 @@ def record_model_call_usage(record: dict[str, Any] | None, raw: dict[str, Any] |
     for key, value in values.items():
         if isinstance(value, (int, float, str)) and str(value).strip():
             record[key] = value
+    provider_reported = any(
+        isinstance(value, (int, float))
+        for value in (values["prompt_tokens"], values["completion_tokens"], values["total_tokens"])
+    )
+    if provider_reported and not isinstance(values["total_tokens"], (int, float)):
+        record["total_tokens"] = int(record.get("prompt_tokens") or 0) + int(record.get("completion_tokens") or 0)
+    if provider_reported:
+        record["usage_source"] = "provider_reported"
+
+
+def estimate_model_tokens(value: Any) -> int:
+    """Estimate tokens without persisting request content."""
+
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = str(value or "").encode("utf-8", errors="replace")
+    return max(1, int(math.ceil(len(encoded) / 4))) if encoded else 0
+
+
+def _model_request_size_metrics(payload: Any) -> dict[str, int]:
+    image_count = 0
+    image_bytes = 0
+
+    def without_images(value: Any) -> Any:
+        nonlocal image_count, image_bytes
+        if isinstance(value, str):
+            matched = re.match(r"^data:image/[^;,]+;base64,(.+)$", value, flags=re.DOTALL | re.IGNORECASE)
+            if not matched:
+                return value
+            encoded = matched.group(1)
+            padding = len(encoded) - len(encoded.rstrip("="))
+            image_count += 1
+            image_bytes += max(0, len(encoded) * 3 // 4 - padding)
+            return "<image>"
+        if isinstance(value, list):
+            return [without_images(item) for item in value]
+        if isinstance(value, dict):
+            return {key: without_images(item) for key, item in value.items()}
+        return value
+
+    text_payload = without_images(payload)
+    try:
+        request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError):
+        request_bytes = len(str(payload or "").encode("utf-8", errors="replace"))
+    return {
+        "request_bytes": request_bytes,
+        "estimated_text_tokens": estimate_model_tokens(text_payload),
+        "image_input_count": image_count,
+        "image_input_bytes": image_bytes,
+    }
+
+
+def record_model_call_estimate(record: dict[str, Any] | None, payload: Any) -> None:
+    """Record request-side usage before network I/O so failures are measurable."""
+
+    if not isinstance(record, dict):
+        return
+    metrics = _model_request_size_metrics(payload)
+    estimate = metrics["estimated_text_tokens"]
+    record.update(metrics)
+    record["estimated_prompt_tokens"] = estimate
+    record.setdefault("prompt_tokens", estimate)
+    record.setdefault("completion_tokens", 0)
+    record.setdefault("total_tokens", estimate)
+    record.setdefault(
+        "usage_source",
+        "platform_text_estimate_without_vision" if metrics["image_input_count"] else "platform_text_estimate",
+    )
+
+
+def record_model_stream_progress(record: dict[str, Any] | None, delta: str) -> None:
+    """Accumulate content-free stream counters for timeout diagnosis."""
+
+    if not isinstance(record, dict) or not isinstance(delta, str) or not delta:
+        return
+    record["stream_chunk_count"] = int(record.get("stream_chunk_count") or 0) + 1
+    record["stream_output_chars"] = int(record.get("stream_output_chars") or 0) + len(delta)
+    record["stream_output_bytes"] = int(record.get("stream_output_bytes") or 0) + len(delta.encode("utf-8"))
+    estimate = max(1, int(math.ceil(int(record["stream_output_bytes"]) / 4)))
+    record["estimated_completion_tokens"] = estimate
+    if record.get("usage_source") != "provider_reported":
+        record["completion_tokens"] = estimate
+        record["total_tokens"] = int(record.get("prompt_tokens") or 0) + estimate
+        record["usage_source"] = "platform_estimated_partial"
 
 
 def _append_model_ledger(record: dict[str, Any]) -> None:

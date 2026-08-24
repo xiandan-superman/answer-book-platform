@@ -202,7 +202,7 @@ def practice_completion_issue_contract(data: dict[str, Any] | None) -> dict[str,
         for risk in item.get("risks") or [] if isinstance(risk, dict)
         and str(risk.get("severity") or "").lower() in {"medium", "high"}
     ]
-    if semantic and semantic_status not in {"passed", "warning"}:
+    if semantic and semantic_status not in {"passed", "warning", "disabled", "not_required"}:
         review_reasons.append("语义审查未完成，需人工复核")
     if semantic_risks:
         review_reasons.extend(_practice_issue_reasons(semantic_risks, fallback="语义审查发现需复核风险"))

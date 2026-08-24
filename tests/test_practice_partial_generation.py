@@ -385,4 +385,4 @@ def test_drawing_question_without_system_figure_is_complete() -> None:
 
     assert quality["status"] == "passed"
     assert quality["blocking_issues"] == []
-    assert quality["checks"]["subject_matter_review_required"] is True
+    assert quality["checks"]["subject_matter_review_required"] is False

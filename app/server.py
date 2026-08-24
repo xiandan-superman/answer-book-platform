@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shutil
+import tempfile
 import time
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -77,6 +78,7 @@ from .practice_queue import (
     start_practice_queue_consumer,
     stop_practice_queue_consumer,
 )
+from .practice_source_store import persist_practice_source_files
 from .practice_store import (
     PracticeEditConflict,
     build_practice_continuation_payload,
@@ -133,8 +135,8 @@ from .word_format_tasks import (
     save_word_format_profile_settings,
     word_format_download_path,
     word_format_preview_path,
-    word_format_source_path,
     word_format_settings_payload,
+    word_format_source_path,
     word_format_task_payload,
 )
 
@@ -526,7 +528,8 @@ def _practice_job_api_payload(record: dict) -> dict:
 
 
 def _start_practice_job(operation: str, payload: dict) -> dict:
-    record = create_or_reuse_practice_job(operation, payload)
+    durable_payload = persist_practice_source_files(payload)
+    record = create_or_reuse_practice_job(operation, durable_payload)
     if record.get("deduplicated"):
         return record
     return enqueue_practice_job(str(record["job_id"]))
@@ -647,6 +650,20 @@ def _render_word_format_page() -> bytes:
     html = html.replace("__API_ROUTES_JSON__", routes_json)
     html = html.replace("__PLATFORM_HOSTED_JSON__", "true")
     return html.encode("utf-8")
+
+
+def _practice_export_filename(export_data: dict[str, object], *, review_candidate: bool = False) -> str:
+    generation = export_data.get("generation") if isinstance(export_data.get("generation"), dict) else {}
+    title = str(
+        export_data.get("knowledge_title")
+        or export_data.get("task_title")
+        or ("知识点模拟题" if str(export_data.get("source_mode") or "exam") == "knowledge" else "按题出题")
+    ).strip()
+    model = str(generation.get("model") or export_data.get("model") or "model").strip()
+    safe = lambda value, fallback: (re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", value).strip()[:48] or fallback)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    suffix = "-待复核" if review_candidate else ""
+    return f"{safe(title, '专项练习')}-{safe(model, 'model')}-{stamp}-题目{suffix}.docx"
 
 
 class PlatformHandler(BaseHTTPRequestHandler):
@@ -1017,7 +1034,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         )
                     )
                 practice_tasks = build_practice_runs(
-                    list_practice_jobs(limit=100),
+                    list_practice_jobs(limit=100, include_history_completed=True),
                     list_practice_records(limit=100),
                 )
                 return {
@@ -1231,7 +1248,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(result)
                 return
             if parsed.path == "/api/practice/generate":
-                body = self.read_json()
+                body = persist_practice_source_files(self.read_json())
                 result = generate_practice_set(body)
                 record = save_practice_record(result, request=body)
                 result = record["data"]
@@ -1259,6 +1276,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {
                         "job_id": record["job_id"],
+                        "task_id": record["job_id"],
                         "status": record["status"],
                         "deduplicated": bool(record.get("deduplicated")),
                     },
@@ -1513,10 +1531,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 if export_kind != "questions":
                     self.send_json({"ok": False, "error": "专项练习仅支持题目 Word 导出。"}, status=400)
                     return
-                filename_text = ("知识点模拟题" if str(export_data.get("source_mode") or "exam") == "knowledge" else "按题出题") + "-题目"
-                if export_validation.get("release_level") == "review_candidate":
-                    filename_text += "-待复核"
-                filename_text += ".docx"
+                filename_text = _practice_export_filename(
+                    export_data,
+                    review_candidate=export_validation.get("release_level") == "review_candidate",
+                )
                 if parsed.path == "/api/practice/export/prepare":
                     export_job = create_or_reuse_practice_export_job(
                         export_data,
@@ -1950,6 +1968,31 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 provider, protocol_overridden = _provider_test_protocol_override(provider, body)
                 provider = replace(provider, thinking_mode=_normalize_thinking_mode(body.get("model_thinking") or body.get("thinking_mode")))
                 client = OpenAICompatibleClient(provider)
+                if not getattr(provider, "supports_text_generation", True) and provider_supports_image_generation(provider):
+                    image_model = str(body.get("model") or provider.image_model or "").strip()
+                    try:
+                        with tempfile.TemporaryDirectory(prefix="answer-book-provider-image-test-") as raw_tmp:
+                            result = client.generate_image(
+                                "A single small black circle centered on a plain white background.",
+                                Path(raw_tmp) / "connection-test.png",
+                                model=image_model,
+                                size=provider.image_size,
+                            )
+                    except LLMError as exc:
+                        self.send_json(
+                            {"ok": False, "provider": provider.name, "model": image_model, "error": str(exc)},
+                            status=400,
+                        )
+                        return
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "provider": provider.name,
+                            "model": result.model,
+                            "capability": "image_generation",
+                        }
+                    )
+                    return
                 model = resolve_provider_model(provider, body.get("model"))
                 messages = [
                     {"role": "system", "content": "Return exactly this JSON object and no other text: {\"ping\":\"pong\"}"},

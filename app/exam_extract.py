@@ -40,7 +40,7 @@ NS = {
 }
 IMAGE_MARKER_PREFIX = "__ANSWER_BOOK_IMAGE__:"
 TABLE_MARKER_PREFIX = "__ANSWER_BOOK_TABLE__:"
-EXAM_GROUPING_POLICY_VERSION = "answer_book.exam_grouping.v8"
+EXAM_GROUPING_POLICY_VERSION = "answer_book.exam_grouping.v9"
 RESPONSE_CONSTRAINT_RE = re.compile(
     r"(?:"
     r"(?:计算|作答|答案|结果|数值)[^。；;？?]{0,30}(?:取|保留|精确到|写成|表示为)[^。；;？?]{0,24}(?:有效数字|小数|位|形式)?|"
@@ -865,6 +865,48 @@ def question_items(section: dict) -> list[dict]:
     return combined
 
 
+def _ensure_unique_question_ids(items: list[dict]) -> None:
+    """Disambiguate repeated source numbering without changing visible numbers.
+
+    Combined exam files commonly restart section and item numbers for each year.
+    The visible ``section`` and ``number`` fields must continue to mirror the
+    source document, while the internal identifier must be unique because it is
+    used as a key by review, retrieval, generation, checkpoint, figure, and
+    delivery stages.
+
+    Keep the first occurrence backward-compatible and add a deterministic
+    occurrence suffix only to later collisions.  Document order makes the
+    result stable across reruns of the same input file.
+    """
+
+    totals: dict[str, int] = {}
+    for item in items:
+        base = str(item.get("question_id") or "").strip()
+        if base:
+            totals[base] = totals.get(base, 0) + 1
+
+    occurrences: dict[str, int] = {}
+    for item in items:
+        base = str(item.get("question_id") or "").strip()
+        if not base or totals.get(base, 0) < 2:
+            continue
+        occurrence = occurrences.get(base, 0) + 1
+        occurrences[base] = occurrence
+        item["question_id_base"] = base
+        item["question_id_occurrence"] = occurrence
+        item["question_id_collision_count"] = totals[base]
+        visible_number = str(item.get("number") or "").strip()
+        item["display_number"] = (
+            f"{visible_number}（同号第{occurrence}题，共{totals[base]}题）"
+            if visible_number
+            else f"同号第{occurrence}题，共{totals[base]}题"
+        )
+        if occurrence > 1:
+            item["question_id"] = f"{base}__r{occurrence:02d}"
+            if item.get("formula_refs"):
+                item["formula_refs"] = [f"{item['question_id']}_source_formula"]
+
+
 def _combine_shared_composite_section(section: dict, items: list[dict]) -> list[dict]:
     """Represent one composite problem with a trailing shared figure as one group.
 
@@ -921,6 +963,7 @@ def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
     items: list[dict] = []
     for section in split_sections(paragraphs):
         items.extend(question_items(section))
+    _ensure_unique_question_ids(items)
     _attach_question_snapshots(items, output_json)
     source_paragraphs = [line for line in paragraphs if not str(line).startswith(IMAGE_MARKER_PREFIX)]
     source_paragraphs = [text for line in source_paragraphs if (text := _source_line_text(str(line)))]

@@ -36,6 +36,16 @@ _TERMINAL_JOB_RETENTION_DAYS = bounded_env_int("PRACTICE_TERMINAL_JOB_RETENTION_
 _MISSING_API_KEY_ERROR = re.compile(r"API key is not configured for provider:\s*ark", re.IGNORECASE)
 
 
+def _terminal_model_usage(job_id: str) -> dict[str, Any]:
+    """Use the model-call ledger as the terminal source of truth for call counts."""
+    usage = model_call_cost_summary(job_id)
+    return {
+        "model_usage": usage,
+        "network_attempted_count": max(0, int(usage.get("call_count") or 0)),
+        "network_stats_synced": True,
+    }
+
+
 def _clean_task_title(value: Any) -> str:
     """Keep user-facing task names short, plain, and safe for durable records."""
     return " ".join(str(value or "").split()).strip()[:80]
@@ -555,7 +565,7 @@ def update_practice_job(
     return record
 
 
-def list_practice_jobs(limit: int = 100) -> list[dict[str, Any]]:
+def list_practice_jobs(limit: int = 100, *, include_history_completed: bool = False) -> list[dict[str, Any]]:
     PRACTICE_JOB_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     for path in sorted(PRACTICE_JOB_DIR.glob("generation_*.json"), reverse=True):
@@ -564,7 +574,7 @@ def list_practice_jobs(limit: int = 100) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         # A completed generation is represented by its normal history record.
-        if record.get("status") == "completed" and record.get("history_id"):
+        if not include_history_completed and record.get("status") == "completed" and record.get("history_id"):
             continue
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         title = _clean_task_title(record.get("title"))
@@ -687,7 +697,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     current_stage="failed",
                     support_id=_new_support_id(),
                     error=f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待。",
-                    model_usage=model_call_cost_summary(job_id),
+                    **_terminal_model_usage(job_id),
                     diagnostic_context={"pinned_model_traces": pinned_model_traces},
                     progress_message="后台任务已超过最长处理时间，已停止等待。",
                     health_status="error",
@@ -740,7 +750,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 status="completed",
                 current_stage="completed",
                 result=outcome.get("result"),
-                model_usage=model_call_cost_summary(job_id),
+                **_terminal_model_usage(job_id),
                 history_id=str(outcome.get("history_id") or ""),
                 progress_message="任务已完成。",
                 last_heartbeat_at=_now(),
@@ -782,7 +792,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     "exception_type": exc.__class__.__name__,
                     "traceback": exception_traceback,
                 },
-                model_usage=model_call_cost_summary(job_id),
+                **_terminal_model_usage(job_id),
                 progress_message="后台任务异常结束。",
                 last_heartbeat_at=_now(),
                 health_status="error",
@@ -825,7 +835,7 @@ def recover_practice_jobs(*, fail_interrupted: bool = True) -> list[dict[str, An
                 current_stage="failed",
                 support_id=_new_support_id(),
                 error="服务重启导致任务中断，请重新发起。",
-                model_usage=model_call_cost_summary(job_id),
+                **_terminal_model_usage(job_id),
                 diagnostic_context={"pinned_model_traces": pinned_model_traces},
                 health_status="error",
                 current_operation="任务已中断",

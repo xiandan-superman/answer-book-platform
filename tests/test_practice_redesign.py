@@ -202,7 +202,7 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn("setPracticeExportButtonsEnabled(isPassed, data)", self.js)
         self.assertIn("async function prepareOrDownloadPracticeWord", self.js)
         self.assertIn("downloadPracticeWord(blob, filename)", self.js)
-        self.assertIn("浏览器已开始下载", self.js)
+        self.assertIn("下载请求已交给浏览器", self.js)
         self.assertIn("function downloadPracticeWord", self.js)
         self.assertIn('title: "题目 Word 操作未完成"', self.js)
         self.assertNotIn("practiceSolutionWordBtn", self.js)

@@ -265,7 +265,18 @@ def _asset_for_installation(
         "size_bytes": int(platform_entry.get("size_bytes") or release_asset.get("size") or 0),
         "sha256": sha256,
         "download_url": str(release_asset.get("browser_download_url") or ""),
+        "dependency_fingerprint": str(platform_entry.get("dependency_fingerprint") or "").strip().lower(),
     }
+
+
+def _current_dependency_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for name in ("requirements.txt", "requirements-windows.txt"):
+        path = PROJECT_ROOT / name
+        if path.is_file():
+            digest.update(path.name.encode("utf-8"))
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
@@ -291,7 +302,19 @@ def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
         raise UpdateError("发布版没有版本号。")
     available = is_newer_version(latest, current)
     asset = _asset_for_installation(release, manifest, kind)
-    action = "pull_source" if kind == "source_checkout" else "download_installer"
+    action = (
+        "pull_source"
+        if kind == "source_checkout"
+        else ("replace_source" if kind == "source_archive" else "download_installer")
+    )
+    source_entry = (manifest.get("platforms") or {}).get("source")
+    remote_dependency_fingerprint = str(
+        source_entry.get("dependency_fingerprint") if isinstance(source_entry, dict) else ""
+    ).strip().lower()
+    dependency_update_required = bool(
+        remote_dependency_fingerprint
+        and remote_dependency_fingerprint != _current_dependency_fingerprint()
+    )
     if available and kind != "source_checkout" and not asset:
         return {
             **base,
@@ -307,6 +330,7 @@ def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
     return {
         **base,
         "latest_version": latest,
+        "release_tag": str(manifest.get("release_tag") or release.get("tag_name") or f"v{latest}"),
         "release_name": str(release.get("name") or release.get("tag_name") or latest),
         "release_page": str(release.get("html_url") or ""),
         "release_notes": str(manifest.get("notes") or release.get("body") or "")[:4000],
@@ -314,6 +338,7 @@ def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
         "update_available": available,
         "action": action if available else "none",
         "asset": asset,
+        "dependency_update_required": dependency_update_required,
         "message": f"发现新版本 {latest}。" if available else "当前已是最新版本。",
     }
 
@@ -414,7 +439,7 @@ def _git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
         raise UpdateError(f"源码更新失败：{str(detail)[:300]}") from exc
 
 
-def _pull_source_update(source: dict[str, Any]) -> dict[str, Any]:
+def _pull_source_update(source: dict[str, Any], release_tag: str) -> dict[str, Any]:
     if installation_kind() != "source_checkout":
         raise UpdateError("当前不是 Git 源码安装。")
     dirty = _git("status", "--porcelain", "--untracked-files=no", timeout=10).stdout.strip()
@@ -422,17 +447,19 @@ def _pull_source_update(source: dict[str, Any]) -> dict[str, Any]:
         raise UpdateError("程序源码有未保存修改，为避免覆盖已停止更新。")
     remote = str(source.get("source_remote") or "origin")
     branch = str(source.get("source_branch") or "main")
+    tag = str(release_tag or "").strip()
+    if not _RELEASE_TAG_PATTERN.fullmatch(tag):
+        raise UpdateError("源码更新标签无效。")
     current_branch = _git("branch", "--show-current", timeout=10).stdout.strip()
     if current_branch != branch:
         raise UpdateError(f"当前分支为 {current_branch or '游离状态'}，更新源要求分支 {branch}，未自动切换。")
     before = _git("rev-parse", "HEAD", timeout=10).stdout.strip()
-    _git("fetch", "--prune", remote, branch, timeout=180)
-    remote_ref = f"{remote}/{branch}"
+    _git("fetch", "--prune", remote, f"refs/tags/{tag}:refs/tags/{tag}", timeout=180)
     try:
-        _git("merge-base", "--is-ancestor", "HEAD", remote_ref, timeout=10)
+        _git("merge-base", "--is-ancestor", "HEAD", tag, timeout=10)
     except UpdateError as exc:
-        raise UpdateError("本地与远程版本已分叉，不能自动快进更新。") from exc
-    _git("merge", "--ff-only", remote_ref, timeout=180)
+        raise UpdateError("本地与正式版本标签已分叉，不能自动快进更新。") from exc
+    _git("merge", "--ff-only", tag, timeout=180)
     after = _git("rev-parse", "HEAD", timeout=10).stdout.strip()
     return {
         "ok": True,
@@ -445,13 +472,61 @@ def _pull_source_update(source: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _schedule_supervised_restart() -> bool:
+    if os.environ.get("ANSWER_BOOK_LAUNCHED_BY_SUPERVISOR") != "1":
+        return False
+    timer = threading.Timer(1.5, lambda: os._exit(75))
+    timer.daemon = True
+    timer.start()
+    return True
+
+
+def _stage_source_archive_update(status: dict[str, Any]) -> dict[str, Any]:
+    target = _download_asset(status)
+    runtime_dir = DATA_ROOT / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = runtime_dir / "pending-source-update.json"
+    temporary = plan_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({
+        "schema_version": "answer_book.pending_source_update.v1",
+        "archive": str(target),
+        "version": status.get("latest_version"),
+        "dependency_update_required": bool(status.get("dependency_update_required")),
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(plan_path)
+    automatic = _schedule_supervised_restart()
+    return {
+        "ok": True,
+        "action": "source_update_staged",
+        "changed": True,
+        "restart_required": True,
+        "automatic_restart": automatic,
+        "dependency_update_required": bool(status.get("dependency_update_required")),
+        "message": (
+            "源码更新包已校验，程序将自动更新并重启。"
+            if automatic
+            else "源码更新包已校验。请关闭程序并重新双击启动文件完成更新。"
+        ),
+    }
+
+
 def apply_update() -> dict[str, Any]:
     status = check_for_updates(refresh=True)
     if not status.get("update_available"):
         return {"ok": True, "changed": False, "restart_required": False, "message": status.get("message") or "当前已是最新版本。"}
     source = load_update_source()
     if status.get("action") == "pull_source":
-        return _pull_source_update(source)
+        release_tag = str(status.get("release_tag") or f"v{status.get('latest_version') or ''}")
+        result = _pull_source_update(source, release_tag)
+        if result.get("restart_required"):
+            automatic = _schedule_supervised_restart()
+            result["automatic_restart"] = automatic
+            if automatic:
+                result["message"] = "源码已更新，程序将自动重启。"
+        return result
+    if status.get("action") == "replace_source":
+        return _stage_source_archive_update(status)
     target = _download_asset(status)
     _open_update_file(target)
     return {

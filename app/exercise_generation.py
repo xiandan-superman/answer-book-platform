@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import time
 from dataclasses import replace
 from datetime import datetime
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Callable
 
 from .concurrency import ModelRequestAborted, model_request_slot
@@ -20,8 +22,10 @@ from .practice_export import (
     has_unrenderable_practice_markup,
     normalize_practice_markup,
     normalize_practice_question_text,
+    practice_stem_answer_leak_reasons,
 )
 from .practice_inputs import parse_practice_sources
+from .paths import OUTPUTS_DIR
 from .practice_result_assembly import (
     PracticeGenerationMetadataContext,
     build_practice_generation_metadata,
@@ -32,6 +36,7 @@ from .practice_runtime import (
     ensure_practice_generation_active,
     iter_bounded_futures,
     load_practice_generation_checkpoint,
+    partition_compatible_batches,
 )
 from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
@@ -41,6 +46,39 @@ SCHEMA_VERSION = "answer_book.practice_set.v1"
 DIFFICULTY_LEVELS = ("基础", "进阶", "挑战")
 ALLOWED_DIFFICULTIES = set(DIFFICULTY_LEVELS)
 ALLOWED_TYPES = {"单选题", "多选题", "判断题", "填空题", "简答题", "计算题", "作图题", "综合题"}
+
+
+def _practice_source_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    files = []
+    for raw in payload.get("source_files") or []:
+        if not isinstance(raw, dict):
+            continue
+        resource_id = _clean(raw.get("resource_id"), 160)
+        inline_data = str(raw.get("data_url") or "") if not resource_id else ""
+        files.append({
+            "resource_id": resource_id,
+            "name": Path(_clean(raw.get("name"), 500)).name,
+            "size": _nonnegative_int(raw.get("size")),
+            "type": _clean(raw.get("type"), 160),
+            "inline_sha256": hashlib.sha256(inline_data.encode("utf-8")).hexdigest() if inline_data else "",
+        })
+    manual_text_digest = hashlib.sha256(str(payload.get("question_text") or "").encode("utf-8")).hexdigest()
+    canonical = {"files": files, "manual_text_sha256": manual_text_digest}
+    return {
+        **canonical,
+        "fingerprint": hashlib.sha256(
+            json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _validate_practice_source_snapshot(payload: dict[str, Any], expected: Any) -> dict[str, Any]:
+    current = _practice_source_snapshot(payload)
+    if not isinstance(expected, dict) or not _clean(expected.get("fingerprint"), 100):
+        return current
+    if current["fingerprint"] != _clean(expected.get("fingerprint"), 100):
+        raise ValueError("任务材料在范围解析后发生了变化；已阻止旧范围或旧蓝图继续生题，请使用当前材料重新解析。")
+    return current
 
 
 DIFFICULTY_LEVERS = (
@@ -127,6 +165,16 @@ def practice_generation_concurrency(payload: dict[str, Any]) -> int:
     # opens every batch at once.  Three workers still overlap useful work while
     # keeping one practice task from exhausting the provider connection pool.
     return practice_inner_concurrency(payload, stage="generation")
+
+
+def practice_generation_stagger_seconds(payload: dict[str, Any]) -> float:
+    raw = payload.get("generation_request_stagger_seconds")
+    if raw is None:
+        raw = os.environ.get("PRACTICE_GENERATION_REQUEST_STAGGER_SECONDS", "0.75")
+    try:
+        return max(0.0, min(10.0, float(raw)))
+    except (TypeError, ValueError):
+        return 0.75
 
 
 def _string_list(value: Any, *, limit: int = 12) -> list[str]:
@@ -498,7 +546,11 @@ def _strategy_prompt_requirement(strategy: str, *, knowledge_mode: bool, source_
     if strategy in {"parallel_exam"}:
         return "一一对应模式：每项只绑定一道来源原题，并完整保留该原题的必考知识点组合。"
     if strategy == "per_question":
-        return "逐题变式模式：每项只绑定一道来源原题，完整保留该原题的必考知识点组合，并在能力或变化方式上形成差异。"
+        return (
+            "逐题变式模式：每项只绑定一道来源原题；同一原题只有一个变式时完整保留知识点组合，"
+            "同一原题有多个变式时按每题目标分配相关知识点和约束，整组变式合计覆盖该原题全部确认知识点，"
+            "并在能力或变化方式上形成差异。"
+        )
     if strategy == "knowledge_item_wise":
         return (
             "逐知识单元模式：每项只绑定一个知识来源；同一来源只有一题时完整保留知识点组合，"
@@ -1371,7 +1423,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             image_dependent_source_ids.update(ref for ref in refs if ref in image_source_ids)
         expected = _required_knowledge_points_for_refs(refs, list(source_by_id.values()), analysis_fallback_points)
         partitioned_knowledge_item = (
-            strategy == "knowledge_item_wise"
+            strategy in {"knowledge_item_wise", "per_question"}
             and len(refs) == 1
             and source_slot_counts.get(refs[0], 0) > 1
         )
@@ -1515,7 +1567,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 + "、".join(uncovered_global_points[:12])
                 + "。"
             )
-    if strategy == "knowledge_item_wise":
+    if strategy in {"knowledge_item_wise", "per_question"}:
         incomplete_sources = []
         for source_id, count_for_source in source_slot_counts.items():
             if count_for_source <= 1:
@@ -1691,7 +1743,7 @@ def ensure_practice_blueprint_defaults(plan: dict[str, Any]) -> dict[str, Any]:
         if not item.get("source_refs") and _clean(item.get("source_question_id"), 80):
             item["source_refs"] = [_clean(item.get("source_question_id"), 80)]
         refs = _unique_strings(item.get("source_refs") or [item.get("source_question_id")], limit=3, item_limit=80)
-        allow_partition = strategy == "knowledge_item_wise" and bool(refs) and source_slot_counts.get(refs[0], 0) > 1
+        allow_partition = strategy in {"knowledge_item_wise", "per_question"} and bool(refs) and source_slot_counts.get(refs[0], 0) > 1
         item["required_knowledge_points"] = _required_knowledge_points_for_plan_item(
             refs,
             source_catalog,
@@ -1927,6 +1979,7 @@ def _normalize_formulas(value: Any) -> list[dict[str, Any]]:
                     "location": _clean(raw.get("location"), 20) or "stem",
                     "display": bool(raw.get("display", True)),
                     "caption": _clean(raw.get("caption"), 300),
+                    "role": _clean(raw.get("role"), 20).lower() or "relation",
                 }
             )
     return rows
@@ -2089,6 +2142,19 @@ def _merge_stem_markdown_tables(stem: str, tables: list[dict[str, Any]]) -> tupl
     return cleaned_stem, merged
 
 
+def _trusted_practice_image_path(value: Any) -> str:
+    raw = _clean(value, 2000)
+    if not raw:
+        return ""
+    try:
+        path = Path(raw).expanduser().resolve()
+        root = (OUTPUTS_DIR / "practice_images").resolve()
+        path.relative_to(root)
+    except (OSError, ValueError):
+        return ""
+    return str(path) if path.is_file() else ""
+
+
 def _normalize_figures(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -2161,6 +2227,10 @@ def _normalize_figures(value: Any) -> list[dict[str, Any]]:
                 "figure_type": _clean(raw.get("figure_type"), 30) or "diagram",
                 "title": _clean(raw.get("title"), 300),
                 "description": _clean(raw.get("description"), 1500),
+                "image_path": _trusted_practice_image_path(raw.get("image_path")),
+                "image_provider": _clean(raw.get("image_provider"), 100),
+                "image_model": _clean(raw.get("image_model"), 200),
+                "figure_purpose": _clean(raw.get("figure_purpose"), 40),
                 "x_label": _clean(raw.get("x_label"), 100),
                 "y_label": _clean(raw.get("y_label"), 100),
                 "series": series,
@@ -2179,6 +2249,9 @@ def _normalize_figures(value: Any) -> list[dict[str, Any]]:
 def _figure_is_renderable(figure: dict[str, Any]) -> bool:
     if not isinstance(figure, dict):
         return False
+    image_path = _clean(figure.get("image_path"), 2000)
+    if image_path and Path(image_path).is_file():
+        return True
     if any(
         isinstance(series, dict) and len(series.get("points") or []) >= 2
         for series in figure.get("series") or []
@@ -2197,13 +2270,100 @@ def _figure_design(value: Any, *, required: bool) -> dict[str, Any]:
     kind = _clean(source.get("kind"), 30).lower()
     if kind not in {"line", "bar", "scatter", "diagram"}:
         kind = "diagram"
+    role = _clean(source.get("role"), 40).lower()
+    if role not in {"stem_reference", "blank_template", "stem_required", "none"}:
+        role = "stem_reference" if required else "none"
+    if not required:
+        role = "none"
     return {
-        "role": "stem_required" if required else "none",
+        "role": role,
         "kind": kind,
         "required_elements": _unique_strings(source.get("required_elements"), limit=20, item_limit=200),
+        "template_elements": _unique_strings(source.get("template_elements"), limit=20, item_limit=200),
+        "forbidden_answer_elements": _unique_strings(source.get("forbidden_answer_elements"), limit=20, item_limit=200),
         "relationship_constraints": _unique_strings(source.get("relationship_constraints"), limit=20, item_limit=300),
         "question_dependency": _clean(source.get("question_dependency"), 500),
     }
+
+
+def _attach_model_generated_blank_template(
+    exercise: dict[str, Any],
+    planned_item: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    """Attach an image-model worksheet scaffold without generating an answer figure.
+
+    A structured, locally renderable figure remains the fallback.  The image
+    model is only used when the confirmed blueprint explicitly identifies a
+    finite set of blank template elements and forbidden answer elements.
+    """
+    design = _figure_design(planned_item.get("figure_design"), required=_plan_requires_stem_figure(planned_item))
+    template_elements = design.get("template_elements") or []
+    forbidden = design.get("forbidden_answer_elements") or []
+    image_provider_name = _clean(payload.get("image_provider"), 100)
+    image_model = _clean(payload.get("image_model"), 200)
+    figures = [row for row in (exercise.get("figures") or []) if isinstance(row, dict)]
+    if (
+        design.get("role") != "blank_template"
+        or not template_elements
+        or not forbidden
+        or not image_provider_name
+        or not image_model
+        or not figures
+        or not any(_figure_is_renderable(row) for row in figures)
+    ):
+        return
+    ensure_practice_generation_active(payload)
+    plan_item_id = _clean(planned_item.get("plan_item_id"), 80) or "item"
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "job": _clean(payload.get("_job_id"), 100),
+                "plan_item_id": plan_item_id,
+                "model": image_model,
+                "template_elements": template_elements,
+                "forbidden": forbidden,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:20]
+    output = OUTPUTS_DIR / "practice_images" / f"{digest}.png"
+    prompt = f"""Generate a clean monochrome educational worksheet scaffold on a plain white background.
+Only draw these blank template elements: {json.dumps(template_elements, ensure_ascii=False)}.
+Strictly omit all answer-bearing elements: {json.dumps(forbidden, ensure_ascii=False)}.
+Do not solve the problem. Do not add an answer, conclusion, target vector, target plane, filled region, numeric result, explanatory paragraph, watermark, or decorative content.
+Use crisp black lines, generous blank writing space, and no text unless a neutral axis label is explicitly listed among the template elements.
+This image is a blank student response template, never an answer image."""
+    metadata = exercise.setdefault("figure_generation", {})
+    try:
+        if not output.is_file():
+            OpenAICompatibleClient(get_provider(image_provider_name)).generate_image(
+                prompt,
+                output,
+                model=image_model,
+                timeout=max(240, int(payload.get("image_generation_timeout_seconds") or 300)),
+            )
+        figures[0]["image_path"] = str(output)
+        figures[0]["image_provider"] = image_provider_name
+        figures[0]["image_model"] = image_model
+        figures[0]["figure_purpose"] = "blank_template"
+        exercise["figures"] = figures
+        metadata.update({
+            "image_status": "generated",
+            "image_provider": image_provider_name,
+            "image_model": image_model,
+            "figure_purpose": "blank_template",
+            "answer_image_forbidden": True,
+        })
+    except Exception as exc:
+        # Preserve the already-gated structured figure so an image service
+        # outage never lowers question quality or discards a valid exercise.
+        metadata.update({
+            "image_status": "structured_fallback",
+            "image_error": redact_credentials(str(exc))[:500],
+            "answer_image_forbidden": True,
+        })
 
 
 def _normalized_figure_term(value: Any) -> str:
@@ -3245,7 +3405,7 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
     for risk in semantic_review_risks:
         if risk["severity"] in {"high", "medium"}:
             warnings.append(f"第 {risk['number'] or '?'} 题语义复核：{risk['message']}")
-    semantic_review_completed = semantic_review_status in {"passed", "warning"}
+    semantic_review_completed = semantic_review_status in {"passed", "warning", "not_required", "disabled"}
     if semantic_review_status == "failed":
         warnings.append("语义质量审查未完成，已保留题目并标记为待复核。")
     elif semantic_review and not semantic_review_completed:
@@ -3253,7 +3413,10 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
     subject_review_required = bool(actionable_semantic_risks) or (
         bool(semantic_review) and not semantic_review_completed
     ) or (
-        bool(boundary_issues or complex_review_candidates) and not semantic_review_completed
+        bool(boundary_issues)
+    ) or (
+        bool(semantic_review) and semantic_review_status not in {"not_required", "disabled"}
+        and bool(complex_review_candidates) and not semantic_review_completed
     )
     checks = {
         "scope_coverage": not any("蓝图" in issue or "来源未全部覆盖" in issue for issue in blocking_issues),
@@ -3352,6 +3515,7 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         status_code = int(status_match.group(1)) if status_match else None
     requires_configuration = status_code in {401, 403, 404}
     transport_phase = str(getattr(exc, "transport_phase", "") or "")
+    partial_output_received = bool(getattr(exc, "partial_output_received", False))
     if status_code == 401:
         code = "provider_http_401"
         message = "模型服务认证失败，API Key 可能无效或已过期。"
@@ -3385,9 +3549,12 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     elif "timeout" in lowered or "timed out" in lowered or "超时" in raw:
         code = "provider_connect_or_first_byte_timeout"
         message = "无法在限定时间内连接模型服务或收到首个响应。"
-    elif any(token in lowered for token in ("connection", "remote end closed", "empty reply", "network")):
-        code = "provider_network_connection_failed"
+    elif any(token in lowered for token in ("ssl", "tls", "eof occurred", "connection", "remote end closed", "empty reply", "network")):
+        code = "provider_tls_connection_failed" if any(token in lowered for token in ("ssl", "tls", "eof occurred")) else "provider_network_connection_failed"
         message = "与模型服务的网络连接中断。"
+    elif "专项练习 json 解析失败" in lowered or "chat 修复后仍失败" in lowered:
+        code = "generation_response_invalid"
+        message = "模型已返回内容，但没有提供可解析的题目 JSON。"
     elif isinstance(exc, ValueError):
         code = "generation_response_invalid"
         message = "模型返回的题目结构不完整，无法生成本题。"
@@ -3396,12 +3563,16 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         message = "上游模型生成失败。"
     transient = (
         status_code in {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
-        or transport_phase in {"read_idle", "hard_timeout", "connect", "first_byte"}
+        or transport_phase in {"read_idle", "connect", "first_byte"}
+        or (transport_phase == "hard_timeout" and not partial_output_received)
+        or code == "generation_response_invalid"
         or (status_code is None and isinstance(exc, LLMError) and any(token in lowered for token in (
             "provider streaming", "provider request", "timeout", "timed out", "connection",
-            "remote end closed", "empty reply",
+            "remote end closed", "empty reply", "ssl", "tls", "eof occurred",
         )))
     )
+    if transport_phase == "hard_timeout" and partial_output_received:
+        transient = False
     signature = code
     retry_after = getattr(exc, "retry_after_seconds", None)
     return {
@@ -3411,6 +3582,7 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         "requires_configuration": requires_configuration,
         "signature": signature,
         "retry_after_seconds": retry_after if isinstance(retry_after, (int, float)) else None,
+        "partial_output_received": partial_output_received,
         "detail": raw,
     }
 
@@ -3604,7 +3776,9 @@ def _failed_exercise_placeholder(
 
 def _type_plan(selected: list[str], count: int) -> list[str]:
     rng = random.SystemRandom()
-    pool = selected or sorted(ALLOWED_TYPES)
+    # Auto mode is a bounded academic mix. It must not randomly introduce a
+    # calculation or drawing requirement that the confirmed source never had.
+    pool = selected or ["简答题", "综合题", "判断题", "单选题"]
     plan: list[str] = []
     while len(plan) < count:
         cycle = list(pool)
@@ -3974,6 +4148,8 @@ def build_generation_contract(payload: dict[str, Any]) -> dict[str, Any]:
             "title": _clean(item.get("title"), 300),
             "stem_excerpt": _clean(item.get("stem_excerpt"), 1200),
             "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
+            "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
+            "content_ref_status": _clean(item.get("content_ref_status"), 30),
             "question_type": _clean(item.get("question_type"), 100),
             "source_difficulty": _clean(item.get("source_difficulty") or item.get("difficulty"), 20),
             "knowledge_points": _string_list(item.get("knowledge_points"), limit=60),
@@ -4111,6 +4287,7 @@ def _exercise_contract() -> dict[str, Any]:
                 "location": "stem",
                 "display": True,
                 "caption": "可选说明",
+                "role": "given/relation；只有题干明确给定、且不是待求结论时才用 given",
             }
         ],
         "tables": [
@@ -4337,6 +4514,37 @@ def _semantic_batch_context(
     }
 
 
+def _generation_source_signature(item: dict[str, Any]) -> tuple[str, ...]:
+    """Return the exact source combination allowed to share one model call.
+
+    Formal generation may batch sibling blueprint items for throughput, but it
+    must never put unrelated source material in the same model context.  Source
+    order is not semantically significant here, so the signature is canonical.
+    Legacy unbound plans share the empty signature because they contain no
+    source text to leak across items.
+    """
+    refs = _unique_strings(
+        item.get("source_refs") or [item.get("source_question_id")],
+        limit=3,
+        item_limit=80,
+    )
+    return tuple(sorted(refs))
+
+
+def _batch_reference_images(
+    reference_images: list[str],
+    semantic_sources: dict[str, Any],
+) -> tuple[list[str], list[int]]:
+    """Select only images explicitly referenced by this batch's source text."""
+    serialized = json.dumps(semantic_sources, ensure_ascii=False)
+    reference_numbers: list[int] = []
+    for raw_number in re.findall(r"⟦IMAGE_REF:(\d+);", serialized):
+        number = int(raw_number)
+        if 1 <= number <= len(reference_images) and number not in reference_numbers:
+            reference_numbers.append(number)
+    return [reference_images[number - 1] for number in reference_numbers], reference_numbers
+
+
 def _hydrate_single_source_content(plan: dict[str, Any], source_text: str) -> None:
     """Keep legacy single-source requests useful without leaking multi-source raw input.
 
@@ -4550,6 +4758,7 @@ def _call_practice_json(
     model: str,
     temperature: float,
     thinking: str | None,
+    max_tokens: int | None = None,
     timeout_seconds: int | None = None,
     ensure_active: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
@@ -4557,12 +4766,13 @@ def _call_practice_json(
         timeout_seconds = _practice_stage_timeout("general", 300)
     if ensure_active is not None:
         ensure_active()
+    output_token_budget = max(2000, min(DEFAULT_MODEL_MAX_TOKENS, int(max_tokens or DEFAULT_MODEL_MAX_TOKENS)))
     with model_request_slot(getattr(client, "config", None)):
         result = client.chat_json(
             messages,
             model=model,
             temperature=temperature,
-            max_tokens=max(DEFAULT_MODEL_MAX_TOKENS, 10000),
+            max_tokens=output_token_budget,
             thinking=thinking,
             timeout=timeout_seconds,
         )
@@ -4578,6 +4788,8 @@ def _call_practice_json(
             {
                 "role": "user",
                 "content": (
+                    "上一个回答不是可解析的最终 JSON。停止解释、分析、复述要求或输出思考过程。"
+                    "你的第一个字符必须是 {，最后一个字符必须是 }。"
                     "只修复上一个回答的 JSON 语法和字符串转义，不改变题目内容。"
                     "LaTeX 命令的反斜杠必须在 JSON 字符串中正确双写；"
                     "不得将 \\beta、\\frac、\\theta、\\rm 等命令转成退格、换页、制表或回车字符。"
@@ -4592,7 +4804,7 @@ def _call_practice_json(
                 repair_messages,
                 model=model,
                 temperature=0,
-                max_tokens=max(DEFAULT_MODEL_MAX_TOKENS, 10000),
+                max_tokens=output_token_budget,
                 thinking="disabled",
                 timeout=timeout_seconds,
             )
@@ -4609,9 +4821,42 @@ def _practice_stage_timeout(stage: str, default: int) -> int:
     key = f"PRACTICE_{stage.upper()}_TIMEOUT_SECONDS"
     raw = os.environ.get(key, os.environ.get("PRACTICE_MODEL_TIMEOUT_SECONDS", str(default)))
     try:
-        return max(5, min(300, int(raw)))
+        stage_limit = 1200 if stage in {"analyze", "plan", "blueprint_revision"} else 900
+        return max(5, min(stage_limit, int(raw)))
     except (TypeError, ValueError):
         return default
+
+
+def _practice_stage_thinking(payload: dict[str, Any], stage: str) -> str | None:
+    """Keep preparatory stages bounded even when the provider default is high."""
+    requested = _clean(payload.get("thinking"), 20).lower()
+    if requested == "disabled":
+        return "disabled"
+    if stage == "analyze":
+        return "low"
+    if stage == "plan":
+        return "medium"
+    return requested or None
+
+
+def _practice_stage_output_tokens(stage: str, default: int) -> int:
+    raw = os.environ.get(f"PRACTICE_{stage.upper()}_MAX_OUTPUT_TOKENS", str(default))
+    try:
+        return max(2000, min(DEFAULT_MODEL_MAX_TOKENS, int(raw)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _practice_analysis_output_default(material: str, image_count: int = 0) -> int:
+    """Keep ordinary scopes compact while allowing genuinely dense chunks to expand."""
+
+    text = str(material or "")
+    structured_markers = sum(text.count(marker) for marker in ("⟦MATHML", "⟦OMML_", "⟦IMAGE_REF", "|---"))
+    if len(text) > 10000 or image_count > 6 or structured_markers > 24:
+        return 12000
+    if len(text) > 7000 or image_count > 2 or structured_markers > 8:
+        return 9000
+    return 6000
 
 
 def _practice_semantic_review_should_run(practice: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -5035,6 +5280,7 @@ def _call_practice_json_with_transport_retry(
     temperature: float,
     thinking: str | None,
     timeout_seconds: int,
+    max_tokens: int | None = None,
     attempts: int = 2,
     backoff_seconds: float = 0.5,
     attempt_log: list[dict[str, Any]] | None = None,
@@ -5042,6 +5288,8 @@ def _call_practice_json_with_transport_retry(
     before_attempt: Callable[[int], None] | None = None,
     after_attempt: Callable[[int, dict[str, Any] | None], None] | None = None,
     max_retry_after_seconds: float = 30.0,
+    same_protocol_retries: int = 0,
+    allow_chat_fallback: bool = True,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
@@ -5049,18 +5297,26 @@ def _call_practice_json_with_transport_retry(
             ensure_active()
         if before_attempt is not None:
             before_attempt(attempt)
+        use_primary_protocol = attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_chat_fallback
+        attempt_client = client if use_primary_protocol else _chat_fallback_client(client)
         try:
             result = _call_practice_json(
-                client,
+                attempt_client,
                 messages,
                 model=model,
                 temperature=temperature,
                 thinking=thinking,
+                max_tokens=max_tokens,
                 timeout_seconds=timeout_seconds,
                 ensure_active=ensure_active,
             )
             if attempt_log is not None:
-                attempt_log.append({"attempt": attempt, "status": "succeeded"})
+                attempt_log.append({
+                    "attempt": attempt,
+                    "status": "succeeded",
+                    "protocol_fallback": attempt_client is not client,
+                    "same_protocol_retry": attempt > 1 and attempt_client is client,
+                })
             if after_attempt is not None:
                 after_attempt(attempt, None)
             return result
@@ -5093,9 +5349,16 @@ def _call_practice_json_with_transport_retry(
                     "retryable": retryable,
                     "requires_configuration": detail["requires_configuration"],
                     "signature": detail["signature"],
+                    "protocol_fallback": attempt_client is not client,
+                    "same_protocol_retry": attempt > 1 and attempt_client is client,
                 })
             if after_attempt is not None:
                 after_attempt(attempt, detail)
+            # A syntactically invalid answer needs a smaller one-item blast
+            # radius, not another equally large whole-batch request. The
+            # caller will split the batch and independently retry every slot.
+            if detail.get("code") == "generation_response_invalid":
+                raise
             if not retryable or attempt >= max(1, attempts):
                 raise
             delay = max(0.0, float(backoff_seconds)) * (2 ** (attempt - 1))
@@ -6163,6 +6426,8 @@ def _normalize_source_scope(raw: Any) -> dict[str, Any]:
                 "title": title or excerpt[:80],
                 "stem_excerpt": excerpt,
                 "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
+                "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
+                "content_ref_status": _clean(item.get("content_ref_status"), 30),
                 "question_type": _clean(item.get("question_type"), 100),
                 "source_difficulty": _clean(item.get("source_difficulty") or item.get("difficulty"), 20),
                 "knowledge_points": _string_list(item.get("knowledge_points"), limit=60),
@@ -6374,12 +6639,40 @@ def scope_cover_summary(
 
 def _source_type(value: Any) -> str:
     text = _clean(value, 100)
+    aliases = (
+        (("单项选择", "单一选择"), "单选题"),
+        (("多项选择",), "多选题"),
+        (("正误判断", "是非判断"), "判断题"),
+    )
+    for keywords, normalized in aliases:
+        if any(keyword in text for keyword in keywords):
+            return normalized
     for allowed in ALLOWED_TYPES:
         if allowed in text:
             return allowed
     if "证明" in text:
         return "综合题"
     return "综合题"
+
+
+def _basic_question_overload_issue(exercise: dict[str, Any], plan_item: dict[str, Any]) -> dict[str, Any] | None:
+    if _clean(plan_item.get("difficulty"), 20) != "基础":
+        return None
+    stem = str(exercise.get("stem") or "").replace("\\n", "\n")
+    numbered = re.findall(
+        r"(?m)(?:^|\n)\s*(?:[（(]\s*[0-9一二三四五六七八九十]+\s*[）)]|[0-9一二三四五六七八九十]+[、.．])",
+        stem,
+    )
+    # Some providers keep every subquestion on one line. Count the explicit
+    # parenthesized markers there as a fallback without confusing answer options.
+    if len(numbered) < 2:
+        numbered = re.findall(r"[（(]\s*[0-9一二三四五六七八九十]+\s*[）)]", stem)
+    if len(numbered) <= 2:
+        return None
+    return {
+        "code": "basic_question_overloaded",
+        "message": f"基础题包含 {len(numbered)} 个明确作答任务；基础难度最多允许 2 个小问，请保持知识深度但缩短任务链。",
+    }
 
 
 def _strategy_plan(
@@ -6402,7 +6695,13 @@ def _strategy_plan(
 
     if strategy == "parallel_exam":
         questions = selected_source_questions[:30]
-        types = [_source_type(item.get("question_type")) for item in questions]
+        inferred_types = [_source_type(item.get("question_type")) for item in questions]
+        if selected_types:
+            types = _type_plan(selected_types, len(questions))
+        elif len(questions) >= 3 and len(set(inferred_types)) == 1 and inferred_types[0] == "综合题":
+            types = _type_plan(["简答题", "综合题"], len(questions))
+        else:
+            types = inferred_types
         source_ids = [_clean(item.get("source_question_id"), 80) for item in questions]
         return strategy, len(questions), types, source_ids
 
@@ -6424,6 +6723,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
     """Analyze source material only; configuration and blueprint come later."""
     ensure_practice_generation_active(payload)
     sources = parse_practice_sources(payload)
+    source_snapshot = _practice_source_snapshot(payload)
     # Text-first DOCX parsing deliberately keeps embedded media out of
     # ``images`` so plain documents do not force vision. Source analysis is
     # different: it must still see bounded reference media or it cannot tell
@@ -6484,6 +6784,22 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
         return chunks or [(text, list(analysis_images[:8]))]
 
     chunks = analysis_chunks()
+    source_fragments: dict[str, str] = {}
+    chunk_ref_ids: dict[int, list[str]] = {}
+    annotated_chunks: list[tuple[str, list[str]]] = []
+    for chunk_index, (chunk_text, chunk_images) in enumerate(chunks, start=1):
+        annotated_parts: list[str] = []
+        ref_ids: list[str] = []
+        for part_index, paragraph in enumerate((part.strip() for part in chunk_text.split("\n\n")), start=1):
+            if not paragraph:
+                continue
+            ref_id = f"C{chunk_index:02d}P{part_index:04d}"
+            source_fragments[ref_id] = paragraph
+            ref_ids.append(ref_id)
+            annotated_parts.append(f"⟦SOURCE_REF:{ref_id}⟧\n{paragraph}")
+        chunk_ref_ids[chunk_index] = ref_ids
+        annotated_chunks.append(("\n\n".join(annotated_parts), chunk_images))
+    chunks = annotated_chunks
 
     def build_task(material: str, chunk_index: int) -> str:
         chunk_note = (
@@ -6506,7 +6822,8 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 - 将材料拆成可独立选择的{item_label}；即使只有一项，也必须在 questions 中返回一项
 - source_scope.mode：多项返回 question_set，单项返回 single
 - questions 中每项给出稳定 ID、编号、短标题、摘要、类型和实际涉及的全部核心知识点；不得为了简化只保留一个知识点
-- questions 中每项给出 source_content，保留该项可供正式生题参考的完整原文、公式和表格内容；不要用 stem_excerpt 替代
+- 原文已经由平台按 SOURCE_REF 确定性保存；questions 中每项只返回 content_refs，列出该项对应的全部 SOURCE_REF，不要复述完整原文
+- content_refs 必须覆盖该项正式生题所需的题面、公式、表格和适用条件；stem_excerpt 只用于用户区分条目
 - questions 中每项还要给出与该项知识点对应的 required_constraints，分别列出必要定义、公式/参数关系、适用边界；不得只把这些约束放在全局 source_analysis
 - 知识材料按章节、概念或能力单元拆分，不要伪装成真题
 - source_analysis 总结学科、整体难度、知识点、能力点、常见错误和不确定处
@@ -6517,7 +6834,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 {{
   "source_scope": {{"mode": "single/question_set", "title": "材料标题", "questions": [{{
     "source_question_id": "source_01", "number": "1", "title": "短标题",
-    "stem_excerpt": "可辨认的内容摘要", "source_content": "该原题/知识单元的完整可用原文、公式和表格内容", "question_type": "题型或知识单元类型",
+    "stem_excerpt": "可辨认的内容摘要", "content_refs": ["C01P0001", "C01P0002"], "question_type": "题型或知识单元类型",
     "source_difficulty": "基础/进阶/挑战；无法判断时填空字符串",
     "knowledge_points": ["知识点"],
     "required_constraints": {{"essential_definitions": ["必要定义"], "essential_formulas": ["必要公式或参数关系"], "applicable_boundaries": ["适用条件、边界或限制"]}}
@@ -6533,17 +6850,45 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 """
     raw_responses: list[dict[str, Any]] = []
     for chunk_index, (chunk_text, chunk_images) in enumerate(chunks, start=1):
-        raw_responses.append(_call_practice_json(
-        _practice_generation_client(provider, model),
+        response = _call_practice_json_with_transport_retry(
+            _practice_generation_client(provider, model),
             [
                 {"role": "system", "content": "你是研究生教育内容分析专家。只做材料结构与范围识别，只输出合法 JSON 对象。"},
                 {"role": "user", "content": _user_content(build_task(chunk_text, chunk_index), chunk_images)},
             ],
             model=model,
             temperature=0.1,
-            thinking=_clean(payload.get("thinking"), 20) or None,
+            thinking=_practice_stage_thinking(payload, "analyze"),
+            max_tokens=_practice_stage_output_tokens(
+                "analyze",
+                _practice_analysis_output_default(chunk_text, len(chunk_images)),
+            ),
+            timeout_seconds=_practice_stage_timeout("analyze", 900),
+            attempts=2 if chunk_images else 3,
+            same_protocol_retries=1,
+            # Vision requests stay on streaming Responses. Re-sending the
+            # same Base64 images through non-streaming Chat lets upstream
+            # proxies sit silent until their 524 ceiling and adds no quality.
+            allow_chat_fallback=not bool(chunk_images),
             ensure_active=lambda: ensure_practice_generation_active(payload),
-        ))
+        )
+        response_scope = response.get("source_scope") if isinstance(response.get("source_scope"), dict) else {}
+        response_questions = [item for item in (response_scope.get("questions") or []) if isinstance(item, dict)]
+        for item in response_questions:
+            refs = _unique_strings(item.get("content_refs"), limit=80, item_limit=40)
+            valid_refs = [ref for ref in refs if ref in source_fragments]
+            existing_content = _clean(item.get("source_content") or item.get("source_text"), 18000)
+            if not valid_refs and not existing_content:
+                # Compatibility/safety fallback: a non-conforming model gets
+                # the whole current chunk locally, never another model round.
+                valid_refs = list(chunk_ref_ids.get(chunk_index) or [])
+                item["content_ref_status"] = "chunk_fallback"
+            else:
+                item["content_ref_status"] = "resolved" if valid_refs else "legacy_content"
+            if valid_refs:
+                item["content_refs"] = valid_refs
+                item["source_content"] = "\n\n".join(source_fragments[ref] for ref in valid_refs)
+        raw_responses.append(response)
         job_id = _clean(payload.get("_job_id"), 100)
         if job_id and len(chunks) > 1:
             try:
@@ -6719,6 +7064,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
         "source_scope": source_scope,
         "source_analysis": source_analysis,
         "source_files": sources["file_names"],
+        "source_snapshot": source_snapshot,
         "source_file_diagnostics": sources.get("file_diagnostics", []),
         "source_constraint_gate": {
             "status": "blocked" if remaining_constraint_ids else "passed",
@@ -6742,6 +7088,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 
 def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_practice_generation_active(payload)
+    source_snapshot = _validate_practice_source_snapshot(payload, payload.get("source_snapshot"))
     sources = parse_practice_sources(payload)
     source_mode = _clean(payload.get("source_mode"), 30)
     is_knowledge_mode = source_mode == "knowledge"
@@ -6833,7 +7180,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "number": _clean(item.get("number"), 50),
             "title": _clean(item.get("title"), 300),
             "source_excerpt": _clean(item.get("stem_excerpt") or item.get("excerpt"), 1200),
-            "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
+            "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
             "question_type": _clean(item.get("question_type"), 100),
             "source_difficulty": _clean(item.get("source_difficulty") or item.get("difficulty"), 20),
             "knowledge_points": _string_list(item.get("knowledge_points"), limit=20),
@@ -6863,9 +7210,14 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         and len(prompt_source_catalog) > 0
         and count < len(prompt_source_catalog)
     )
-    if generation_strategy == "knowledge_item_wise":
+    if underprovisioned_comprehensive:
+        # A compact comprehensive plan cannot assign one detail call per source.
+        # Keep it in one coherent request instead of paying for refinement calls
+        # that cannot make the deliberately partial source coverage complete.
+        adaptive_blueprint = False
+    if generation_strategy in {"knowledge_item_wise", "per_question"}:
         required_knowledge_points_requirement = (
-            "同一知识来源只分配一题时，本题完整保留该来源的知识点组合；"
+            "同一来源只分配一题时，本题完整保留该来源的知识点组合；"
             "同一来源分配多题时，每题只列出题干将实际考查的相关子集，且同源整组题合计覆盖全部确认知识点；"
             "required_constraints 同样只保留与本题子主题相关的定义、公式和边界"
         )
@@ -6901,8 +7253,11 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         "required_knowledge_points": ["本题正式生成时必须完整考查的知识点组合"],
         "stem_figure_required": False,
         "figure_design": {
+            "role": "stem_reference/blank_template/none",
             "kind": "line/bar/scatter/diagram；仅 stem_figure_required=true 时填写",
             "required_elements": ["题干配图必须出现的元素"],
+            "template_elements": ["仅 blank_template 时：可提供的空白坐标系、晶胞框架或作答网格"],
+            "forbidden_answer_elements": ["仅 blank_template 时：必须从图中排除的答案向量、晶面、曲线或标注"],
             "relationship_constraints": ["题干配图必须保持的关系"],
             "question_dependency": "学生需要从题干配图读取的信息",
         },
@@ -6992,9 +7347,10 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
 - 当前生成策略：{strategy_requirement}
 - 每个蓝图项都必须输出 required_knowledge_points：{required_knowledge_points_requirement}
 - 每个蓝图项输出 difficulty_levers 和 difficulty_rationale，但它们是设计方向而非硬模板：自主选择一种最合适的主要机制，最多再加一种辅助机制；基础优先直接条件或支架，进阶优先条件转换、方法选择或知识组合，挑战优先真实的迁移、判断、逆向、评价、建模或纠错瓶颈。不得全部堆叠、不得用固定步数或纯计算量代替难度。
+- 难度为“基础”的蓝图项最多设计 2 个明确作答任务或小问；不得用三问以上的综合任务堆叠来保持“基础”标签。
 - 已有材料分析时直接作为事实使用，不要重新分析或改写；尚无分析时才补充 source_analysis
 - exercise_plan 必须恰好 {count} 项，并严格使用程序指定的逐题题型和逐题难度
-- 仅当学生必须读取题干所附图片才能作答时，stem_figure_required 才为 true 并填写 figure_design；“作图题”要求学生绘图，不自动代表题干需要配图
+- 仅当学生必须读图，或空白作答框架能帮助作图但不泄漏答案时，stem_figure_required 才为 true。前者 role=stem_reference；后者 role=blank_template，必须同时填写 template_elements 和 forbidden_answer_elements。禁止生成答案图
 - 题目应覆盖概念辨析、原理理解、公式或参数应用、图表理解和综合迁移中适合该知识点的层次
 - {"本次只做全局槽位分配：先给出每题的来源、目标能力、变式方式和覆盖角色；系统随后会按知识点/来源分组并发补全设计意图与难度细节。" if adaptive_blueprint else "每题说明目标能力、出题方式和设计意图；不得只是对教材原句做机械填空"}
 - 只输出合法 JSON，不输出具体题干
@@ -7041,11 +7397,12 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
 - required_constraints 是来源允许的硬边界。变式可以增加更具体的条件，但不得把适用边界替换成来源未覆盖的过程、理论或状态，也不得引入缺少必要参数而无法唯一作答的新任务。
 - 用户专项要求中的“保留读图、原图依赖、作图条件、公式或表格”等要求属于硬约束；不能为了降低生成难度改成纯文字题。
 - 每个蓝图项输出 difficulty_levers 和 difficulty_rationale，但只选择一种最合适的主要机制，最多再加一种辅助机制；基础优先直接条件或支架，进阶优先条件转换、方法选择或知识组合，挑战优先迁移、边界判断、逆向、评价、建模或纠错。这些是设计方向而非检查表，不得全部堆叠，也不得靠删除必考知识点或纯增加计算量改变难度。
+- 难度为“基础”的蓝图项最多设计 2 个明确作答任务或小问；不得把三问以上的综合任务仍标为基础题。
 - 对参考计算题生成计算题时，structural_change 必须选择一种实质结构变化（改变未知量、求解路径、边界条件、子问结构、逆向求解、比较优化或跨情境迁移）；不得只写“换数字”“改参数”“平行换数据”。
 - 当前生成策略：{strategy_requirement}
 - 如果确实只有一道题：source_scope.mode 返回 single，并直接设计蓝图
 - 只有单题或用户已经选择原题时，exercise_plan 才必须恰好 {count} 项，并严格使用上面的逐题题型
-- 仅当学生必须读取题干所附图片才能作答时，stem_figure_required 才为 true 并填写 figure_design；“作图题”要求学生绘图，不自动代表题干需要配图
+- 仅当学生必须读图，或空白作答框架能帮助作图但不泄漏答案时，stem_figure_required 才为 true。前者 role=stem_reference；后者 role=blank_template，必须同时填写 template_elements 和 forbidden_answer_elements。禁止生成答案图
 - {"本次只做全局槽位分配：先给出每题的来源、目标能力、变式方式和覆盖角色；系统随后会按知识点/原题分组并发补全设计意图与难度细节。" if adaptive_blueprint else "每题说明目标能力、变式方式和设计意图"}
 - variation_type 与 structural_change 必须具体说明考查方式或解题结构如何变化，不能把数字变化当作唯一变化。
 - 只输出合法 JSON，不输出具体题干
@@ -7068,12 +7425,15 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         },
         {"role": "user", "content": _user_content(task, planning_images)},
     ]
-    raw = _call_practice_json(
+    raw = _call_practice_json_with_transport_retry(
         _practice_generation_client(provider, model),
         messages,
         model=model,
         temperature=0.2,
-        thinking=_clean(payload.get("thinking"), 20) or None,
+        thinking=_practice_stage_thinking(payload, "plan"),
+        max_tokens=_practice_stage_output_tokens("plan", 12000),
+        timeout_seconds=_practice_stage_timeout("plan", 600),
+        attempts=2,
         ensure_active=lambda: ensure_practice_generation_active(payload),
     )
     ensure_practice_generation_active(payload)
@@ -7195,6 +7555,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         level: planned_difficulties.count(level) for level in DIFFICULTY_LEVELS
     }
     plan["source_file_diagnostics"] = sources.get("file_diagnostics", [])
+    plan["source_snapshot"] = source_snapshot
     if is_knowledge_mode:
         plan["knowledge_title"] = knowledge_title or source_scope.get("title") or "知识点模拟题"
     plan["generation"] = {
@@ -7317,6 +7678,7 @@ def _selectively_repair_practice_diversity(
 
 def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+    _validate_practice_source_snapshot(payload, plan.get("source_snapshot") or payload.get("source_snapshot"))
     plan = ensure_practice_blueprint_defaults(plan)
     include_source_content = _include_source_content_in_generation(payload, plan)
     plan["include_source_content_in_generation"] = include_source_content
@@ -7507,8 +7869,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     ) -> tuple[int, list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
         ensure_practice_generation_active(payload)
         batch_count = len(batch_plan)
-        parent_batch_start = (batch_start // batch_size) * batch_size
-        parent_batch_plan = exercise_plan[parent_batch_start:parent_batch_start + batch_size]
+        # Source-aware batching may end before the configured numeric batch
+        # boundary.  The retry root must therefore be the actual submitted
+        # batch, never neighboring blueprint items with another source set.
+        parent_batch_start = batch_start
+        parent_batch_plan = batch_plan
         root_key = retry_root_key or "|".join(
             _clean(item.get("plan_item_id"), 80) or f"plan_item_{parent_batch_start + index + 1:02d}"
             for index, item in enumerate(parent_batch_plan)
@@ -7549,6 +7914,15 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             knowledge_mode=is_knowledge_mode,
             include_source_content=include_source_content,
         )
+        batch_reference_images, batch_reference_numbers = _batch_reference_images(
+            generation_reference_images,
+            semantic_sources,
+        )
+        if batch_reference_numbers:
+            semantic_sources["attached_image_map"] = [
+                {"attachment_index": index, "image_ref": reference_number}
+                for index, reference_number in enumerate(batch_reference_numbers, start=1)
+            ]
         source_context = semantic_sources if include_source_content else _abstract_generation_context(
             plan,
             knowledge_mode=is_knowledge_mode,
@@ -7610,6 +7984,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 - diversity_signature 只用于系统去重，必须忠实概括本题，不得写入 stem，也不得伪造差异
 - difficulty_intent 是难度方向和防退化边界，不是检查表；每题自主选择一种最自然的主要机制，最多再加一种辅助机制，不得把候选项全部堆叠
 - difficulty_evidence 只记录实际使用的主要机制和学生瓶颈，不得为迎合难度标签伪造，也不得包含答案或推导
+- 难度为“基础”的题最多包含 2 个明确作答任务或小问；在不删除 required_knowledge_points 的前提下缩短任务链，不得生成三问以上的综合题再标为基础
 - {"题目必须由知识范围出发独立设计，不得假装存在一份未提供的原题" if is_knowledge_mode else "题目必须保持与已确认训练目标的一致性"}
 - 每题 knowledge_points 必须与本批蓝图项的 required_knowledge_points 完整一致，且题干必须实际要求学生使用每个列出的知识点；不得只在元数据中声称覆盖、不得额外添加其它知识点
 - 不得用固定推理步数、统一计算量或删除必考知识点替代难度设计
@@ -7631,7 +8006,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "不得改变题型方案，不得降低到中学或普通本科入门层级。只输出合法 JSON。"
                 ),
             },
-            {"role": "user", "content": _user_content(task, generation_reference_images if include_source_content and _batch_needs_visual_reference(semantic_sources, batch_plan) else [])},
+            {"role": "user", "content": _user_content(task, batch_reference_images if include_source_content and _batch_needs_visual_reference(semantic_sources, batch_plan) else [])},
         ]
 
         batch_diagnostic: dict[str, Any] = {
@@ -7640,6 +8015,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "expected_indexes": list(range(1, batch_count + 1)),
             "prompt_char_count": len(task),
             "source_context_char_count": len(json.dumps(source_context, ensure_ascii=False)),
+            "source_signature": list(_generation_source_signature(batch_plan[0])) if batch_plan else [],
+            "reference_image_numbers": batch_reference_numbers,
+            "reference_image_count": len(batch_reference_images),
             "control_contract_char_count": sum(len(json.dumps(value, ensure_ascii=False)) for value in (
                 semantic_plan,
                 diversity_context,
@@ -7871,7 +8249,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         "status": "split_item_failed",
                         "error_code": split_failures[plan_item_id]["code"],
                     })
-                    if local_index == 0 and split_error.get("signature") == error_detail.get("signature"):
+                    if (
+                        local_index == 0
+                        and split_error.get("signature") == error_detail.get("signature")
+                        and split_error.get("code") != "generation_response_invalid"
+                    ):
                         retry_coordinator.open_circuit(root_key, split_error)
                         for rest_index, rest_item in enumerate(batch_plan[1:], start=1):
                             rest_id = _clean(rest_item.get("plan_item_id"), 80) or f"plan_item_{batch_start + rest_index + 1:02d}"
@@ -7910,6 +8292,19 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 if issue:
                     structure_issues.append({"batch_index": raw_item.get("batch_index"), **issue})
+                leak_reasons = practice_stem_answer_leak_reasons({
+                    **raw_item,
+                    "question_type": _effective_question_type(raw_item, batch_plan[local_index]),
+                })
+                if leak_reasons:
+                    structure_issues.append({
+                        "batch_index": raw_item.get("batch_index"),
+                        "code": "stem_answer_leak",
+                        "message": "题干结构化公式可能直接泄漏待求答案：" + "；".join(leak_reasons),
+                    })
+                overload = _basic_question_overload_issue(raw_item, batch_plan[local_index])
+                if overload:
+                    structure_issues.append({"batch_index": raw_item.get("batch_index"), **overload})
             return [
                 *structure_issues,
                 *_batch_variation_issues(rows, batch_plan, plan),
@@ -8081,6 +8476,23 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 # findings; the isolated failure remains retryable in the UI.
                 raw_item["figure_generation"]["repair_error"] = "题图独立修复请求失败。"
 
+        # The image model is an optional delivery enhancement, not a repair
+        # dependency.  It runs only after the structured figure has passed its
+        # deterministic gate, and failures retain that gated local fallback.
+        for raw_item in batch_exercises:
+            if not isinstance(raw_item, dict):
+                continue
+            try:
+                local_index = int(raw_item.get("batch_index")) - 1
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= local_index < batch_count):
+                continue
+            planned_item = batch_plan[local_index]
+            if _exercise_figure_issues(raw_item, planned_item, batch_index=local_index + 1):
+                continue
+            _attach_model_generated_blank_template(raw_item, planned_item, payload)
+
         remaining_issues = [
             *batch_content_issues(batch_exercises),
             *_batch_figure_issues(batch_exercises, batch_plan),
@@ -8197,30 +8609,19 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "model_call_count": 0,
         })
     completed_ids = {str(item.get("plan_item_id") or "") for item in all_exercises}
-    pending_run_start: int | None = None
-    pending_run: list[dict[str, Any]] = []
-
-    def flush_pending_run() -> None:
-        nonlocal pending_run_start, pending_run
-        if pending_run_start is not None and pending_run:
-            pending_batches.append((pending_run_start, pending_run))
-        pending_run_start = None
-        pending_run = []
-
+    pending_items: list[tuple[int, dict[str, Any]]] = []
     for plan_index, item in enumerate(exercise_plan[:count]):
         if not isinstance(item, dict):
-            flush_pending_run()
             continue
         plan_item_id = _clean(item.get("plan_item_id"), 80) or f"plan_item_{plan_index + 1:02d}"
         if plan_item_id in audit_failed_plan_ids or plan_item_id in completed_ids:
-            flush_pending_run()
             continue
-        if pending_run_start is None:
-            pending_run_start = plan_index
-        pending_run.append(item)
-        if len(pending_run) >= batch_size:
-            flush_pending_run()
-    flush_pending_run()
+        pending_items.append((plan_index, item))
+    pending_batches.extend(partition_compatible_batches(
+        pending_items,
+        compatibility_key=_generation_source_signature,
+        max_batch_size=batch_size,
+    ))
 
     def run_pending_batch(
         pending: tuple[int, list[dict[str, Any]]],
@@ -8233,6 +8634,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         max_workers=max_concurrency,
         thread_name_prefix="practice-batch",
         ensure_active=lambda: ensure_practice_generation_active(payload),
+        stagger_seconds=practice_generation_stagger_seconds(payload),
     ):
         try:
             _batch_start, restored, isolated_failures, batch_diagnostic = future.result()
@@ -8366,7 +8768,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             diversity_repair=diversity_repair,
             generation_run_id=_clean(payload.get("generation_run_id"), 100),
             include_source_content=include_source_content,
-            reference_images_attached=bool(generation_reference_images),
+            reference_images_attached=any(
+                int(item.get("reference_image_count") or 0) > 0
+                for item in generation_batch_diagnostics
+                if isinstance(item, dict)
+            ),
             blueprint_multi_question=multi_question_config,
         ),
     )
@@ -8403,9 +8809,16 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             }
     elif payload.get("semantic_review_enabled") is True or payload.get("formal_quality_review") is True:
         result["semantic_review"] = {
-            "status": "skipped",
+            "status": "not_required",
             "triggered": False,
-            "reason": "structural_issues_or_low_risk_simple_set",
+            "reason": "low_risk_set",
+            "items": [],
+        }
+    else:
+        result["semantic_review"] = {
+            "status": "disabled",
+            "triggered": False,
+            "reason": "fast_mode",
             "items": [],
         }
     result["quality"] = recompute_practice_quality(result)
@@ -8414,6 +8827,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
 def generate_practice_from_contract(payload: dict[str, Any]) -> dict[str, Any]:
     """Generate directly from program-owned constraints without model planning."""
+    _validate_practice_source_snapshot(payload, payload.get("source_snapshot"))
     supplied = payload.get("generation_contract")
     contract = supplied if isinstance(supplied, dict) else build_generation_contract(payload)
     include_source_content = _include_source_content_in_generation(payload, {
@@ -8591,8 +9005,8 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         _clean(blueprint.get("generation_strategy") or practice.get("generation_strategy"), 40),
         practice.get("source_analysis") if len(source_catalog) <= 1 else None,
         allow_partition=(
-            is_knowledge_mode
-            and _clean(blueprint.get("generation_strategy") or practice.get("generation_strategy"), 40) == "knowledge_item_wise"
+            _clean(blueprint.get("generation_strategy") or practice.get("generation_strategy"), 40)
+            in {"knowledge_item_wise", "per_question"}
             and bool(source_refs)
             and sum(
                 1
@@ -8650,6 +9064,15 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         knowledge_mode=is_knowledge_mode,
         include_source_content=include_source_content,
     )
+    generation_reference_images, regeneration_reference_numbers = _batch_reference_images(
+        generation_reference_images,
+        semantic_sources,
+    )
+    if regeneration_reference_numbers:
+        semantic_sources["attached_image_map"] = [
+            {"attachment_index": attachment_index, "image_ref": reference_number}
+            for attachment_index, reference_number in enumerate(regeneration_reference_numbers, start=1)
+        ]
     source_context = semantic_sources if include_source_content else _abstract_generation_context(
         context_plan,
         knowledge_mode=is_knowledge_mode,
@@ -9150,6 +9573,15 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
         knowledge_mode=is_knowledge_mode,
         include_source_content=include_source_content,
     )
+    generation_images, draft_reference_numbers = _batch_reference_images(
+        generation_images,
+        semantic_sources,
+    )
+    if draft_reference_numbers:
+        semantic_sources["attached_image_map"] = [
+            {"attachment_index": attachment_index, "image_ref": reference_number}
+            for attachment_index, reference_number in enumerate(draft_reference_numbers, start=1)
+        ]
     source_context = semantic_sources if include_source_content else _abstract_generation_context(
         context_plan,
         knowledge_mode=is_knowledge_mode,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 from app import update_manager
 from scripts.build_update_manifest import build_manifest
@@ -94,3 +95,74 @@ def test_release_update_manifest_records_asset_size_and_checksum(tmp_path) -> No
     assert entry["size_bytes"] == len(b"verified-installer")
     assert entry["sha256"] == hashlib.sha256(b"verified-installer").hexdigest()
     assert manifest["release_tag"] == "v0.9.1-beta"
+
+
+def test_source_archive_update_uses_verified_source_asset(monkeypatch) -> None:
+    manifest = {
+        "schema_version": update_manager.UPDATE_MANIFEST_SCHEMA,
+        "version": "0.9.2",
+        "release_tag": "v0.9.2",
+        "platforms": {
+            "source": {
+                "asset_name": "answer-book-source.zip",
+                "size_bytes": 456,
+                "sha256": "b" * 64,
+                "dependency_fingerprint": "c" * 64,
+            }
+        },
+    }
+    monkeypatch.setattr(update_manager, "_github_json", lambda _url, **_kwargs: manifest)
+    monkeypatch.setattr(update_manager, "get_app_version", lambda: "0.9.1")
+    monkeypatch.setattr(update_manager, "installation_kind", lambda: "source_archive")
+    monkeypatch.setattr(update_manager, "_current_dependency_fingerprint", lambda: "d" * 64)
+    status = update_manager._build_update_status({
+        "enabled": True,
+        "repository": "example/releases",
+        "channel": "stable",
+        "manifest_url": "https://raw.githubusercontent.com/example/releases/main/update-stable.json",
+    })
+    assert status["action"] == "replace_source"
+    assert status["asset"]["sha256"] == "b" * 64
+    assert status["dependency_update_required"] is True
+
+
+def test_source_archive_apply_stages_supervisor_plan(tmp_path, monkeypatch) -> None:
+    archive = tmp_path / "source.zip"
+    archive.write_bytes(b"verified")
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path / "data")
+    monkeypatch.setattr(update_manager, "_download_asset", lambda _status: archive)
+    monkeypatch.setattr(update_manager, "_schedule_supervised_restart", lambda: True)
+    result = update_manager._stage_source_archive_update({
+        "latest_version": "0.9.2",
+        "dependency_update_required": True,
+    })
+    plan = update_manager._read_json(tmp_path / "data" / "runtime" / "pending-source-update.json")
+    assert result["automatic_restart"] is True
+    assert plan["archive"] == str(archive)
+    assert plan["dependency_update_required"] is True
+
+
+def test_git_checkout_updates_to_release_tag_not_unpublished_main(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    revisions = iter(["a" * 40, "b" * 40])
+
+    def fake_git(*args, **_kwargs):
+        calls.append(tuple(args))
+        if args[:2] == ("status", "--porcelain"):
+            return SimpleNamespace(stdout="")
+        if args[:2] == ("branch", "--show-current"):
+            return SimpleNamespace(stdout="main\n")
+        if args[:2] == ("rev-parse", "HEAD"):
+            return SimpleNamespace(stdout=next(revisions) + "\n")
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(update_manager, "installation_kind", lambda: "source_checkout")
+    monkeypatch.setattr(update_manager, "_git", fake_git)
+    result = update_manager._pull_source_update(
+        {"source_remote": "origin", "source_branch": "main"},
+        "v0.9.2",
+    )
+    assert result["changed"] is True
+    assert ("fetch", "--prune", "origin", "refs/tags/v0.9.2:refs/tags/v0.9.2") in calls
+    assert ("merge", "--ff-only", "v0.9.2") in calls
+    assert not any(call[:3] == ("fetch", "--prune", "origin") and call[-1] == "main" for call in calls)

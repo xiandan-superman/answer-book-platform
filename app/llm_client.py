@@ -18,7 +18,12 @@ from typing import Any, Protocol
 from .concurrency import ModelRequestAborted, ensure_model_request_active, model_request_slot
 from .model_diagnostics import model_diagnostic_hint, record_model_diagnostic
 from .redaction import redact_credentials
-from .runtime_monitor import record_model_call_usage, track_model_call
+from .runtime_monitor import (
+    record_model_call_estimate,
+    record_model_call_usage,
+    record_model_stream_progress,
+    track_model_call,
+)
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 
 _DEFAULT_URLOPEN = urllib.request.urlopen
@@ -34,11 +39,13 @@ class LLMError(RuntimeError):
         status_code: int | None = None,
         retry_after_seconds: float | None = None,
         transport_phase: str = "",
+        partial_output_received: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
         self.transport_phase = transport_phase
+        self.partial_output_received = bool(partial_output_received)
 
 
 class LLMTimeoutError(LLMError, TimeoutError):
@@ -51,6 +58,13 @@ def _transport_timeout(name: str, default: int, hard_timeout: int) -> int:
     except (TypeError, ValueError):
         value = default
     return max(1, min(max(1, int(hard_timeout)), value))
+
+
+def _first_byte_timeout(hard_timeout: int) -> int:
+    """Scale preparation wait for long stages while retaining a short connect timeout."""
+
+    adaptive_default = min(180, max(45, int(hard_timeout) // 4))
+    return _transport_timeout("PRACTICE_MODEL_FIRST_BYTE_TIMEOUT_SECONDS", adaptive_default, hard_timeout)
 
 
 class _LayeredHTTPConnection(http.client.HTTPConnection):
@@ -215,7 +229,11 @@ def _read_response_body(
         ensure_model_request_active()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise LLMError("模型请求超过单次硬截止时间。", transport_phase="hard_timeout")
+            raise LLMError(
+                "模型请求超过单次硬截止时间。",
+                transport_phase="hard_timeout",
+                partial_output_received=bool(chunks),
+            )
         _set_stream_read_deadline(response, min(float(idle), remaining))
         try:
             try:
@@ -228,7 +246,11 @@ def _read_response_body(
         except (socket.timeout, TimeoutError) as exc:
             phase = "hard_timeout" if time.monotonic() >= deadline else "read_idle"
             message = "模型请求超过单次硬截止时间。" if phase == "hard_timeout" else "模型响应读取空闲超时。"
-            raise LLMError(message, transport_phase=phase) from exc
+            raise LLMError(
+                message,
+                transport_phase=phase,
+                partial_output_received=bool(chunks),
+            ) from exc
         if not chunk:
             break
         chunks.append(chunk)
@@ -410,9 +432,8 @@ class OpenAICompatibleClient:
                         connect_timeout = _transport_timeout(
                             "PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout
                         )
-                        first_byte_timeout = _transport_timeout(
-                            "PRACTICE_MODEL_FIRST_BYTE_TIMEOUT_SECONDS", 45, timeout
-                        )
+                        first_byte_timeout = _first_byte_timeout(timeout)
+                        record_model_call_estimate(call_record, payload)
                         with _open_provider_response(
                             self._urlopen,
                             req,
@@ -637,7 +658,8 @@ class OpenAICompatibleClient:
                     hard_deadline = time.monotonic() + max(1, int(timeout))
                     try:
                         connect = _transport_timeout("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout)
-                        first_byte = _transport_timeout("PRACTICE_MODEL_FIRST_BYTE_TIMEOUT_SECONDS", 45, timeout)
+                        first_byte = _first_byte_timeout(timeout)
+                        record_model_call_estimate(call_record, payload)
                         with _open_provider_response(
                             self._urlopen,
                             req,
@@ -710,7 +732,8 @@ class OpenAICompatibleClient:
                     deadline_monotonic = time.monotonic() + max(1, int(timeout))
                     try:
                         connect = _transport_timeout("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout)
-                        first_byte = _transport_timeout("PRACTICE_MODEL_FIRST_BYTE_TIMEOUT_SECONDS", 45, timeout)
+                        first_byte = _first_byte_timeout(timeout)
+                        record_model_call_estimate(call_record, streaming_payload)
                         with _open_provider_response(
                             self._urlopen,
                             req,
@@ -727,7 +750,11 @@ class OpenAICompatibleClient:
                                 if not isinstance(raw, dict):
                                     raise LLMError(f"Unexpected provider response shape: {raw}")
                             else:
-                                raw = _consume_responses_sse(resp, deadline_monotonic=deadline_monotonic)
+                                raw = _consume_responses_sse(
+                                    resp,
+                                    deadline_monotonic=deadline_monotonic,
+                                    call_record=call_record,
+                                )
                     except urllib.error.HTTPError as exc:
                         body = _read_response_body(
                             exc,
@@ -1086,7 +1113,12 @@ def _set_stream_read_deadline(response: Any, remaining_seconds: float) -> None:
                 continue
 
 
-def _consume_responses_sse(response: Any, *, deadline_monotonic: float | None = None) -> dict[str, Any]:
+def _consume_responses_sse(
+    response: Any,
+    *,
+    deadline_monotonic: float | None = None,
+    call_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Normalize Responses API server-sent events into one response object."""
     final_response: dict[str, Any] | None = None
     text_deltas: list[str] = []
@@ -1112,6 +1144,7 @@ def _consume_responses_sse(response: Any, *, deadline_monotonic: float | None = 
             delta = event.get("delta")
             if isinstance(delta, str):
                 text_deltas.append(delta)
+                record_model_stream_progress(call_record, delta)
             return
         if event_type == "response.output_text.done":
             text = event.get("text")
@@ -1153,6 +1186,7 @@ def _consume_responses_sse(response: Any, *, deadline_monotonic: float | None = 
                 raise LLMTimeoutError(
                     "Responses stream exceeded total wall-clock deadline",
                     transport_phase="hard_timeout",
+                    partial_output_received=bool(text_deltas or terminal_texts),
                 )
             idle = _transport_timeout("PRACTICE_MODEL_READ_IDLE_TIMEOUT_SECONDS", 45, max(1, int(remaining)))
             _set_stream_read_deadline(response, min(remaining, float(idle)))
@@ -1161,7 +1195,11 @@ def _consume_responses_sse(response: Any, *, deadline_monotonic: float | None = 
         except (socket.timeout, TimeoutError) as exc:
             phase = "hard_timeout" if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic else "read_idle"
             message = "模型请求超过单次硬截止时间。" if phase == "hard_timeout" else "模型响应读取空闲超时。"
-            raise LLMError(message, transport_phase=phase) from exc
+            raise LLMError(
+                message,
+                transport_phase=phase,
+                partial_output_received=bool(text_deltas or terminal_texts),
+            ) from exc
         if not line:
             consume_event()
             break

@@ -2,10 +2,6 @@ name: Build and publish desktop release
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"
 
 permissions:
   contents: read
@@ -150,11 +146,14 @@ jobs:
         run: |
           mac_asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-macos-arm64.dmg"
           windows_asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-windows-x86_64.zip"
-          printf '真题解析与生题平台 %s\n\n- Mac（Apple 芯片）与 Windows 64 位安装包\n- 安装包由 GitHub Actions 从已确认源码自动构建\n- 应用内更新会先校验 SHA256\n' "$RELEASE_VERSION" > dist/release-notes.md
+          source_asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-source.zip"
+          git archive --format=zip --prefix=answer-book-platform/ --output="$source_asset" HEAD
+          printf '真题解析与生题平台 %s\n\n- 推荐使用源码启动版；同时保留 Mac（Apple 芯片）与 Windows 64 位安装包\n- 所有更新附件由 GitHub Actions 从已确认源码自动构建\n- 应用内更新会先校验 SHA256\n' "$RELEASE_VERSION" > dist/release-notes.md
           python scripts/build_update_manifest.py \
             --version "$RELEASE_VERSION" \
             --release-tag "$RELEASE_TAG" \
             --notes-file dist/release-notes.md \
+            --asset "source=$source_asset" \
             --asset "macos-arm64=$mac_asset" \
             --asset "windows-x86_64=$windows_asset" \
             --output dist/release-assets/update-manifest.json

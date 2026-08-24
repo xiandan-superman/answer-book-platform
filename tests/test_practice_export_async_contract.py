@@ -59,5 +59,17 @@ def test_export_recovery_is_explicit_and_independent_from_generation_recovery() 
     delivery_end = APP_JS.index("async function retryRememberedPracticeWord", delivery_start)
     delivery_flow = APP_JS[delivery_start:delivery_end]
     assert "forgetPracticeWordExportPointer(pointer.export_key)" not in delivery_flow
-    assert "已开始下载：${pointer.filename}" in delivery_flow
+    assert "Word 已生成：${pointer.filename}" in delivery_flow
+    assert "下载请求已交给浏览器" in delivery_flow
     assert "已保存到：${result.path}" in delivery_flow
+
+
+def test_completed_export_immediately_updates_recovery_and_final_progress() -> None:
+    start = APP_JS.index("async function waitForPracticeWordExportJob")
+    end = APP_JS.index("async function prepareOrDownloadPracticeWord", start)
+    wait_flow = APP_JS[start:end]
+
+    assert "practiceWordRecoveryJobs.set(exportKey, { pointer, job })" in wait_flow
+    assert "renderPracticeWordRecoveryNotice()" in wait_flow
+    assert "completed: Number(job.completed_count ?? job.total_count ?? 0)" in wait_flow
+    assert "Word 已生成，正在准备保存或下载。" in wait_flow

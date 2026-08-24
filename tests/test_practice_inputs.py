@@ -1,4 +1,5 @@
 import base64
+from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,8 +8,9 @@ from zipfile import ZipFile
 
 from docx import Document
 from lxml import etree
+from PIL import Image
 
-from app.practice_inputs import parse_practice_sources
+from app.practice_inputs import _reference_image_data_url, parse_practice_sources
 
 
 PNG = base64.b64decode(
@@ -22,6 +24,24 @@ def _payload(path: Path) -> dict:
 
 
 class PracticeInputTests(unittest.TestCase):
+    def test_large_embedded_image_is_losslessly_compacted_for_transport(self):
+        source = Image.new("RGB", (320, 240))
+        source.putdata([
+            ((x * 7) % 256, (y * 11) % 256, ((x + y) * 5) % 256)
+            for y in range(240) for x in range(320)
+        ])
+        raw = BytesIO()
+        source.save(raw, format="PNG", compress_level=0)
+
+        compact_url = _reference_image_data_url(raw.getvalue(), "image/png")
+        header, encoded = compact_url.split(",", 1)
+        compact = base64.b64decode(encoded)
+
+        self.assertIn("image/webp", header)
+        self.assertLess(len(compact), len(raw.getvalue()))
+        with Image.open(BytesIO(compact)) as restored:
+            self.assertEqual(list(source.getdata()), list(restored.convert("RGB").getdata()))
+
     def test_explicit_docx_media_directory_entry_is_not_treated_as_an_image(self):
         from app.practice_inputs import _docx_content
 
@@ -80,6 +100,7 @@ class PracticeInputTests(unittest.TestCase):
             self.assertEqual(diagnostics["reference_image_count_included"], 9)
             self.assertEqual(diagnostics["image_anchor_count_included"], 9)
             self.assertEqual(len(diagnostics["embedded_image_order"]), 9)
+            self.assertEqual(len(diagnostics["reference_image_order"]), 9)
             self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 9)
             self.assertEqual(result["reference_image_count"], 9)
             self.assertTrue(diagnostics["warnings"])
@@ -109,6 +130,7 @@ class PracticeInputTests(unittest.TestCase):
             self.assertEqual(result["reference_image_count"], 1)
             self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 1)
             self.assertEqual(result["file_diagnostics"][0]["image_count_included"], 0)
+            self.assertEqual(result["file_diagnostics"][0]["reference_image_count_included"], 1)
 
     def test_nested_omml_para_counts_once(self):
         root = etree.fromstring(

@@ -355,12 +355,39 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
 
 
 def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    history_runs = [_practice_history_run(record) for record in histories]
-    history_batches = {str(row.get("practice_batch_id") or "") for row in history_runs if row.get("practice_batch_id")}
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for job in jobs:
         batch_id = str(job.get("practice_batch_id") or "")
         groups[batch_id or f"legacy:{job.get('job_id')}"].append(job)
+
+    history_runs = [_practice_history_run(record) for record in histories]
+    for row in history_runs:
+        batch_id = str(row.get("practice_batch_id") or "")
+        group = groups.get(batch_id) or []
+        if not group:
+            continue
+        created_values = [_time_key(item.get("created_at")) for item in group if _time_key(item.get("created_at"))]
+        finished_values = [
+            _time_key(item.get("completed_at") or item.get("updated_at"))
+            for item in group
+            if _time_key(item.get("completed_at") or item.get("updated_at"))
+        ]
+        wall_seconds = max(0, int(max(finished_values) - min(created_values))) if created_values and finished_values else 0
+        active_seconds = sum(max(0, int(item.get("elapsed_seconds") or 0)) for item in group)
+        queue_seconds = sum(
+            max(0, int(_time_key(item.get("started_at")) - _time_key(item.get("created_at"))))
+            for item in group
+            if _time_key(item.get("started_at")) and _time_key(item.get("created_at"))
+        )
+        row["duration_seconds"] = wall_seconds
+        row["duration_text"] = ""
+        row["active_duration_seconds"] = active_seconds
+        row["queue_duration_seconds"] = queue_seconds
+        row["model_attempt_count"] = sum(
+            max(0, int((item.get("model_usage") or {}).get("call_count") or 0))
+            for item in group
+        )
+    history_batches = {str(row.get("practice_batch_id") or "") for row in history_runs if row.get("practice_batch_id")}
 
     job_runs: list[dict[str, Any]] = []
     operation_order = {"analyze": 0, "plan": 1, "generate_from_plan": 2, "generate_from_contract": 2}

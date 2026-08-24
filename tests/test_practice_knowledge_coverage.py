@@ -153,3 +153,6 @@ def test_frontend_labels_dual_coverage_without_claiming_partial_is_complete() ->
     assert "本次未纳入：" in app_js
     assert "蓝图可继续生成，但只覆盖本次纳入的知识点范围。" in app_js
     assert "来源单元与必考知识点均覆盖完整，可生成。" in app_js
+    assert "另 ${points.length - limit} 项" in app_js
+    assert '["targeted_set", "knowledge_overall"].includes(strategy)' in app_js
+    assert "本套题将只覆盖部分来源" in app_js

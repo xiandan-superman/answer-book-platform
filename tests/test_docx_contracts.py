@@ -147,6 +147,37 @@ def test_generated_docx_obeys_page_font_spacing_and_answer_indent_contract(tmp_p
     assert audit_docx_v4(output) == []
 
 
+def test_generated_docx_disambiguates_repeated_visible_question_numbers(tmp_path) -> None:
+    payload = {
+        "schema_version": "answer_book.answer_fragments.v4",
+        "fragments": [
+            {
+                "schema_version": "answer_book.answer_fragment.v4",
+                "question_id": f"qa_s01_01_01{suffix}",
+                "section": "一、简答题",
+                "question_type": "简答题",
+                "number": "1",
+                "display_number": f"1（同号第{index}题，共2题）",
+                "answer": f"答案{index}",
+                "answer_summary": f"答案{index}",
+                "formulas": [],
+                "blocks": [],
+            }
+            for index, suffix in ((1, ""), (2, "__r02"))
+        ],
+    }
+    source = tmp_path / "fragments.json"
+    output = tmp_path / "answer.docx"
+    source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    build_docx_from_fragments(source, output)
+
+    text = "\n".join(paragraph.text for paragraph in Document(output).paragraphs)
+    assert "1（同号第1题，共2题）、" in text
+    assert "1（同号第2题，共2题）、" in text
+    assert audit_docx_v4(output) == []
+
+
 def test_student_docx_hides_unconfirmed_evidence_process_diagnostics(tmp_path) -> None:
     payload = {
         "schema_version": "answer_book.answer_fragments.v4",

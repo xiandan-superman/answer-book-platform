@@ -238,6 +238,83 @@ def test_retry_after_is_honoured_with_cap_without_real_wait(monkeypatch) -> None
     assert 5 <= sleeps[0] <= 5.25
 
 
+def test_preparatory_stages_clamp_thinking_and_output_budget(monkeypatch) -> None:
+    assert exercise_generation._practice_stage_thinking({"thinking": "high"}, "analyze") == "low"
+    assert exercise_generation._practice_stage_thinking({"thinking": "high"}, "plan") == "medium"
+    assert exercise_generation._practice_stage_thinking({"thinking": "disabled"}, "plan") == "disabled"
+    monkeypatch.setenv("PRACTICE_ANALYZE_MAX_OUTPUT_TOKENS", "999999")
+    assert exercise_generation._practice_stage_output_tokens("analyze", 16000) == exercise_generation.DEFAULT_MODEL_MAX_TOKENS
+
+
+def test_transport_retry_forwards_stage_output_budget(monkeypatch) -> None:
+    captured = {}
+
+    def fake_call(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        object(), [], model="fake", temperature=0, thinking="low",
+        timeout_seconds=30, max_tokens=12000, attempts=1,
+    )
+    assert result == {"ok": True}
+    assert captured["max_tokens"] == 12000
+
+
+def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monkeypatch) -> None:
+    primary = object()
+    fallback = object()
+    clients = []
+
+    def fake_call(client, *_args, **_kwargs):
+        clients.append(client)
+        if len(clients) == 1:
+            raise LLMError("Responses stream exceeded total wall-clock deadline", status_code=524)
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    attempts = []
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        primary, [], model="fake", temperature=0, thinking="low", timeout_seconds=30,
+        attempts=2, backoff_seconds=0, attempt_log=attempts,
+    )
+    assert result == {"ok": True}
+    assert clients == [primary, fallback]
+    assert attempts[-1]["protocol_fallback"] is True
+
+
+def test_transport_retry_reconnects_responses_before_any_protocol_fallback(monkeypatch) -> None:
+    primary = object()
+    fallback = object()
+    clients = []
+
+    def fake_call(client, *_args, **_kwargs):
+        clients.append(client)
+        if len(clients) == 1:
+            raise LLMError("SSL: EOF occurred in violation of protocol")
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    attempts = []
+
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        primary, [], model="fake", temperature=0, thinking="low", timeout_seconds=30,
+        attempts=2, backoff_seconds=0, attempt_log=attempts,
+        same_protocol_retries=1, allow_chat_fallback=False,
+    )
+
+    assert result == {"ok": True}
+    assert clients == [primary, primary]
+    assert attempts[0]["error_code"] == "provider_tls_connection_failed"
+    assert attempts[-1]["same_protocol_retry"] is True
+    assert attempts[-1]["protocol_fallback"] is False
+
+
 def test_retry_budget_persists_across_same_job_recovery(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
     job = practice_jobs.create_practice_job("generate_from_plan", _payload(3))

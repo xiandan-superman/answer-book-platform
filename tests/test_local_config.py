@@ -27,6 +27,7 @@ class LocalConfigTests(unittest.TestCase):
 
         supplier_keys = {
             "LINGSUAN_OPENAI_API_KEY": "test-openai-key",
+            "LINGSUAN_IMAGE_API_KEY": "test-image-key",
             "LINGSUAN_GOOGLE_API_KEY": "test-google-key",
             "LINGSUAN_XAI_API_KEY": "test-xai-key",
             "LINGSUAN_ANTHROPIC_API_KEY": "test-anthropic-key",

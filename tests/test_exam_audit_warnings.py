@@ -3,6 +3,41 @@ import json
 from app.exam_audit import audit_exam_structure
 
 
+def test_resolved_source_number_collisions_are_reported_without_failing(tmp_path) -> None:
+    output = tmp_path / "audit.json"
+    issues = audit_exam_structure(
+        {
+            "items": [
+                {
+                    "question_id": "qa_s01_01_01",
+                    "question_id_base": "qa_s01_01_01",
+                    "question_id_occurrence": 1,
+                    "question_id_collision_count": 2,
+                    "display_number": "1（同号第1题，共2题）",
+                    "number": "1",
+                    "stem": "第一套卷中的第一题。",
+                },
+                {
+                    "question_id": "qa_s01_01_01__r02",
+                    "question_id_base": "qa_s01_01_01",
+                    "question_id_occurrence": 2,
+                    "question_id_collision_count": 2,
+                    "display_number": "1（同号第2题，共2题）",
+                    "number": "1",
+                    "stem": "第二套卷中的第一题。",
+                },
+            ]
+        },
+        output,
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert issues == []
+    assert report["ok"] is True
+    assert report["question_id_disambiguation"]["applied"] is True
+    assert report["question_id_disambiguation"]["item_count"] == 2
+
+
 def test_answer_below_cue_is_normal_inside_short_answer_section(tmp_path) -> None:
     output = tmp_path / "audit.json"
     audit_exam_structure(

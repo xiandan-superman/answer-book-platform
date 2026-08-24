@@ -16,6 +16,7 @@ cache/
 tmp/
 output/
 practice_history/
+practice_sources/
 backups/
 runtime/
 .playwright-cli/
@@ -39,3 +40,6 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 .venv/
+
+# Locally uploaded/generated test materials; retained on the user's machine only.
+exams/跨年组合_材料科学基础_*.docx

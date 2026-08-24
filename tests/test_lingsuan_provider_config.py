@@ -21,6 +21,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         providers = self._providers()
         expected = {
             "lingsuan_openai": "LINGSUAN_OPENAI_API_KEY",
+            "lingsuan_image": "LINGSUAN_IMAGE_API_KEY",
             "lingsuan_google": "LINGSUAN_GOOGLE_API_KEY",
             "lingsuan_xai": "LINGSUAN_XAI_API_KEY",
             "lingsuan_anthropic": "LINGSUAN_ANTHROPIC_API_KEY",
@@ -41,6 +42,19 @@ class LingsuanProviderConfigTests(unittest.TestCase):
                 self.assertFalse(provider.allow_custom_model)
 
         self.assertEqual(len(set(expected.values())), len(expected))
+
+    def test_image_provider_is_image_only_and_uses_gpt_image_2(self) -> None:
+        from app.settings import provider_supports_image_generation, resolve_provider_model
+
+        provider = self._providers()["lingsuan_image"]
+
+        self.assertFalse(provider.supports_text_generation)
+        self.assertTrue(provider_supports_image_generation(provider))
+        self.assertEqual("gpt-image-2", provider.image_model)
+        self.assertEqual(("gpt-image-2",), provider.image_model_options)
+        self.assertEqual("LINGSUAN_IMAGE_API_KEY", provider.api_key_env)
+        with self.assertRaisesRegex(ValueError, "not configured for text generation"):
+            resolve_provider_model(provider)
 
     def test_openai_and_google_models_are_isolated_and_multimodal(self) -> None:
         from app.settings import provider_model_supports_vision
@@ -71,6 +85,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
 
         for provider, env_name, label in (
             ("lingsuan_openai", "LINGSUAN_OPENAI_API_KEY", "灵算 · OpenAI"),
+            ("lingsuan_image", "LINGSUAN_IMAGE_API_KEY", "灵算 · OpenAI 图片"),
             ("lingsuan_google", "LINGSUAN_GOOGLE_API_KEY", "灵算 · Google Gemini"),
             ("lingsuan_xai", "LINGSUAN_XAI_API_KEY", "灵算 · xAI"),
             ("lingsuan_anthropic", "LINGSUAN_ANTHROPIC_API_KEY", "灵算 · Anthropic"),
@@ -78,6 +93,8 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             self.assertIn(f'{provider}: "{env_name}"', source)
             self.assertIn(f'{provider}: "{label}"', source)
         self.assertIn('thinking_mode: cfg.thinking_mode || "auto"', source)
+        self.assertIn('image: ["lingsuan_image", "gpt-image-2"]', source)
+        self.assertIn('cfg.supports_text_generation !== false', source)
 
 
 if __name__ == "__main__":

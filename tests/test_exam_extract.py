@@ -8,10 +8,52 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.exam_extract import IMAGE_MARKER_PREFIX, _subquestion_entry, question_items, split_sections
+from app.exam_extract import (
+    IMAGE_MARKER_PREFIX,
+    _ensure_unique_question_ids,
+    _subquestion_entry,
+    question_items,
+    split_sections,
+)
 
 
 class ExamExtractTests(unittest.TestCase):
+    def test_repeated_source_numbering_gets_stable_unique_internal_ids(self) -> None:
+        paragraphs = [
+            "一、简答题（20分）",
+            "1、第一年第一题。",
+            "2、第一年第二题。",
+            "一、简答题（10分）",
+            "1、第二年第一题。",
+            "一、简答题（10分）",
+            "1、第三年第一题。",
+        ]
+        items = [item for section in split_sections(paragraphs) for item in question_items(section)]
+
+        _ensure_unique_question_ids(items)
+
+        self.assertEqual(
+            ["qa_s01_01_01", "qa_s01_01_02", "qa_s01_01_01__r02", "qa_s01_01_01__r03"],
+            [item["question_id"] for item in items],
+        )
+        repeated = [item for item in items if item.get("question_id_base") == "qa_s01_01_01"]
+        self.assertEqual([1, 2, 3], [item["question_id_occurrence"] for item in repeated])
+        self.assertTrue(all(item["question_id_collision_count"] == 3 for item in repeated))
+        self.assertEqual(["1", "1", "1"], [item["number"] for item in repeated])
+        self.assertEqual(
+            ["1（同号第1题，共3题）", "1（同号第2题，共3题）", "1（同号第3题，共3题）"],
+            [item["display_number"] for item in repeated],
+        )
+
+    def test_unique_source_numbering_keeps_legacy_internal_ids(self) -> None:
+        section = split_sections(["一、简答题", "1、第一题。", "2、第二题。"])[0]
+        items = question_items(section)
+
+        _ensure_unique_question_ids(items)
+
+        self.assertEqual(["qa_s01_01_01", "qa_s01_01_02"], [item["question_id"] for item in items])
+        self.assertTrue(all("question_id_base" not in item for item in items))
+
     def test_inline_numbered_term_explanations_are_split_into_individual_items(self) -> None:
         section = split_sections(
             [

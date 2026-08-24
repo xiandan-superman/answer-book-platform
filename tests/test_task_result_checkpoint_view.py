@@ -63,6 +63,35 @@ def test_task_result_view_exposes_per_question_checkpoint_plan(tmp_path, monkeyp
     assert report["checkpoint_reconciliation"]["source_contract"]["status"] == "matched"
 
 
+def test_task_result_view_exposes_disambiguated_display_number(tmp_path, monkeypatch) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "structured_exam.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "question_id": "qa_s01_01_01__r02",
+                        "number": "1",
+                        "display_number": "1（同号第2题，共2题）",
+                        "stem": "第二套卷中的第一题",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    record = SimpleNamespace(status="running", current_stage="answer_generation", error="")
+    monkeypatch.setattr(task_result_view, "stage_dir", lambda _task_id: stage)
+    monkeypatch.setattr(task_result_view, "load_task", lambda _task_id: record)
+
+    report = task_result_view.build_task_result_view("task")
+
+    assert report["questions"][0]["number"] == "1"
+    assert report["questions"][0]["display_number"] == "1（同号第2题，共2题）"
+
+
 def test_task_result_view_tolerates_malformed_optional_json(tmp_path, monkeypatch) -> None:
     stage = tmp_path / "stage"
     stage.mkdir()

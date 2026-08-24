@@ -204,6 +204,24 @@ def test_duplicate_queue_messages_claim_one_job_only_once(tmp_path, monkeypatch)
     assert practice_jobs.load_practice_job(created["job_id"])["status"] == "completed"
 
 
+def test_terminal_job_syncs_network_attempt_count_from_model_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(practice_jobs, "model_call_cost_summary", lambda _job_id: {
+        "call_count": 3, "success_count": 2, "failed_count": 1,
+    })
+    created = practice_jobs.create_practice_job("analyze", {"source_mode": "exam"})
+
+    practice_jobs.run_practice_job(
+        created["job_id"],
+        lambda _operation, _payload: {"result": {"ok": True}, "history_id": ""},
+    )
+
+    completed = practice_jobs.load_practice_job(created["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["network_attempted_count"] == 3
+    assert completed["network_stats_synced"] is True
+
+
 def test_cancellation_while_worker_is_blocked_preserves_cancelled_result(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
     created = practice_jobs.create_practice_job("analyze", {"source_mode": "exam"})

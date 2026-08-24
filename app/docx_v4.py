@@ -1170,7 +1170,7 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
             current_section = section
             add_text_paragraph(doc, section_display_title(section), bold=True, size=11)
         qid = str(fragment.get("question_id", "")).replace("_", "-")
-        number = str(fragment.get("number") or qid)
+        number = str(fragment.get("display_number") or fragment.get("number") or qid)
         formulas = {str(f.get("formula_id")): f for f in fragment.get("formulas", [])}
         answer = str(fragment.get("answer", ""))
         answer_summary = str(fragment.get("answer_summary", "")).strip()

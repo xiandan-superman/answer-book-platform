@@ -131,10 +131,13 @@ def _provider_key(provider: object | None) -> tuple[str, str]:
 
 @contextmanager
 def model_request_slot(provider: object | None):
-    """Apply a shared provider ceiling with fair admission across tasks.
+    """Apply an optional emergency provider ceiling across tasks.
 
     The context is re-entrant for a provider so legacy business-layer guards
     can coexist with the authoritative guard at the network client boundary.
+    Normal operation intentionally has no global ceiling: individual workflows
+    own their concurrency and stagger admission instead of blocking unrelated
+    work behind one provider-wide fixed number.
     """
     key = _provider_key(provider)
     held_keys = _MODEL_REQUEST_HELD_KEYS.get()
@@ -146,6 +149,12 @@ def model_request_slot(provider: object | None):
         return
 
     limit = _model_request_limit()
+    if limit <= 0:
+        admission_check = _MODEL_REQUEST_ADMISSION_CHECK.get()
+        if admission_check:
+            admission_check()
+        yield
+        return
     with _MODEL_REQUEST_LOCK:
         gate = _MODEL_REQUEST_GATES.get(key)
         if gate is None:

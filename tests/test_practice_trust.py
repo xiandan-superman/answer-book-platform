@@ -28,6 +28,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PracticeTrustTests(unittest.TestCase):
+    def test_frontend_exposes_local_semantic_repair_and_phase_batch_ids(self) -> None:
+        js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("按复核建议修复本题", js)
+        self.assertIn("data-practice-semantic-fix", js)
+        self.assertIn("<span>阶段</span>", js)
+        self.assertIn("<span>流程</span>", js)
+        self.assertIn("button?.dataset.taskId || task?.task_id", js)
+
     def test_figure_ids_are_namespaced_and_unique_across_exercises(self) -> None:
         exercises = [
             {"exercise_id": "practice_01", "figures": [{"figure_id": "g1"}, {"figure_id": "shared"}]},

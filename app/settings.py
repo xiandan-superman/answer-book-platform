@@ -28,6 +28,7 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "ark",
     "bailian",
     "lingsuan_openai",
+    "lingsuan_image",
     "lingsuan_google",
     "lingsuan_xai",
     "lingsuan_anthropic",
@@ -52,6 +53,7 @@ class ProviderConfig:
     image_model_options: tuple[str, ...] = ()
     image_model_option_labels: dict[str, str] = field(default_factory=dict)
     image_size: str = "1024x1024"
+    supports_text_generation: bool = True
     supports_image_generation: bool = True
     vision_model: str = ""
     vision_model_options: tuple[str, ...] = ()
@@ -82,6 +84,7 @@ class ProviderConfig:
             "image_model_options": list(self.image_model_options),
             "image_model_option_labels": dict(self.image_model_option_labels),
             "image_size": self.image_size,
+            "supports_text_generation": self.supports_text_generation,
             "supports_image_generation": self.supports_image_generation,
             "vision_model": self.vision_model,
             "vision_model_options": list(self.vision_model_options),
@@ -172,6 +175,8 @@ def list_providers() -> dict[str, ProviderConfig]:
             image_model = ""
         vision_model = str(item.get("vision_model", "") or item.get("default_model", "")).strip()
         supports_vision = bool(item.get("supports_vision", False) or ("vl" in vision_model.lower()) or vision_model.lower().endswith("v") or "vision" in vision_model.lower())
+        if not supports_vision:
+            vision_model = ""
         model_options = [str(x) for x in item.get("model_options", []) if str(x).strip()]
         model_option_labels = {
             str(key): str(value)
@@ -215,6 +220,7 @@ def list_providers() -> dict[str, ProviderConfig]:
                 else {}
             ),
             image_size=str(item.get("image_size", "") or os.environ.get("ANSWER_BOOK_IMAGE_SIZE", "") or "1024x1024"),
+            supports_text_generation=bool(item.get("supports_text_generation", True)),
             supports_image_generation=supports_image_generation,
             vision_model=vision_model,
             vision_model_options=tuple(str(x) for x in item.get("vision_model_options", []) if str(x).strip()),
@@ -323,6 +329,8 @@ def get_provider(name: str | None = None) -> ProviderConfig:
 
 
 def resolve_provider_model(provider: ProviderConfig, requested_model: Any = None) -> str:
+    if not getattr(provider, "supports_text_generation", True):
+        raise ValueError(f"Provider {provider.name} is not configured for text generation")
     model = str(requested_model or provider.default_model).strip()
     if not model:
         raise ValueError(f"Provider {provider.name} has no default model configured")

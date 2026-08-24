@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,9 +27,7 @@ def _data_root(project_root: Path) -> Path:
     override = str(os.environ.get("ANSWER_BOOK_DATA_DIR") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    if getattr(sys, "frozen", False):
-        return _default_user_data_root().resolve()
-    return project_root
+    return _default_user_data_root().resolve()
 
 
 PROJECT_ROOT = _program_root()
@@ -45,6 +44,42 @@ CACHE_DIR = DATA_ROOT / "cache"
 SHARED_TEXTBOOK_LIBRARY_DIR = CACHE_DIR / "shared_textbook_library"
 
 
+def _migrate_legacy_source_data() -> None:
+    """Copy pre-0.10 source-checkout data out of the replaceable code tree."""
+    if getattr(sys, "frozen", False):
+        return
+    if os.environ.get("ANSWER_BOOK_DATA_DIR") and os.environ.get("ANSWER_BOOK_LAUNCHED_BY_SUPERVISOR") != "1":
+        return
+    if DATA_ROOT == PROJECT_ROOT:
+        return
+    marker = DATA_ROOT / "runtime" / "source_data_migration_v1.done"
+    if marker.exists():
+        return
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "tasks", "outputs", "logs", "cache", "practice_history", "practice_jobs",
+        "model_diagnostics", "support_reports", "textbooks", "exams",
+    ):
+        source = PROJECT_ROOT / name
+        target = DATA_ROOT / name
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True)
+    legacy_config = PROJECT_ROOT / "config"
+    target_config = DATA_ROOT / "config"
+    target_config.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "api_keys.json", "providers.local.json", "support_reporting.json",
+        "support_cloud.json", "hybrid_cloud.json", "remote_monitor.local.json",
+    ):
+        source = legacy_config / name
+        target = target_config / name
+        if source.is_file() and not target.exists():
+            shutil.copy2(source, target)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("legacy source data copied; original files retained\n", encoding="utf-8")
+
+
 def ensure_project_dirs() -> None:
+    _migrate_legacy_source_data()
     for path in (DATA_ROOT, LOCAL_CONFIG_DIR, TASKS_DIR, OUTPUTS_DIR, TEXTBOOKS_DIR, EXAMS_DIR, LOGS_DIR, CACHE_DIR, SHARED_TEXTBOOK_LIBRARY_DIR):
         path.mkdir(parents=True, exist_ok=True)

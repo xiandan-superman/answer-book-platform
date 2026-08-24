@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import mimetypes
 import re
 import subprocess
@@ -11,9 +12,16 @@ from zipfile import ZipFile
 
 from docx import Document
 from lxml import etree
+from PIL import Image
 
 from .omml_input import find_omml2mathml_xsl, mixed_text_with_structured_math
 from .pdf_render import pdf_page_count, render_pdf_pages
+from .practice_source_store import (
+    extraction_cache_key,
+    load_extraction_cache,
+    load_practice_source_file,
+    save_extraction_cache,
+)
 
 MAX_FILE_COUNT = 12
 MAX_FILE_BYTES = 12 * 1024 * 1024
@@ -40,13 +48,16 @@ def _has_meaningful_text(text: str) -> bool:
 def _decode_file(item: dict[str, Any]) -> tuple[str, str, bytes]:
     name = Path(str(item.get("name") or "未命名文件")).name
     mime = str(item.get("type") or mimetypes.guess_type(name)[0] or "application/octet-stream")
-    encoded = str(item.get("data_url") or "")
-    if "," in encoded and encoded.startswith("data:"):
-        encoded = encoded.split(",", 1)[1]
-    try:
-        data = base64.b64decode(encoded, validate=True)
-    except Exception as exc:
-        raise ValueError(f"{name} 的文件内容无效。") from exc
+    if item.get("resource_id"):
+        data = load_practice_source_file(item)
+    else:
+        encoded = str(item.get("data_url") or "")
+        if "," in encoded and encoded.startswith("data:"):
+            encoded = encoded.split(",", 1)[1]
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise ValueError(f"{name} 的文件内容无效。") from exc
     if not data:
         raise ValueError(f"{name} 是空文件。")
     if len(data) > MAX_FILE_BYTES:
@@ -56,6 +67,22 @@ def _decode_file(item: dict[str, Any]) -> tuple[str, str, bytes]:
 
 def _data_url(data: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _reference_image_data_url(data: bytes, mime: str) -> str:
+    """Losslessly compact embedded document images before network transport."""
+    original = _data_url(data, mime)
+    if len(data) < 32 * 1024 or mime.lower() not in {"image/png", "image/jpeg", "image/jpg", "image/bmp", "image/tiff"}:
+        return original
+    try:
+        with Image.open(BytesIO(data)) as source:
+            converted = source.convert("RGBA" if "A" in source.getbands() else "RGB")
+            output = BytesIO()
+            converted.save(output, format="WEBP", lossless=True, method=6)
+        compact = output.getvalue()
+    except Exception:
+        return original
+    return _data_url(compact, "image/webp") if len(compact) <= len(data) * 0.9 else original
 
 
 def _docx_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any]]:
@@ -106,13 +133,21 @@ def _docx_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any
                 "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
                 "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
             }
+
+            def media_members(element: Any) -> list[str]:
+                members: list[str] = []
+                for rel_id in element.xpath(".//a:blip/@r:embed", namespaces=drawing_ns):
+                    target = rel_targets.get(str(rel_id), "").lstrip("/")
+                    if target.startswith("media/"):
+                        target = f"word/{target}"
+                    if target.startswith("word/media/") and target not in members:
+                        members.append(target)
+                return members
+
             ordered_media: list[str] = []
-            for rel_id in root.xpath(".//a:blip/@r:embed", namespaces=drawing_ns):
-                target = rel_targets.get(str(rel_id), "").lstrip("/")
-                if target.startswith("media/"):
-                    target = f"word/{target}"
-                if target.startswith("word/media/") and target not in ordered_media:
-                    ordered_media.append(target)
+            for member in media_members(root):
+                if member not in ordered_media:
+                    ordered_media.append(member)
             for member in sorted(
                 name
                 for name in archive.namelist()
@@ -121,7 +156,20 @@ def _docx_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any
                 if member not in ordered_media:
                     ordered_media.append(member)
             diagnostics["embedded_image_order"] = ordered_media
-        anchorable_media = set(ordered_media[:MAX_REFERENCE_IMAGES])
+            # Prefer figures that share a paragraph/table cell with visible
+            # source text. Decorative or unanchored media only fills remaining
+            # reference slots, preserving body order throughout.
+            contextual_media: list[str] = []
+            for element in root.xpath("./w:body/w:p|./w:body/w:tbl//w:tc", namespaces=ns):
+                visible_text = "".join(element.xpath(".//w:t/text()|.//m:t/text()", namespaces=ns)).strip()
+                if not visible_text:
+                    continue
+                for member in media_members(element):
+                    if member not in contextual_media:
+                        contextual_media.append(member)
+            reference_media = contextual_media + [member for member in ordered_media if member not in contextual_media]
+            diagnostics["reference_image_order"] = reference_media[:MAX_REFERENCE_IMAGES]
+        anchorable_media = set(diagnostics["reference_image_order"])
 
         def image_anchor_suffix(element: Any) -> str:
             members: list[str] = []
@@ -162,12 +210,12 @@ def _docx_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any
                     blocks.append(" | ".join(cells))
         images: list[str] = []
         with ZipFile(path) as archive:
-            for member in diagnostics.get("embedded_image_order", [])[:MAX_REFERENCE_IMAGES]:
+            for member in diagnostics.get("reference_image_order", []):
                 member = f"word/media/{member}" if not str(member).startswith("word/media/") else str(member)
                 image = archive.read(member)
                 image_mime = mimetypes.guess_type(member)[0] or "image/png"
                 if image_mime.startswith("image/"):
-                    images.append(_data_url(image, image_mime))
+                    images.append(_reference_image_data_url(image, image_mime))
         diagnostics["image_count_included"] = len(images)
         if diagnostics["omml_degraded_formula_count"]:
             diagnostics["warnings"].append(
@@ -236,6 +284,10 @@ def _pdf_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any]
 
 
 def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
+    cache_key = extraction_cache_key(payload)
+    cached = load_extraction_cache(cache_key) if cache_key else None
+    if cached is not None:
+        return cached
     text_parts: list[str] = []
     direct_text = str(payload.get("question_text") or "").strip()
     if direct_text:
@@ -319,7 +371,7 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
                 member_reference_numbers = {
                     member: first_reference_number + index
                     for index, member in enumerate(
-                        diagnostics.get("embedded_image_order", [])[: len(included_references)]
+                        diagnostics.get("reference_image_order", [])[: len(included_references)]
                     )
                 }
                 filtered_text, included_anchor_count = filter_image_anchors(text, member_reference_numbers)
@@ -373,7 +425,7 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
     text = "\n\n".join(part for part in text_parts if part.strip()).strip()
     if not text and not images:
         raise ValueError("请填写题目文字或上传题目文件。")
-    return {
+    result = {
         "text": text,
         "images": images,
         "reference_images": reference_images,
@@ -382,3 +434,6 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
         "file_diagnostics": file_diagnostics,
         "analysis_mode": "mixed" if text and images else ("vision" if images else "text"),
     }
+    if cache_key:
+        save_extraction_cache(cache_key, result)
+    return result

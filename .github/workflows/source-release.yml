@@ -1,0 +1,71 @@
+name: Publish source runtime release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-source:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+      RELEASE_REPOSITORY: xiandan-superman/answer-book-platform-releases
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate tagged version
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n ' < APP_VERSION)"
+          test -n "$version"
+          test "$RELEASE_TAG" = "v${version}"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build reproducible source archive and update feed
+        shell: bash
+        run: |
+          mkdir -p dist/release-assets
+          asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-source.zip"
+          git archive --format=zip --prefix=answer-book-platform/ --output="$asset" "$RELEASE_TAG"
+          printf '真题解析与生题平台 %s\n\n- 推荐使用源码启动版\n- 首次启动自动创建独立 Python 环境并安装依赖\n- 应用内更新会校验 SHA256，用户数据保存在程序目录之外\n' "$RELEASE_VERSION" > dist/release-notes.md
+          python scripts/build_update_manifest.py \
+            --version "$RELEASE_VERSION" \
+            --release-tag "$RELEASE_TAG" \
+            --notes-file dist/release-notes.md \
+            --asset "source=$asset" \
+            --output dist/release-assets/update-manifest.json
+      - name: Publish source release
+        shell: bash
+        run: |
+          test -n "$GH_TOKEN"
+          if gh release view "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/release-assets/* --repo "$RELEASE_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/release-assets/* \
+              --repo "$RELEASE_REPOSITORY" \
+              --title "真题解析与生题平台 ${RELEASE_VERSION}" \
+              --notes-file dist/release-notes.md
+          fi
+      - name: Update stable source feed
+        shell: bash
+        run: |
+          content="$(base64 -w 0 dist/release-assets/update-manifest.json)"
+          sha="$(gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable.json" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${RELEASE_REPOSITORY}/contents/update-stable.json" -f message="release: update stable source feed to ${RELEASE_VERSION}" -f content="$content")
+          if [[ -n "$sha" ]]; then args+=(-f sha="$sha"); fi
+          gh api "${args[@]}"

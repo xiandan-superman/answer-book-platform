@@ -44,6 +44,17 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
     qids = [str(x.get("question_id", "")) for x in items]
     if len(qids) != len(set(qids)):
         issues.append("duplicate question_id found")
+    disambiguated_items = [
+        {
+            "question_id": str(item.get("question_id") or ""),
+            "question_id_base": str(item.get("question_id_base") or ""),
+            "occurrence": item.get("question_id_occurrence") or 0,
+            "collision_count": item.get("question_id_collision_count") or 0,
+            "display_number": str(item.get("display_number") or item.get("number") or ""),
+        }
+        for item in items
+        if isinstance(item, dict) and item.get("question_id_base")
+    ]
     for item in items:
         qid = str(item.get("question_id", ""))
         stem = str(item.get("stem", "")).strip()
@@ -122,6 +133,11 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
         "ok": not issues,
         "question_count": len(items),
         "source_coverage": source_coverage,
+        "question_id_disambiguation": {
+            "applied": bool(disambiguated_items),
+            "item_count": len(disambiguated_items),
+            "items": disambiguated_items,
+        },
         "issue_count": len(issues),
         "warning_count": len(warnings),
         "issues": issues,

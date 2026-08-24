@@ -7,12 +7,67 @@ from app.practice_export import (
     build_practice_question_docx,
     has_unrenderable_practice_markup,
     normalize_practice_markup,
+    normalize_practice_question_text,
     resolve_practice_export_payload,
     validate_docx_output,
 )
 
 
 class PracticeExportGateTests(unittest.TestCase):
+    def test_disabled_semantic_review_does_not_downgrade_clean_export(self):
+        from app.practice_export import validate_practice_export
+
+        report = validate_practice_export({
+            "quality": {"status": "passed"},
+            "semantic_review": {"status": "disabled", "triggered": False, "items": []},
+            "exercises": [{"number": 1, "stem": "说明晶格常数的物理意义。", "generation_status": "completed"}],
+        })
+
+        self.assertTrue(report["ok"])
+        self.assertEqual("formal", report["release_level"])
+        self.assertEqual([], report["warning_issues"])
+    def test_literal_escaped_subquestion_breaks_become_real_paragraphs(self):
+        normalized = normalize_practice_question_text(r"材料说明。\n(1) 第一问。\n(2) 第二问。")
+
+        self.assertNotIn(r"\n", normalized)
+        self.assertEqual(normalized, "材料说明。\n\n(1) 第一问。\n\n(2) 第二问。")
+
+    def test_literal_newline_repair_does_not_touch_latex_commands(self):
+        normalized = normalize_practice_question_text(r"已知 $\nabla f=0$，再判断 $\nu$。")
+
+        self.assertIn(r"\nabla", normalized)
+        self.assertIn(r"\nu", normalized)
+
+    def test_fill_in_formula_bank_is_blocked_as_answer_leak(self):
+        from app.practice_export import validate_practice_export
+
+        data = {"exercises": [{
+            "number": 3,
+            "question_type": "填空题",
+            "stem": "fcc 密排方向为 ______。",
+            "formulas": [{
+                "latex": r"\mathrm{fcc}:\langle110\rangle",
+                "location": "stem",
+                "caption": "fcc 密排方向",
+            }],
+        }]}
+
+        report = validate_practice_export(data)
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("题面答案泄漏" in issue for issue in report["blocking_issues"]))
+
+    def test_explicit_given_formula_remains_exportable(self):
+        from app.practice_export import validate_practice_export
+
+        data = {"exercises": [{
+            "question_type": "填空题",
+            "stem": "已知状态方程，待求体积为 ______。",
+            "formulas": [{"latex": r"PV=nRT", "location": "stem", "role": "given"}],
+        }]}
+
+        self.assertTrue(validate_practice_export(data)["ok"])
+
     def test_structured_formula_preflight_failure_blocks_formal_export(self):
         from unittest.mock import patch
 

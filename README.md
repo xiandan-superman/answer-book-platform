@@ -11,24 +11,11 @@
 - 生成、审计、渲染由平台程序控制，执行任务时不得临时修改工具链。
 - 当前本地平台采用单服务进程、多线程工作器架构。正式启动入口和命令行解析入口共享进程锁；重复启动会在恢复队列或调用模型前停止，避免重复任务和额外费用。异常退出后操作系统会自动释放锁，可直接重新启动。
 - 多模态模型直接接收原题图片；文本模型才使用单独的视觉备用模型。模型能力来自本地配置并按“服务商 + 模型 + 能力声明”缓存，不会为了识别能力重复调用或试探模型。
-- 桌面版可在顶部点击“检查更新”，只接受 GitHub Release 中通过 SHA256 校验的对应平台安装包；更新不会覆盖用户数据和 API Key。
+- 推荐使用 GitHub 源码启动版。首次启动自动创建独立 Python 环境并安装依赖；顶部“检查更新”只接受版本标签发布且通过 SHA256 校验的源码更新。用户数据和 API Key 位于程序目录之外，不会被源码替换覆盖。
 
 ## 快速启动
 
-```bash
-cd <项目目录>
-python3 scripts/install_dependencies.py
-python3 scripts/check_environment.py
-python3 scripts/start_platform.py
-```
-
-启动后访问：
-
-```text
-http://127.0.0.1:8766
-```
-
-macOS 也可以双击或运行：
+普通用户在 GitHub 下载源码 ZIP 并解压。macOS 双击：
 
 ```bash
 ./start_platform.command
@@ -40,11 +27,33 @@ Windows 可运行：
 start_platform_windows.bat
 ```
 
+启动器会检查 Python 3.9+。若电脑没有 Python，会显示安装提示并打开官方下载页面；安装 Python 后再次双击即可。首次成功启动会在系统用户数据目录创建独立虚拟环境、自动安装依赖、启动 `http://127.0.0.1:8766` 并打开浏览器。
+
+开发者仍可直接运行：
+
+```bash
+python3 scripts/start_platform.py
+```
+
+直接运行不会接管依赖安装和自动重启，日常用户验收应使用双击启动器。
+
+## 源码更新
+
+- 网页启动后静默检查稳定更新；发现版本时只改变“检查更新”提示，不会自动修改本机。
+- 只有仓库创建与 `APP_VERSION` 一致的版本标签后，普通用户才会收到更新；普通 `main` push 不会下发。
+- 用户确认后，程序下载源码 ZIP、校验大小和 SHA256、退出旧服务、备份旧源码、替换代码并自动重启。
+- Git clone 用户使用安全的 `fetch + fast-forward merge`；本地有源码修改、分支不符或历史分叉时会拒绝自动更新。
+- 新版本若改变依赖清单，确认框会提前说明；重启时检查并安装缺失依赖。依赖没有变化时不会重复安装。
+- 更新失败会恢复旧源码。API Key、教材、任务、日志和输出位于 macOS `~/Library/Application Support/Answer Book Platform` 或 Windows `%LOCALAPPDATA%\Answer Book Platform`。
+
+开发与发布细节见 [源码分发与更新架构](docs/SOURCE_DISTRIBUTION_AND_UPDATE.md)。
+
 ## 配置模型
 
 首次启动会自动创建内部配置文件 `config/api_keys.json`。普通用户不需要打开文件：
 在首页或顶部导航进入“API 配置”，选择已接入的平台，填写 Key，测试成功后保存。
 同一个页面可替换或删除已保存的 Key，所有需要模型的模块统一读取这份配置。
+灵算的 GPT 文本模型与 `gpt-image-2` 使用独立 Key：分别配置“灵算 · OpenAI”和“灵算 · OpenAI 图片”，平台不会在两类请求之间混用 Key。
 专项练习可以单独选择正式生题的服务商和模型，API Key 仍统一从“API 配置”页面读取。用户选择的主模型固定负责蓝图设计、正式生题、单题重生和题图修复；视觉备用模型只在尚未解析的图片需要识别时使用，图片识别完成后不会因为原附件仍存在而静默替换正式生题模型。
 
 专项练习题图采用可同时渲染到网页和 Word 的结构化图形数据。题目正文生成后，题图会独立完成元素、曲线采样、状态点坐标和可证明几何关系检查；不合格时只修复当前题图，不重写题目或同批其它题。P-V 等坐标图中的节点与曲线使用同一数据坐标，程序会补齐可确定的坐标轴、状态点和终压辅助线。
@@ -420,6 +429,23 @@ Web 控制台中点击：
 ```
 
 会列出当前任务的阶段文件和输出文件，可直接下载。下载接口只允许访问当前任务的 `stage_outputs` 和 `outputs` 下的文件。
+
+## 专项生题的长材料与超时策略
+
+专项生题上传的文件会先保存为内容寻址资源，后台任务只持有 `resource_id`，不再在每个阶段重复保存 Base64。原文、公式、表格和图片锚点由平台确定性抽取并缓存；范围解析模型只返回来源边界、知识点、约束和 `content_refs`，完整 `source_content` 由平台按引用重建。
+
+范围解析与蓝图规划使用分层超时：连接超时保持较短，首字节等待随阶段总预算自适应，读取阶段按空闲时间判断。默认范围解析安全上限为 900 秒，蓝图规划为 600 秒；有部分流式输出的硬截止请求不会自动整段重试。可通过以下环境变量灰度调整：
+
+```bash
+export PRACTICE_ANALYZE_TIMEOUT_SECONDS=900
+export PRACTICE_PLAN_TIMEOUT_SECONDS=600
+export PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS=15
+export PRACTICE_MODEL_FIRST_BYTE_TIMEOUT_SECONDS=180
+export PRACTICE_MODEL_READ_IDLE_TIMEOUT_SECONDS=45
+export PRACTICE_ANALYZE_MAX_OUTPUT_TOKENS=6000  # 可选硬覆盖；默认会按材料复杂度在 6000/9000/12000 间自适应
+```
+
+模型调用台账会在请求发出前记录估算输入，并在流式响应期间累计部分输出。供应商返回正式 usage 后会覆盖估算值；`usage_source` 用于区分 `platform_estimated`、`platform_estimated_partial` 和 `provider_reported`。
 
 ## 任务交付包
 

@@ -6,14 +6,108 @@ from unittest.mock import patch
 from app import practice_jobs
 from app.exercise_generation import (
     PracticeGenerationStopped,
+    _batch_reference_images,
     _batch_sibling_variant_issues,
     _blueprint_multi_question_config,
     _expand_blueprint_items_for_generation,
+    _generation_source_signature,
     generate_practice_from_plan,
     recompute_practice_quality,
     reconcile_practice_generation,
 )
 from app.llm_client import LLMError
+
+
+def test_source_signature_is_order_independent_and_reference_images_are_cropped() -> None:
+    assert _generation_source_signature({"source_refs": ["source_02", "source_01"]}) == (
+        "source_01",
+        "source_02",
+    )
+    images = ["image-1", "image-2", "image-3"]
+    selected, numbers = _batch_reference_images(
+        images,
+        {"items": [{"sources": [{"source_content": "题干⟦IMAGE_REF:3;MEMBER:image3.png⟧"}]}]},
+    )
+    assert selected == ["image-3"]
+    assert numbers == [3]
+
+
+def test_formal_generation_never_batches_different_source_combinations() -> None:
+    prompts: list[str] = []
+
+    def fake_call(_client, messages, **_kwargs):
+        prompt = str(messages[-1]["content"])
+        prompts.append(prompt)
+        first = "SOURCE_ONE" in prompt
+        assert first != ("SOURCE_TWO" in prompt)
+        point = "知识一" if first else "知识二"
+        return {"exercises": [{
+            "batch_index": 1,
+            "question_type": "简答题",
+            "difficulty": "进阶",
+            "target_skill": "来源约束分析",
+            "variation_type": "情境迁移",
+            "stem": f"请在新的研究情境中分析{point}的适用条件与边界。",
+            "options": [],
+            "knowledge_points": [point],
+            "verification_note": "题干条件完整。",
+            "formulas": [],
+            "tables": [],
+            "figures": [],
+        }]}
+
+    sources = [
+        {"source_question_id": "source_01", "source_content": "SOURCE_ONE", "knowledge_points": ["知识一"]},
+        {"source_question_id": "source_02", "source_content": "SOURCE_TWO", "knowledge_points": ["知识二"]},
+    ]
+    payload = {
+        "source_mode": "exam",
+        "generation_strategy": "parallel_exam",
+        "generation_batch_size": 3,
+        "generation_concurrency": 1,
+        "blueprint_review_enabled": False,
+        "plan": {
+            "selected_source_questions": sources,
+            "source_scope": {"mode": "question_set", "questions": sources},
+            "blueprint": {
+                "generation_strategy": "parallel_exam",
+                "exercise_plan": [
+                    {
+                        "plan_item_id": "plan_item_01",
+                        "source_question_id": "source_01",
+                        "source_refs": ["source_01"],
+                        "question_type": "简答题",
+                        "difficulty": "进阶",
+                        "required_knowledge_points": ["知识一"],
+                    },
+                    {
+                        "plan_item_id": "plan_item_02",
+                        "source_question_id": "source_02",
+                        "source_refs": ["source_02"],
+                        "question_type": "简答题",
+                        "difficulty": "进阶",
+                        "required_knowledge_points": ["知识二"],
+                    },
+                ],
+            },
+        },
+    }
+    provider = SimpleNamespace(name="test", supports_vision=False)
+    with (
+        patch("app.exercise_generation._primary_model_runtime", return_value=(provider, "test-model")),
+        patch("app.exercise_generation.OpenAICompatibleClient", return_value=object()),
+        patch("app.exercise_generation._call_practice_json", side_effect=fake_call),
+        patch("app.exercise_generation.parse_practice_sources", return_value={
+            "text": "",
+            "images": [],
+            "reference_images": [],
+            "file_names": [],
+        }),
+    ):
+        result = generate_practice_from_plan(payload)
+
+    assert len(prompts) == 2
+    assert [row["plan_item_id"] for row in result["exercises"]] == ["plan_item_01", "plan_item_02"]
 
 
 def test_generation_uses_bounded_semantic_batches_and_restores_internal_ids() -> None:

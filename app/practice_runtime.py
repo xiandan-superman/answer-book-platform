@@ -4,14 +4,62 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterable, Iterator, TypeVar
+import time
+from typing import Any, Callable, Hashable, Iterable, Iterator, TypeVar
 
 InputT = TypeVar("InputT")
 ResultT = TypeVar("ResultT")
+KeyT = TypeVar("KeyT", bound=Hashable)
 
 
 class PracticeGenerationStopped(RuntimeError):
     """Raised when a durable practice job may no longer spend model work."""
+
+
+def partition_compatible_batches(
+    indexed_items: Iterable[tuple[int, InputT]],
+    *,
+    compatibility_key: Callable[[InputT], KeyT],
+    max_batch_size: int,
+) -> list[tuple[int, list[InputT]]]:
+    """Batch only contiguous items with an identical model-context key.
+
+    The explicit indexes preserve result identity and make gaps caused by
+    checkpoints or failed gates split a batch.  Callers can reuse this for any
+    generation workflow by supplying a source, capability, or context key.
+    """
+    limit = max(1, int(max_batch_size or 1))
+    batches: list[tuple[int, list[InputT]]] = []
+    start: int | None = None
+    rows: list[InputT] = []
+    active_key: KeyT | None = None
+    previous_index: int | None = None
+
+    def flush() -> None:
+        nonlocal start, rows, active_key, previous_index
+        if start is not None and rows:
+            batches.append((start, rows))
+        start = None
+        rows = []
+        active_key = None
+        previous_index = None
+
+    for index, item in indexed_items:
+        item_key = compatibility_key(item)
+        if rows and (
+            item_key != active_key
+            or previous_index is None
+            or index != previous_index + 1
+            or len(rows) >= limit
+        ):
+            flush()
+        if start is None:
+            start = index
+            active_key = item_key
+        rows.append(item)
+        previous_index = index
+    flush()
+    return batches
 
 
 def ensure_practice_generation_active(payload: dict[str, Any]) -> None:
@@ -56,6 +104,7 @@ def iter_bounded_futures(
     max_workers: int,
     thread_name_prefix: str,
     ensure_active: Callable[[], None] | None = None,
+    stagger_seconds: float = 0.0,
 ) -> Iterator[tuple[InputT, Future[ResultT]]]:
     """Yield incrementally scheduled work without pre-submitting the full task.
 
@@ -69,15 +118,23 @@ def iter_bounded_futures(
         thread_name_prefix=thread_name_prefix,
     )
     futures: dict[Future[ResultT], InputT] = {}
+    last_submitted_at = 0.0
 
     def submit_next() -> bool:
+        nonlocal last_submitted_at
         try:
             item = next(iterator)
         except StopIteration:
             return False
         if ensure_active is not None:
             ensure_active()
+        delay = max(0.0, float(stagger_seconds or 0.0) - (time.monotonic() - last_submitted_at))
+        if delay:
+            time.sleep(delay)
+            if ensure_active is not None:
+                ensure_active()
         futures[executor.submit(copy_context().run, worker, item)] = item
+        last_submitted_at = time.monotonic()
         return True
 
     try:

@@ -20,6 +20,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def dependency_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for name in ("requirements.txt", "requirements-windows.txt"):
+        path = ROOT / name
+        if path.is_file():
+            digest.update(name.encode("utf-8"))
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def parse_asset(value: str) -> tuple[str, Path]:
     key, separator, raw_path = value.partition("=")
     if not separator or not key.strip() or not raw_path.strip():
@@ -52,6 +62,8 @@ def build_manifest(
             "size_bytes": path.stat().st_size,
             "sha256": sha256_file(path),
         }
+        if key == "source":
+            platforms[key]["dependency_fingerprint"] = dependency_fingerprint()
     return {
         "schema_version": SCHEMA_VERSION,
         "version": version.strip(),

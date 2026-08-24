@@ -165,6 +165,13 @@ def build_task_result_view(task_id: str) -> dict[str, Any]:
                 "question_id": qid,
                 "index": index,
                 "number": str((fragment or {}).get("number") or item.get("number") or index),
+                "display_number": str(
+                    (fragment or {}).get("display_number")
+                    or item.get("display_number")
+                    or (fragment or {}).get("number")
+                    or item.get("number")
+                    or index
+                ),
                 "type": _question_type(item, fragment),
                 "section": str((fragment or {}).get("section") or item.get("section") or ""),
                 "stem": str(item.get("stem") or ""),

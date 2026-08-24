@@ -12,8 +12,8 @@ def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def model_request_max_concurrency() -> int:
-    """Global per-provider request ceiling shared by every workflow."""
-    return bounded_env_int("MODEL_REQUEST_MAX_CONCURRENCY", 4, 1, 10)
+    """Optional emergency ceiling; zero leaves provider concurrency uncapped."""
+    return bounded_env_int("MODEL_REQUEST_MAX_CONCURRENCY", 0, 0, 64)
 
 
 def practice_job_max_concurrency() -> int:
@@ -28,9 +28,10 @@ def practice_inner_concurrency(payload: dict[str, Any], *, stage: str) -> int:
     else:
         requested = payload.get("generation_concurrency")
     try:
-        return max(1, min(4, int(requested or 2)))
+        default = 4 if stage == "blueprint" else 6
+        return max(1, min(12, int(requested or default)))
     except (TypeError, ValueError):
-        return 2
+        return 4 if stage == "blueprint" else 6
 
 
 def runtime_capacity_summary() -> dict[str, int]:

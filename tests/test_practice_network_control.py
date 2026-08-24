@@ -13,8 +13,33 @@ import pytest
 import app.capabilities  # noqa: F401  # Initialize the capability registry before LLM imports.
 from app import exercise_generation, llm_client, practice_jobs, practice_worker, task_read_model
 from app.concurrency import ModelRequestAborted
-from app.practice_runtime import PracticeGenerationStopped, ensure_practice_generation_active, iter_bounded_futures
+from app.practice_runtime import (
+    PracticeGenerationStopped,
+    ensure_practice_generation_active,
+    iter_bounded_futures,
+    partition_compatible_batches,
+)
 from app.settings import ProviderConfig
+
+
+def test_compatible_batch_partition_reuses_context_key_and_splits_index_gaps() -> None:
+    rows = [
+        (0, {"source": "a", "value": 1}),
+        (1, {"source": "a", "value": 2}),
+        (2, {"source": "b", "value": 3}),
+        (4, {"source": "b", "value": 4}),
+        (5, {"source": "b", "value": 5}),
+    ]
+    batches = partition_compatible_batches(
+        rows,
+        compatibility_key=lambda item: item["source"],
+        max_batch_size=3,
+    )
+    assert [(start, [item["value"] for item in items]) for start, items in batches] == [
+        (0, [1, 2]),
+        (2, [3]),
+        (4, [4, 5]),
+    ]
 
 
 def _job(tmp_path, monkeypatch):
@@ -415,6 +440,13 @@ def test_network_error_layers_are_sanitized() -> None:
     hard = exercise_generation._generation_error_detail(
         llm_client.LLMError("socket secret detail", transport_phase="hard_timeout")
     )
+    active_hard = exercise_generation._generation_error_detail(
+        llm_client.LLMError(
+            "socket secret detail",
+            transport_phase="hard_timeout",
+            partial_output_received=True,
+        )
+    )
     auth = exercise_generation._generation_error_detail(
         llm_client.LLMError("raw provider json", status_code=401)
     )
@@ -422,6 +454,7 @@ def test_network_error_layers_are_sanitized() -> None:
     assert first_byte["code"] == "provider_first_byte_timeout" and first_byte["retryable"] is True
     assert idle["code"] == "provider_read_idle_timeout" and idle["retryable"] is True
     assert hard["code"] == "provider_call_deadline_exceeded" and hard["retryable"] is True
+    assert active_hard["retryable"] is False and active_hard["partial_output_received"] is True
     assert auth["requires_configuration"] is True and auth["retryable"] is False
     assert "raw provider json" not in auth["message"]
 

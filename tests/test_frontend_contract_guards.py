@@ -349,6 +349,16 @@ def test_task_manager_opens_all_tasks_instead_of_action_required_filter() -> Non
     start = APP_JS.index('function openTaskManager(kind = "all")')
     end = APP_JS.index("function openWordFormatReviewer", start)
     assert 'filterTasks("all");' in APP_JS[start:end]
+    assert "taskManagerLoading = true;" in APP_JS[start:end]
+
+
+def test_task_manager_ignores_stale_list_responses_and_has_loading_copy() -> None:
+    start = APP_JS.index("async function loadTasks(options = {})")
+    end = APP_JS.index("async function runTask", start)
+    flow = APP_JS[start:end]
+    assert "const requestVersion = ++taskLoadVersion;" in flow
+    assert "if (requestVersion !== taskLoadVersion) return;" in flow
+    assert "正在读取任务" in APP_JS
 
 
 def test_exam_confirmation_counts_textbook_groups_instead_of_file_parts() -> None:
@@ -495,6 +505,32 @@ def test_pre_generation_workspace_is_persisted_by_mode_and_stage() -> None:
     assert 'id="practiceWorkspaceDraftClear"' in INDEX_HTML
     assert 'id="practiceWorkspaceDraftClearActive"' in INDEX_HTML
     assert 'id="knowledgeWorkspaceDraftClear"' in INDEX_HTML
+    assert 'id="practiceWorkspaceDraftRestorePrevious"' in INDEX_HTML
+    assert 'id="knowledgeWorkspaceDraftRestorePrevious"' in INDEX_HTML
+    assert "function restorePreviousPracticeWorkspace(" in APP_JS
+    assert "workspace_mode: normalizedMode" in APP_JS
+    assert 'id="practiceSemanticReviewEnabled"' in INDEX_HTML
+    assert 'id="knowledgeSemanticReviewEnabled"' in INDEX_HTML
+    assert 'semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true' in APP_JS
+    assert 'semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true' in APP_JS
+    assert "function announceAvailablePracticeWorkspaceDraft(" in APP_JS
+    assert "当前已保持新任务空白" in APP_JS
+    assert "practiceWorkspaceDraftEpochs[normalizedMode] += 1" in APP_JS
+
+
+def test_practice_requests_include_the_configured_image_route() -> None:
+    practice_start = APP_JS.index("function practiceRequestPayload()")
+    knowledge_start = APP_JS.index("function knowledgeRequestPayload()", practice_start)
+    practice_flow = APP_JS[practice_start:knowledge_start]
+    knowledge_flow = APP_JS[knowledge_start:APP_JS.index("function updateKnowledgeModelSummary", knowledge_start)]
+    for flow in (practice_flow, knowledge_flow):
+        assert 'image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : ""' in flow
+        assert "image_model: imageConfigured ? selectedImageModel()" in flow
+
+
+def test_practice_drawing_question_explains_why_answer_image_is_not_generated() -> None:
+    assert "本题要求学生作图" in APP_JS
+    assert "不会调用 gpt-image-2 生成答案图" in APP_JS
 
 
 def test_practice_preview_renders_real_diagrams_and_exposes_invalid_figures() -> None:
@@ -527,3 +563,17 @@ def test_generation_network_summary_exposes_each_transport_layer() -> None:
     hydrate_start = APP_JS.index("async function hydrateLiveTaskDetails")
     hydrate_end = APP_JS.index("async function loadTasks", hydrate_start)
     assert "!task.is_generation_job" in APP_JS[hydrate_start:hydrate_end]
+
+
+def test_practice_loading_shows_copyable_task_id() -> None:
+    assert 'id="practiceLoadingTaskId"' in INDEX_HTML
+    assert 'id="practiceLoadingCopyTaskId"' in INDEX_HTML
+    assert "showPracticeLoadingTaskId(queued.job_id || queued.task_id)" in APP_JS
+
+
+def test_failed_analysis_material_is_replaced_and_scope_snapshot_is_pinned() -> None:
+    assert "let practiceMaterialReplacementRequired = false;" in APP_JS
+    assert "const replaceFailedTaskMaterial = practiceMaterialReplacementRequired;" in APP_JS
+    assert "上次失败任务的材料已自动移出" in APP_JS
+    assert "latestPracticeRequest = { ...latestPracticeRequest, source_snapshot: data.source_snapshot };" in APP_JS
+    assert "practiceMaterialReplacementRequired = request.source_files.length > 0;" in APP_JS

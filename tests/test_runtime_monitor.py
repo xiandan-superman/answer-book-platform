@@ -185,3 +185,35 @@ class RuntimeMonitorTests(unittest.TestCase):
 
         self.assertEqual(12, health["completed_count"])
         self.assertEqual(12, health["total_count"])
+
+    def test_partial_usage_is_available_before_provider_completion(self) -> None:
+        record = {}
+        runtime_monitor.record_model_call_estimate(record, {"messages": [{"content": "长材料" * 100}]})
+        runtime_monitor.record_model_stream_progress(record, '{"source_scope":')
+
+        self.assertGreater(record["prompt_tokens"], 0)
+        self.assertGreater(record["completion_tokens"], 0)
+        self.assertEqual(1, record["stream_chunk_count"])
+        self.assertEqual("platform_estimated_partial", record["usage_source"])
+
+        runtime_monitor.record_model_call_usage(
+            record,
+            {"usage": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168}},
+        )
+        self.assertEqual(123, record["prompt_tokens"])
+        self.assertEqual(45, record["completion_tokens"])
+        self.assertEqual("provider_reported", record["usage_source"])
+
+    def test_multimodal_estimate_separates_image_bytes_from_text_tokens(self) -> None:
+        record = {}
+        encoded = __import__("base64").b64encode(b"image-bytes" * 1000).decode("ascii")
+
+        runtime_monitor.record_model_call_estimate(record, {
+            "messages": [{"content": ["短文本", f"data:image/png;base64,{encoded}"]}],
+        })
+
+        self.assertEqual(1, record["image_input_count"])
+        self.assertEqual(11000, record["image_input_bytes"])
+        self.assertGreater(record["request_bytes"], record["image_input_bytes"])
+        self.assertLess(record["estimated_prompt_tokens"], 100)
+        self.assertEqual("platform_text_estimate_without_vision", record["usage_source"])

@@ -11,7 +11,8 @@ def get_version() -> str:
     version = get_base_version()
     revision = get_source_revision()
     if revision:
-        return f"{version} {revision}"
+        suffix = "+dirty" if is_source_dirty() else ""
+        return f"{version} {revision}{suffix}"
     return version
 
 
@@ -57,6 +58,30 @@ def get_source_revision() -> str:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return ""
     return ""
+
+
+def is_source_dirty() -> bool:
+    """Return whether a source checkout has uncommitted changes.
+
+    A local preview otherwise reports the same revision as its last commit,
+    which makes a freshly restarted development service look stale.
+    Packaged releases have no ``.git`` directory and remain unaffected.
+    """
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return bool(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def release_manifest_status() -> dict[str, Any]:

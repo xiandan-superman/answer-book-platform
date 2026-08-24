@@ -35,6 +35,7 @@ from app.exercise_generation import (
     validate_practice_mode_contract,
     validate_reference_calculation_variation,
 )
+from app.llm_client import LLMError
 
 
 def _exercise(**overrides):
@@ -55,6 +56,42 @@ def _exercise(**overrides):
 def test_drawing_question_does_not_implicitly_request_a_stem_figure():
     contract = _batch_output_contract([{"question_type": "作图题"}])
     assert "figures" not in contract["exercises"][0]
+
+
+def test_source_type_normalizes_long_form_selection_labels():
+    assert exercise_generation._source_type("单项选择题") == "单选题"
+    assert exercise_generation._source_type("多项选择题") == "多选题"
+
+
+def test_basic_question_gate_rejects_three_subquestion_task_chain():
+    issue = exercise_generation._basic_question_overload_issue(
+        {"stem": "材料。\\n(1) 判断。\\n(2) 计算。\\n(3) 解释。"},
+        {"difficulty": "基础"},
+    )
+
+    assert issue["code"] == "basic_question_overloaded"
+    assert exercise_generation._basic_question_overload_issue(
+        {"stem": "材料。\\n(1) 判断。\\n(2) 解释。"},
+        {"difficulty": "基础"},
+    ) is None
+
+
+def test_source_snapshot_blocks_material_change_after_scope_confirmation():
+    original = {
+        "question_text": "金属学材料",
+        "source_files": [{"resource_id": "res-metal", "name": "金属学.docx", "size": 120, "type": "application/docx"}],
+    }
+    snapshot = exercise_generation._practice_source_snapshot(original)
+
+    exercise_generation._validate_practice_source_snapshot(original, snapshot)
+    with pytest.raises(ValueError, match="材料在范围解析后发生了变化"):
+        exercise_generation._validate_practice_source_snapshot({
+            **original,
+            "source_files": [
+                *original["source_files"],
+                {"resource_id": "res-polymer", "name": "高分子.docx", "size": 99, "type": "application/docx"},
+            ],
+        }, snapshot)
 
 
 def test_compound_figure_requirements_accept_separate_visible_labels():
@@ -2012,6 +2049,188 @@ def test_difficulty_plan_has_expected_progression_and_counts():
     assert _difficulty_plan("进阶到挑战", 5) == ["进阶", "进阶", "进阶", "挑战", "挑战"]
 
 
+def test_parallel_exam_respects_explicit_selected_question_types():
+    selected = [
+        {"source_question_id": "source_1", "question_type": "综合题"},
+        {"source_question_id": "source_2", "question_type": "综合题"},
+    ]
+
+    strategy, count, types, source_ids = exercise_generation._strategy_plan(
+        {"generation_strategy": "parallel_exam"},
+        selected_source_questions=selected,
+        selected_types=["单选题", "综合题"],
+    )
+
+    assert strategy == "parallel_exam"
+    assert count == 2
+    assert sorted(types) == ["单选题", "综合题"]
+    assert source_ids == ["source_1", "source_2"]
+
+
+def test_parallel_exam_auto_mode_breaks_up_three_identical_comprehensive_types():
+    selected = [
+        {"source_question_id": f"source_{index}", "question_type": "综合题"}
+        for index in range(1, 4)
+    ]
+
+    strategy, count, types, source_ids = exercise_generation._strategy_plan(
+        {"generation_strategy": "parallel_exam"},
+        selected_source_questions=selected,
+        selected_types=[],
+    )
+
+    assert strategy == "parallel_exam"
+    assert count == 3
+    assert set(types) == {"简答题", "综合题"}
+    assert source_ids == ["source_1", "source_2", "source_3"]
+
+
+def test_disabled_or_not_required_semantic_review_does_not_create_false_review_warning():
+    base = {
+        "requested_count": 1,
+        "blueprint": {"exercise_plan": [{"plan_item_id": "p1", "question_type": "综合题", "required_knowledge_points": ["相图"]}]},
+        "exercises": [{
+            "number": 1, "plan_item_id": "p1", "question_type": "综合题", "difficulty": "挑战",
+            "stem": "比较两种相图路径。", "knowledge_points": ["相图"], "answerability_check_status": "reported",
+        }],
+    }
+    for status in ("disabled", "not_required"):
+        quality = recompute_practice_quality({**base, "semantic_review": {"status": status, "items": []}})
+        assert quality["checks"]["semantic_review_completed"] is True
+        assert quality["checks"]["subject_matter_review_required"] is False
+        assert not any("语义质量审查未执行" in item for item in quality["warnings"])
+
+
+def test_per_question_variants_partition_knowledge_across_same_source():
+    source = {
+        "source_question_id": "source_1",
+        "title": "聚合物分子量与机理",
+        "knowledge_points": ["临界分子量计算", "聚合反应机理"],
+        "required_constraints": {
+            "essential_definitions": ["临界分子量定义", "聚合反应机理定义"],
+            "essential_formulas": ["Mc 计算式"],
+            "applicable_boundaries": [],
+        },
+    }
+    plan = {
+        "source_mode": "exam",
+        "source_scope": {"mode": "question_set", "questions": [source]},
+        "selected_source_questions": [source],
+        "source_analysis": {"knowledge_points": source["knowledge_points"]},
+        "blueprint": {
+            "generation_strategy": "per_question",
+            "exercise_plan": [
+                {
+                    "plan_item_id": "plan_item_01", "question_type": "计算题", "difficulty": "进阶",
+                    "source_question_id": "source_1", "source_refs": ["source_1"],
+                    "target_skill": "计算临界分子量", "variation_type": "改变求解路径",
+                    "design_intent": "要求完成临界分子量计算。",
+                    "required_knowledge_points": ["临界分子量计算"],
+                    "required_constraints": {"essential_definitions": ["临界分子量定义"], "essential_formulas": ["Mc 计算式"], "applicable_boundaries": []},
+                },
+                {
+                    "plan_item_id": "plan_item_02", "question_type": "综合题", "difficulty": "进阶",
+                    "source_question_id": "source_1", "source_refs": ["source_1"],
+                    "target_skill": "辨析聚合机理", "variation_type": "改变论证链条",
+                    "design_intent": "要求辨析聚合反应机理。",
+                    "required_knowledge_points": ["聚合反应机理"],
+                    "required_constraints": {"essential_definitions": ["聚合反应机理定义"], "essential_formulas": [], "applicable_boundaries": []},
+                },
+            ],
+        },
+    }
+
+    normalized = ensure_practice_blueprint_defaults(plan)
+    items = normalized["blueprint"]["exercise_plan"]
+
+    assert items[0]["required_knowledge_points"] == ["临界分子量计算"]
+    assert items[1]["required_knowledge_points"] == ["聚合反应机理"]
+    assert audit_practice_blueprint(normalized)["errors"] == []
+
+
+def test_source_analysis_retries_stream_read_failure(monkeypatch):
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMError("Provider streaming failed: stream_read_error")
+        return {
+            "source_scope": {
+                "mode": "single",
+                "title": "物理化学原题",
+                "questions": [{
+                    "source_question_id": "source_1", "number": "1", "title": "相平衡",
+                    "stem_excerpt": "判断相区", "source_content": "判断相区",
+                    "question_type": "综合题", "knowledge_points": ["相平衡"],
+                    "required_constraints": {"essential_definitions": ["相平衡定义"]},
+                }],
+            },
+            "source_analysis": {"subject": "物理化学", "knowledge_points": ["相平衡"]},
+        }
+
+    monkeypatch.setattr(exercise_generation, "parse_practice_sources", lambda _payload: {
+        "text": "判断相区", "images": [], "reference_images": [], "file_names": [],
+    })
+    monkeypatch.setattr(exercise_generation, "_model_runtime", lambda _payload, _has_images: (SimpleNamespace(name="fake"), "fake-model"))
+    monkeypatch.setattr(exercise_generation, "_practice_generation_client", lambda _provider, _model: object())
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+
+    result = exercise_generation.analyze_practice_source({"source_mode": "exam"})
+
+    assert calls == 2
+    assert result["source_scope"]["questions"][0]["source_question_id"] == "source_1"
+
+
+def test_underprovisioned_comprehensive_plan_skips_adaptive_detail_calls(monkeypatch):
+    calls = 0
+    selected = [
+        {
+            "source_question_id": f"source_{index}", "number": str(index), "title": f"来源{index}",
+            "source_content": f"材料{index}", "question_type": "综合题",
+            "knowledge_points": [f"知识点{index}"],
+            "required_constraints": {"essential_definitions": [f"定义{index}"]},
+        }
+        for index in range(1, 7)
+    ]
+
+    def fake_call(_client, _messages, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "blueprint": {
+                "training_goal": "核心知识专项补强",
+                "exercise_plan": [
+                    {
+                        "source_refs": [f"S{index}"], "question_type": "综合题",
+                        "target_skill": f"能力{index}", "variation_type": "改变论证链条",
+                        "design_intent": f"考查知识点{index}",
+                        "required_knowledge_points": [f"知识点{index}"],
+                        "required_constraints": {"essential_definitions": [f"定义{index}"]},
+                    }
+                    for index in (1, 2)
+                ],
+            },
+        }
+
+    monkeypatch.setattr(exercise_generation, "_primary_model_runtime", lambda _payload: (SimpleNamespace(name="fake"), "fake-model"))
+    monkeypatch.setattr(exercise_generation, "_practice_generation_client", lambda _provider, _model: object())
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+
+    plan = plan_practice_set({
+        "source_mode": "exam", "generation_strategy": "targeted_set", "strategy_count": 2,
+        "question_types": ["综合题"], "question_text": "六项材料的综合训练。", "selected_source_questions": selected,
+        "source_scope": {"mode": "question_set", "questions": selected},
+        "source_analysis": {"subject": "材料科学", "knowledge_points": [f"知识点{index}" for index in range(1, 7)]},
+    })
+
+    assert calls == 1
+    assert plan["planning_evidence"]["adaptive_blueprint"] is False
+    assert plan["scope_cover"]["complete"] is False
+
+
 def _direct_contract_payload():
     selected = [
         {"source_question_id": "source_1", "title": "来源一", "stem_excerpt": "材料一"},
@@ -2639,8 +2858,10 @@ def test_confirmed_comprehensive_planning_uses_compact_catalog_and_one_default_c
     })
 
     assert "FULL_MATERIAL_SHOULD_NOT_REPEAT" not in captured["prompt"]
-    assert captured["prompt"].count("CATALOG_SOURCE_CONTENT_ONE") == 1
-    assert captured["prompt"].count("CATALOG_SOURCE_CONTENT_TWO") == 1
+    assert "CATALOG_SOURCE_CONTENT_ONE" not in captured["prompt"]
+    assert "CATALOG_SOURCE_CONTENT_TWO" not in captured["prompt"]
+    assert captured["prompt"].count("片段一") == 1
+    assert captured["prompt"].count("片段二") == 1
     assert "用户确认的知识范围：来源目录中的 S1、S2（共 2 项）" in captured["prompt"]
     assert plan["planning_evidence"]["default_call_count"] == 1
     assert plan["planning_evidence"]["material_char_count"] == 0
@@ -3297,3 +3518,61 @@ def test_single_variant_regeneration_keeps_parent_blueprint_identity(monkeypatch
     assert regenerated["variant_role"] == "条件转换"
     assert regenerated["difficulty"] == "进阶"
     assert result["quality"]["status"] == "passed"
+
+
+def test_analysis_uses_source_refs_and_reconstructs_original_content(monkeypatch):
+    captured = {}
+
+    def fake_call(_client, messages, **kwargs):
+        captured["prompt"] = messages[-1]["content"]
+        return {
+            "source_scope": {
+                "mode": "single",
+                "title": "材料",
+                "questions": [{
+                    "source_question_id": "source_01",
+                    "number": "1",
+                    "title": "知识单元",
+                    "stem_excerpt": "段落A",
+                    "content_refs": ["C01P0001", "C01P0002"],
+                    "question_type": "知识单元",
+                    "knowledge_points": ["知识点"],
+                    "required_constraints": {
+                        "essential_definitions": ["定义"],
+                        "essential_formulas": [],
+                        "applicable_boundaries": ["边界"],
+                    },
+                }],
+            },
+            "source_analysis": {"subject": "材料学", "knowledge_points": ["知识点"]},
+        }
+
+    monkeypatch.setattr(exercise_generation, "parse_practice_sources", lambda _payload: {
+        "text": "段落A\n\n段落B",
+        "images": [],
+        "reference_images": [],
+        "file_names": [],
+        "file_diagnostics": [],
+    })
+    monkeypatch.setattr(
+        exercise_generation,
+        "_model_runtime",
+        lambda payload, has_images: (SimpleNamespace(name="fake"), "fake-model"),
+    )
+    monkeypatch.setattr(exercise_generation, "_practice_generation_client", lambda provider, model: object())
+    monkeypatch.setattr(exercise_generation, "_call_practice_json_with_transport_retry", fake_call)
+
+    result = exercise_generation.analyze_practice_source({"source_mode": "knowledge", "knowledge_title": "材料"})
+    question = result["source_scope"]["questions"][0]
+
+    assert "⟦SOURCE_REF:C01P0001⟧" in captured["prompt"]
+    assert "不要复述完整原文" in captured["prompt"]
+    assert question["content_refs"] == ["C01P0001", "C01P0002"]
+    assert question["source_content"] == "段落A\n\n段落B"
+    assert result["generation"]["analysis_chunk_count"] == 1
+
+
+def test_analysis_output_budget_expands_only_for_dense_material():
+    assert exercise_generation._practice_analysis_output_default("普通材料" * 100) == 6000
+    assert exercise_generation._practice_analysis_output_default("长材料" * 2500) == 9000
+    assert exercise_generation._practice_analysis_output_default("⟦MATHML:x⟧" * 30) == 12000

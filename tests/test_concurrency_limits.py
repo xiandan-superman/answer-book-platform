@@ -31,12 +31,12 @@ class ConcurrencyLimitTests(unittest.TestCase):
 
     def test_priority_model_tasks_keep_short_calls_fast_and_bound_long_generation_streams(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(4, _model_request_limit())
+            self.assertEqual(0, _model_request_limit())
             self.assertEqual(10, question_understanding_worker_count())
             self.assertEqual(10, knowledge_planning_worker_count())
             self.assertEqual(10, evidence_selection_worker_count())
-            self.assertEqual(2, blueprint_refinement_concurrency({}))
-            self.assertEqual(2, practice_generation_concurrency({}))
+            self.assertEqual(4, blueprint_refinement_concurrency({}))
+            self.assertEqual(6, practice_generation_concurrency({}))
 
         with patch.dict(os.environ, {
             "MODEL_REQUEST_MAX_CONCURRENCY": "99",
@@ -44,13 +44,13 @@ class ConcurrencyLimitTests(unittest.TestCase):
             "KNOWLEDGE_PLANNING_MAX_WORKERS": "99",
             "EVIDENCE_SELECTION_MAX_WORKERS": "99",
         }, clear=True):
-            self.assertEqual(10, _model_request_limit())
+            self.assertEqual(64, _model_request_limit())
             self.assertEqual(10, question_understanding_worker_count())
             self.assertEqual(10, knowledge_planning_worker_count())
             self.assertEqual(10, evidence_selection_worker_count())
-        self.assertEqual(4, blueprint_refinement_concurrency({"blueprint_concurrency": 99}))
-        self.assertEqual(4, practice_generation_concurrency({"generation_concurrency": 99}))
-        self.assertEqual(4, practice_generation_concurrency({"generation_concurrency": 5}))
+        self.assertEqual(12, blueprint_refinement_concurrency({"blueprint_concurrency": 99}))
+        self.assertEqual(12, practice_generation_concurrency({"generation_concurrency": 99}))
+        self.assertEqual(5, practice_generation_concurrency({"generation_concurrency": 5}))
 
     def test_other_model_stages_use_doubled_defaults_and_ceilings(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
