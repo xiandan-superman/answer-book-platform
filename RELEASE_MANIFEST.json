@@ -1,13 +1,13 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析平台",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.14",
+  "source_revision": "release-v0.9.15",
   "build_kind": "stable-desktop-release",
-  "created_at": "2026-08-24T22:16:23+08:00",
+  "created_at": "2026-08-24T22:28:41+08:00",
   "validation": {
-    "pytest": "1514 passed, 13 deselected",
+    "pytest": "1516 passed, 13 deselected",
     "platform_quality_gate": "passed for source compilation, version consistency, formula OMML, project completeness and release-focused regression",
     "version_consistency": "passed",
     "saved_real_task_replay": "passed with the repository-contained historical replay fixture",
