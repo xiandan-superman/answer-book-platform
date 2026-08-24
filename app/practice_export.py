@@ -78,7 +78,7 @@ def _renderable_figure(spec: dict[str, Any]) -> bool:
     if any(isinstance(row, dict) and len(row.get("points") or []) >= 2 for row in series):
         return True
     nodes = spec.get("nodes") if isinstance(spec.get("nodes"), list) else []
-    return len([node for node in nodes if isinstance(node, dict) and node.get("id") and node.get("label")]) >= 2
+    return len([node for node in nodes if isinstance(node, dict) and node.get("id")]) >= 2
 
 
 def practice_export_exercise_id(item: dict[str, Any], index: int = 0) -> str:
@@ -1154,7 +1154,7 @@ def _add_data_table(doc: Document, spec: dict[str, Any]) -> None:
 def _chart_png(spec: dict[str, Any]) -> BytesIO | None:
     series = spec.get("series") if isinstance(spec.get("series"), list) else []
     has_points = any(isinstance(row, dict) and len(row.get("points") or []) >= 2 for row in series)
-    nodes = [node for node in (spec.get("nodes") or []) if isinstance(node, dict) and node.get("id") and node.get("label")]
+    nodes = [node for node in (spec.get("nodes") or []) if isinstance(node, dict) and node.get("id")]
     if not has_points and len(nodes) < 2:
         return None
     try:
@@ -1162,7 +1162,7 @@ def _chart_png(spec: dict[str, Any]) -> BytesIO | None:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.font_manager import FontProperties
-        from matplotlib.patches import Circle, Ellipse, FancyBboxPatch
+        from matplotlib.patches import Circle, Ellipse, FancyBboxPatch, Polygon
     except Exception:
         return None
     chart_font_path = next((path for path in CHART_FONT_PATHS if path.exists()), None)
@@ -1173,6 +1173,30 @@ def _chart_png(spec: dict[str, Any]) -> BytesIO | None:
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         by_id = {str(node["id"]): node for node in nodes}
+        plane_edges = [
+            edge for edge in (spec.get("edges") or [])
+            if isinstance(edge, dict)
+            and re.search(r"晶面|阴影|平行\s*z", _text(edge.get("label"), 120), re.IGNORECASE)
+            and str(edge.get("from")) in by_id
+            and str(edge.get("to")) in by_id
+        ]
+        plane_ids: list[str] = []
+        for edge in plane_edges:
+            for endpoint in (str(edge.get("from")), str(edge.get("to"))):
+                if endpoint not in plane_ids:
+                    plane_ids.append(endpoint)
+        if len(plane_ids) >= 3:
+            polygon_points = [(float(by_id[node_id]["x"]), float(by_id[node_id]["y"])) for node_id in plane_ids]
+            ax.add_patch(Polygon(
+                polygon_points,
+                closed=True,
+                facecolor="#93c5fd",
+                edgecolor="#2563eb",
+                linewidth=1.1,
+                alpha=0.28,
+                hatch="//",
+                zorder=0,
+            ))
         for edge in spec.get("edges") or []:
             if not isinstance(edge, dict) or str(edge.get("from")) not in by_id or str(edge.get("to")) not in by_id:
                 continue
@@ -1188,14 +1212,18 @@ def _chart_png(spec: dict[str, Any]) -> BytesIO | None:
         for node in nodes:
             x, y = float(node["x"]), float(node["y"])
             shape = _text(node.get("shape"), 20)
-            if shape == "circle":
+            label = _text(node.get("label"), 200)
+            if not label:
+                patch = Circle((x, y), 0.012, facecolor="#0f172a", edgecolor="#0f172a", lw=0.8, zorder=2)
+            elif shape == "circle":
                 patch = Circle((x, y), 0.065, facecolor="#eff6ff", edgecolor="#2563eb", lw=1.4, zorder=2)
             elif shape == "ellipse":
                 patch = Ellipse((x, y), 0.2, 0.11, facecolor="#eff6ff", edgecolor="#2563eb", lw=1.4, zorder=2)
             else:
                 patch = FancyBboxPatch((x - 0.09, y - 0.05), 0.18, 0.1, boxstyle="round,pad=0.01", facecolor="#eff6ff", edgecolor="#2563eb", lw=1.4, zorder=2)
             ax.add_patch(patch)
-            ax.text(x, y, _text(node.get("label"), 200), ha="center", va="center", fontsize=8.5, fontproperties=chart_font, zorder=3)
+            if label:
+                ax.text(x, y, label, ha="center", va="center", fontsize=8.5, fontproperties=chart_font, zorder=3)
         buffer = BytesIO()
         fig.savefig(buffer, format="png", bbox_inches="tight", facecolor="white")
         plt.close(fig)

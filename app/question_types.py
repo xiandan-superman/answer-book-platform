@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .text_utils import clean_text
@@ -74,7 +75,47 @@ def _type_from_text(text: str) -> str:
     return ""
 
 
+def _mixed_section_short_answer_override(item: dict[str, Any]) -> bool:
+    """Recover grouped short-answer questions mislabeled by a mixed section title."""
+    parent_type = ""
+    for key in ("confirmed_question_type", "question_type"):
+        parent_type = normalize_question_type(item.get(key))
+        if parent_type:
+            break
+    if parent_type != "计算题":
+        return False
+
+    leaves = iter_leaf_question_parts(item) or iter_question_parts(item)
+    if not leaves:
+        return False
+    child_types = []
+    for part in leaves:
+        child_type = explicit_question_type(part)
+        if not child_type:
+            return False
+        child_types.append(child_type)
+    if set(child_types) != {"简答题"}:
+        return False
+
+    section_text = " ".join(
+        str(item.get(key) or "")
+        for key in ("section", "section_raw", "extracted_section", "extracted_section_raw")
+    )
+    if not re.search(r"(?:计算.*(?:综合|分析)|(?:综合|分析).*计算)", section_text):
+        return False
+
+    stem_text = clean_text(str(item.get("stem") or ""))
+    return bool(
+        re.search(
+            r"回答下列问题|说明|讨论|叙述|为什么|影响.{0,12}因素|简述|解释|分析",
+            stem_text,
+        )
+    )
+
+
 def infer_question_type(item: dict[str, Any]) -> str:
+    if _mixed_section_short_answer_override(item):
+        return "简答题"
     for key in ("confirmed_question_type", "question_type"):
         explicit = normalize_question_type(item.get(key))
         if explicit:
@@ -125,6 +166,11 @@ def question_has_type(item: dict[str, Any], question_type: str) -> bool:
     normalized = normalize_question_type(question_type)
     if not normalized:
         return False
+    if _mixed_section_short_answer_override(item):
+        if normalized == "简答题":
+            return True
+        if normalized == "计算题":
+            return False
     if explicit_question_type(item) == normalized:
         return True
     return any(isinstance(part, dict) and explicit_question_type(part) == normalized for part in iter_question_parts(item))
@@ -189,6 +235,8 @@ def has_calculation_answer_unit(item: dict[str, Any]) -> bool:
 
 
 def is_short_answer_question(item: dict[str, Any]) -> bool:
+    if _mixed_section_short_answer_override(item):
+        return True
     return (explicit_question_type(item) or infer_question_type(item)) == "简答题"
 
 

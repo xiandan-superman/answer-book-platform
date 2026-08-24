@@ -146,6 +146,7 @@ def _apply_confirmed_score(target: dict[str, Any], update: dict[str, Any]) -> No
     target["score"] = score
     target["confirmed_score"] = score
     target["score_reviewed"] = True
+    target["score_review_origin"] = str(update.get("score_review_origin") or "manual")
 
 
 def _validate_score_row(row: dict[str, Any], label: str, issues: list[str]) -> None:
@@ -409,6 +410,7 @@ def _automatic_review_row(row: dict[str, Any]) -> dict[str, Any]:
     suggested_score = str(row.get("suggested_score") or row.get("score") or "").strip()
     if suggested_score:
         update["confirmed_score"] = suggested_score
+        update["score_review_origin"] = "auto"
     for child_key in ("subquestions", "requirements"):
         children = row.get(child_key)
         if isinstance(children, list):

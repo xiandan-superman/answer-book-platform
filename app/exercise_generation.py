@@ -2123,7 +2123,12 @@ def _normalize_figures(value: Any) -> list[dict[str, Any]]:
                 y = max(0.0, min(1.0, y))
             node_id = _clean(raw_node.get("id"), 50)
             label = _clean(raw_node.get("label"), 200)
-            if not node_id or not label:
+            # Structural vertices in scientific diagrams (cube corners,
+            # polygon control points, curve intersections) are often
+            # intentionally unlabelled.  Dropping them also drops every edge
+            # attached to them and can turn a complete diagram into a false
+            # quality-gate failure.
+            if not node_id:
                 continue
             shape = _clean(raw_node.get("shape"), 20).lower()
             nodes.append({
@@ -2179,7 +2184,7 @@ def _figure_is_renderable(figure: dict[str, Any]) -> bool:
         for series in figure.get("series") or []
     ):
         return True
-    nodes = [node for node in (figure.get("nodes") or []) if isinstance(node, dict) and node.get("id") and node.get("label")]
+    nodes = [node for node in (figure.get("nodes") or []) if isinstance(node, dict) and node.get("id")]
     return len(nodes) >= 2
 
 
@@ -2563,6 +2568,91 @@ def _figure_element_present(element: str, figures: list[dict[str, Any]], visible
     combined = "".join(visible_normalized)
     series = _figure_series(figures)
     nodes = [node for figure in figures for node in (figure.get("nodes") or []) if isinstance(node, dict)]
+    edges = [edge for figure in figures for edge in (figure.get("edges") or []) if isinstance(edge, dict)]
+
+    # Prove common crystallography-diagram requirements from geometry rather
+    # than requiring a model to copy the blueprint sentence into a label.
+    # This remains stricter than trusting description/semantic_contract text:
+    # every accepted feature must exist as nodes or edges in the render data.
+    node_by_id = {_clean(node.get("id"), 50): node for node in nodes if _clean(node.get("id"), 50)}
+    origin_ids = {
+        node_id for node_id, node in node_by_id.items()
+        if _normalized_figure_term(node.get("label")) in {"o", "原点", "o原点"}
+        or "原点" in _normalized_figure_term(node.get("label"))
+    }
+    axis_edges: list[dict[str, Any]] = []
+    for edge in edges:
+        source = _clean(edge.get("from"), 50)
+        target = _clean(edge.get("to"), 50)
+        if source not in origin_ids or target not in node_by_id or edge.get("directed") is False:
+            continue
+        edge_label = _normalized_figure_term(edge.get("label"))
+        target_label = _normalized_figure_term(node_by_id[target].get("label"))
+        # Crystallography drawings legitimately use x/y/z, a/b/c or a1/a2/a3
+        # for their three axes.  The edge annotation is more reliable than
+        # requiring one particular node-label convention.
+        if (
+            "轴" in edge_label
+            or "晶轴" in edge_label
+            or re.fullmatch(r"[xyzabc](?:[123])?", target_label)
+        ):
+            axis_edges.append(edge)
+    axis_target_ids = {_clean(edge.get("to"), 50) for edge in axis_edges}
+    three_axes_from_origin = bool(origin_ids) and len(axis_target_ids) >= 3
+
+    # Models frequently omit ``directed: false`` on ordinary wireframe
+    # segments.  Prove a cube from its structural graph instead of treating
+    # that harmless schema omission as evidence that no wireframe exists.
+    structural_edges: list[dict[str, Any]] = []
+    for edge in edges:
+        label = _normalized_figure_term(edge.get("label"))
+        if edge in axis_edges or re.search(r"晶向|方向箭头|晶面|阴影|平行z", label):
+            continue
+        structural_edges.append(edge)
+    structural_node_ids = {
+        _clean(edge.get(endpoint), 50)
+        for edge in structural_edges
+        for endpoint in ("from", "to")
+        if _clean(edge.get(endpoint), 50) in node_by_id
+    }
+    # The origin-to-axis segments usually double as three cube edges, so the
+    # origin is a valid eighth wireframe vertex even though those segments are
+    # classified as axes above.
+    if structural_node_ids and origin_ids:
+        structural_node_ids.update(origin_ids)
+    cube_wireframe = len(structural_node_ids) >= 8 and len(structural_edges) >= 8
+    direction_arrow = any(
+        edge.get("directed") is not False
+        and (
+            re.search(r"晶向|方向箭头|晶体学方向|向量", _normalized_figure_term(edge.get("label")))
+            or (
+                _clean(edge.get("from"), 50) in origin_ids
+                and _clean(edge.get("to"), 50) not in axis_target_ids
+                and bool(_clean(node_by_id.get(_clean(edge.get("to"), 50), {}).get("label"), 200))
+            )
+        )
+        for edge in edges
+    )
+    plane_edges = [
+        edge for edge in edges
+        if re.search(r"晶面|阴影|平行z", _normalized_figure_term(edge.get("label")))
+    ]
+    plane_node_ids = {
+        _clean(edge.get(endpoint), 50)
+        for edge in plane_edges
+        for endpoint in ("from", "to")
+        if _clean(edge.get(endpoint), 50) in node_by_id
+    }
+    drawn_plane = len(plane_edges) >= 3 and len(plane_node_ids) >= 3
+
+    if "立方晶胞线框" in normalized and "晶轴" in normalized and "原点" in normalized:
+        return three_axes_from_origin and cube_wireframe
+    if "晶向" in normalized and "箭头" in normalized:
+        return direction_arrow
+    if "晶面" in normalized and any(term in normalized for term in ("半透明", "斜线", "阴影")):
+        return drawn_plane
+    if "晶轴正方向" in normalized and "阵点" in normalized:
+        return three_axes_from_origin and len(node_by_id) >= 4
 
     if _has_axis_pair(figures, element):
         return True
@@ -4422,20 +4512,9 @@ def _chat_protocol_provider(provider):
     return replace(provider, api_protocol="chat_completions", responses_streaming=False)
 
 
-def _is_lingsuan_gpt(provider, model: str) -> bool:
-    provider_name = str(getattr(provider, "name", "") or "").strip().lower()
-    base_url = str(getattr(provider, "base_url", "") or "").strip().lower()
-    model_name = str(model or "").strip().lower()
-    return (
-        ("lingsuan" in provider_name or "lingsuan.top" in base_url)
-        and model_name.startswith("gpt-")
-    )
-
-
 def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:
-    """Keep only Lingsuan GPT practice generation off the Responses API."""
-    routed_provider = _chat_protocol_provider(provider) if _is_lingsuan_gpt(provider, model) else provider
-    return OpenAICompatibleClient(routed_provider)
+    """Use the provider's configured protocol for practice generation."""
+    return OpenAICompatibleClient(provider)
 
 
 def _chat_fallback_client(client: OpenAICompatibleClient) -> OpenAICompatibleClient:
@@ -4723,6 +4802,7 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
                     ],
                     "nodes": [
                         {
+                            "id": _clean(node.get("id"), 80),
                             "label": _clean(node.get("label"), 200),
                             "x": node.get("x"),
                             "y": node.get("y"),
@@ -4730,9 +4810,22 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
                         for node in (figure.get("nodes") or [])[:30]
                         if isinstance(node, dict)
                     ],
+                    "edges": [
+                        {
+                            "from": _clean(edge.get("from"), 80),
+                            "to": _clean(edge.get("to"), 80),
+                            "label": _clean(edge.get("label"), 200),
+                            "directed": edge.get("directed") is not False,
+                        }
+                        for edge in (figure.get("edges") or [])[:50]
+                        if isinstance(edge, dict)
+                    ],
                     "renderer_contract": {
                         "series_names_are_visible_legend_labels": True,
                         "nodes_are_visible_markers_with_text_labels": True,
+                        "edges_are_visible_lines": True,
+                        "directed_edges_have_arrowheads": True,
+                        "crystal_plane_edges_are_shaded_or_hatched_when_labelled": True,
                     },
                 }
                 for figure in (exercise.get("figures") or [])
@@ -4779,7 +4872,7 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
 - 判断题的待判断命题可以为真，也可以为假。命题为假本身不是 fact_error；只检查学生能否依据已给材料和边界得到唯一真值。仅当命题真假不唯一、混合了无法整体判断的多项陈述、缺少决定真值的条件、超出材料边界，或题干的事实性前提本身错误时报告风险。
 - 区分“待判断命题”和题干用来设定情境的事实性前提。无论题型如何，事实性前提都必须受材料支持；主动核对“同时发生、均、总是、必然、无论、始终”等全称或绝对化措辞，不能把只对部分材料成立的结论扩展到全部对象。
 - 不得为了显得严格而编造问题；不要把“要求学生掌握标准示意图”误判为题干必须给出全部曲线数据。
-- figure_summary.renderer_contract 是实际导出器的可视规则；已声明会显示的图例和节点标签，不得误报为“图中未标注”。
+- figure_summary.renderer_contract 是实际导出器的可视规则；已声明会显示的图例、节点、连线、箭头和晶面填充，不得误报为“图中未标注/未定义”。
 
 ## 待审查内容
 

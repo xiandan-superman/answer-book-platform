@@ -387,6 +387,37 @@ def test_practice_export_renders_node_edge_diagram_as_media():
     assert report["media_count"] >= 1
 
 
+def test_practice_export_renders_unlabelled_wireframe_vertices_and_shaded_plane():
+    data = _practice()
+    data["exercises"][0]["stem"] = "根据图示判断晶向与晶面。"
+    data["exercises"][0]["figures"] = [{
+        "figure_id": "g1",
+        "location": "stem",
+        "figure_type": "diagram",
+        "nodes": [
+            {"id": "o", "label": "O", "x": 0.2, "y": 0.5, "shape": "circle"},
+            {"id": "corner", "label": "", "x": 0.4, "y": 0.8, "shape": "circle"},
+            {"id": "a", "label": "A", "x": 0.5, "y": 0.7, "shape": "box"},
+            {"id": "b", "label": "B", "x": 0.7, "y": 0.7, "shape": "box"},
+            {"id": "c", "label": "C", "x": 0.7, "y": 0.3, "shape": "box"},
+            {"id": "d", "label": "D", "x": 0.5, "y": 0.3, "shape": "box"},
+        ],
+        "edges": [
+            {"from": "o", "to": "corner", "label": "晶向箭头", "directed": True},
+            {"from": "a", "to": "b", "label": "阴影晶面边界", "directed": False},
+            {"from": "b", "to": "c", "label": "平行 z 轴", "directed": False},
+            {"from": "c", "to": "d", "label": "阴影晶面边界", "directed": False},
+            {"from": "d", "to": "a", "label": "平行 z 轴", "directed": False},
+        ],
+    }]
+
+    content = build_practice_question_docx(data)
+    report = validate_docx_output(content, data)
+
+    assert report["ok"]
+    assert report["media_count"] >= 1
+
+
 def test_practice_figure_title_stays_with_following_image():
     data = _practice()
     data["exercises"][0]["figures"] = [{

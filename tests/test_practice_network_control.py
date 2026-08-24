@@ -142,6 +142,28 @@ def test_paused_job_cannot_resume_after_parent_deadline(tmp_path, monkeypatch) -
     assert latest["generation_deadline_at"] == past
 
 
+def test_generation_deadline_enters_draining_without_losing_worker_lease(tmp_path, monkeypatch) -> None:
+    job = _job(tmp_path, monkeypatch)
+    running = practice_jobs.update_practice_job(job["job_id"], status="running")
+
+    draining = practice_jobs._mark_generation_deadline_draining(
+        job["job_id"],
+        lease_epoch=int(running["control_epoch"]),
+        elapsed=421,
+    )
+
+    assert draining["status"] == "running"
+    assert draining["control_epoch"] == running["control_epoch"]
+    assert draining["deadline_stop_requested"] is True
+    assert draining["progress_message"] == "网络等待截止时间已到，已停止派发新请求；正在保存已完成题目。"
+    # The still-valid lease lets the worker finalize and persist a partial
+    # result/history instead of being rejected as a stale failed task.
+    ensure_practice_generation_active({
+        "_job_id": job["job_id"],
+        "_job_epoch": running["control_epoch"],
+    })
+
+
 def test_invalidated_inflight_attempt_is_charged_and_recorded(tmp_path, monkeypatch) -> None:
     job = _job(tmp_path, monkeypatch)
     practice_jobs.update_practice_job(job["job_id"], status="running")

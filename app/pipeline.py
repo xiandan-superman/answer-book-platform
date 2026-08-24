@@ -114,6 +114,34 @@ CONTENT_QUALITY_MODEL_REPAIR_CODES = {
 }
 
 
+def _pin_text_provider_model(provider: object, model: str):
+    """Keep every recovery path on the model explicitly selected for a task role."""
+
+    selected = str(model or "").strip()
+    if not selected:
+        return provider
+    return replace(
+        provider,
+        default_model=selected,
+        model_options=(selected,),
+    )
+
+
+def _pin_vision_provider_model(provider: object, model: str):
+    """Pin both generic and vision candidate lists to the configured vision model."""
+
+    selected = str(model or "").strip()
+    if not selected:
+        return provider
+    return replace(
+        provider,
+        default_model=selected,
+        model_options=(selected,),
+        vision_model=selected,
+        vision_model_options=(selected,),
+    )
+
+
 def _normalize_generated_expression_segments(payload: dict) -> list[str]:
     """Apply deterministic academic-expression typing after every model write.
 
@@ -909,13 +937,22 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         ).strip()
         vision_provider = get_provider(getattr(record, "vision_provider", "") or record.provider)
         vision_model = str(getattr(record, "vision_model", "") or getattr(vision_provider, "vision_model", "") or record.model).strip()
+        provider = _pin_text_provider_model(provider, record.model)
+        reasoning_provider = _pin_text_provider_model(reasoning_provider, reasoning_model)
+        answer_provider = _pin_text_provider_model(answer_provider, answer_model)
+        correctness_provider = _pin_text_provider_model(correctness_provider, correctness_model)
+        vision_provider = _pin_vision_provider_model(vision_provider, vision_model)
         direct_answer_multimodal = provider_model_supports_vision(answer_provider, answer_model)
         image_provider = get_provider(getattr(record, "image_provider", "") or record.provider)
         image_model = str(getattr(record, "image_model", "") or getattr(image_provider, "image_model", "") or "").strip()
         if not provider_supports_image_generation(image_provider):
             image_model = ""
         if image_model:
-            image_provider = replace(image_provider, image_model=image_model)
+            image_provider = replace(
+                image_provider,
+                image_model=image_model,
+                image_model_options=(image_model,),
+            )
         key_issues = _validate_required_provider_keys(
             use_model=options.use_model,
             allow_demo_without_key=options.allow_demo_without_key,

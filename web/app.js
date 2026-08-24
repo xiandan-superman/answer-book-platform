@@ -9746,8 +9746,8 @@ function taskManagerActions(task = {}, reviewPending = false) {
     add(caps.resume, "resume", "green-action", "fas fa-play", "继续");
     add(caps.cancel, "cancel", "red-action", "fas fa-times", "取消");
       add(caps.view_result, "result", task.status === "completed_with_issues" ? "yellow-action" : "blue-action", "fas fa-eye", task.status === "completed_with_issues" ? "审核结果" : "查看结果");
-    add(caps.download, "download", "green-action", "fas fa-download", "下载交付物");
     add(caps.retry && !caps.reopen_review, "retry-exam", "green-action", "fas fa-rotate", "从检查点重跑");
+    add(caps.download, "download", "green-action", "fas fa-download", "下载交付物");
     add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
   }
   const feedbackStatus = taskDisplayStatus(task);

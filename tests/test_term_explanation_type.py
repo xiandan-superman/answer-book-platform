@@ -5,13 +5,42 @@ import json
 from docx import Document
 
 from app.docx_v4 import build_docx_from_fragments
-from app.question_types import infer_question_type, normalize_question_type, question_kind
+from app.question_types import (
+    infer_question_type,
+    is_calculation_question,
+    is_short_answer_question,
+    normalize_question_type,
+    question_has_type,
+    question_kind,
+)
 
 
 def test_term_explanation_type_normalization() -> None:
     assert normalize_question_type("名词解释题") == "名词解释"
     assert infer_question_type({"section": "一、名词解释题", "stem": "点阵畸变"}) == "名词解释"
     assert question_kind({"question_type": "名词解释"}) == "term_explanation"
+
+
+def test_mixed_calculation_section_preserves_unanimous_short_answer_group() -> None:
+    item = {
+        "question_id": "calc_s04_01",
+        "section": "四、计算与综合分析题",
+        "section_raw": "四、计算与综合分析题",
+        "question_type": "计算题",
+        "confirmed_question_type": "计算题",
+        "stem": "扩散是材料科学中的重要过程，请回答下列问题。",
+        "subquestions": [
+            {"number": "(1)", "question_type": "简答题", "stem": "说明扩散机制。"},
+            {"number": "(2)", "question_type": "简答题", "stem": "讨论影响因素。"},
+        ],
+    }
+
+    assert infer_question_type(item) == "简答题"
+    assert question_kind(item) == "short_answer"
+    assert question_has_type(item, "简答题") is True
+    assert question_has_type(item, "计算题") is False
+    assert is_short_answer_question(item) is True
+    assert is_calculation_question(item) is False
 
 
 def test_term_explanation_docx_renders_evidence_and_answer_only(tmp_path) -> None:

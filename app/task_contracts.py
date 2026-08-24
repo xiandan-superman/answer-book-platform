@@ -516,6 +516,7 @@ def capabilities_for(
             view_result=True,
             view_quality=True,
             view_files=is_exam,
+            retry=is_exam,
             reuse=not is_exam,
             download=is_exam,
             delete=True,

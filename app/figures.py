@@ -748,7 +748,18 @@ def draw_binary_phase_diagram(spec: dict[str, Any], output: Path) -> None:
 
 
 def draw_crystal_unit_cell(spec: dict[str, Any], output: Path) -> None:
-    structure = str(spec.get("structure") or "").lower()
+    raw_structure = spec.get("structure")
+    raw_dimension = raw_structure.get("dimension") if isinstance(raw_structure, dict) else None
+    dimension_text = str(raw_dimension or "").strip().lower()
+    is_two_dimensional = (
+        raw_dimension == 2
+        or dimension_text in {"2", "2d", "2-d", "two-dimensional", "two dimensional"}
+        or "二维" in dimension_text
+    )
+    if isinstance(raw_structure, dict) and is_two_dimensional:
+        _draw_two_dimensional_crystal_cell(spec, raw_structure, output)
+        return
+    structure = str(raw_structure or "").lower()
     if not structure:
         raise ValueError("crystal_unit_cell: structure is required")
     if structure in {"fcc", "face_centered_cubic", "面心立方"}:
@@ -772,6 +783,85 @@ def draw_crystal_unit_cell(spec: dict[str, Any], output: Path) -> None:
             ax.scatter([x], [y], s=120, color="#dc2626", edgecolors="#111", linewidths=0.8, zorder=4)
         ax.text(0.75, -0.12, "阴/阳离子占位", fontsize=8, color="#dc2626")
     ax.set_title(spec.get("title") or spec.get("caption") or "晶胞结构示意图", fontsize=11)
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output)
+    plt.close(fig)
+
+
+def _draw_two_dimensional_crystal_cell(
+    spec: dict[str, Any],
+    structure: dict[str, Any],
+    output: Path,
+) -> None:
+    """Render a publication-style 2D binary lattice instead of a 3D cube."""
+
+    basis = structure.get("basis") if isinstance(structure.get("basis"), list) else []
+    species = [str(item.get("species") or "").strip() for item in basis if isinstance(item, dict)]
+    first = species[0] if species else "A"
+    second = species[1] if len(species) > 1 else "B"
+    formula = str(((structure.get("unit_cell") or {}).get("stoichiometric_formula") if isinstance(structure.get("unit_cell"), dict) else "") or f"{first}{second}")
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.0), dpi=180)
+    palette = {first: "#2563eb", second: "#f59e0b"}
+    for row in range(5):
+        for column in range(5):
+            label = first if (row + column) % 2 == 0 else second
+            # Radius is expressed in lattice-coordinate units so nearest
+            # neighbours of equal radius touch exactly, independent of DPI.
+            ax.add_patch(Circle(
+                (column, row),
+                0.5,
+                facecolor=palette[label],
+                edgecolor="#111827",
+                linewidth=0.8,
+                zorder=3,
+            ))
+            ax.text(column, row, label, ha="center", va="center", fontsize=7.5, color="white", weight="bold", zorder=7)
+
+    diamond = [(1, 2), (2, 1), (3, 2), (2, 3), (1, 2)]
+    ax.plot(
+        [point[0] for point in diamond],
+        [point[1] for point in diamond],
+        color="#dc2626",
+        linewidth=2.1,
+        zorder=5,
+    )
+    # Primitive-vector arrows sit above both the cell outline and atoms. Their
+    # labels are offset away from the red boundary for reliable visual QA.
+    ax.annotate(
+        "",
+        xy=(2.92, 1.08),
+        xytext=(2.08, 1.92),
+        arrowprops={"arrowstyle": "-|>", "color": "#166534", "lw": 2.2},
+        zorder=8,
+    )
+    ax.annotate(
+        "",
+        xy=(2.92, 2.92),
+        xytext=(2.08, 2.08),
+        arrowprops={"arrowstyle": "-|>", "color": "#166534", "lw": 2.2},
+        zorder=8,
+    )
+    ax.text(2.46, 1.42, r"$a_1$", color="#166534", fontsize=10, weight="bold", zorder=9,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.5})
+    ax.text(2.46, 2.48, r"$a_2$", color="#166534", fontsize=10, weight="bold", zorder=9,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.5})
+    ax.annotate(
+        "代表性晶胞",
+        xy=(3.0, 2.0),
+        xytext=(4.75, 2.8),
+        arrowprops={"arrowstyle": "-", "color": "#dc2626", "lw": 1.1},
+        color="#dc2626",
+        fontsize=9,
+        bbox={"boxstyle": "round,pad=0.18", "facecolor": "white", "edgecolor": "none", "alpha": 0.9},
+        zorder=8,
+    )
+    ax.text(4.75, 1.85, f"计量成分式：{formula}", ha="left", fontsize=9.5, weight="bold")
+    ax.set_xlim(-0.55, 7.0)
+    ax.set_ylim(-0.55, 4.55)
     ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
     fig.tight_layout()

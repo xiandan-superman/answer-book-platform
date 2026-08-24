@@ -196,6 +196,14 @@ def test_control_capabilities_remain_different_between_workflows() -> None:
     assert practice.cancel is True
 
 
+def test_only_exam_review_candidate_can_rerun_from_checkpoint() -> None:
+    exam = capabilities_for(WorkflowType.EXAM_ANALYSIS, RunStatus.COMPLETED_WITH_ISSUES)
+    practice = capabilities_for(WorkflowType.PRACTICE_BY_QUESTION, RunStatus.COMPLETED_WITH_ISSUES)
+
+    assert exam.retry is True
+    assert practice.retry is False
+
+
 def test_only_exam_queued_run_can_be_started_or_cancelled() -> None:
     exam = capabilities_for(WorkflowType.EXAM_ANALYSIS, RunStatus.QUEUED)
     practice = capabilities_for(WorkflowType.PRACTICE_BY_KNOWLEDGE, RunStatus.QUEUED)

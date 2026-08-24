@@ -43,6 +43,12 @@ def test_formula_numeric_equality_understands_percentage_subtraction() -> None:
     ) == []
 
 
+def test_pure_unit_conversion_relation_is_not_treated_as_same_unit_arithmetic() -> None:
+    assert formula_numeric_consistency_issues(
+        [{"latex": r"1\ \mathrm{cm}=10^7\ \mathrm{nm}", "role": "relation"}]
+    ) == []
+
+
 def test_substitution_expression_must_match_same_quantity_result_formula() -> None:
     issues = formula_numeric_consistency_issues(
         [

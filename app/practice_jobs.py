@@ -600,6 +600,24 @@ def list_practice_jobs_for_batch(batch_id: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _mark_generation_deadline_draining(job_id: str, *, lease_epoch: int, elapsed: int) -> dict[str, Any]:
+    """Stop new generation calls without discarding the worker's checkpoint."""
+    return update_practice_job(
+        job_id,
+        expected_status="running",
+        expected_epoch=lease_epoch,
+        last_heartbeat_at=_now(),
+        last_progress_at=_now(),
+        health_status="waiting",
+        current_operation="正在停止新请求并保存已完成题目",
+        warning_reason="本批次网络等待已达截止时间。",
+        suggested_action="正在保存已完成题目，随后可继续未完成项。",
+        progress_message="网络等待截止时间已到，已停止派发新请求；正在保存已完成题目。",
+        elapsed_seconds=elapsed,
+        deadline_stop_requested=True,
+    )
+
+
 def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[str, Any]]) -> None:
     # The durable Huey queue owns task-level concurrency. Claiming is atomic so
     # a duplicate persisted queue message cannot execute or bill the same job
@@ -646,7 +664,16 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     generation_deadline_reached = datetime.now().astimezone() >= deadline
                 except ValueError:
                     pass
-            if elapsed >= timeout_seconds or generation_deadline_reached:
+            if generation_deadline_reached:
+                # The generation deadline is a soft stop for *new* model calls.
+                # Keep the worker lease alive so in-flight calls can unwind and
+                # the worker can persist completed questions plus placeholders
+                # for unfinished slots.  Marking the job failed here used to
+                # discard that final result/history and made the advertised
+                # "continue unfinished items" action impossible.
+                _mark_generation_deadline_draining(job_id, lease_epoch=lease_epoch, elapsed=elapsed)
+                return
+            if elapsed >= timeout_seconds:
                 try:
                     pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
                 except Exception:
@@ -659,17 +686,13 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     status="failed",
                     current_stage="failed",
                     support_id=_new_support_id(),
-                    error=(
-                        "本批次网络等待已达持久化截止时间，已停止新请求。"
-                        if generation_deadline_reached
-                        else f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待。"
-                    ),
+                    error=f"后台任务超过 {timeout_seconds} 秒未完成，已停止等待。",
                     model_usage=model_call_cost_summary(job_id),
                     diagnostic_context={"pinned_model_traces": pinned_model_traces},
-                    progress_message="网络等待截止时间已到，已保留完成的题目。",
+                    progress_message="后台任务已超过最长处理时间，已停止等待。",
                     health_status="error",
                     warning_reason="后台任务已超过允许等待时间。",
-                    suggested_action="可显式继续未完成项。",
+                    suggested_action="可重新运行任务。",
                     completed_at=_now(),
                     elapsed_seconds=elapsed,
                 )

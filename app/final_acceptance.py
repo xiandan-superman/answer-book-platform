@@ -71,13 +71,19 @@ def diagnostic_advisories(stage_dir: Path) -> dict[str, Any]:
     answer_coverage = read_json(stage_dir / "answer_coverage_audit.json") or {}
     semantic_quality = read_json(stage_dir / "semantic_quality_advisories.json") or {}
     pending_questions: list[dict[str, Any]] = []
+    informational_fragment_warning_count = 0
     for fragment in fragments_data.get("fragments", []) if isinstance(fragments_data, dict) else []:
         if not isinstance(fragment, dict):
             continue
         answer = str(fragment.get("answer", "")).strip()
         warnings = [str(item) for item in fragment.get("warnings", []) if str(item).strip()]
         flags = [item for item in fragment.get("_review_flags", []) if isinstance(item, dict)]
-        if answer in PENDING_REVIEW_ANSWERS or warnings or flags:
+        # A model caveat is useful context for the reader, but it is not by
+        # itself an unresolved answer. Hard audits and explicit review flags
+        # decide whether the question must remain in the review queue.
+        if warnings and answer not in PENDING_REVIEW_ANSWERS and not flags:
+            informational_fragment_warning_count += len(warnings)
+        if answer in PENDING_REVIEW_ANSWERS or flags:
             pending_questions.append(
                 {
                     "question_id": str(fragment.get("question_id", "")).strip(),
@@ -91,14 +97,28 @@ def diagnostic_advisories(stage_dir: Path) -> dict[str, Any]:
     review_question_count = int(review_docx.get("review_question_count", 0) or 0) if isinstance(review_docx, dict) else 0
     content_issue_count = int(content_quality.get("issue_count", 0) or 0) if isinstance(content_quality, dict) else 0
     coverage_warnings = answer_coverage.get("warnings", []) if isinstance(answer_coverage, dict) else []
-    semantic_advisory_count = int(semantic_quality.get("advisory_count", 0) or 0)
+    semantic_advisories = [
+        item for item in semantic_quality.get("advisories", [])
+        if isinstance(item, dict)
+    ] if isinstance(semantic_quality, dict) else []
+    semantic_advisory_count = int(semantic_quality.get("advisory_count", len(semantic_advisories)) or 0)
+    unresolved_semantic_ids = {
+        str(item).strip()
+        for item in semantic_quality.get("unresolved_correctness_question_ids", [])
+        if str(item).strip()
+    } if isinstance(semantic_quality, dict) else set()
+    actionable_semantic_advisory_count = sum(
+        1
+        for item in semantic_advisories
+        if str(item.get("decision") or "").strip().lower() == "repair"
+        or str(item.get("question_id") or "").strip() in unresolved_semantic_ids
+    )
     review_service_advisory_count = int(semantic_quality.get("review_service_advisory_count", 0) or 0)
     advisory = bool(
         pending_questions
-        or review_question_count
         or content_issue_count
         or coverage_warnings
-        or semantic_advisory_count
+        or actionable_semantic_advisory_count
         or review_service_advisory_count
     )
     return {
@@ -108,6 +128,11 @@ def diagnostic_advisories(stage_dir: Path) -> dict[str, Any]:
         "content_quality_issue_count": content_issue_count,
         "answer_coverage_warning_count": len(coverage_warnings),
         "semantic_model_advisory_count": semantic_advisory_count,
+        "actionable_semantic_advisory_count": actionable_semantic_advisory_count,
+        "informational_semantic_advisory_count": max(
+            0, semantic_advisory_count - actionable_semantic_advisory_count
+        ),
+        "informational_fragment_warning_count": informational_fragment_warning_count,
         "review_service_advisory_count": review_service_advisory_count,
         "pending_questions": pending_questions[:50],
         "message": "诊断提示已随交付报告保留；正式答案未使用候选版或人工放行。" if advisory else "",

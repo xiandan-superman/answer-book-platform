@@ -132,15 +132,92 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
     if section_match:
         return float(section_match.group(1))
     text = _score_text(question, ("stem", "title", "raw_title"))
-    for pattern in (
-        r"每小题\s*(\d+(?:\.\d+)?)\s*分",
-        r"[（(]\s*(?:本题)?\s*(?:满分|共)?\s*(\d+(?:\.\d+)?)\s*分\s*[）)]",
-        r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分",
-        r"(\d+(?:\.\d+)?)\s*分",
-    ):
+    # A parent stem commonly embeds every child line, including ``(1) ...
+    # (3分)``.  Those marks belong to the children and must never become the
+    # suggested parent total.  For a grouped parent, only an explicitly named
+    # total is safe to infer from the stem.
+    has_real_subquestions = any(
+        isinstance(row, dict) and not row.get("synthetic_parent")
+        for row in (question.get("subquestions") or [])
+    )
+    patterns = (
+        (
+            r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分",
+        )
+        if has_real_subquestions
+        else (
+            r"每小题\s*(\d+(?:\.\d+)?)\s*分",
+            r"[（(]\s*(?:本题)?\s*(?:满分|共)?\s*(\d+(?:\.\d+)?)\s*分\s*[）)]",
+            r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分",
+            r"(\d+(?:\.\d+)?)\s*分",
+        )
+    )
+    for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             return float(match.group(1))
     if section_total:
         return float(section_total.group(1))
     return None
+
+
+def infer_explicit_parent_score(question: dict[str, Any]) -> float | None:
+    """Return a parent total only when the source identifies it as a total."""
+    section_text = _score_text(
+        question,
+        ("section", "section_raw", "extracted_section", "extracted_section_raw", "raw_title"),
+    )
+    per_question = _per_question_score_from_text(section_text, question)
+    if per_question is not None:
+        return per_question
+    section_total = re.search(r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分", section_text)
+    if section_total:
+        return float(section_total.group(1))
+    section_item_count = int(question.get("section_item_count") or 0)
+    represents_whole_section = bool(question.get("subquestions")) and (
+        section_item_count == 1
+        if section_item_count
+        else str(question.get("number") or "").strip() == str(question.get("major_number") or "").strip()
+    )
+    if represents_whole_section:
+        bare_section_total = re.search(r"[（(]\s*(\d+(?:\.\d+)?)\s*分\s*[）)]", section_text)
+        if bare_section_total:
+            return float(bare_section_total.group(1))
+    stem_text = _score_text(question, ("stem", "title"))
+    explicit_stem_total = re.search(
+        r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分",
+        stem_text,
+    )
+    if explicit_stem_total:
+        return float(explicit_stem_total.group(1))
+
+    stored_score = next(
+        (score for key in SCORE_KEYS if (score := parse_score(question.get(key))) is not None),
+        None,
+    )
+    if stored_score is None:
+        return None
+    review_origin = str(question.get("score_review_origin") or "").strip().lower()
+    if review_origin == "manual":
+        return stored_score
+    if question.get("subquestions"):
+        child_scores = [
+            infer_suggested_score(row)
+            for row in question.get("subquestions") or []
+            if isinstance(row, dict)
+        ]
+        known_child_scores = [score for score in child_scores if score is not None]
+        # Legacy unattended checkpoints did not record score provenance.  A
+        # leaked first-child score is recognizable because the parent has no
+        # source total, the same value occurs on a child, and it differs from
+        # the complete child sum.  Ignore that stale value so checkpoint
+        # reruns can recover instead of failing forever.
+        if (
+            review_origin in {"", "auto"}
+            and known_child_scores
+            and stored_score in known_child_scores
+            and len(known_child_scores) == len(question.get("subquestions") or [])
+            and abs(stored_score - sum(known_child_scores)) > 1e-9
+        ):
+            return None
+    return stored_score

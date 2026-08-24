@@ -66,6 +66,19 @@ class FormulaConversionError(RuntimeError):
 
 def normalize_latex(src: str) -> str:
     text = normalize_expression_latex(str(src or "").replace(r"\ominus", r"\theta"))
+    # LibreOffice's OMML importer can misread one upright run such as
+    # ``\mathrm{at.\%Ni}`` as the internal token ``%N`` and draw a red
+    # unknown-glyph marker.  Keep the percent sign and following chemical
+    # symbol in separate upright runs; Microsoft Word renders both forms the
+    # same, while the split form is portable across the bundled PDF renderer.
+    text = re.sub(
+        r"\\mathrm\{(?P<prefix>[^{}]*?\\%)(?P<element>[A-Z][a-z]?)(?P<suffix>[^{}]*)\}",
+        lambda match: (
+            rf"\mathrm{{{match.group('prefix')}}}"
+            rf"\mathrm{{{match.group('element')}{match.group('suffix')}}}"
+        ),
+        text,
+    )
     # Word's linear-math parser treats the domain label ``Le`` as the relation
     # keyword ``le`` (≤). In mass-fraction notation it is an identifier, so
     # make the token boundary and upright typography explicit.

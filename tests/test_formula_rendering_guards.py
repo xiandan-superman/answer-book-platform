@@ -71,6 +71,21 @@ class FormulaRenderingGuardTests(unittest.TestCase):
         self.assertNotIn("<m:e/>", xml)
         self.assertFalse(math_node_has_empty_delimiter_slots(omml))
 
+    def test_percent_before_chemical_symbol_uses_separate_portable_omml_runs(self) -> None:
+        latex = r"\mathrm{Cu}-18\,\mathrm{at.\%Ni}"
+
+        normalized = normalize_latex(latex)
+        omml = omml_from_latex(latex)
+        texts = omml.xpath(
+            ".//m:t/text()",
+            namespaces={"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"},
+        )
+
+        self.assertIn(r"\mathrm{at.\%}\mathrm{Ni}", normalized)
+        self.assertIn("%", texts)
+        self.assertIn("Ni", texts)
+        self.assertNotIn("%Ni", texts)
+
     def test_docx_audit_reports_empty_formula_delimiter_slots(self) -> None:
         xml = etree.fromstring(
             b"""

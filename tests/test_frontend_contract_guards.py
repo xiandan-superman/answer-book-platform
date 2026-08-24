@@ -30,6 +30,13 @@ def test_task_controls_are_capability_driven() -> None:
     assert "task.capabilities || {}" in APP_JS
 
 
+def test_review_candidate_checkpoint_retry_is_not_cut_off_by_card_action_limit() -> None:
+    retry_action = 'add(caps.retry && !caps.reopen_review, "retry-exam"'
+    download_action = 'add(caps.download, "download"'
+
+    assert APP_JS.index(retry_action) < APP_JS.index(download_action)
+
+
 def test_exam_flow_has_explicit_high_risk_correctness_model_route() -> None:
     assert 'id="correctnessProviderSelect"' in INDEX_HTML
     assert 'id="correctnessModelSelect"' in INDEX_HTML

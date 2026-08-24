@@ -564,11 +564,22 @@ def _split_requirement_text(text: str) -> list[str]:
     index = 0
     while index < len(out):
         current = out[index].strip()
+        answer_action_re = r"(计算|求出|求得|判断|说明|写出|列出|画出|绘制|作图|标出|分析|比较|解释|讨论|叙述|简述)"
         context_prefix = bool(
             re.match(r"^(根据|依据|由)", current)
-            and not re.search(r"(计算|求出|求得|判断|说明|写出|列出|画出|绘制|作图|标出|分析|比较|解释)", current)
+            and not re.search(answer_action_re, current)
         )
-        if context_prefix and index + 1 < len(out):
+        # A clause containing only givens (density, constants, composition,
+        # etc.) is context for the following action, not an independently
+        # answerable subquestion.  This also covers model-independent input
+        # such as “M=..., ρ=..., N_A=...，计算...”.
+        condition_prefix = bool(
+            index + 1 < len(out)
+            and not re.search(answer_action_re, current)
+            and re.search(answer_action_re, out[index + 1])
+            and not _is_response_constraint(out[index + 1])
+        )
+        if (context_prefix or condition_prefix) and index + 1 < len(out):
             merged.append(clean_text(f"{current}，{out[index + 1]}"))
             index += 2
             continue

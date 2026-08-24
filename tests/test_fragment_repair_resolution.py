@@ -186,8 +186,13 @@ def test_fragment_generation_never_promotes_mathml_markup_from_question_stem() -
         "question_type": "简答题",
         "stem": f"(1)说明机理\n(2)在1000 K{marker}保温后画图",
         "subquestions": [
-            {"number": "1.1", "question_type": "简答题", "stem": "说明机理"},
-            {"number": "1.2", "question_type": "简答题", "stem": "画图"},
+            {"number": "1.1", "question_type": "简答题", "stem": f"说明1000 K{marker}下的机理"},
+            {
+                "number": "1.2",
+                "question_type": "简答题",
+                "stem": "画图",
+                "requirements": [{"number": "1.2.1", "stem": f"标出1000 K{marker}条件"}],
+            },
         ],
     }
     draft = {

@@ -479,6 +479,14 @@ def formula_numeric_consistency_issues(formulas: list[dict[str, Any]]) -> list[s
             # is not an authoritative calculation ledger entry.
             continue
         latex = str(formula.get("latex") or "")
+        if str(formula.get("role") or "").strip().lower() == "relation":
+            units = re.findall(r"\\(?:mathrm|text)\{([^{}]+)\}", latex)
+            if len(set(units)) >= 2:
+                # A pure unit conversion intentionally has different numeric
+                # values on either side (for example 1 cm = 10^7 nm).  The
+                # lightweight arithmetic checker is unit-agnostic, so this is
+                # not an authoritative equality for its purposes.
+                continue
         parts = [part.strip() for part in latex.split("=") if part.strip()]
         if len(parts) < 2:
             continue

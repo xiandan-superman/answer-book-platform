@@ -148,7 +148,14 @@ def test_semantic_review_checks_complete_set_once_without_answer_content(monkeyp
                 "difficulty": "挑战",
                 "stem": "分析综合情形。",
                 "knowledge_points": ["概念"],
-                "figures": [{"series": [{"name": "边界曲线", "points": [[0, 1], [1, 2], [2, 3]]}]}],
+                "figures": [{
+                    "series": [{"name": "边界曲线", "points": [[0, 1], [1, 2], [2, 3]]}],
+                    "nodes": [
+                        {"id": "o", "label": "O", "x": 0.1, "y": 0.1},
+                        {"id": "p", "label": "P", "x": 0.8, "y": 0.8},
+                    ],
+                    "edges": [{"from": "o", "to": "p", "label": "晶向 OP", "directed": True}],
+                }],
             },
         ],
     }
@@ -176,6 +183,8 @@ def test_semantic_review_checks_complete_set_once_without_answer_content(monkeyp
     assert '"sampled_points": [' in captured["prompt"]
     assert '0.0' in captured["prompt"] and '3.0' in captured["prompt"]
     assert '"series_names_are_visible_legend_labels": true' in captured["prompt"]
+    assert '"from": "o"' in captured["prompt"]
+    assert '"directed_edges_have_arrowheads": true' in captured["prompt"]
     assert "不输出答案" in captured["prompt"]
     assert captured["kwargs"]["thinking"] == "disabled"
     assert captured["kwargs"]["timeout_seconds"] == 180
@@ -1182,6 +1191,104 @@ def test_node_edge_diagram_is_normalized_as_renderable():
     }])
     assert figures[0]["nodes"][1]["label"] == "出口"
     assert figures[0]["edges"] == [{"from": "a", "to": "b", "label": "", "directed": True}]
+
+
+def test_crystallography_diagram_keeps_unlabelled_vertices_and_passes_structural_gate():
+    figures = _normalize_figures([{
+        "nodes": [
+            {"id": "o", "label": "O (原点)", "x": 0.34, "y": 0.62, "shape": "circle"},
+            {"id": "xp", "label": "x+", "x": 0.59, "y": 0.74, "shape": "circle"},
+            {"id": "yp", "label": "y+", "x": 0.10, "y": 0.74, "shape": "circle"},
+            {"id": "zp", "label": "z+", "x": 0.34, "y": 0.20, "shape": "circle"},
+            {"id": "xy", "label": "", "x": 0.35, "y": 0.86, "shape": "circle"},
+            {"id": "xz", "label": "", "x": 0.59, "y": 0.32, "shape": "circle"},
+            {"id": "yz", "label": "", "x": 0.10, "y": 0.32, "shape": "circle"},
+            {"id": "xyz", "label": "", "x": 0.35, "y": 0.44, "shape": "circle"},
+            {"id": "p", "label": "P", "x": 0.83, "y": 0.62, "shape": "circle"},
+            {"id": "a", "label": "A", "x": 0.59, "y": 0.74, "shape": "box"},
+            {"id": "b", "label": "B", "x": 0.58, "y": 0.50, "shape": "box"},
+            {"id": "c", "label": "C", "x": 0.58, "y": 0.08, "shape": "box"},
+            {"id": "d", "label": "D", "x": 0.59, "y": 0.32, "shape": "box"},
+        ],
+        "edges": [
+            {"from": "o", "to": "xp", "label": "x 轴正方向", "directed": True},
+            {"from": "o", "to": "yp", "label": "y 轴正方向", "directed": True},
+            {"from": "o", "to": "zp", "label": "z 轴正方向", "directed": True},
+            {"from": "xp", "to": "xy", "directed": False},
+            {"from": "yp", "to": "xy", "directed": False},
+            {"from": "xp", "to": "xz", "directed": False},
+            {"from": "yp", "to": "yz", "directed": False},
+            {"from": "zp", "to": "xz", "directed": False},
+            {"from": "zp", "to": "yz", "directed": False},
+            {"from": "xy", "to": "xyz", "directed": False},
+            {"from": "xz", "to": "xyz", "directed": False},
+            {"from": "yz", "to": "xyz", "directed": False},
+            {"from": "o", "to": "p", "label": "晶向箭头 OP", "directed": True},
+            {"from": "a", "to": "b", "label": "阴影晶面边界", "directed": False},
+            {"from": "b", "to": "c", "label": "平行 z 轴", "directed": False},
+            {"from": "c", "to": "d", "label": "阴影晶面边界", "directed": False},
+            {"from": "d", "to": "a", "label": "平行 z 轴", "directed": False},
+        ],
+    }])
+    plan_item = {
+        "stem_figure_required": True,
+        "figure_design": {"required_elements": [
+            "带三条晶轴和原点标记的立方晶胞线框",
+            "一条明确标出起点、终点和方向箭头的晶向",
+            "一个以半透明或斜线方式标出的晶面",
+            "晶轴正方向及必要的阵点标记",
+        ]},
+    }
+
+    assert {node["id"] for node in figures[0]["nodes"]} >= {"xy", "xz", "yz", "xyz"}
+    assert _exercise_figure_issues({"stem": "根据图1作答。", "figures": figures}, plan_item) == []
+
+
+def test_crystallography_gate_accepts_abc_axes_and_unmarked_wireframe_edges():
+    raw = {
+        "nodes": [
+            {"id": "o", "label": "原点 O", "x": 0.3, "y": 0.7},
+            {"id": "a1", "label": "a1", "x": 0.7, "y": 0.8},
+            {"id": "a2", "label": "a2", "x": 0.1, "y": 0.8},
+            {"id": "a3", "label": "a3", "x": 0.3, "y": 0.2},
+            {"id": "v4", "label": "", "x": 0.5, "y": 0.9},
+            {"id": "v5", "label": "", "x": 0.7, "y": 0.4},
+            {"id": "v6", "label": "", "x": 0.1, "y": 0.4},
+            {"id": "v7", "label": "", "x": 0.5, "y": 0.5},
+            {"id": "q", "label": "Q", "x": 0.8, "y": 0.55},
+            {"id": "p1", "label": "A", "x": 0.65, "y": 0.75},
+            {"id": "p2", "label": "B", "x": 0.62, "y": 0.55},
+            {"id": "p3", "label": "C", "x": 0.45, "y": 0.35},
+            {"id": "p4", "label": "D", "x": 0.48, "y": 0.58},
+        ],
+        "edges": [
+            {"from": "o", "to": "a1", "label": "a1 晶轴正方向", "directed": True},
+            {"from": "o", "to": "a2", "label": "a2 晶轴正方向", "directed": True},
+            {"from": "o", "to": "a3", "label": "a3 晶轴正方向", "directed": True},
+            {"from": "a1", "to": "v4"}, {"from": "a2", "to": "v4"},
+            {"from": "a1", "to": "v5"}, {"from": "a2", "to": "v6"},
+            {"from": "a3", "to": "v5"}, {"from": "a3", "to": "v6"},
+            {"from": "v4", "to": "v7"}, {"from": "v5", "to": "v7"},
+            {"from": "v6", "to": "v7"},
+            {"from": "o", "to": "q", "label": "晶向 [1 1 0]", "directed": True},
+            {"from": "p1", "to": "p2", "label": "阴影晶面边界", "directed": False},
+            {"from": "p2", "to": "p3", "label": "平行 z 轴", "directed": False},
+            {"from": "p3", "to": "p4", "label": "阴影晶面边界", "directed": False},
+            {"from": "p4", "to": "p1", "label": "平行 z 轴", "directed": False},
+        ],
+    }
+    figures = _normalize_figures([raw])
+    plan_item = {
+        "stem_figure_required": True,
+        "figure_design": {"required_elements": [
+            "带三条晶轴和原点标记的立方晶胞线框",
+            "一条明确标出起点、终点和方向箭头的晶向",
+            "一个以半透明或斜线方式标出的晶面",
+            "晶轴正方向及必要的阵点标记",
+        ]},
+    }
+
+    assert _exercise_figure_issues({"stem": "根据图示作答。", "figures": figures}, plan_item) == []
 
 
 def test_chart_nodes_keep_data_coordinates_instead_of_being_clamped_to_canvas():

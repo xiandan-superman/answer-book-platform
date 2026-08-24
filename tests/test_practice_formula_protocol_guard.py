@@ -45,14 +45,14 @@ def _valid_latex_json() -> str:
     return json.dumps({"exercises": [{"stem": "$\\beta$"}]}, ensure_ascii=False)
 
 
-def test_lingsuan_gpt_practice_generation_is_forced_to_chat_completions():
+def test_lingsuan_gpt_practice_generation_keeps_configured_responses_protocol():
     provider = _provider()
 
     client = exercise_generation._practice_generation_client(provider, "gpt-5.6-terra")
 
-    assert client.config.api_protocol == "chat_completions"
-    assert client.config.responses_streaming is False
-    assert not isinstance(client, ResponsesAPIClient)
+    assert isinstance(client, ResponsesAPIClient)
+    assert client.config.api_protocol == "responses"
+    assert client.config.responses_streaming is True
     assert provider.api_protocol == "responses"
 
 

@@ -47,6 +47,18 @@ def _clean_question_stem(question: dict[str, Any]) -> str:
     return strip_structured_math_metadata(str(question.get("stem") or ""))
 
 
+def _clean_question_source_markup(value: Any) -> Any:
+    """Remove extraction-only math metadata before it can enter durable fragments."""
+
+    if isinstance(value, str):
+        return strip_structured_math_metadata(value)
+    if isinstance(value, list):
+        return [_clean_question_source_markup(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _clean_question_source_markup(item) for key, item in value.items()}
+    return value
+
+
 def question_answer_source_fingerprint(question: dict[str, Any]) -> str:
     payload = json.dumps(question, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -1156,12 +1168,12 @@ def _question_subquestion_rows(question: dict[str, Any]) -> list[dict[str, str]]
                 rows.append(
                     {
                         "number": req_number,
-                        "stem": str(req.get("stem") or "").strip(),
+                        "stem": strip_structured_math_metadata(str(req.get("stem") or "")).strip(),
                         "marker": str(req.get("marker") or req_number).strip(),
                         "question_type": infer_question_type(req),
                         "level": "subquestion" if flatten else "requirement",
                         "parent_number": "" if flatten else number,
-                        "parent_stem": str(raw.get("stem") or "").strip(),
+                        "parent_stem": strip_structured_math_metadata(str(raw.get("stem") or "")).strip(),
                         "requirement_index": str(req_index),
                         "display_number": str(req_index) if flatten else "",
                         "synthetic_flattened": flatten,
@@ -1171,7 +1183,7 @@ def _question_subquestion_rows(question: dict[str, Any]) -> list[dict[str, str]]
         rows.append(
             {
                 "number": number,
-                "stem": str(raw.get("stem") or "").strip(),
+                "stem": strip_structured_math_metadata(str(raw.get("stem") or "")).strip(),
                 "marker": str(raw.get("marker") or "").strip(),
                 "question_type": infer_question_type(raw),
                 "level": "subquestion",
@@ -2370,7 +2382,7 @@ def fragment_from_analysis_draft(
         "question_id": qid,
         "section": question.get("section", draft.get("section", "")),
         "question_type": question.get("question_type") or "",
-        "subquestions": question.get("subquestions") or [],
+        "subquestions": _clean_question_source_markup(question.get("subquestions") or []),
         "number": question.get("number", draft.get("number", "")),
         "answer": top_answer,
         "answer_summary": answer_summary,

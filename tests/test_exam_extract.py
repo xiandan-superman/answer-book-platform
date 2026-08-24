@@ -111,6 +111,18 @@ class ExamExtractTests(unittest.TestCase):
         self.assertEqual(["简答题", "作图题"], [row["question_type"] for row in requirements])
         self.assertIn("示意画出扩散层", requirements[1]["stem"])
 
+    def test_leading_numeric_givens_do_not_become_an_answer_unit(self) -> None:
+        section = split_sections(
+            [
+                "四、计算题",
+                "5、Cu 的相对原子质量为63.55g/mol，密度为8.96g/cm3，NA=6.023×10^23/mol，计算铜原子的点阵常数和原子半径。",
+            ]
+        )[0]
+
+        item = question_items(section)[0]
+
+        self.assertFalse(item.get("subquestions"))
+
     def test_composite_section_trailing_figure_is_shared_by_all_subquestions(self) -> None:
         image = "/tmp/shared_phase_diagram.png"
         section = split_sections(

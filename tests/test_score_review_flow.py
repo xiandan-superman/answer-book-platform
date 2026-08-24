@@ -84,6 +84,81 @@ def test_exam_structure_audit_blocks_parent_child_score_mismatch(tmp_path):
     assert any("does not equal subquestion total" in issue for issue in issues)
 
 
+def test_exam_structure_audit_does_not_treat_first_child_score_as_parent_total(tmp_path):
+    issues = audit_exam_structure(
+        {
+            "items": [{
+                "question_id": "q_children_only_scores",
+                "number": "6",
+                "major_number": "6",
+                "section": "六、计算题",
+                "section_raw": "六、计算题",
+                "stem": "(1)说明条件。(3分)\n(2)完成计算。(6分)\n(3)分析结果。(6分)",
+                "subquestions": [
+                    {"number": "1", "stem": "说明条件。(3分)"},
+                    {"number": "2", "stem": "完成计算。(6分)"},
+                    {"number": "3", "stem": "分析结果。(6分)"},
+                ],
+            }],
+        },
+        tmp_path / "audit.json",
+    )
+
+    assert not any("does not equal subquestion total" in issue for issue in issues)
+
+
+def test_structure_review_does_not_suggest_first_child_score_for_parent():
+    request = build_exam_structure_review_request(
+        "child_scores_only",
+        {
+            "items": [{
+                "question_id": "q6",
+                "number": "6",
+                "section": "四、计算与综合分析题",
+                "stem": (
+                    "固态扩散，回答下列问题：\n"
+                    "(1) 说明机制。(3分)\n"
+                    "(2) 分析因素。(6分)\n"
+                    "(3) 判断方向。(6分)"
+                ),
+                "subquestions": [
+                    {"number": "1", "stem": "说明机制。(3分)"},
+                    {"number": "2", "stem": "分析因素。(6分)"},
+                    {"number": "3", "stem": "判断方向。(6分)"},
+                ],
+            }],
+        },
+    )
+
+    parent = request["items"][0]
+    assert parent["suggested_score"] == ""
+    assert [row["suggested_score"] for row in parent["subquestions"]] == ["3", "6", "6"]
+
+
+def test_exam_structure_audit_recovers_legacy_auto_confirmed_first_child_score(tmp_path):
+    issues = audit_exam_structure(
+        {
+            "items": [{
+                "question_id": "legacy_q6",
+                "number": "6",
+                "section": "四、计算题",
+                "stem": "(1)说明条件。(3分)\n(2)完成计算。(6分)\n(3)分析结果。(6分)",
+                "score": 3,
+                "confirmed_score": 3,
+                "score_reviewed": True,
+                "subquestions": [
+                    {"number": "1", "stem": "说明条件。(3分)", "score": 3},
+                    {"number": "2", "stem": "完成计算。(6分)", "score": 6},
+                    {"number": "3", "stem": "分析结果。(6分)", "score": 6},
+                ],
+            }],
+        },
+        tmp_path / "audit.json",
+    )
+
+    assert not any("does not equal subquestion total" in issue for issue in issues)
+
+
 def test_exam_structure_review_request_includes_score_confirmation_fields():
     request = build_exam_structure_review_request(
         "score_review_task",

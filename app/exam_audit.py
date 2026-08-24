@@ -5,7 +5,8 @@ import re
 from pathlib import Path
 
 from .exam_extract import _split_inline_numbered_items
-from .question_scores import infer_suggested_score
+from .question_scores import infer_explicit_parent_score, infer_suggested_score
+from .question_types import question_kind
 
 ITEM_RE = re.compile(r"^\s*\d{1,3}[、.．]\s*")
 SECTION_RE = re.compile(r"^\s*[一二三四五六七八九十]+、")
@@ -51,7 +52,11 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
         section = str(item.get("section", ""))
         if "选择题" in section and item.get("image_refs"):
             warnings.append(f"{qid}: choice question has image hint; review if this is false positive")
-        if "回答下列问题" in stem and not any(label in section for label in ("问答题", "简答题")):
+        if (
+            "回答下列问题" in stem
+            and question_kind(item) != "short_answer"
+            and not any(label in section for label in ("问答题", "简答题"))
+        ):
             warnings.append(f"{qid}: stem says 回答下列问题 but section is {section}")
         if EMBEDDED_SECTION_TITLE_RE.search(stem):
             issues.append(f"{qid}: stem contains section title; exam split likely failed")
@@ -59,7 +64,7 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
             issues.append(f"{qid}: stem contains subject partition title; exam split likely failed")
         subquestions = [row for row in (item.get("subquestions") or []) if isinstance(row, dict)]
         if subquestions:
-            parent_score = infer_suggested_score(item)
+            parent_score = infer_explicit_parent_score(item)
             child_scores = [infer_suggested_score(row) for row in subquestions]
             if parent_score is not None and all(score is not None for score in child_scores):
                 child_total = sum(float(score) for score in child_scores if score is not None)
