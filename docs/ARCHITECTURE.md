@@ -132,11 +132,11 @@ Local Web UI
 
 ### 表达渲染契约
 
-`app/capabilities/expression_rendering.py` 把识别结果继续投影为 `ExpressionRenderPlan`：保留原文与规范化形式，声明表达类别、行内/独行呈现、数学混合排版或化学直立排版、规则来源和 Word 预检结果。
+`app/capabilities/expression_rendering.py` 把识别结果继续投影为 `ExpressionRenderPlan`：保留原文与规范化形式，声明表达类别、行内/独行呈现、全公式斜体排版、规则来源和 Word 预检结果。
 
 普通正文中的显式表达先由 `app/capabilities/text_expression_rendering.py` 生成 `TextExpressionRenderPlan`，再进入同一 OMML 渲染入口。该规则只允许有确定性转换器的跨学科表达晋级，当前覆盖方程、热力学标准态、化学式、完整反应式和电极表示式。学科包中的晶向等规则可参与审计，但在没有学科渲染契约时不会被通用层自动改写。
 
-真题 Word 与生题 Word 只能调用这些公共入口，不得各自实现正文扫描、LaTeX/OMML 风格或反应式转换规则。数学变量使用数学样式，`\mathrm` 单位与函数名保留直立，化学式/反应式整体使用直立排版。同一规范化表达的 OMML 预检使用进程内有界缓存，不增加模型请求。
+真题 Word 与生题 Word 只能调用这些公共入口，不得各自实现正文扫描、LaTeX/OMML 风格或反应式转换规则。凡进入 Word 原生公式对象的内容，所有可见公式 run 必须统一使用斜体，包括数学变量、化学式、反应式、单位、状态符号以及原始 `\mathrm` 内容。同一规范化表达的 OMML 预检使用进程内有界缓存，不增加模型请求。
 
 只有 LaTeX 结构不闭合和 OMML 无法生成这类可机器证明的问题阻断 Word 交付；符号风格、专业表达与语义判断仍按启发式/模型判断管理，不得借排版预检升级为主观硬门禁。
 

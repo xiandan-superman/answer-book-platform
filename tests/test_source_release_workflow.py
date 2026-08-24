@@ -1,27 +1,24 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = (ROOT / ".github" / "workflows" / "source-release.yml").read_text(encoding="utf-8")
-README = (ROOT / "README.md").read_text(encoding="utf-8")
-SOURCE_UPDATE_DOC = (ROOT / "docs" / "SOURCE_DISTRIBUTION_AND_UPDATE.md").read_text(encoding="utf-8")
+SOURCE_RELEASE = (ROOT / ".github" / "workflows" / "source-release.yml").read_text(encoding="utf-8")
+QUALITY = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
 
 
-def test_source_release_is_tag_driven_and_checksum_verified() -> None:
-    assert '"v[0-9]+.[0-9]+.[0-9]+"' in WORKFLOW
-    assert "git archive" in WORKFLOW
-    assert '--asset "source=$asset"' in WORKFLOW
-    assert "scripts/build_update_manifest.py" in WORKFLOW
-    assert "update-stable.json" in WORKFLOW
-    assert "RELEASE_REPO_TOKEN" in WORKFLOW
+def test_source_release_requires_full_quality_gate_before_packaging() -> None:
+    assert "python scripts/run_quality_gates.py --full" in SOURCE_RELEASE
+    assert SOURCE_RELEASE.index("run_quality_gates.py --full") < SOURCE_RELEASE.index("git archive")
 
 
-def test_end_user_installation_and_legacy_migration_are_documented() -> None:
-    for text in (README, SOURCE_UPDATE_DOC):
-        assert "answer-book-platform-<版本号>-source.zip" in text
-        assert "Source code (zip)" in text
-        assert "start_platform.command" in text
-        assert "start_platform_windows.bat" in text
-        assert "0.9.12" in text
-    assert "不要直接双击 `web/index.html`" in README
-    assert "config/api_keys.json" in README
+def test_source_release_smoke_starts_the_packaged_zip_with_isolated_data() -> None:
+    assert "unzip -q" in SOURCE_RELEASE
+    assert "ANSWER_BOOK_DATA_DIR" in SOURCE_RELEASE
+    assert "/api/version" in SOURCE_RELEASE
+
+
+def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> None:
+    assert 'python-version: ["3.9", "3.11"]' in QUALITY
+    assert "constraints-py39.txt" in QUALITY
+    assert "constraints-py311.txt" in QUALITY
+    assert "playwright install --with-deps chromium" in QUALITY
+    assert "tests/e2e/test_platform_smoke.py" in QUALITY

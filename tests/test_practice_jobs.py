@@ -291,6 +291,36 @@ def test_practice_task_title_uses_material_name_and_persists_across_steps(tmp_pa
     assert practice_jobs.load_practice_job(second["job_id"])["payload"]["task_title"] == "期末热力学"
 
 
+def test_automatic_material_title_removes_mode_suffix_and_filename_separators(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+
+    created = practice_jobs.create_practice_job(
+        "analyze",
+        {
+            "source_mode": "exam",
+            "practice_batch_id": "friendly-title",
+            "source_files": [{"name": "跨年组合_高分子物理_按题生题.docx"}],
+        },
+    )
+
+    assert created["title"] == "跨年组合 · 高分子物理"
+
+
+def test_explicit_user_task_title_is_not_rewritten(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+
+    created = practice_jobs.create_practice_job(
+        "analyze",
+        {
+            "source_mode": "exam",
+            "task_title": "我的_自定义任务名",
+            "source_files": [{"name": "跨年组合_高分子物理_按题生题.docx"}],
+        },
+    )
+
+    assert created["title"] == "我的_自定义任务名"
+
+
 def test_practice_task_title_uses_text_summary_when_no_file_name_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
 

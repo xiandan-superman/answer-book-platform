@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
 let taskPollTimer = null;
+let platformUpdateProgressTimer = null;
+let platformUpdateInProgress = false;
 let taskManagerPollTimer = null;
 let taskManagerPollInFlight = false;
 let systemMonitorPollTimer = null;
@@ -2209,21 +2211,124 @@ async function checkPlatformUpdate() {
       cancelText: "稍后再说"
     });
     if (!confirmed) return;
+    $("platformUpdateNotice")?.classList.add("hidden");
     if (label) label.textContent = status.action === "pull_source" ? "拉取中" : status.action === "replace_source" ? "更新中" : "下载中";
-    const result = await api("/api/update/apply", { method: "POST", body: "{}" });
-    await platformAlert(result.message || "更新已准备完成。", {
-      title: result.restart_required ? "请重启程序" : "更新完成",
-      tone: "success"
-    });
+    const operation = await api("/api/update/apply", { method: "POST", body: "{}" });
+    platformUpdateInProgress = true;
+    openPlatformUpdateProgress(operation);
+    pollPlatformUpdateProgress();
   } catch (error) {
     await platformAlert(String(error).replace(/^Error:\s*/, ""), {
       title: "更新未完成",
       tone: "danger"
     });
   } finally {
-    if (button) button.disabled = false;
-    if (label) label.textContent = "检查更新";
+    if (button) button.disabled = platformUpdateInProgress;
+    if (label && !platformUpdateInProgress) label.textContent = "检查更新";
   }
+}
+
+const PLATFORM_UPDATE_STAGE_LABELS = {
+  idle: "等待开始",
+  checking: "检查版本",
+  downloading: "下载更新",
+  verifying: "安全校验",
+  preparing: "准备替换",
+  installing: "安装更新",
+  restarting: "自动重启",
+  awaiting_restart: "等待重启",
+  completed: "更新完成",
+  failed: "更新失败"
+};
+
+function showPlatformUpdateNotice(status) {
+  const latest = String(status?.latest_version || "").trim();
+  if (!latest || sessionStorage.getItem("answerBook.dismissedUpdateVersion") === latest) return;
+  if ($("platformUpdateNotice")) $("platformUpdateNotice").dataset.version = latest;
+  setText("platformUpdateNoticeTitle", `发现新版本 ${latest}`);
+  setText(
+    "platformUpdateNoticeMessage",
+    status.dependency_update_required
+      ? "新版包含体验改进和依赖更新；确认后会安全下载，并在重启前提示。"
+      : "新版已准备完成，可查看更新内容后安全升级；任务和本地数据不会被覆盖。"
+  );
+  $("platformUpdateNotice")?.classList.remove("hidden");
+}
+
+function renderPlatformUpdateProgress(progress = {}) {
+  const overlay = $("platformUpdateProgress");
+  const card = overlay?.querySelector(".platform-update-progress-card");
+  const status = String(progress.status || "checking");
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+  const downloaded = Number(progress.downloaded_bytes || 0);
+  const total = Number(progress.total_bytes || 0);
+  const detail = downloaded > 0
+    ? `${formatBytes(downloaded)}${total > 0 ? ` / ${formatBytes(total)}` : ""} · API Key、教材、任务和输出保持不变`
+    : "更新期间 API Key、教材、任务和输出不会被删除。";
+  if (card) card.dataset.status = status;
+  setText("platformUpdateProgressStage", PLATFORM_UPDATE_STAGE_LABELS[status] || "处理更新");
+  setText("platformUpdateProgressPercent", `${Math.round(percent)}%`);
+  setText("platformUpdateProgressMessage", progress.message || "正在处理更新，请保持程序运行。");
+  setText("platformUpdateProgressDetail", detail);
+  if ($("platformUpdateProgressBar")) $("platformUpdateProgressBar").style.width = `${percent}%`;
+  $("platformUpdateProgressTrack")?.setAttribute("aria-valuenow", String(Math.round(percent)));
+  const close = $("platformUpdateProgressClose");
+  if (close) close.textContent = ["completed", "awaiting_restart", "failed"].includes(status) ? "关闭" : "在后台继续";
+  const title = status === "failed"
+    ? "更新未完成"
+    : status === "completed"
+      ? "已完成版本更新"
+      : status === "awaiting_restart"
+        ? "更新已准备好"
+        : "正在提升使用体验";
+  setText("platformUpdateProgressTitle", title);
+}
+
+function openPlatformUpdateProgress(progress = {}) {
+  renderPlatformUpdateProgress(progress);
+  const overlay = $("platformUpdateProgress");
+  overlay?.classList.remove("hidden");
+  overlay?.querySelector(".platform-update-progress-card")?.focus();
+}
+
+function finishPlatformUpdatePolling(progress = {}) {
+  platformUpdateInProgress = false;
+  if (platformUpdateProgressTimer) window.clearTimeout(platformUpdateProgressTimer);
+  platformUpdateProgressTimer = null;
+  const button = $("checkUpdateBtn");
+  const label = button?.querySelector("span");
+  if (button) button.disabled = false;
+  if (label) label.textContent = progress.status === "completed" ? "已是最新版" : "检查更新";
+  if (progress.status === "completed") button?.classList.remove("update-available");
+}
+
+async function pollPlatformUpdateProgress() {
+  if (platformUpdateProgressTimer) window.clearTimeout(platformUpdateProgressTimer);
+  try {
+    const progress = await api("/api/update/progress");
+    renderPlatformUpdateProgress(progress);
+    if (["completed", "awaiting_restart", "failed"].includes(String(progress.status || ""))) {
+      finishPlatformUpdatePolling(progress);
+      return;
+    }
+  } catch (_error) {
+    renderPlatformUpdateProgress({
+      status: "restarting",
+      percent: 97,
+      message: "本地服务正在重启，页面会自动重新连接。"
+    });
+  }
+  platformUpdateProgressTimer = window.setTimeout(pollPlatformUpdateProgress, 650);
+}
+
+async function resumePlatformUpdateProgress() {
+  try {
+    const progress = await api("/api/update/progress");
+    if (!["checking", "downloading", "verifying", "preparing", "installing", "restarting"].includes(String(progress.status || ""))) return;
+    platformUpdateInProgress = true;
+    openPlatformUpdateProgress(progress);
+    pollPlatformUpdateProgress();
+  } catch (_error) {}
 }
 
 async function checkPlatformUpdateSilently() {
@@ -2237,6 +2342,7 @@ async function checkPlatformUpdateSilently() {
     if (button) button.title = status.dependency_update_required
       ? "发现新版本，包含依赖变化；点击查看并确认安装。"
       : "发现新版本；点击查看更新说明。";
+    showPlatformUpdateNotice(status);
   } catch (_error) {
     // 启动检查不打扰用户；手动点击时仍展示明确错误。
   }
@@ -12963,6 +13069,18 @@ $("practiceBackToPlanBtn")?.addEventListener("click", () => {
   setPracticeStageDescription("回到训练蓝图，可调整后再生成。");
 });
 $("practiceRegenerateSetBtn")?.addEventListener("click", () => regenerateSelectedPracticeQuestions($("practiceRegenerateSetBtn")));
+$("platformUpdateNoticeAction")?.addEventListener("click", () => {
+  $("platformUpdateNotice")?.classList.add("hidden");
+  checkPlatformUpdate();
+});
+$("platformUpdateNoticeLater")?.addEventListener("click", () => {
+  const version = String($("platformUpdateNotice")?.dataset.version || "current");
+  sessionStorage.setItem("answerBook.dismissedUpdateVersion", version);
+  $("platformUpdateNotice")?.classList.add("hidden");
+});
+$("platformUpdateProgressClose")?.addEventListener("click", () => {
+  $("platformUpdateProgress")?.classList.add("hidden");
+});
 $("practiceShowAllHistory")?.addEventListener("click", async () => {
   $("practiceHistoryList")?.classList.remove("hidden");
   await loadPracticeHistory().catch((error) => {
@@ -12990,6 +13108,7 @@ refresh().catch((err) => {
   $("environmentBox").textContent = String(err);
 });
 loadTasks().catch(() => {});
+resumePlatformUpdateProgress();
 
 /* ============================================================
    全站视觉增强 · 滚动揭示 / 导航滚动模糊 / 交错入场

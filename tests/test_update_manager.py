@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import threading
+import time
 from types import SimpleNamespace
 
 from app import update_manager
@@ -97,6 +100,17 @@ def test_release_update_manifest_records_asset_size_and_checksum(tmp_path) -> No
     assert manifest["release_tag"] == "v0.9.1-beta"
 
 
+def test_source_manifest_records_all_supported_dependency_profiles(tmp_path) -> None:
+    asset = tmp_path / "answer-book-source.zip"
+    asset.write_bytes(b"source")
+
+    manifest = build_manifest(version="1.0.0", assets=[("source", asset)])
+
+    fingerprints = manifest["platforms"]["source"]["dependency_fingerprints"]
+    assert {"py39", "py39-windows", "py310", "py310-windows", "py311", "py311-windows"} <= set(fingerprints)
+    assert all(len(value) == 64 for value in fingerprints.values())
+
+
 def test_source_archive_update_uses_verified_source_asset(monkeypatch) -> None:
     manifest = {
         "schema_version": update_manager.UPDATE_MANIFEST_SCHEMA,
@@ -130,7 +144,7 @@ def test_source_archive_apply_stages_supervisor_plan(tmp_path, monkeypatch) -> N
     archive = tmp_path / "source.zip"
     archive.write_bytes(b"verified")
     monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path / "data")
-    monkeypatch.setattr(update_manager, "_download_asset", lambda _status: archive)
+    monkeypatch.setattr(update_manager, "_download_asset", lambda _status, _progress=None: archive)
     monkeypatch.setattr(update_manager, "_schedule_supervised_restart", lambda: True)
     result = update_manager._stage_source_archive_update({
         "latest_version": "0.9.2",
@@ -166,3 +180,77 @@ def test_git_checkout_updates_to_release_tag_not_unpublished_main(monkeypatch) -
     assert ("fetch", "--prune", "origin", "refs/tags/v0.9.2:refs/tags/v0.9.2") in calls
     assert ("merge", "--ff-only", "v0.9.2") in calls
     assert not any(call[:3] == ("fetch", "--prune", "origin") and call[-1] == "main" for call in calls)
+
+
+def test_download_reports_real_byte_progress(tmp_path, monkeypatch) -> None:
+    payload = b"verified-update-content"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(payload))
+    events = []
+    target = update_manager._download_asset(
+        {
+            "latest_version": "1.0.0",
+            "asset": {
+                "name": "answer-book-source.zip",
+                "size_bytes": len(payload),
+                "sha256": digest,
+                "download_url": "https://github.com/example/releases/download/v1.0.0/source.zip",
+            },
+        },
+        lambda status, percent, message, **details: events.append((status, percent, message, details)),
+    )
+
+    assert target.read_bytes() == payload
+    assert any(event[0] == "downloading" and event[3]["downloaded_bytes"] == len(payload) for event in events)
+    assert events[-1][0] == "verifying"
+
+
+def test_start_update_returns_before_network_work_finishes(tmp_path, monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_apply(progress):
+        started.set()
+        release.wait(timeout=2)
+        progress("completed", 100, "done")
+        return {"ok": True, "latest_version": "1.0.0", "restart_required": False, "message": "done"}
+
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager, "apply_update", slow_apply)
+    update_manager._UPDATE_PROGRESS.clear()
+    update_manager._UPDATE_THREAD = None
+
+    before = time.monotonic()
+    operation = update_manager.start_update()
+    elapsed = time.monotonic() - before
+
+    assert operation["accepted"] is True
+    assert operation["status"] == "checking"
+    assert elapsed < 0.5
+    assert started.wait(timeout=1)
+    release.set()
+    worker = update_manager._UPDATE_THREAD
+    assert worker is not None
+    worker.join(timeout=2)
+    assert update_manager.update_progress()["status"] == "completed"
+
+
+def test_update_progress_persists_without_credentials(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    update_manager._UPDATE_PROGRESS.clear()
+
+    update_manager._set_update_progress("downloading", 42, "正在下载", downloaded_bytes=12, total_bytes=30)
+    persisted = update_manager._read_json(tmp_path / "runtime" / "update-progress.json")
+
+    assert persisted["percent"] == 42
+    assert persisted["downloaded_bytes"] == 12
+    assert not any("key" in key.lower() or "token" in key.lower() for key in persisted)

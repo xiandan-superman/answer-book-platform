@@ -63,7 +63,14 @@ def main() -> int:
     if args.full:
         missing = [name for name in ("ruff", "mypy", "coverage") if not _module_available(name)]
         if missing:
-            print(json.dumps({"ok": False, "missing_dev_tools": missing, "install": "python3 -m pip install -r requirements-dev.txt"}, ensure_ascii=False, indent=2))
+            print(json.dumps({
+                "ok": False,
+                "missing_dev_tools": missing,
+                "install": (
+                    "python3 -m pip install -r requirements.txt -r requirements-dev.txt "
+                    "-c constraints-py39.txt  # Python 3.11+ use constraints-py311.txt"
+                ),
+            }, ensure_ascii=False, indent=2))
             return 2
         lint_scope = [
             "app/http_errors.py", "app/task_runner.py", "app/task_store.py", "app/task_control.py",
@@ -83,7 +90,12 @@ def main() -> int:
                 "app/render_word.py",
                 "app/task_diagnostics.py",
                 "app/task_result_view.py",
+                "app/dependency_profiles.py",
+                "app/update_manager.py",
                 "scripts/audit_answer_fragments.py",
+                "scripts/build_update_manifest.py",
+                "scripts/install_dependencies.py",
+                "scripts/source_launcher.py",
                 "app/practice_batch_contracts.py",
                 "app/practice_result_assembly.py",
                 "tests/test_capability_architecture.py",
@@ -102,6 +114,10 @@ def main() -> int:
                 "tests/test_task_control_contract.py",
                 "tests/test_task_runner_admission.py",
                 "tests/test_audit_answer_fragments_script.py",
+                "tests/test_dependency_profiles.py",
+                "tests/test_server_api_not_found.py",
+                "tests/test_source_release_workflow.py",
+                "tests/test_update_manager.py",
             ]
         )
         type_scope = [path for path in lint_scope if path != "app/practice_store.py"]

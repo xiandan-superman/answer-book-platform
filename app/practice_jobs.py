@@ -16,6 +16,7 @@ from .paths import DATA_ROOT
 from .redaction import redact_credentials, redact_diagnostic_value
 from .runtime_capacity import bounded_env_int, practice_job_max_concurrency
 from .runtime_monitor import model_call_context, model_call_cost_summary
+from .task_titles import friendly_material_title
 
 PRACTICE_JOB_DIR = DATA_ROOT / "practice_jobs"
 _LOCK = threading.RLock()
@@ -78,7 +79,7 @@ def _default_task_title(payload: dict[str, Any]) -> str:
         if not isinstance(item, dict):
             continue
         filename = Path(str(item.get("name") or "")).name
-        material_name = _clean_task_title(Path(filename).stem)
+        material_name = friendly_material_title(filename)
         if material_name and not _is_generated_upload_title(material_name):
             return material_name
     source_text = " ".join(str(payload.get("question_text") or "").split()).strip()

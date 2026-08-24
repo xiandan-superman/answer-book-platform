@@ -13,11 +13,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .paths import CONFIG_DIR, DATA_ROOT, LOCAL_CONFIG_DIR, PROJECT_ROOT
 from .version import get_app_version
-
 
 UPDATE_SOURCE_SCHEMA = "answer_book.update_source.v1"
 UPDATE_MANIFEST_SCHEMA = "answer_book.update_manifest.v1"
@@ -29,6 +28,9 @@ _RELEASE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STATUS_CACHE: dict[str, Any] = {}
 _STATUS_CACHE_LOCK = threading.Lock()
+_UPDATE_PROGRESS: dict[str, Any] = {}
+_UPDATE_PROGRESS_LOCK = threading.RLock()
+_UPDATE_THREAD: threading.Thread | None = None
 
 
 class UpdateError(RuntimeError):
@@ -270,13 +272,9 @@ def _asset_for_installation(
 
 
 def _current_dependency_fingerprint() -> str:
-    digest = hashlib.sha256()
-    for name in ("requirements.txt", "requirements-windows.txt"):
-        path = PROJECT_ROOT / name
-        if path.is_file():
-            digest.update(path.name.encode("utf-8"))
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
+    from .dependency_profiles import runtime_dependency_fingerprint
+
+    return runtime_dependency_fingerprint(PROJECT_ROOT, sys.version_info[:2], platform_name=sys.platform)
 
 
 def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
@@ -308,9 +306,17 @@ def _build_update_status(source: dict[str, Any]) -> dict[str, Any]:
         else ("replace_source" if kind == "source_archive" else "download_installer")
     )
     source_entry = (manifest.get("platforms") or {}).get("source")
-    remote_dependency_fingerprint = str(
-        source_entry.get("dependency_fingerprint") if isinstance(source_entry, dict) else ""
-    ).strip().lower()
+    remote_dependency_fingerprint = ""
+    if isinstance(source_entry, dict):
+        from .dependency_profiles import dependency_profile_key
+
+        profile_fingerprints = source_entry.get("dependency_fingerprints")
+        if isinstance(profile_fingerprints, dict):
+            remote_dependency_fingerprint = str(
+                profile_fingerprints.get(dependency_profile_key(sys.version_info[:2], platform_name=sys.platform)) or ""
+            ).strip().lower()
+        if not remote_dependency_fingerprint:
+            remote_dependency_fingerprint = str(source_entry.get("dependency_fingerprint") or "").strip().lower()
     dependency_update_required = bool(
         remote_dependency_fingerprint
         and remote_dependency_fingerprint != _current_dependency_fingerprint()
@@ -366,8 +372,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _download_asset(status: dict[str, Any]) -> Path:
-    asset = status.get("asset") if isinstance(status.get("asset"), dict) else {}
+def _download_asset(
+    status: dict[str, Any],
+    progress: Callable[..., Any] | None = None,
+) -> Path:
+    raw_asset = status.get("asset")
+    asset: dict[str, Any] = raw_asset if isinstance(raw_asset, dict) else {}
     name = Path(str(asset.get("name") or "")).name
     expected_sha256 = str(asset.get("sha256") or "").lower()
     expected_size = int(asset.get("size_bytes") or 0)
@@ -380,6 +390,8 @@ def _download_asset(status: dict[str, Any]) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / name
     if target.exists() and _sha256(target) == expected_sha256:
+        if progress:
+            progress("verifying", 78, "已找到校验通过的更新包，正在准备安装。", downloaded_bytes=expected_size, total_bytes=expected_size)
         return target
     partial = target.with_suffix(target.suffix + ".part")
     partial.unlink(missing_ok=True)
@@ -395,12 +407,23 @@ def _download_asset(status: dict[str, Any]) -> Path:
                 if written > MAX_UPDATE_BYTES:
                     raise UpdateError("更新包超出安全限制。")
                 stream.write(chunk)
+                if progress:
+                    ratio = min(1.0, written / expected_size) if expected_size else 0.0
+                    progress(
+                        "downloading",
+                        12 + int(ratio * 58) if expected_size else 35,
+                        "正在下载更新包，请保持程序运行。",
+                        downloaded_bytes=written,
+                        total_bytes=expected_size,
+                    )
     except Exception:
         partial.unlink(missing_ok=True)
         raise
     if expected_size and written != expected_size:
         partial.unlink(missing_ok=True)
         raise UpdateError(f"更新包大小校验失败：应为 {expected_size}，实际 {written}。")
+    if progress:
+        progress("verifying", 74, "下载完成，正在校验更新包完整性。", downloaded_bytes=written, total_bytes=expected_size or written)
     actual_sha256 = _sha256(partial)
     if actual_sha256 != expected_sha256:
         partial.unlink(missing_ok=True)
@@ -481,8 +504,13 @@ def _schedule_supervised_restart() -> bool:
     return True
 
 
-def _stage_source_archive_update(status: dict[str, Any]) -> dict[str, Any]:
-    target = _download_asset(status)
+def _stage_source_archive_update(
+    status: dict[str, Any],
+    progress: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    target = _download_asset(status, progress)
+    if progress:
+        progress("preparing", 86, "更新包校验通过，正在准备安全替换和重启。")
     runtime_dir = DATA_ROOT / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     plan_path = runtime_dir / "pending-source-update.json"
@@ -503,6 +531,7 @@ def _stage_source_archive_update(status: dict[str, Any]) -> dict[str, Any]:
         "restart_required": True,
         "automatic_restart": automatic,
         "dependency_update_required": bool(status.get("dependency_update_required")),
+        "latest_version": status.get("latest_version"),
         "message": (
             "源码更新包已校验，程序将自动更新并重启。"
             if automatic
@@ -511,14 +540,29 @@ def _stage_source_archive_update(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def apply_update() -> dict[str, Any]:
+def apply_update(progress: Callable[..., Any] | None = None) -> dict[str, Any]:
+    if progress:
+        progress("checking", 5, "正在确认最新正式版本和安装方式。")
     status = check_for_updates(refresh=True)
     if not status.get("update_available"):
-        return {"ok": True, "changed": False, "restart_required": False, "message": status.get("message") or "当前已是最新版本。"}
+        if progress:
+            progress("completed", 100, status.get("message") or "当前已是最新版本。")
+        return {
+            "ok": True,
+            "changed": False,
+            "latest_version": status.get("latest_version") or status.get("current_version"),
+            "restart_required": False,
+            "message": status.get("message") or "当前已是最新版本。",
+        }
     source = load_update_source()
     if status.get("action") == "pull_source":
+        if progress:
+            progress("installing", 35, "正在安全拉取正式版本标签。")
         release_tag = str(status.get("release_tag") or f"v{status.get('latest_version') or ''}")
         result = _pull_source_update(source, release_tag)
+        result["latest_version"] = status.get("latest_version")
+        if progress:
+            progress("preparing", 88, "源码已完成快进校验，正在准备重启。")
         if result.get("restart_required"):
             automatic = _schedule_supervised_restart()
             result["automatic_restart"] = automatic
@@ -526,8 +570,10 @@ def apply_update() -> dict[str, Any]:
                 result["message"] = "源码已更新，程序将自动重启。"
         return result
     if status.get("action") == "replace_source":
-        return _stage_source_archive_update(status)
-    target = _download_asset(status)
+        return _stage_source_archive_update(status, progress)
+    target = _download_asset(status, progress)
+    if progress:
+        progress("preparing", 88, "更新包校验通过，正在打开安装程序。")
     _open_update_file(target)
     return {
         "ok": True,
@@ -538,3 +584,107 @@ def apply_update() -> dict[str, Any]:
         "restart_required": True,
         "message": "更新包已验证并打开。请完成安装后重启程序；API Key、教材、任务和输出不会被覆盖。",
     }
+
+
+def _update_progress_path() -> Path:
+    return DATA_ROOT / "runtime" / "update-progress.json"
+
+
+def _persist_update_progress(value: dict[str, Any]) -> None:
+    path = _update_progress_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _set_update_progress(
+    status: str,
+    percent: int,
+    message: str,
+    **details: Any,
+) -> dict[str, Any]:
+    with _UPDATE_PROGRESS_LOCK:
+        current = dict(_UPDATE_PROGRESS)
+        current.update({
+            "schema_version": "answer_book.update_progress.v1",
+            "ok": status != "failed",
+            "operation_id": current.get("operation_id") or f"update_{int(time.time())}_{os.getpid()}",
+            "status": status,
+            "percent": max(0, min(100, int(percent))),
+            "message": str(message or "正在处理更新。")[:500],
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            **{key: value for key, value in details.items() if value is not None},
+        })
+        if not current.get("started_at"):
+            current["started_at"] = current["updated_at"]
+        _UPDATE_PROGRESS.clear()
+        _UPDATE_PROGRESS.update(current)
+        _persist_update_progress(current)
+        return dict(current)
+
+
+def update_progress() -> dict[str, Any]:
+    with _UPDATE_PROGRESS_LOCK:
+        if not _UPDATE_PROGRESS:
+            _UPDATE_PROGRESS.update(_read_json(_update_progress_path()))
+        current = dict(_UPDATE_PROGRESS)
+    if not current:
+        return {
+            "ok": True,
+            "status": "idle",
+            "percent": 0,
+            "message": "尚未开始更新。",
+        }
+    target_version = str(current.get("latest_version") or "")
+    if target_version and current.get("status") in {"restarting", "awaiting_restart"}:
+        if not is_newer_version(target_version, get_app_version()):
+            return _set_update_progress(
+                "completed",
+                100,
+                f"已更新到 {get_app_version()}。",
+                latest_version=target_version,
+                restart_required=False,
+            )
+    return current
+
+
+def _run_update_operation() -> None:
+    try:
+        result = apply_update(_set_update_progress)
+        latest_version = str(result.get("latest_version") or get_app_version())
+        details = {
+            "latest_version": latest_version,
+            "restart_required": bool(result.get("restart_required")),
+            "automatic_restart": bool(result.get("automatic_restart")),
+            "result": result,
+        }
+        if result.get("restart_required") and result.get("automatic_restart"):
+            _set_update_progress("restarting", 96, "更新已准备完成，程序正在自动重启。", **details)
+        elif result.get("restart_required"):
+            _set_update_progress("awaiting_restart", 100, str(result.get("message") or "请重启程序完成更新。"), **details)
+        else:
+            _set_update_progress("completed", 100, str(result.get("message") or "更新检查已完成。"), **details)
+    except Exception as exc:
+        _set_update_progress("failed", 100, str(exc)[:500], error=str(exc)[:500])
+
+
+def start_update() -> dict[str, Any]:
+    global _UPDATE_THREAD
+    with _UPDATE_PROGRESS_LOCK:
+        if _UPDATE_THREAD is not None and _UPDATE_THREAD.is_alive():
+            return {**update_progress(), "accepted": False, "already_running": True}
+        _UPDATE_PROGRESS.clear()
+        initial = _set_update_progress(
+            "checking",
+            2,
+            "已开始更新，正在确认正式版本。",
+            current_version=get_app_version(),
+        )
+        _UPDATE_THREAD = threading.Thread(
+            target=_run_update_operation,
+            name="platform-update-worker",
+            daemon=True,
+        )
+        _UPDATE_THREAD.start()
+        return {**initial, "accepted": True, "already_running": False}

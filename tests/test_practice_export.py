@@ -233,7 +233,7 @@ def test_practice_export_converts_complete_bare_reaction_to_one_office_math_obje
     assert "L+δ→γ" in formulas
 
 
-def test_practice_export_preserves_shared_chemical_typography_decision():
+def test_practice_export_makes_every_chemical_formula_run_italic():
     data = _practice()
     data["exercises"][0]["stem"] = (
         "反应式为 2H₂+O₂→2H₂O，参比电极为（Hg₂Cl₂(s)|Hg(l)|KCl(aq)）。"
@@ -253,8 +253,10 @@ def test_practice_export_preserves_shared_chemical_typography_decision():
     assert len(targets) == 2
     for target in targets:
         runs = target.xpath(".//m:r", namespaces=namespace)
-        upright_runs = target.xpath(".//m:r[m:rPr/m:sty[@m:val='p']]", namespaces=namespace)
-        assert len(upright_runs) == len(runs)
+        italic_runs = target.xpath(".//m:r[m:rPr/m:sty[@m:val='i']]", namespaces=namespace)
+        upright_runs = target.xpath(".//m:r[m:rPr/m:sty[@m:val='p'] or m:rPr/m:nor]", namespaces=namespace)
+        assert len(italic_runs) == len(runs)
+        assert upright_runs == []
 
 
 def test_practice_export_keeps_complete_electrode_equation_in_one_math_object():

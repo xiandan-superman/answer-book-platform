@@ -25,7 +25,7 @@ def test_exam_public_metadata_recovers_names_without_storage_paths_or_internal_k
         },
     })
 
-    assert run["display_title"] == "真题解析 · 2025年材料分析真题.docx"
+    assert run["display_title"] == "真题解析 · 2025年材料分析真题"
     assert run["description"] == "2025年材料分析真题.docx"
     assert run["textbook_material_names"] == ["材料科学基础（第3版）", "材料工程基础"]
     public_copy = str({key: run[key] for key in ("display_title", "description", "textbook_material_names")})
@@ -56,6 +56,48 @@ def test_practice_public_metadata_recovers_source_basename_for_old_internal_titl
     assert run["material_display_names"] == ["相图原题-07.png"]
     assert "/private/" not in run["display_title"]
     assert "selected_textbooks" not in run["display_title"]
+
+
+def test_old_automatic_filename_title_is_presented_as_a_friendly_task_name() -> None:
+    run = build_practice_runs([{
+        "job_id": "job-friendly-old-title",
+        "practice_batch_id": "batch-friendly-old-title",
+        "task_kind": "practice",
+        "operation": "analyze",
+        "status": "running",
+        "title": "跨年组合_高分子物理_按题生题",
+        "model": "gpt-5.6-sol",
+        "payload": {
+            "source_mode": "exam",
+            "task_title": "跨年组合_高分子物理_按题生题",
+            "source_files": [{"name": "跨年组合_高分子物理_按题生题.docx"}],
+        },
+        "created_at": "2026-08-24T19:00:00+08:00",
+        "updated_at": "2026-08-24T19:01:00+08:00",
+    }], [])[0]
+
+    assert run["display_title"] == "按题出题 · Sol · 跨年组合 · 高分子物理"
+
+
+def test_user_renamed_title_remains_unchanged_in_public_task_name() -> None:
+    run = build_practice_runs([{
+        "job_id": "job-user-title",
+        "practice_batch_id": "batch-user-title",
+        "task_kind": "practice",
+        "operation": "analyze",
+        "status": "running",
+        "title": "我的_自定义任务名",
+        "model": "gemini-3.6-flash",
+        "payload": {
+            "source_mode": "exam",
+            "task_title": "我的_自定义任务名",
+            "source_files": [{"name": "跨年组合_高分子物理_按题生题.docx"}],
+        },
+        "created_at": "2026-08-24T19:00:00+08:00",
+        "updated_at": "2026-08-24T19:01:00+08:00",
+    }], [])[0]
+
+    assert run["display_title"] == "按题出题 · Gemini · 我的_自定义任务名"
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "paused", "completed"])

@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from .paths import DATA_ROOT
+from .task_titles import friendly_material_title
 
 PRACTICE_HISTORY_DIR = DATA_ROOT / "practice_history"
 _PRACTICE_ANSWER_FIELDS = {
@@ -68,7 +69,7 @@ def _material_task_title(request: dict[str, Any], fallback: Any = "") -> str:
     files = request.get("source_files") if isinstance(request.get("source_files"), list) else []
     names = [item.get("name") for item in files if isinstance(item, dict)] or request.get("source_file_names") or []
     for name in names:
-        material_name = _clean_task_title(Path(str(name or "")).stem)
+        material_name = friendly_material_title(name)
         if material_name:
             return material_name
     return _clean_task_title(fallback)
@@ -752,6 +753,20 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
                     "practice_batch_id": request.get("practice_batch_id") or "",
                     "provider": request.get("provider") or "",
                     "model": request.get("model") or "",
+                    # Basenames only: enough to distinguish automatic titles
+                    # from user renames without exposing local paths/payloads.
+                    "source_file_names": [
+                        str(name or "")
+                        for name in (
+                            request.get("source_file_names")
+                            or [
+                                item.get("name")
+                                for item in request.get("source_files") or []
+                                if isinstance(item, dict)
+                            ]
+                        )
+                        if str(name or "").strip()
+                    ],
                 },
                 "source_recovery": request.get("source_recovery") or {"status": "blocked" if request.get("source_file_names") else "not_required"},
                 "revision_count": len(record.get("revisions") or []),

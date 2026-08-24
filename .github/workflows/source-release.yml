@@ -29,6 +29,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+      - name: Install locked release validation runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt
+      - name: Require complete platform quality gate
+        run: python scripts/run_quality_gates.py --full
       - name: Validate tagged version
         shell: bash
         run: |
@@ -49,6 +56,25 @@ jobs:
             --notes-file dist/release-notes.md \
             --asset "source=$asset" \
             --output dist/release-assets/update-manifest.json
+      - name: Verify packaged source starts with isolated data
+        shell: bash
+        run: |
+          smoke_root="$RUNNER_TEMP/source-release-smoke"
+          mkdir -p "$smoke_root"
+          unzip -q "dist/release-assets/answer-book-platform-${RELEASE_VERSION}-source.zip" -d "$smoke_root"
+          ANSWER_BOOK_DATA_DIR="$RUNNER_TEMP/source-release-data" \
+            python "$smoke_root/answer-book-platform/scripts/start_platform.py" --host 127.0.0.1 --port 18766 \
+            >"$RUNNER_TEMP/source-release-smoke.log" 2>&1 &
+          smoke_pid=$!
+          trap 'kill "$smoke_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18766/api/version >"$RUNNER_TEMP/source-release-version.json"; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18766/api/version
+          kill "$smoke_pid"
+          wait "$smoke_pid" 2>/dev/null || true
+          trap - EXIT
       - name: Publish source release
         shell: bash
         run: |

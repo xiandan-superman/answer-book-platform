@@ -6,7 +6,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..omml import normalize_latex, omml_from_latex
-from .academic_expressions import ExpressionKind, classify_formula
+from .academic_expressions import classify_formula
 
 
 class ExpressionPresentation(str, Enum):
@@ -15,8 +15,9 @@ class ExpressionPresentation(str, Enum):
 
 
 class ExpressionTypography(str, Enum):
-    MATH_MIXED = "math_mixed"
-    CHEMISTRY_UPRIGHT = "chemistry_upright"
+    ALL_ITALIC = "all_italic"
+    MATH_MIXED = "all_italic"
+    CHEMISTRY_UPRIGHT = "all_italic"
 
 
 @dataclass(frozen=True)
@@ -56,10 +57,6 @@ def build_expression_render_plan(
         location=location,
         context=context,
     )
-    chemistry = expression.kind in {
-        ExpressionKind.CHEMICAL_NOTATION.value,
-        ExpressionKind.REACTION.value,
-    }
     return ExpressionRenderPlan(
         expression_id=expression.expression_id,
         question_id=question_id,
@@ -68,11 +65,7 @@ def build_expression_render_plan(
         render_latex=normalize_latex(expression.raw),
         expression_kind=expression.kind,
         presentation=ExpressionPresentation.DISPLAY if display else ExpressionPresentation.INLINE,
-        typography=(
-            ExpressionTypography.CHEMISTRY_UPRIGHT
-            if chemistry
-            else ExpressionTypography.MATH_MIXED
-        ),
+        typography=ExpressionTypography.ALL_ITALIC,
         role=str(role or "relation").strip() or "relation",
         location=location,
         capability_id=expression.capability_id,

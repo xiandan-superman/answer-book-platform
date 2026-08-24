@@ -323,7 +323,9 @@ def m_el(name: str, text: str | None = None):
 
 
 def apply_expression_math_style(omath, *, expression_kind: str = "formula"):
-    force_upright = expression_kind in {"chemical_notation", "reaction"}
+    # Product contract: once content is promoted to a Word formula object,
+    # every visible math run is italic, including chemical notation, units,
+    # state symbols and text originally emitted through ``\\mathrm``.
     for node in omath.iter():
         if not str(node.tag).endswith("}r"):
             continue
@@ -331,29 +333,12 @@ def apply_expression_math_style(omath, *, expression_kind: str = "formula"):
         if r_pr is None:
             r_pr = m_el("rPr")
             node.insert(0, r_pr)
-        existing_style = next(
-            (child for child in list(r_pr) if str(child.tag).endswith("}sty")),
-            None,
-        )
-        existing_normal = next(
-            (child for child in list(r_pr) if str(child.tag).endswith("}nor")),
-            None,
-        )
-        if force_upright:
-            for child in list(r_pr):
-                if str(child.tag).endswith("}sty") or str(child.tag).endswith("}nor"):
-                    r_pr.remove(child)
-            # ``m:nor`` switches a run to Word's normal-text layout.  That is
-            # unsuitable for mixed chemical runs such as ``(s)∣`` because it
-            # distorts math operators and their spacing.  Plain math style keeps
-            # letters upright while preserving operator geometry.
-            style = m_el("sty")
-            style.set(qn("m:val"), "p")
-            r_pr.insert(0, style)
-        elif existing_style is None and existing_normal is None:
-            sty = m_el("sty")
-            sty.set(qn("m:val"), "i")
-            r_pr.insert(0, sty)
+        for child in list(r_pr):
+            if str(child.tag).endswith("}sty") or str(child.tag).endswith("}nor"):
+                r_pr.remove(child)
+        sty = m_el("sty")
+        sty.set(qn("m:val"), "i")
+        r_pr.insert(0, sty)
         word_r_pr = next((child for child in list(node) if str(child.tag).endswith("}rPr") and str(child.tag).startswith("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}")), None)
         if word_r_pr is None:
             word_r_pr = OxmlElement("w:rPr")
@@ -371,7 +356,7 @@ def apply_expression_math_style(omath, *, expression_kind: str = "formula"):
 
 
 def apply_italic_math_style(omath):
-    """Backward-compatible alias for callers expecting general math styling."""
+    """Apply the product-wide all-italic Word formula contract."""
 
     return apply_expression_math_style(omath)
 

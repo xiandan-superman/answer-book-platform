@@ -68,6 +68,17 @@
       <button id="practiceRecoveryStayBtn" class="text-button" type="button">留在当前页</button>
     </div>
   </aside>
+  <aside id="platformUpdateNotice" class="platform-update-notice hidden" role="status" aria-live="polite" aria-labelledby="platformUpdateNoticeTitle">
+    <span class="platform-update-notice__icon"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i></span>
+    <div>
+      <strong id="platformUpdateNoticeTitle">发现新版本</strong>
+      <p id="platformUpdateNoticeMessage">新版已准备好，可查看更新内容后安装。</p>
+    </div>
+    <div class="platform-update-notice__actions">
+      <button id="platformUpdateNoticeLater" class="text-button" type="button">稍后提醒</button>
+      <button id="platformUpdateNoticeAction" class="primary-button" type="button">查看更新</button>
+    </div>
+  </aside>
 
   <aside id="practiceWordRecoveryNotice" class="practice-word-recovery-notice hidden" aria-labelledby="practiceWordRecoveryTitle">
     <header class="practice-word-recovery-notice__header">
@@ -1943,6 +1954,31 @@
       <footer class="platform-dialog-actions">
         <button id="platformDialogCancel" class="secondary-button" type="button">取消</button>
         <button id="platformDialogConfirm" class="primary-button" type="button">确定</button>
+      </footer>
+    </section>
+  </div>
+  <div id="platformUpdateProgress" class="platform-update-progress-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="platformUpdateProgressTitle" aria-describedby="platformUpdateProgressMessage">
+    <section class="platform-update-progress-card" tabindex="-1">
+      <header>
+        <span class="platform-update-progress-icon"><i class="fas fa-cloud-arrow-down" aria-hidden="true"></i></span>
+        <div>
+          <p>安全更新</p>
+          <h2 id="platformUpdateProgressTitle">正在准备更新</h2>
+        </div>
+      </header>
+      <div class="platform-update-progress-body">
+        <div class="platform-update-progress-summary">
+          <span id="platformUpdateProgressStage">检查版本</span>
+          <strong id="platformUpdateProgressPercent">0%</strong>
+        </div>
+        <div id="platformUpdateProgressTrack" class="platform-update-progress-track" role="progressbar" aria-label="程序更新进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="platformUpdateProgressBar"></span>
+        </div>
+        <p id="platformUpdateProgressMessage">正在确认最新正式版本。</p>
+        <small id="platformUpdateProgressDetail">更新期间任务、教材、API Key 和输出不会被删除。</small>
+      </div>
+      <footer>
+        <button id="platformUpdateProgressClose" class="secondary-button" type="button">在后台继续</button>
       </footer>
     </section>
   </div>

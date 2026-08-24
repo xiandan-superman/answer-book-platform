@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -17,6 +15,7 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
+from app.dependency_profiles import runtime_dependency_files, runtime_dependency_fingerprint
 
 MIN_PYTHON = (3, 9)
 RESTART_EXIT_CODE = 75
@@ -40,20 +39,11 @@ def runtime_python(env_dir: Path) -> Path:
 
 
 def dependency_files(project_root: Path) -> list[Path]:
-    rows = [project_root / "requirements.txt"]
-    if sys.platform.startswith("win"):
-        rows.append(project_root / "requirements-windows.txt")
-    return [path for path in rows if path.is_file()]
+    return runtime_dependency_files(project_root, sys.version_info[:2], platform_name=sys.platform)
 
 
 def dependency_fingerprint(project_root: Path) -> str:
-    digest = hashlib.sha256()
-    for name in ("requirements.txt", "requirements-windows.txt"):
-        path = project_root / name
-        if path.is_file():
-            digest.update(path.name.encode("utf-8"))
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
+    return runtime_dependency_fingerprint(project_root, sys.version_info[:2], platform_name=sys.platform)
 
 
 def dependencies_healthy(python: Path) -> bool:
@@ -95,7 +85,10 @@ def ensure_dependencies(project_root: Path, data_root: Path, *, approved: bool) 
         raise RuntimeError("依赖安装已取消，程序仍保留原版本和用户数据。")
     command = [str(python), "-m", "pip", "install", "--disable-pip-version-check"]
     for requirements in dependency_files(project_root):
-        command.extend(["-r", str(requirements)])
+        if requirements.name.startswith("constraints-"):
+            command.extend(["-c", str(requirements)])
+        else:
+            command.extend(["-r", str(requirements)])
     print("首次启动需要准备运行环境，正在安装 Python 依赖，请保持此窗口打开……" if first_install else "正在补充或更新 Python 依赖，请保持此窗口打开……", flush=True)
     result = subprocess.run(command, cwd=project_root)
     if result.returncode != 0 or not dependencies_healthy(python):

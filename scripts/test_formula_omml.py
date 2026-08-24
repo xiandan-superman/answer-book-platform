@@ -42,11 +42,9 @@ def main() -> int:
         for run in node.xpath(".//*[local-name()='r' and ./*[local-name()='t']]"):
             styles = run.xpath("./*[local-name()='rPr']/*[local-name()='sty']/@*[local-name()='val']")
             normal_text = run.xpath("./*[local-name()='rPr']/*[local-name()='nor']")
-            # Scientific Word math legitimately mixes italic variables with
-            # upright chemical symbols, units and operators. Every text run
-            # must declare one of those two styles; upright text is not an
-            # error by itself.
-            if not normal_text and not any(style in {"i", "bi", "p"} for style in styles):
+            # Product contract: every visible run in a Word formula object is
+            # italic, including chemistry, units and state symbols.
+            if normal_text or not any(style in {"i", "bi"} for style in styles):
                 failed += 1
         if "\\" in text or "{" in text or "}" in text:
             failed += 1

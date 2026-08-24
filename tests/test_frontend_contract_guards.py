@@ -85,6 +85,12 @@ def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert "async function checkPlatformUpdate()" in APP_JS
     assert 'api("/api/update/status?refresh=1")' in APP_JS
     assert 'api("/api/update/apply"' in APP_JS
+    assert 'api("/api/update/progress")' in APP_JS
+    assert 'id="platformUpdateNotice"' in INDEX_HTML
+    assert 'id="platformUpdateProgress"' in INDEX_HTML
+    assert 'role="progressbar"' in INDEX_HTML
+    assert "function checkPlatformUpdateSilently()" in APP_JS
+    assert "showPlatformUpdateNotice(status)" in APP_JS
     assert "API Key、教材、任务和输出不会被覆盖" in APP_JS
 
 

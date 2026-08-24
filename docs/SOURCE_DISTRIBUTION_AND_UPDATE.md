@@ -22,7 +22,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 
 1. 应用待处理的已校验源码更新。
 2. 在用户数据目录创建 `runtime/python-env`。
-3. 比较 `requirements.txt`、`requirements-windows.txt` 的联合指纹。
+3. 按当前 Python 与平台选择锁定约束（Python 3.9 使用 `constraints-py39.txt`，Python 3.11+ 使用 `constraints-py311.txt`），并比较运行依赖、Windows 补充依赖和所选约束的联合指纹。Python 3.10 保持有界依赖兼容路径。
 4. 首次运行自动安装依赖；已安装环境异常或指纹变化时请求用户确认。
 5. 启动 `scripts/start_platform.py`，等待 `/api/version` 健康检查通过。
 6. 持续等待 `/api/version` 就绪后只打开一次默认浏览器，不设置会导致慢启动漏开网页的固定 30 秒截止时间；默认浏览器调用失败时使用系统打开命令兜底。如果服务已运行，则只打开页面，不启动第二个工作器。
@@ -69,7 +69,10 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 5. `.github/workflows/source-release.yml` 使用 `git archive` 生成固定顶层目录的源码 ZIP。
 6. 生成包含版本、附件名、大小、SHA256 和依赖指纹的 `update-manifest.json`。
 7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新 `update-stable.json`。
-8. 客户端静默检查清单，用户点击确认后才更新。
+8. 客户端启动后自动静默检查清单。发现旧版本时显示非阻塞提醒；用户查看说明并确认后才更新。
+9. 更新请求进入独立后台线程，网页通过本机进度接口显示检查、下载、SHA256 校验、准备替换和重启状态；服务重启期间页面自动等待并重新连接。
+
+发布标签的工作流在生成稳定更新前必须安装锁定依赖并通过完整质量门禁；生成源码 ZIP 后还会用独立数据目录实际启动压缩包并检查 `/api/version`。普通 `main` push 和拉取请求由 Python 3.9、3.11 门禁以及 Chromium 关键流程保护，但不会调用真实付费模型。
 
 桌面安装包工作流只保留为手动兼容渠道。不得让桌面打包成功与否阻塞源码更新发布。
 
@@ -78,6 +81,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 - 更新 URL 必须为 HTTPS，仓库、标签和附件名必须通过白名单格式验证。
 - 任何下载都必须校验大小与 SHA256；失败的 `.part` 文件必须删除。
 - 更新 API 只能由运行服务的本机调用。
+- 更新进度只记录版本、阶段、字节数和公开错误，不记录 API Key、任务材料或用户输出内容。
 - 运行中的 Python 服务不直接覆盖自身；所有替换由外层监督器在服务退出后执行。
 - 依赖安装只进入用户级虚拟环境，不写系统 Python。
 - API Key 不进入源码包、更新清单、日志或备份说明。

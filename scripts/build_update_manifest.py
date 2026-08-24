@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from app.dependency_profiles import release_dependency_fingerprints
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "dist" / "update-manifest.json"
@@ -21,13 +22,7 @@ def sha256_file(path: Path) -> str:
 
 
 def dependency_fingerprint() -> str:
-    digest = hashlib.sha256()
-    for name in ("requirements.txt", "requirements-windows.txt"):
-        path = ROOT / name
-        if path.is_file():
-            digest.update(name.encode("utf-8"))
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
+    return release_dependency_fingerprints(ROOT)["py311"]
 
 
 def parse_asset(value: str) -> tuple[str, Path]:
@@ -64,6 +59,7 @@ def build_manifest(
         }
         if key == "source":
             platforms[key]["dependency_fingerprint"] = dependency_fingerprint()
+            platforms[key]["dependency_fingerprints"] = release_dependency_fingerprints(ROOT)
     return {
         "schema_version": SCHEMA_VERSION,
         "version": version.strip(),

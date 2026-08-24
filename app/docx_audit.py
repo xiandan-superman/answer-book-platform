@@ -276,9 +276,9 @@ def audit_docx_v4(docx: Path, min_formulas: int = 0) -> list[str]:
         for run_idx, run in enumerate(node.xpath(".//m:r[m:t]", namespaces=NS), 1):
             styles = run.xpath("./m:rPr/m:sty/@m:val", namespaces=NS)
             normal_text = run.xpath("./m:rPr/m:nor", namespaces=NS)
-            if not normal_text and not any(style in {"i", "bi", "p"} for style in styles):
+            if normal_text or not any(style in {"i", "bi"} for style in styles):
                 run_text = "".join(run.xpath("./m:t/text()", namespaces=NS))
-                issues.append(f"math object {idx} run {run_idx} has no explicit math typography: {run_text[:40]}")
+                issues.append(f"math object {idx} run {run_idx} is not italic: {run_text[:40]}")
     for idx, p in enumerate(root.xpath("//w:body/w:p", namespaces=NS), 1):
         text = "".join(p.xpath(".//w:t/text()", namespaces=NS)).strip()
         if text.startswith("教材依据："):

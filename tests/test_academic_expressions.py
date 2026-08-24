@@ -132,10 +132,10 @@ class AcademicExpressionTests(unittest.TestCase):
         )
 
         self.assertEqual("chemical_notation", plan.expression_kind)
-        self.assertEqual("chemistry_upright", plan.typography.value)
+        self.assertEqual("all_italic", plan.typography.value)
         self.assertEqual("", preflight_expression_render(plan))
 
-    def test_rendered_chemistry_is_upright_and_math_preserves_mixed_typography(self) -> None:
+    def test_rendered_chemistry_and_math_are_entirely_italic(self) -> None:
         from lxml import etree
 
         from app.capabilities.expression_rendering import render_expression_omml
@@ -145,11 +145,14 @@ class AcademicExpressionTests(unittest.TestCase):
         chemistry_xml = etree.tostring(chemistry, encoding="unicode")
         math_xml = etree.tostring(math, encoding="unicode")
 
-        self.assertIn('m:val="p"', chemistry_xml)
         self.assertNotIn("<m:nor", chemistry_xml)
-        self.assertNotIn('m:val="i"', chemistry_xml)
         self.assertIn('m:val="i"', math_xml)
-        self.assertIn('m:val="p"', math_xml)
+        self.assertNotIn('m:val="p"', chemistry_xml)
+        self.assertNotIn('m:val="p"', math_xml)
+        self.assertTrue(all(
+            run.xpath("./m:rPr/m:sty[@m:val='i']", namespaces={"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"})
+            for run in chemistry.xpath(".//m:r[m:t]", namespaces={"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"})
+        ))
 
     def test_domain_label_le_is_not_rendered_as_less_equal(self) -> None:
         from lxml import etree
@@ -167,7 +170,8 @@ class AcademicExpressionTests(unittest.TestCase):
 
         self.assertIn("Le", text)
         self.assertNotIn("≤", text)
-        self.assertIn('m:val="p"', xml)
+        self.assertIn('m:val="i"', xml)
+        self.assertNotIn('m:val="p"', xml)
 
     def test_cross_discipline_formulas_use_one_intermediate_contract(self) -> None:
         from app.capabilities.academic_expressions import audit_academic_expressions

@@ -18,6 +18,7 @@ from .task_contracts import (
     quality_from_summary,
     workflow_for_kind,
 )
+from .task_titles import build_display_task_title, friendly_material_title, title_matches_material_name
 
 
 def _time_key(value: object) -> float:
@@ -87,6 +88,18 @@ def _practice_material_metadata(record: dict[str, Any], task_kind: str) -> tuple
         name = _display_basename(item.get("name"))
         if name and name not in material_names:
             material_names.append(name)
+    for item in metadata.get("source_file_names") or []:
+        name = _display_basename(item)
+        if name and name not in material_names:
+            material_names.append(name)
+    # Live jobs retain source names, which lets us preserve an explicitly
+    # renamed title. Compact history rows omit those names, so their stored
+    # automatic title is cleaned directly for display. Saved data is untouched.
+    if title and (
+        not material_names
+        or any(title_matches_material_name(title, name) for name in material_names)
+    ):
+        title = friendly_material_title(title)
     if not title and material_names:
         title = material_names[0]
     return title or ("未命名知识点" if task_kind == "knowledge" else "未命名原题"), material_names
@@ -185,7 +198,12 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     textbook_names = _textbook_display_names(row)
     public_row = {
         **row,
-        "display_title": f"真题解析 · {exam_name}",
+        "display_title": build_display_task_title(
+            "真题解析",
+            friendly_material_title(exam_name) or exam_name,
+            model=row.get("model"),
+            provider=row.get("provider"),
+        ),
         "description": exam_name,
         "exam_display_name": exam_name,
         "material_display_names": [exam_name],
@@ -236,7 +254,12 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         "generation_phases": phases,
         "steps": phases,
         "is_generation_task": True,
-        "display_title": f"{kind_label} · {task_title}",
+        "display_title": build_display_task_title(
+            kind_label,
+            task_title,
+            model=request.get("model") or record.get("model"),
+            provider=request.get("provider") or record.get("provider"),
+        ),
         "description": task_title,
         "material_display_names": material_names or [task_title],
         "exam_path": task_title,
@@ -289,6 +312,7 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
     engine_status = str(record.get("status") or "queued")
     operation = str(record.get("operation") or "")
     task_kind = str(record.get("task_kind") or "practice")
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
     elapsed = max(0, int(record.get("elapsed_seconds") or 0))
     running_progress = min(88, 30 + elapsed // 15) if operation in {"generate_from_plan", "generate_from_contract"} else min(88, 35 + elapsed // 10)
     status = practice_run_status(engine_status, operation=operation, quality=QualityStatus.UNKNOWN)
@@ -306,7 +330,12 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         "is_generation_task": True,
         "is_generation_job": True,
         "operation": operation,
-        "display_title": f"{kind_label} · {task_title}",
+        "display_title": build_display_task_title(
+            kind_label,
+            task_title,
+            model=record.get("model") or payload.get("model"),
+            provider=record.get("provider") or payload.get("provider"),
+        ),
         "description": task_title,
         "material_display_names": material_names or [task_title],
         "steps": steps,

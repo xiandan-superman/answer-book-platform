@@ -122,7 +122,7 @@ from .task_result_view import build_task_result_view
 from .task_runner import control_exam_task, start_exam_task
 from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
 from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
-from .update_manager import UpdateError, apply_update, check_for_updates
+from .update_manager import UpdateError, check_for_updates, start_update, update_progress
 from .v4_schema import validate_v4_answer_fragment
 from .version import get_app_version, get_source_revision, get_version, release_manifest_status
 from .word_format_tasks import (
@@ -874,6 +874,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
             except UpdateError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
+        if parsed.path == "/api/update/progress":
+            if not self.is_local_client():
+                self.send_json({"ok": False, "error": "只能在运行程序的本机查看更新进度。"}, status=403)
+                return
+            self.send_json(update_progress())
+            return
         if parsed.path == "/api/environment":
             self.send_json(check_environment())
             return
@@ -1146,6 +1152,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if parsed.path.startswith("/api/"):
+            self.send_json(
+                {"ok": False, "error": "接口不存在。", "error_code": "api_not_found", "path": parsed.path},
+                status=404,
+            )
+            return
         self.serve_static(parsed.path)
 
     def do_POST(self) -> None:
@@ -1171,7 +1183,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "只能在运行程序的本机安装更新。"}, status=403)
                     return
                 try:
-                    result = apply_update()
+                    result = start_update()
                 except UpdateError as exc:
                     append_runtime_log("update", f"程序更新未完成：{exc}", "warning")
                     self.send_json({"ok": False, "error": str(exc)}, status=400)
@@ -1185,7 +1197,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         "restart_required": result.get("restart_required"),
                     },
                 )
-                self.send_json(result)
+                self.send_json(result, status=202 if result.get("accepted") else 200)
                 return
             if parsed.path == "/api/word-format/audit":
                 body = self.read_json(max_bytes=70 * 1024 * 1024)

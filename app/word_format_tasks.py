@@ -20,6 +20,7 @@ from standalone_word_format_reviewer.format_engine import (
 )
 
 from .paths import CONFIG_DIR, TASKS_DIR
+from .task_titles import build_display_task_title, friendly_material_title
 
 SETTINGS_FILE = CONFIG_DIR / "word_format_reviewer_settings.json"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -162,7 +163,11 @@ def _task_row(record: dict) -> dict:
         "task_kind": "format",
         "workflow_type": "word_format_review",
         "is_format_task": True,
-        "display_title": f"格式审查 · {record.get('filename') or 'Word 文档'}",
+        "display_title": build_display_task_title(
+            "格式审查",
+            friendly_material_title(record.get("filename")) or "Word 文档",
+            model_label="规则引擎",
+        ),
         "description": record.get("filename") or "Word 文档",
         "exam_path": record.get("filename") or "Word 文档",
         "model_label": "规则引擎",

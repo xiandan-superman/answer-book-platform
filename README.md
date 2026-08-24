@@ -1,6 +1,6 @@
 # 真题解析与生题平台
 
-本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.15。
+本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.16。
 
 ## 普通用户安装与使用
 
@@ -38,7 +38,7 @@
 
 - 每次使用都双击原程序文件夹中的 `start_platform.command`（macOS）或 `start_platform_windows.bat`（Windows），不要直接打开 HTML 文件。
 - 网页显示后可以关闭浏览器标签页，但这不会停止服务。需要完全退出时，回到启动程序打开的终端或命令窗口，按 `Control-C`，或直接关闭该窗口。
-- 从 0.9.13 开始，网页顶部会静默检查正式更新。发现新版本后点击“检查更新”并确认，程序会校验更新包、备份旧源码、替换程序并重启；任务、教材、输出和 API Key 不会被覆盖。
+- 从 0.9.13 开始，网页会自动检查正式更新。运行旧版本时，页面顶部显示非阻塞的新版本提醒；确认更新后可实时看到检查、下载、完整性校验、准备替换和重启进度。程序会备份旧源码并保护任务、教材、输出和 API Key。
 
 ### 从 0.9.12 或更早的 ZIP 版迁移
 
@@ -74,7 +74,8 @@ python3 scripts/start_platform.py
 
 ## 源码更新
 
-- 网页启动后静默检查稳定更新；发现版本时只改变“检查更新”提示，不会自动修改本机。
+- 网页启动后静默检查稳定更新；发现版本时显示可稍后关闭的更新提醒，不会未经用户确认修改本机。
+- 用户确认后，更新在后台执行，页面显示真实下载字节、校验、准备替换和重启阶段；服务重启期间页面会自动尝试重新连接。
 - 只有仓库创建与 `APP_VERSION` 一致的版本标签后，普通用户才会收到更新；普通 `main` push 不会下发。
 - 用户确认后，程序下载源码 ZIP、校验大小和 SHA256、退出旧服务、备份旧源码、替换代码并自动重启。
 - Git clone 用户使用安全的 `fetch + fast-forward merge`；本地有源码修改、分支不符或历史分叉时会拒绝自动更新。
@@ -216,10 +217,11 @@ python3 scripts/run_task.py "<task_id>" --render
 python3 scripts/run_quality_gates.py
 ```
 
-安装 `requirements-dev.txt` 后可运行包含 lint、类型检查和覆盖率的完整门禁：
+安装当前 Python 对应的锁定运行依赖和 `requirements-dev.txt` 后，可运行包含 lint、类型检查和覆盖率的完整门禁：
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
+python3 -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py39.txt   # Python 3.9
+# Python 3.11+ 改用 constraints-py311.txt
 python3 scripts/run_quality_gates.py --full
 ```
 
