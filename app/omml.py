@@ -352,6 +352,31 @@ def apply_expression_math_style(omath, *, expression_kind: str = "formula"):
         fonts.set(qn("w:hAnsi"), MATH_FONT)
         fonts.set(qn("w:cs"), MATH_FONT)
         fonts.set(qn("w:eastAsia"), CJK_MATH_FONT if re.search(r"[\u3400-\u9fff]", run_text) else MATH_FONT)
+    # Converter releases differ in whether identifiers such as ``mol`` and
+    # ``Ni`` become one run or one run per character.  Rejoin only adjacent
+    # ASCII-letter runs under the same structural parent.  Punctuation stays
+    # separate, so the portable ``%`` / ``Ni`` boundary is preserved.
+    for parent in list(omath.iter()):
+        children = list(parent)
+        index = 0
+        while index + 1 < len(children):
+            current, following = children[index], children[index + 1]
+            if not (
+                str(current.tag).endswith("}r")
+                and str(following.tag).endswith("}r")
+            ):
+                index += 1
+                continue
+            current_texts = [child for child in list(current) if str(child.tag).endswith("}t")]
+            following_texts = [child for child in list(following) if str(child.tag).endswith("}t")]
+            current_text = current_texts[0].text or "" if len(current_texts) == 1 else ""
+            following_text = following_texts[0].text or "" if len(following_texts) == 1 else ""
+            if re.fullmatch(r"[A-Za-z]+", current_text) and re.fullmatch(r"[A-Za-z]+", following_text):
+                current_texts[0].text = current_text + following_text
+                parent.remove(following)
+                children.pop(index + 1)
+                continue
+            index += 1
     return omath
 
 

@@ -320,7 +320,10 @@ def _find_composable_cache_roots(
             if counter and _counter_contains(remaining, counter):
                 candidates.append((sum(counter.values()), cache_root, counter))
         selected: list[Path] = []
-        for _, cache_root, counter in sorted(candidates, key=lambda item: item[0], reverse=True):
+        for _, cache_root, counter in sorted(
+            candidates,
+            key=lambda item: (-item[0], item[1].name.lower(), str(item[1])),
+        ):
             if not _counter_contains(remaining, counter):
                 continue
             selected.append(cache_root)

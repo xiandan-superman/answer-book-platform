@@ -220,7 +220,7 @@ def math_node_has_empty_delimiter_character(node) -> bool:
                 if (
                     name == "endChr"
                     and begin_value == "{"
-                    and delimiter.xpath("./m:e/m:m", namespaces=NS)
+                    and delimiter.xpath("./m:e//m:m", namespaces=NS)
                 ):
                     continue
                 return True
