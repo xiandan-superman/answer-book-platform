@@ -56,7 +56,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 - Windows：`%LOCALAPPDATA%\Answer Book Platform`
 - Linux：`${XDG_DATA_HOME:-~/.local/share}/answer-book-platform`
 
-首次由源码监督器启动时，程序把旧仓库内的任务、输出、日志、缓存、教材、试卷和本地配置复制到用户目录。迁移是复制而非删除，写入一次性标记；确认数据无误前保留旧文件便于恢复。显式设置 `ANSWER_BOOK_DATA_DIR` 的开发预览不执行迁移。
+首次由源码监督器启动时，程序把旧仓库内的任务、输出、日志、缓存、教材、试卷和本地配置复制到用户目录。迁移是“只补缺失文件”的复制：用户数据目录中已经存在的 API Key、教材、任务、输出和配置拥有最高优先级，任何同名旧文件都不得覆盖它。迁移完成后写入一次性标记；确认数据无误前保留旧文件便于恢复。显式设置 `ANSWER_BOOK_DATA_DIR` 的开发预览不执行迁移。
 
 ## 发布链路
 

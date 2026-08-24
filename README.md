@@ -80,6 +80,7 @@ python3 scripts/start_platform.py
 - Git clone 用户使用安全的 `fetch + fast-forward merge`；本地有源码修改、分支不符或历史分叉时会拒绝自动更新。
 - 新版本若改变依赖清单，确认框会提前说明；重启时检查并安装缺失依赖。依赖没有变化时不会重复安装。
 - 更新失败会恢复旧源码。API Key、教材、任务、日志和输出位于 macOS `~/Library/Application Support/Answer Book Platform` 或 Windows `%LOCALAPPDATA%\Answer Book Platform`。
+- 旧数据迁移只复制用户数据目录中尚不存在的文件；已有 API Key、教材、任务、输出和配置不会被同名旧文件或新版程序包覆盖。
 
 开发与发布细节见 [源码分发与更新架构](docs/SOURCE_DISTRIBUTION_AND_UPDATE.md)。
 

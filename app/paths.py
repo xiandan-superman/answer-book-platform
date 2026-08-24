@@ -44,6 +44,25 @@ CACHE_DIR = DATA_ROOT / "cache"
 SHARED_TEXTBOOK_LIBRARY_DIR = CACHE_DIR / "shared_textbook_library"
 
 
+def _copy_tree_without_overwrite(source: Path, target: Path) -> None:
+    """Merge legacy user data while preserving every existing destination file."""
+    target.mkdir(parents=True, exist_ok=True)
+    for root, directory_names, file_names in os.walk(source, followlinks=False):
+        root_path = Path(root)
+        directory_names[:] = [
+            name for name in directory_names if not (root_path / name).is_symlink()
+        ]
+        relative = root_path.relative_to(source)
+        destination_root = target / relative
+        destination_root.mkdir(parents=True, exist_ok=True)
+        for name in file_names:
+            source_file = root_path / name
+            destination_file = destination_root / name
+            if source_file.is_symlink() or destination_file.exists():
+                continue
+            shutil.copy2(source_file, destination_file)
+
+
 def _migrate_legacy_source_data() -> None:
     """Copy pre-0.10 source-checkout data out of the replaceable code tree."""
     if getattr(sys, "frozen", False):
@@ -63,7 +82,7 @@ def _migrate_legacy_source_data() -> None:
         source = PROJECT_ROOT / name
         target = DATA_ROOT / name
         if source.is_dir():
-            shutil.copytree(source, target, dirs_exist_ok=True)
+            _copy_tree_without_overwrite(source, target)
     legacy_config = PROJECT_ROOT / "config"
     target_config = DATA_ROOT / "config"
     target_config.mkdir(parents=True, exist_ok=True)
