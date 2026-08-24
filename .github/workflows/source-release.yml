@@ -87,11 +87,11 @@ jobs:
               --title "真题解析与生题平台 ${RELEASE_VERSION}" \
               --notes-file dist/release-notes.md
           fi
-      - name: Update stable source feed
+      - name: Update safe stable source feed
         shell: bash
         run: |
           content="$(base64 -w 0 dist/release-assets/update-manifest.json)"
-          sha="$(gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable.json" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/${RELEASE_REPOSITORY}/contents/update-stable.json" -f message="release: update stable source feed to ${RELEASE_VERSION}" -f content="$content")
+          sha="$(gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" -f message="release: update safe stable source feed to ${RELEASE_VERSION}" -f content="$content")
           if [[ -n "$sha" ]]; then args+=(-f sha="$sha"); fi
           gh api "${args[@]}"

@@ -138,21 +138,40 @@ def apply_pending_source_update(project_root: Path, data_root: Path) -> bool:
         version = str(plan.get("version") or "unknown").replace("/", "-")
         backup = data_root / "runtime" / "source-backups" / f"{version}-{time.strftime('%Y%m%d-%H%M%S')}"
         backup.parent.mkdir(parents=True, exist_ok=True)
-        previous_cwd = Path.cwd()
-        os.chdir(runtime_dir)
+        # Never move the live source directory away before the replacement is
+        # complete.  That old approach exposed an empty program folder while a
+        # cross-volume copy was running; closing the launcher during that gap
+        # could strand the user with only the hidden backup.  Prepare the new
+        # tree beside the installation first, then retain a full backup while
+        # overlaying the stopped source tree in place.  An interrupted overlay
+        # keeps both the launcher and pending plan, so the next start can retry.
+        project_root.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(
+            prefix=f".{project_root.name}-update-{version}-",
+            dir=project_root.parent,
+        ))
+        staging.rmdir()
         try:
-            shutil.move(str(project_root), str(backup))
+            shutil.copytree(extracted_root, staging)
+            if not (staging / "scripts" / "start_platform.py").is_file():
+                raise RuntimeError("新源码缺少启动入口。")
+            if not (staging / "start_platform_windows.bat").is_file():
+                raise RuntimeError("新源码缺少 Windows 启动入口。")
+
+            shutil.copytree(project_root, backup)
+            if not (backup / "scripts" / "start_platform.py").is_file():
+                raise RuntimeError("旧源码备份校验失败。")
             try:
-                shutil.copytree(extracted_root, project_root)
+                shutil.copytree(staging, project_root, dirs_exist_ok=True)
                 if not (project_root / "scripts" / "start_platform.py").is_file():
                     raise RuntimeError("新源码缺少启动入口。")
             except Exception:
-                shutil.rmtree(project_root, ignore_errors=True)
-                shutil.move(str(backup), str(project_root))
+                # Restore by overlay as well: never remove the user's visible
+                # program directory, even on a failed replacement.
+                shutil.copytree(backup, project_root, dirs_exist_ok=True)
                 raise
         finally:
-            if previous_cwd.exists():
-                os.chdir(previous_cwd)
+            shutil.rmtree(staging, ignore_errors=True)
     plan_path.unlink(missing_ok=True)
     return True
 

@@ -32,6 +32,7 @@ def test_pending_source_update_replaces_code_and_retains_backup(tmp_path) -> Non
         bundle.writestr("answer-book-platform/scripts/start_platform.py", "new")
         bundle.writestr("answer-book-platform/app/__init__.py", "")
         bundle.writestr("answer-book-platform/web/index.html", "new")
+        bundle.writestr("answer-book-platform/start_platform_windows.bat", "new launcher")
     plan = data / "runtime" / "pending-source-update.json"
     plan.write_text(json.dumps({"archive": str(archive), "version": "1.0.0"}), encoding="utf-8")
 
@@ -58,14 +59,21 @@ def test_failed_source_replacement_restores_code_without_touching_user_data(monk
         bundle.writestr("answer-book-platform/scripts/start_platform.py", "new")
         bundle.writestr("answer-book-platform/app/__init__.py", "")
         bundle.writestr("answer-book-platform/web/index.html", "new")
+        bundle.writestr("answer-book-platform/start_platform_windows.bat", "new launcher")
     plan = data / "runtime" / "pending-source-update.json"
     plan.write_text(json.dumps({"archive": str(archive), "version": "1.0.1"}), encoding="utf-8")
     (data / "config").mkdir()
     user_config = data / "config" / "api_keys.json"
     user_config.write_text("keep me", encoding="utf-8")
 
-    def fail_copy(*args, **kwargs):
-        raise OSError("simulated copy failure")
+    original_copytree = source_launcher.shutil.copytree
+
+    def fail_copy(source, destination, *args, **kwargs):
+        source_path = source if isinstance(source, type(project)) else type(project)(source)
+        if kwargs.get("dirs_exist_ok") and source_path.name.startswith(".program-update-"):
+            (project / "scripts" / "start_platform.py").write_text("partial", encoding="utf-8")
+            raise OSError("simulated copy failure")
+        return original_copytree(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(source_launcher.shutil, "copytree", fail_copy)
     with pytest.raises(OSError, match="simulated copy failure"):
@@ -74,6 +82,39 @@ def test_failed_source_replacement_restores_code_without_touching_user_data(monk
     assert (project / "scripts" / "start_platform.py").read_text(encoding="utf-8") == "old"
     assert user_config.read_text(encoding="utf-8") == "keep me"
     assert plan.exists()
+
+
+def test_source_update_prepares_new_tree_before_copying_live_source(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "program"
+    (project / "scripts").mkdir(parents=True)
+    (project / "scripts" / "start_platform.py").write_text("old", encoding="utf-8")
+    (project / "app").mkdir()
+    (project / "web").mkdir()
+    (project / "start_platform_windows.bat").write_text("old launcher", encoding="utf-8")
+    data = tmp_path / "data"
+    archive = data / "runtime" / "source.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("answer-book-platform/scripts/start_platform.py", "new")
+        bundle.writestr("answer-book-platform/app/__init__.py", "")
+        bundle.writestr("answer-book-platform/web/index.html", "new")
+        bundle.writestr("answer-book-platform/start_platform_windows.bat", "new launcher")
+    plan = data / "runtime" / "pending-source-update.json"
+    plan.write_text(json.dumps({"archive": str(archive), "version": "1.0.2"}), encoding="utf-8")
+    original_copytree = source_launcher.shutil.copytree
+    observations: list[tuple[str, str]] = []
+
+    def observe_copy(source, destination, *args, **kwargs):
+        observations.append((type(project)(source).name, (project / "scripts" / "start_platform.py").read_text(encoding="utf-8")))
+        return original_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(source_launcher.shutil, "copytree", observe_copy)
+
+    assert source_launcher.apply_pending_source_update(project, data) is True
+    assert observations[0][1] == "old"
+    assert observations[1][1] == "old"
+    assert (project / "scripts" / "start_platform.py").read_text(encoding="utf-8") == "new"
+    assert not plan.exists()
 
 
 def test_delayed_server_readiness_still_opens_browser_once(monkeypatch) -> None:

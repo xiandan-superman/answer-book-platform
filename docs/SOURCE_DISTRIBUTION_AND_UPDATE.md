@@ -6,7 +6,7 @@
 
 下载后解压整个目录：macOS 双击 `start_platform.command`，Windows 双击 `start_platform_windows.bat`。启动器检查 Python 3.9+，首次运行创建专用虚拟环境、安装依赖、启动本地服务并打开 `http://127.0.0.1:8766`。API 配置、日常启动、停止服务和旧 ZIP 版迁移的完整用户步骤以仓库根目录 `README.md` 为准。
 
-0.9.12 或更早的无 Git ZIP 版不具备监督器自替换能力：它只能下载并打开新 ZIP。用户必须保留旧目录，解压新版，把需要保留的旧数据目录及本地配置复制到新版同名位置，再首次运行新版启动器。0.9.13 及之后由监督器安装的源码版才进入自动替换链路。
+0.9.18 及更早的无 Git ZIP 版必须手动安装 0.9.19 一次。旧替换器会先把程序目录移动到用户数据备份区；程序目录与用户数据目录跨磁盘时，这个移动实际是慢速复制，用户在空目录窗口期间关闭启动器会中断替换。旧版固定读取的 `update-stable.json` 保持暂停状态。0.9.19 起改读 `update-stable-v2.json`，进入不会先移走可见程序目录的安全替换链路。
 
 ## 固定决策
 
@@ -42,9 +42,9 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 2. 校验清单声明的大小和 SHA256。
 3. 写入 `pending-source-update.json`，向浏览器返回成功结果。
 4. 监督器收到退出码 75 后验证 ZIP 路径，防止 Zip Slip，并确认包中只有一个有效项目根。
-5. 把旧程序目录移动到 `runtime/source-backups`，复制新源码。
-6. 新源码入口缺失或复制失败时删除不完整目录并恢复旧目录。
-7. 成功后删除待更新计划，依赖检查通过后重启。
+5. 先把新源码完整复制到安装目录旁的临时目录，并验证通用入口与 Windows 启动入口。
+6. 保持原程序目录原位不动，完整复制旧源码到 `runtime/source-backups`；备份校验通过后才把已准备的新源码覆盖到停止运行的程序目录。
+7. 覆盖失败时用备份原位恢复，但绝不删除或移走用户可见的程序目录；成功后删除待更新计划，依赖检查通过后重启。若进程在覆盖期间中断，启动文件和待更新计划仍存在，下次启动可安全重试。
 
 源码备份属于可恢复安全措施，不与用户任务数据混放。后续可以增加保留数量清理策略，但不得在没有可用新版本和健康检查证据时删除最后一个旧版本。
 
@@ -68,7 +68,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 4. 创建完全匹配的 `v<APP_VERSION>` 标签。
 5. `.github/workflows/source-release.yml` 使用 `git archive` 生成固定顶层目录的源码 ZIP。
 6. 生成包含版本、附件名、大小、SHA256 和依赖指纹的 `update-manifest.json`。
-7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新 `update-stable.json`。
+7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新仅供 0.9.19+ 安全替换器使用的 `update-stable-v2.json`。旧版固定读取的 `update-stable.json` 保持禁用，防止旧替换逻辑再次触发。
 8. 客户端启动后自动静默检查清单。发现旧版本时显示非阻塞提醒；用户查看说明并确认后才更新。
 9. 更新请求进入独立后台线程，网页通过本机进度接口显示检查、下载、SHA256 校验、准备替换和重启状态；服务重启期间页面自动等待并重新连接。
 

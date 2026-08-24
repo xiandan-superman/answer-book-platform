@@ -18,6 +18,11 @@ def test_source_release_smoke_starts_the_packaged_zip_with_isolated_data() -> No
     assert "/api/version" in SOURCE_RELEASE
 
 
+def test_source_release_updates_only_the_safe_v2_feed() -> None:
+    assert "update-stable-v2.json" in SOURCE_RELEASE
+    assert "contents/update-stable.json" not in SOURCE_RELEASE
+
+
 def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> None:
     assert 'python-version: ["3.9", "3.11"]' in QUALITY
     assert "constraints-py39.txt" in QUALITY
