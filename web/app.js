@@ -23,6 +23,8 @@ let activeTaskFilter = "all";
 let activeTaskKind = "all";
 let activeTaskSort = "smart";
 let taskManagerPage = 1;
+let taskManagerMotionEntrancePending = true;
+const taskManagerMotionStatuses = new Map();
 const TASK_MANAGER_PAGE_SIZE = 20;
 const FAILED_TASK_FEEDBACK_STORAGE_KEY = "answerBook.failedTaskFeedback.v1";
 const FAILED_TASK_FEEDBACK_DISMISS_KEY = "answerBook.failedTaskFeedbackDismiss.v1";
@@ -209,6 +211,7 @@ function startWizard() {
 
 function goToPage(page) {
   window.SupportTelemetry?.record("navigation", { action: "go_to_page", target: page });
+  const previousPage = currentPage;
   practiceNavigationVersion += 1;
   if (page !== currentPage) {
     if (currentPage === "knowledge") flushScheduledPracticeWorkspaceDraft("knowledge");
@@ -229,6 +232,7 @@ function goToPage(page) {
     if ($("resultQuestionDetail")) $("resultQuestionDetail").innerHTML = "";
   }
   currentPage = page;
+  if (page === "tasks" && previousPage !== "tasks") taskManagerMotionEntrancePending = true;
   document.body.dataset.activePage = page;
   if (page !== "practice") $("practiceWorkflowActions")?.classList.add("hidden");
   if (page !== "tasks") stopTaskManagerPolling();
@@ -236,6 +240,7 @@ function goToPage(page) {
   document.querySelectorAll(".page").forEach((el) => el.classList.remove("active"));
   const target = $(`page-${page}`);
   if (target) target.classList.add("active");
+  if (target && previousPage !== page) window.PlatformMotion?.pageEnter(target);
   const indicator = $("stepIndicator");
   if (indicator) indicator.classList.toggle("hidden", !workflowStepPages.includes(page));
   updateStepIndicator(page);
@@ -9226,6 +9231,8 @@ function renderTaskManager(tasks = latestTasks) {
   taskManagerPage = Math.min(Math.max(1, taskManagerPage), pageCount);
   const pageStart = (taskManagerPage - 1) * TASK_MANAGER_PAGE_SIZE;
   const visible = filteredVisible.slice(pageStart, pageStart + TASK_MANAGER_PAGE_SIZE);
+  const animateAllVisible = currentPage === "tasks" && taskManagerMotionEntrancePending;
+  const animatedItems = [];
   list.innerHTML = "";
   if (empty) empty.classList.toggle("hidden", visible.length > 0);
   renderTaskManagerPagination(filteredVisible.length);
@@ -9302,6 +9309,7 @@ function renderTaskManager(tasks = latestTasks) {
     item.classList.toggle("task-selection-mode", taskBulkMode);
     item.classList.toggle("task-selected", selectedTaskIds.has(taskId));
     item.dataset.status = normalized;
+    item.dataset.taskId = taskId;
     item.innerHTML = `
       <div class="task-manager-main">
         ${taskBulkMode ? `<label class="task-select-control" title="选择此任务"><input type="checkbox" data-task-select="${escapeHtml(taskId)}"${selectedTaskIds.has(taskId) ? " checked" : ""}><span aria-hidden="true"><i class="fas fa-check"></i></span></label>` : ""}
@@ -9363,6 +9371,24 @@ function renderTaskManager(tasks = latestTasks) {
       else openTaskDetail(task);
     });
     list.appendChild(item);
+    const previousStatus = taskManagerMotionStatuses.get(taskId);
+    if (currentPage === "tasks" && (animateAllVisible || previousStatus === undefined || previousStatus !== normalized)) {
+      animatedItems.push(item);
+    }
+  }
+  const currentTaskIds = new Set();
+  tasks.forEach((task) => {
+    const taskId = String(task.task_id || "");
+    if (!taskId) return;
+    currentTaskIds.add(taskId);
+    taskManagerMotionStatuses.set(taskId, taskDisplayStatus(task));
+  });
+  for (const taskId of taskManagerMotionStatuses.keys()) {
+    if (!currentTaskIds.has(taskId)) taskManagerMotionStatuses.delete(taskId);
+  }
+  if (currentPage === "tasks" && visible.length) {
+    taskManagerMotionEntrancePending = false;
+    window.PlatformMotion?.taskItemsChanged(animatedItems);
   }
 }
 
@@ -12866,6 +12892,7 @@ function initLiquidGlassLight() {
 
 const platformDialogQueue = [];
 let platformDialogActive = null;
+let platformDialogClosing = false;
 
 function platformDialogElements() {
   return {
@@ -12894,6 +12921,7 @@ function renderNextPlatformDialog() {
     return;
   }
   platformDialogActive = { ...item, previousFocus: document.activeElement };
+  platformDialogClosing = false;
   const tone = ["danger", "warning", "success"].includes(item.options.tone) ? item.options.tone : "info";
   const icon = tone === "danger" ? "fa-triangle-exclamation"
     : tone === "warning" ? "fa-circle-exclamation"
@@ -12915,14 +12943,19 @@ function renderNextPlatformDialog() {
   }
   elements.overlay.classList.remove("hidden");
   document.body.classList.add("platform-dialog-open");
-  requestAnimationFrame(() => {
+  const focusDialog = () => {
     if (item.kind === "prompt") elements.input.focus();
     else elements.confirm.focus();
-  });
+  };
+  if (window.PlatformMotion?.dialogOpen) {
+    window.PlatformMotion.dialogOpen(elements.overlay, elements.card, focusDialog);
+  } else {
+    requestAnimationFrame(focusDialog);
+  }
 }
 
 function finishPlatformDialog(confirmed) {
-  if (!platformDialogActive) return;
+  if (!platformDialogActive || platformDialogClosing) return;
   const current = platformDialogActive;
   const elements = platformDialogElements();
   const result = current.kind === "prompt"
@@ -12930,12 +12963,21 @@ function finishPlatformDialog(confirmed) {
     : current.kind === "confirm"
       ? Boolean(confirmed)
       : true;
-  elements.overlay?.classList.add("hidden");
-  document.body.classList.remove("platform-dialog-open");
-  platformDialogActive = null;
-  current.resolve(result);
-  if (current.previousFocus?.isConnected) current.previousFocus.focus({ preventScroll: true });
-  renderNextPlatformDialog();
+  platformDialogClosing = true;
+  const finalize = () => {
+    elements.overlay?.classList.add("hidden");
+    document.body.classList.remove("platform-dialog-open");
+    platformDialogActive = null;
+    platformDialogClosing = false;
+    current.resolve(result);
+    if (current.previousFocus?.isConnected) current.previousFocus.focus({ preventScroll: true });
+    renderNextPlatformDialog();
+  };
+  if (window.PlatformMotion?.dialogClose) {
+    window.PlatformMotion.dialogClose(elements.overlay, elements.card, finalize);
+  } else {
+    finalize();
+  }
 }
 
 function showPlatformDialog(kind, options = {}) {

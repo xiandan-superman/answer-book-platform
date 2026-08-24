@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+MOTION_JS = (ROOT / "web" / "motion.js").read_text(encoding="utf-8")
 
 
 def test_practice_formula_renderer_strips_provider_delimiters_before_wrapping() -> None:
@@ -63,6 +64,20 @@ def test_practice_result_selection_is_scoped_to_history_identity() -> None:
 def test_application_has_only_one_main_landmark() -> None:
     assert INDEX_HTML.count("<main") == 1
     assert INDEX_HTML.count("</main>") == 1
+
+
+def test_motion_layer_is_accessible_and_limited_to_compositor_properties() -> None:
+    assert "prefers-reduced-motion: reduce" in MOTION_JS
+    assert "engine?.matchMedia()" in MOTION_JS
+    assert 'clearProps: "opacity,visibility,transform,willChange"' in MOTION_JS
+    assert "width:" not in MOTION_JS
+    assert "height:" not in MOTION_JS
+
+
+def test_task_manager_animates_only_entries_that_are_new_or_changed() -> None:
+    assert "taskManagerMotionStatuses" in APP_JS
+    assert "previousStatus !== normalized" in APP_JS
+    assert "taskItemsChanged(animatedItems)" in APP_JS
 
 
 def test_local_app_exposes_verified_user_initiated_updates() -> None:

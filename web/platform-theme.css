@@ -2416,6 +2416,11 @@ body.platform-dialog-open {
   animation: platform-dialog-card-in .2s cubic-bezier(.2, .75, .25, 1);
 }
 
+.motion-ready .platform-dialog-overlay,
+.motion-ready .platform-dialog-card {
+  animation: none;
+}
+
 .platform-dialog-header {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr) 38px;

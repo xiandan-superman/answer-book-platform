@@ -7441,7 +7441,6 @@ body.practice-drawer-open { overflow: auto !important; }
   opacity: 0;
   transform: translateY(26px);
   transition: opacity 0.66s cubic-bezier(.22,1,.36,1), transform 0.66s cubic-bezier(.22,1,.36,1);
-  will-change: opacity, transform;
 }
 .reveal.visible { opacity: 1; transform: translateY(0); }
 .reveal-left { opacity: 0; transform: translateX(-30px); transition: opacity 0.66s cubic-bezier(.22,1,.36,1), transform 0.66s cubic-bezier(.22,1,.36,1); }
@@ -7458,6 +7457,7 @@ body.practice-drawer-open { overflow: auto !important; }
 .page {
   animation: pageIn 0.42s cubic-bezier(.22,1,.36,1);
 }
+.motion-ready .page { animation: none; }
 @keyframes pageIn {
   from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: translateY(0); }
@@ -7744,7 +7744,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ---- 结果图标脉冲 ---- */
 .result-icon {
-  animation: resultPulse 2.4s ease-in-out infinite;
+  animation: resultPulse 0.8s ease-out 1;
 }
 @keyframes resultPulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(30, 58, 138, 0.3); }
@@ -7757,7 +7757,7 @@ input:focus, select:focus, textarea:focus {
 }
 .flow-preview:hover .flow-row > i {
   color: var(--indigo);
-  animation: arrowNudge 1.8s ease-in-out infinite;
+  animation: arrowNudge 0.6s ease-in-out 1;
 }
 @keyframes arrowNudge {
   0%, 100% { transform: translateX(0); }
