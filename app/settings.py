@@ -27,6 +27,7 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "deepseek",
     "ark",
     "bailian",
+    "openrouter",
     "lingsuan_openai",
     "lingsuan_image",
     "lingsuan_google",

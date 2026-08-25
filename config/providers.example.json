@@ -215,6 +215,44 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "openrouter": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "api_key": "",
+      "default_model": "stealth/ox-alpha",
+      "vision_model": "stealth/ox-alpha",
+      "vision_model_options": [
+        "stealth/ox-alpha",
+        "minimax/minimax-m3:free"
+      ],
+      "supports_vision": true,
+      "model_capabilities": {
+        "stealth/ox-alpha": ["text", "vision"],
+        "z-ai/glm-5.2:free": ["text"],
+        "minimax/minimax-m3:free": ["text", "vision"]
+      },
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": [
+        "stealth/ox-alpha",
+        "z-ai/glm-5.2:free",
+        "minimax/minimax-m3:free"
+      ],
+      "model_option_labels": {
+        "stealth/ox-alpha": "Ox Alpha（文本与多模态理解）",
+        "z-ai/glm-5.2:free": "GLM 5.2 Free（文本，免费池可能限流）",
+        "minimax/minimax-m3:free": "MiniMax M3 Free（文本与多模态理解）"
+      },
+      "allow_custom_model": false,
+      "model_hint": "使用 OpenRouter Responses API。MiniMax M3 Free 已实测通过文本、JSON 与图片输入；GLM 5.2 Free 的上游免费共享池可能临时限流。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
     "lingsuan_openai": {
       "type": "openai_compatible",
       "api_protocol": "responses",

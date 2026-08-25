@@ -46,6 +46,12 @@ def short_model_label(model: Any, provider: Any = "") -> str:
         return "Hy3"
     if "mimo" in lowered:
         return "MiMo"
+    if "minimax" in lowered:
+        return "MiniMax"
+    if "glm" in lowered:
+        return "GLM"
+    if "ox-alpha" in lowered:
+        return "Ox Alpha"
     if "claude" in lowered:
         return "Claude"
     if "qwen" in lowered:
@@ -65,6 +71,7 @@ def short_model_label(model: Any, provider: Any = "") -> str:
         "zhipu": "智谱",
         "sensenova": "SenseNova",
         "bai": "B.AI",
+        "openrouter": "OpenRouter",
     }
     return provider_labels.get(provider_text, "")
 

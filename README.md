@@ -1,6 +1,8 @@
 # 真题解析与生题平台
 
-本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.20。
+本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.21。
+
+每个正式版本的具体新增、修复和升级注意事项统一记录在 [CHANGELOG.md](CHANGELOG.md)。GitHub Release 与应用内更新提示均从对应版本条目生成。
 
 ## 普通用户安装与使用
 
@@ -115,6 +117,7 @@ export ARK_API_KEY="..."
 export DASHSCOPE_API_KEY="..."
 export SENSENOVA_API_KEY="..."
 export BAI_API_KEY="..."
+export OPENROUTER_API_KEY="..."
 export ARK_IMAGE_MODEL="doubao-seedream-5-0-260128"
 export BAILIAN_IMAGE_MODEL="qwen-image-2.0-pro"
 export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
@@ -123,7 +126,7 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 旧版 `.env` 和 `config/providers.local.json` 中已有的 Key 会在首次启动时自动迁移。
 这两个旧文件仍兼容，但新版本以独立 Key 文件为主要配置入口。
 
-“API 配置”页面集中管理 DeepSeek、火山方舟、阿里云百炼、商汤日日新、B.AI 和灵算等已接入平台。新 Key 必须先通过连接测试才能保存；模型配置页面只负责选择具体模型，不再重复输入 Key。页面和接口只返回 `api_key_set`，不会回显已保存密钥；发布包脚本会排除真实 Key 文件。
+“API 配置”页面集中管理 DeepSeek、火山方舟、阿里云百炼、商汤日日新、B.AI、OpenRouter 和灵算等已接入平台。新 Key 必须先通过连接测试才能保存；模型配置页面只负责选择具体模型，不再重复输入 Key。页面和接口只返回 `api_key_set`，不会回显已保存密钥；发布包脚本会排除真实 Key 文件。
 
 真题模型配置中可单独选择“高风险正确性复核”模型。它仅用于计算/作图综合题的证据复核，以及硬校验失败题的单题纠错；不配置时自动复用结构化解析模型，不会额外引入另一条隐式模型路线。命令行可用 `--correctness-provider` 和 `--correctness-model` 显式指定。
 
@@ -134,6 +137,8 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 商汤日日新使用 `https://token.sensenova.cn/v1` 的 OpenAI 兼容接口。文本模型包含多模态的 `sensenova-6.8-flash-lite`（支持图片输入）、`deepseek-v4-flash` 和 `glm-5.2`；图片生成使用 `sensenova-u1.5-lite`，结果以 PNG/Base64 接收并立即保存到本地。按产品要求未接入 `sensenova-u1-fast`。
 
 B.AI 使用 `https://api.b.ai/v1` 的 OpenAI 兼容 Chat Completions 接口。仅内置已完成真实请求和 JSON 结构化输出验证的 `deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`hy3` 与 `mimo-v2.5`；其中只有 `deepseek-v4-flash-vision-exp` 启用图片输入。需要充值解锁的 `gpt-5.6-luna` 不在可选模型中。
+
+OpenRouter 使用 `https://openrouter.ai/api/v1` 的 Responses API。内置 `stealth/ox-alpha`、`z-ai/glm-5.2:free` 和 `minimax/minimax-m3:free`；其中 Ox Alpha 与 MiniMax M3 Free 启用图片输入，GLM 5.2 Free 仅启用文本输入。MiniMax M3 Free 已完成文本、JSON 结构化输出和图片理解的真实请求验证；GLM 5.2 Free 在测试时持续受 OpenRouter 上游免费共享池 429 限流，使用时可能需稍后重试。API Key 通过独立的 `OPENROUTER_API_KEY` 配置项保存。
 
 作图题会优先使用图片模型直接生成 PNG，再插入最终文档；如果图片接口不可用，会自动回退到程序绘图。图片模型可在 `providers.local.json` 中配置 `image_model`，或用 `ARK_IMAGE_MODEL` / `ANSWER_BOOK_IMAGE_MODEL` 环境变量指定。
 
@@ -265,7 +270,7 @@ python3 scripts/data_inventory.py
 - macOS / Windows 启动入口。
 - 依赖安装脚本。
 - Windows 专用依赖文件 `requirements-windows.txt`，用于 Word COM 自动化。
-- DeepSeek / 火山方舟 / 阿里云百炼 / 商汤日日新 / B.AI / 灵算 provider 配置。
+- DeepSeek / 火山方舟 / 阿里云百炼 / 商汤日日新 / B.AI / OpenRouter / 灵算 provider 配置。
 - 独立 API 配置页面，按平台测试并保存到程序数据目录的 `config/api_keys.json`，所有模型模块统一读取且不回显密钥。
 - `/api/version` 版本接口与 Web 顶部版本显示。
 - API Key 脱敏读取。

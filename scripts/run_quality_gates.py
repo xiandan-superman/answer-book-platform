@@ -77,6 +77,7 @@ def main() -> int:
             "app/practice_jobs.py", "app/practice_store.py", "app/version.py", "app/environment.py",
             "app/lan_access.py", "scripts/check_version_consistency.py",
             "scripts/data_inventory.py", "scripts/run_quality_gates.py",
+            "scripts/extract_release_notes.py",
         ]
         lint_scope.extend(str(path.relative_to(ROOT)) for path in sorted((ROOT / "app" / "capabilities").rglob("*.py")))
         lint_scope.extend(
@@ -117,6 +118,7 @@ def main() -> int:
                 "tests/test_dependency_profiles.py",
                 "tests/test_server_api_not_found.py",
                 "tests/test_source_release_workflow.py",
+                "tests/test_release_notes.py",
                 "tests/test_update_manager.py",
             ]
         )

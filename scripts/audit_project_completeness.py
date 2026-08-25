@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_FILES = [
     "README.md",
+    "CHANGELOG.md",
     "MIGRATION_README.md",
     "VERSION",
     "requirements.txt",
@@ -47,6 +48,7 @@ REQUIRED_FILES = [
     "scripts/export_question_review.py",
     "scripts/package_task_delivery.py",
     "scripts/check_version_consistency.py",
+    "scripts/extract_release_notes.py",
     "scripts/data_inventory.py",
     "scripts/run_quality_gates.py",
     "scripts/clean_runtime_state.py",
@@ -109,6 +111,7 @@ REQUIRED_TEXT = {
     ],
     "README.md": [
         "MIGRATION_README.md",
+        "CHANGELOG.md",
         "RELEASE_MANIFEST.json",
         "平台质量检查",
         "最终验收",

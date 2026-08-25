@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_RELEASE = (ROOT / ".github" / "workflows" / "source-release.yml").read_text(encoding="utf-8")
+DESKTOP_RELEASE = (ROOT / ".github" / "workflows" / "desktop-release.yml").read_text(encoding="utf-8")
 QUALITY = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
 
 
@@ -21,6 +22,14 @@ def test_source_release_smoke_starts_the_packaged_zip_with_isolated_data() -> No
 def test_source_release_updates_only_the_safe_v2_feed() -> None:
     assert "update-stable-v2.json" in SOURCE_RELEASE
     assert "contents/update-stable.json" not in SOURCE_RELEASE
+
+
+def test_release_workflows_require_version_specific_changelog_notes() -> None:
+    command = 'python scripts/extract_release_notes.py --version "$RELEASE_VERSION"'
+    assert command in SOURCE_RELEASE
+    assert command in DESKTOP_RELEASE
+    assert "--notes-file dist/release-notes.md" in SOURCE_RELEASE
+    assert "--notes-file dist/release-notes.md" in DESKTOP_RELEASE
 
 
 def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> None:

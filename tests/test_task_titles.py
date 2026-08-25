@@ -21,6 +21,9 @@ def test_model_label_is_concise_and_truthful() -> None:
     assert short_model_label("sensenova-6.8-flash-lite") == "SenseNova"
     assert short_model_label("hy3") == "Hy3"
     assert short_model_label("mimo-v2.5") == "MiMo"
+    assert short_model_label("minimax/minimax-m3:free") == "MiniMax"
+    assert short_model_label("z-ai/glm-5.2:free") == "GLM"
+    assert short_model_label("stealth/ox-alpha") == "Ox Alpha"
     assert build_display_task_title("格式审查", "论文", model_label="规则引擎") == "格式审查 · 规则引擎 · 论文"
 
 
