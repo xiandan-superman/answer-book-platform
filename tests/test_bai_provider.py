@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -22,6 +21,7 @@ def test_bai_provider_contains_only_verified_models() -> None:
     provider = _provider()
 
     assert provider.base_url == "https://api.b.ai/v1"
+    assert provider.user_agent.startswith("Mozilla/5.0 ")
     assert provider.api_protocol == "chat_completions"
     assert provider.api_key_env == "BAI_API_KEY"
     assert provider.default_model == "deepseek-v4-flash"
@@ -40,6 +40,29 @@ def test_bai_provider_contains_only_verified_models() -> None:
     assert not provider_supports_image_generation(provider)
     assert provider.image_model == ""
     assert "gpt-5.6-luna" not in provider.model_options
+
+
+def test_bai_browser_compatibility_header_is_scoped_to_provider() -> None:
+    from app.llm_client import _provider_request_headers
+    from app.settings import ProviderConfig
+
+    bai_headers = _provider_request_headers(_provider())
+    assert bai_headers["User-Agent"].startswith("Mozilla/5.0 ")
+    assert bai_headers["Authorization"] == "Bearer "
+
+    ordinary = ProviderConfig(
+        name="ordinary",
+        type="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        default_model="test-model",
+        model_options=(),
+        allow_custom_model=False,
+        model_hint="",
+        temperature=0.1,
+        max_tokens=128,
+    )
+    assert "User-Agent" not in _provider_request_headers(ordinary)
 
 
 def test_bai_frontend_label_and_key_slot_are_available() -> None:

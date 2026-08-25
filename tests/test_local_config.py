@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -37,6 +36,7 @@ class LocalConfigTests(unittest.TestCase):
         self.assertIn("SENSENOVA_API_KEY", ALLOWED_API_KEY_NAMES)
         self.assertIn("BAI_API_KEY", ALLOWED_API_KEY_NAMES)
         self.assertIn("OPENROUTER_API_KEY", ALLOWED_API_KEY_NAMES)
+        self.assertIn("YUANHENG_API_KEY", ALLOWED_API_KEY_NAMES)
         with tempfile.TemporaryDirectory() as raw_tmp:
             project_root = Path(raw_tmp)
             key_file = project_root / "config" / "api_keys.json"

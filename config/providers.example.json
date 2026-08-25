@@ -183,6 +183,7 @@
       "type": "openai_compatible",
       "api_protocol": "chat_completions",
       "base_url": "https://api.b.ai/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "BAI_API_KEY",
       "api_key": "",
       "default_model": "deepseek-v4-flash",
@@ -249,6 +250,41 @@
       },
       "allow_custom_model": false,
       "model_hint": "使用 OpenRouter Responses API。MiniMax M3 Free 已实测通过文本、JSON 与图片输入；GLM 5.2 Free 的上游免费共享池可能临时限流。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "yuanheng": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
+      "base_url": "https://cn.meta-api.vip/v1",
+      "api_key_env": "YUANHENG_API_KEY",
+      "api_key": "",
+      "default_model": "gpt-5.6-luna",
+      "vision_model": "gpt-5.6-luna",
+      "vision_model_options": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra"
+      ],
+      "supports_vision": true,
+      "model_capabilities": {
+        "gpt-5.6-luna": ["text", "vision"],
+        "gpt-5.6-terra": ["text", "vision"]
+      },
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra"
+      ],
+      "model_option_labels": {
+        "gpt-5.6-luna": "GPT-5.6 Luna（文本与多模态理解）",
+        "gpt-5.6-terra": "GPT-5.6 Terra（文本与多模态理解）"
+      },
+      "allow_custom_model": false,
+      "model_hint": "仅展示已在元衡 API 实测通过流式 Responses、JSON 结构化输出和图片理解的 Luna 与 Terra。",
       "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576

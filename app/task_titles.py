@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 _AUTOMATIC_MODE_SUFFIX = re.compile(
     r"(?:[\s_·—-]*(?:按题生题|按题出题|知识点生题|知识点出题|专项练习))+$"
 )
@@ -72,6 +71,7 @@ def short_model_label(model: Any, provider: Any = "") -> str:
         "sensenova": "SenseNova",
         "bai": "B.AI",
         "openrouter": "OpenRouter",
+        "yuanheng": "元衡 API",
     }
     return provider_labels.get(provider_text, "")
 

@@ -28,6 +28,7 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "ark",
     "bailian",
     "openrouter",
+    "yuanheng",
     "lingsuan_openai",
     "lingsuan_image",
     "lingsuan_google",
@@ -69,6 +70,7 @@ class ProviderConfig:
     api_protocol: str = "chat_completions"
     responses_fallback_to_chat: bool = True
     responses_streaming: bool = True
+    user_agent: str = ""
 
     def redacted(self) -> dict[str, Any]:
         return {
@@ -100,6 +102,7 @@ class ProviderConfig:
             "api_protocol": self.api_protocol,
             "responses_fallback_to_chat": self.responses_fallback_to_chat,
             "responses_streaming": self.responses_streaming,
+            "user_agent": self.user_agent,
         }
 
 
@@ -249,6 +252,7 @@ def list_providers() -> dict[str, ProviderConfig]:
                 False if builtin_responses else bool(item.get("responses_fallback_to_chat", True))
             ),
             responses_streaming=True if builtin_responses else bool(item.get("responses_streaming", True)),
+            user_agent=str(item.get("user_agent", "") or "").strip(),
         )
     return providers
 

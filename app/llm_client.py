@@ -29,6 +29,19 @@ from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
+def _provider_request_headers(config: ProviderConfig, *, accept: str = "") -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+    }
+    user_agent = str(getattr(config, "user_agent", "") or "").strip()
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    if accept:
+        headers["Accept"] = accept
+    return headers
+
+
 class LLMError(RuntimeError):
     """Provider failure with machine-readable transport metadata."""
 
@@ -413,10 +426,7 @@ class OpenAICompatibleClient:
         req = urllib.request.Request(
             f"{self.config.base_url}/chat/completions",
             data=data,
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=_provider_request_headers(self.config),
             method="POST",
         )
         try:
@@ -646,10 +656,7 @@ class OpenAICompatibleClient:
         req = urllib.request.Request(
             url,
             data=data,
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=_provider_request_headers(self.config),
             method="POST",
         )
         try:
@@ -719,11 +726,7 @@ class OpenAICompatibleClient:
         req = urllib.request.Request(
             url,
             data=data,
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-            },
+            headers=_provider_request_headers(self.config, accept="text/event-stream"),
             method="POST",
         )
         try:
