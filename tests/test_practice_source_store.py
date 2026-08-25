@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 
-from app import practice_inputs, practice_source_store
+from app import practice_inputs, practice_source_store, practice_store
 
 
 def _upload(name: str, content: bytes, mime: str = "text/plain") -> dict:
@@ -32,3 +32,16 @@ def test_extracted_source_is_reused_from_cache(tmp_path, monkeypatch):
 
     assert second == first
     assert "知识材料" in second["text"]
+
+
+def test_history_compaction_preserves_durable_source_reference(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_source_store, "OBJECT_ROOT", tmp_path / "objects")
+    payload = practice_source_store.persist_practice_source_files({
+        "source_files": [_upload("原始题图.png", b"original-image", "image/png")],
+    })
+
+    compacted = practice_store._compact_request(payload)
+
+    assert compacted["source_files"][0]["resource_id"] == payload["source_files"][0]["resource_id"]
+    assert compacted["source_recovery"] == {"status": "ready", "missing_files": []}
+    assert practice_source_store.load_practice_source_file(compacted["source_files"][0]) == b"original-image"

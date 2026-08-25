@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 import unittest
 import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +48,47 @@ class _FakeSSEResponse:
 
 
 class LLMProtocolAdapterTests(unittest.TestCase):
+    def test_first_byte_timeout_gives_long_generation_six_minutes(self):
+        from app.llm_client import _first_byte_timeout
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(360, _first_byte_timeout(480))
+            self.assertEqual(120, _first_byte_timeout(120))
+
+    def test_lingsuan_transport_bypasses_system_proxy_by_default(self):
+        from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
+
+        request = urllib.request.Request("https://lingsuan.top/v1/responses")
+        with patch.dict(os.environ, {}, clear=True), patch("app.llm_client.urllib.request.build_opener") as build_opener:
+            _open_provider_response(
+                _DEFAULT_URLOPEN,
+                request,
+                connect_timeout=15,
+                first_byte_timeout=120,
+                hard_deadline_monotonic=time.monotonic() + 480,
+            )
+
+        handlers = build_opener.call_args.args
+        self.assertTrue(any(isinstance(handler, urllib.request.ProxyHandler) for handler in handlers))
+
+    def test_lingsuan_transport_can_explicitly_reenable_system_proxy(self):
+        from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
+
+        request = urllib.request.Request("https://lingsuan.top/v1/responses")
+        with patch.dict(os.environ, {"ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY": "1"}), patch(
+            "app.llm_client.urllib.request.build_opener"
+        ) as build_opener:
+            _open_provider_response(
+                _DEFAULT_URLOPEN,
+                request,
+                connect_timeout=15,
+                first_byte_timeout=120,
+                hard_deadline_monotonic=time.monotonic() + 480,
+            )
+
+        handlers = build_opener.call_args.args
+        self.assertFalse(any(isinstance(handler, urllib.request.ProxyHandler) for handler in handlers))
+
     def test_responses_stream_enforces_total_wall_clock_deadline(self):
         from app.llm_client import _consume_responses_sse
 
@@ -78,8 +121,9 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual("chat_completions", client.config.api_protocol)
 
     def test_configured_text_providers_use_their_verified_protocol(self):
-        from app.llm_client import OpenAICompatibleClient, ResponsesAPIClient
+        from app.llm_client import AnthropicMessagesClient, OpenAICompatibleClient, ResponsesAPIClient
         from app.settings import (
+            BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES,
             BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES,
             BUILTIN_RESPONSES_PROVIDER_NAMES,
             get_provider,
@@ -100,6 +144,9 @@ class LLMProtocolAdapterTests(unittest.TestCase):
                     self.assertTrue(provider.responses_streaming)
                     self.assertFalse(provider.responses_fallback_to_chat)
                     self.assertIsInstance(client, ResponsesAPIClient)
+                elif name in BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES:
+                    self.assertEqual("anthropic_messages", provider.api_protocol)
+                    self.assertIsInstance(client, AnthropicMessagesClient)
                 else:
                     self.assertIn(name, BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES)
                     self.assertEqual("chat_completions", provider.api_protocol)
@@ -120,6 +167,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
     def test_stale_local_protocol_overrides_cannot_restore_chat_for_responses_providers(self):
         from app.settings import (
+            BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES,
             BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES,
             BUILTIN_RESPONSES_PROVIDER_NAMES,
             list_providers,
@@ -140,6 +188,8 @@ class LLMProtocolAdapterTests(unittest.TestCase):
                     self.assertEqual("responses", provider.api_protocol)
                     self.assertFalse(provider.responses_fallback_to_chat)
                     self.assertTrue(provider.responses_streaming)
+                elif name in BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES:
+                    self.assertEqual("anthropic_messages", provider.api_protocol)
                 else:
                     self.assertIn(name, BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES)
                     self.assertEqual("chat_completions", provider.api_protocol)
@@ -263,6 +313,91 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual('{"ok":true}', result.content)
         self.assertTrue(result.raw["_stream_salvaged"])
 
+    def test_structured_final_answer_takes_priority_over_gateway_thought_summary(self):
+        from app.llm_client import _responses_output_text
+
+        raw = {
+            "output_text": "**Defining the Constraints**\n\nI am thinking about JSON.",
+            "output": [
+                {"id": "reason_1", "type": "reasoning", "summary": [{"type": "summary_text", "text": "internal"}]},
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "text", "text": "discard this thought", "thought": True},
+                        {"type": "output_text", "text": '{"exercises":[]}'},
+                    ],
+                },
+            ],
+        }
+
+        self.assertEqual('{"exercises":[]}', _responses_output_text(raw))
+
+    def test_thought_only_output_cannot_be_mistaken_for_the_final_answer(self):
+        from app.llm_client import _responses_output_text
+
+        raw = {
+            "output_text": "**JSON Output Refinement Process**",
+            "output": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]}],
+        }
+
+        self.assertEqual("", _responses_output_text(raw))
+
+    def test_gateway_reasoning_merged_into_message_is_removed_before_final_json(self):
+        from app.llm_client import _responses_output_text
+
+        final = '{"exercises":[{"batch_index":1,"stem":"最终题目"}]}'
+        raw = {
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": (
+                        '**Defining the Parameters**\n\n'
+                        'My preliminary example is {"draft":true}.\n\n'
+                        f'```json\n{final}\n```'
+                    ),
+                }],
+            }],
+        }
+
+        self.assertEqual(final, _responses_output_text(raw))
+
+    def test_gateway_final_json_with_unescaped_latex_reaches_practice_repair(self):
+        from app.llm_client import _responses_output_text
+
+        final = '{"exercises":[{"stem":"\\mathrm{CO_2}"}]}'
+        raw = {"output_text": '**Working through the chemistry**\n' + final}
+
+        self.assertEqual(final, _responses_output_text(raw))
+
+    def test_gemini_model_output_steps_ignore_thought_steps(self):
+        from app.llm_client import _responses_output_text
+
+        raw = {
+            "steps": [
+                {"type": "thought", "content": [{"type": "text", "text": "**Thinking**"}]},
+                {"type": "model_output", "content": [{"type": "text", "text": '{"ok":true}'}]},
+            ],
+        }
+
+        self.assertEqual('{"ok":true}', _responses_output_text(raw))
+
+    def test_responses_stream_discards_reasoning_item_deltas(self):
+        from app.llm_client import ResponsesAPIClient
+
+        client = ResponsesAPIClient(self._provider(api_protocol="responses"))
+        client._urlopen = lambda _request, timeout: _FakeSSEResponse([
+            {"type": "response.output_item.added", "item": {"id": "reason_1", "type": "reasoning"}},
+            {"type": "response.output_text.delta", "item_id": "reason_1", "delta": "**Thought summary**"},
+            {"type": "response.content_part.done", "item_id": "reason_1", "part": {"type": "text", "text": "thinking", "thought": True}},
+            {"type": "response.output_text.delta", "item_id": "message_1", "delta": '{"ok":true}'},
+        ])
+
+        result = client.chat_json([{"role": "user", "content": "return JSON"}])
+
+        self.assertEqual('{"ok":true}', result.content)
+
     def test_responses_auto_omits_effort_and_legacy_enabled_means_medium(self):
         from app.llm_client import ResponsesAPIClient
 
@@ -279,6 +414,21 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         self.assertNotIn("reasoning", payloads[0])
         self.assertEqual({"effort": "medium"}, payloads[1]["reasoning"])
+
+    def test_responses_supports_gemini_minimal_retry_effort(self):
+        from app.llm_client import ResponsesAPIClient
+
+        payloads = []
+        client = ResponsesAPIClient(self._provider(api_protocol="responses", name="lingsuan_google"))
+
+        def fake_urlopen(request, timeout):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            return _FakeResponse({"output_text": '{"ok":true}', "status": "completed"})
+
+        client._urlopen = fake_urlopen
+        client.chat_json([{"role": "user", "content": "JSON"}], thinking="minimal")
+
+        self.assertEqual({"effort": "minimal"}, payloads[0]["reasoning"])
 
     def test_responses_json_mode_injects_required_json_instruction(self):
         from app.llm_client import ResponsesAPIClient

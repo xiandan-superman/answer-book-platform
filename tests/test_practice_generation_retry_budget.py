@@ -97,7 +97,7 @@ def test_configuration_error_short_circuits_batch_without_split(monkeypatch, sta
     assert all("request-id" not in item["generation_error"]["message"].lower() for item in result["exercises"])
 
 
-def test_same_transport_signature_opens_circuit_after_one_probe(monkeypatch) -> None:
+def test_same_transport_signature_exhausts_one_item_without_retrying_every_sibling(monkeypatch) -> None:
     calls = 0
 
     def fake_call(*_args, **_kwargs):
@@ -108,9 +108,9 @@ def test_same_transport_signature_opens_circuit_after_one_probe(monkeypatch) -> 
     _patch_runtime(monkeypatch, fake_call)
     result = exercise_generation.generate_practice_from_plan(_payload(5))
 
-    assert calls == 3  # two bounded batch attempts plus exactly one single-item probe
+    assert calls == 4  # two batch attempts plus the first item's two remaining opportunities
     assert result["quality"]["generated_count"] == 0
-    assert result["generation"]["retry_budget"]["total_model_calls"] == 3
+    assert result["generation"]["retry_budget"]["total_model_calls"] == 4
     assert result["exercises"][0]["generation_error"]["code"] == "provider_http_524"
     assert all(item["generation_error"]["code"] == "generation_retry_circuit_open" for item in result["exercises"][1:])
 
@@ -135,7 +135,7 @@ def test_probe_success_continues_remaining_items_within_shared_limit(monkeypatch
     assert all(item["generation_status"] == "completed" for item in result["exercises"])
 
 
-def test_different_probe_signature_does_not_circuit_healthy_items(monkeypatch) -> None:
+def test_different_probe_signature_can_recover_within_the_items_independent_budget(monkeypatch) -> None:
     calls = 0
 
     def fake_call(*_args, **_kwargs):
@@ -145,18 +145,16 @@ def test_different_probe_signature_does_not_circuit_healthy_items(monkeypatch) -
             raise LLMError("Provider HTTP 524: timeout", status_code=524)
         if calls == 3:
             raise LLMError("Provider HTTP 503: unavailable", status_code=503)
-        return {"exercises": [_exercise(1, calls - 2)]}
+        return {"exercises": [_exercise(1, 1 if calls == 4 else calls - 3)]}
 
     _patch_runtime(monkeypatch, fake_call)
     result = exercise_generation.generate_practice_from_plan(_payload(3))
 
-    assert calls == 5
-    assert [item["generation_status"] for item in result["exercises"]] == ["failed", "completed", "completed"]
-    assert result["exercises"][0]["generation_error"]["code"] == "provider_http_503"
-    assert all(item["generation_error"]["code"] != "generation_retry_circuit_open" for item in result["exercises"] if item["generation_status"] == "failed")
+    assert calls == 6
+    assert [item["generation_status"] for item in result["exercises"]] == ["completed", "completed", "completed"]
 
 
-def test_persistent_empty_response_stops_after_single_probe(monkeypatch) -> None:
+def test_persistent_empty_response_gives_every_question_four_independent_chances(monkeypatch) -> None:
     calls = 0
 
     def fake_call(*_args, **_kwargs):
@@ -167,10 +165,73 @@ def test_persistent_empty_response_stops_after_single_probe(monkeypatch) -> None
     _patch_runtime(monkeypatch, fake_call)
     result = exercise_generation.generate_practice_from_plan(_payload(4))
 
-    assert calls == 2
+    assert calls == 13  # one shared initial batch plus three independent attempts per question
     assert result["quality"]["generated_count"] == 0
     assert result["exercises"][0]["generation_error"]["signature"] == "generation_response_invalid:empty"
-    assert all(item["generation_error"]["code"] == "generation_retry_circuit_open" for item in result["exercises"][1:])
+    assert all(item["generation_error"]["code"] == "generation_response_invalid" for item in result["exercises"])
+    per_item = {
+        key: row
+        for key, row in result["generation"]["retry_budget"]["batches"].items()
+        if "|" not in key
+    }
+    assert len(per_item) == 4
+    assert all(row["calls_used"] == 4 for row in per_item.values())
+
+
+def test_fill_in_repair_must_pass_structure_before_it_counts_as_repaired(monkeypatch) -> None:
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        item = _exercise(1)
+        item["question_type"] = "填空题"
+        item["stem"] = (
+            "根据给定边界判断材料的状态变化并说明其原因。"
+            if calls < 3
+            else "根据给定边界判断材料的状态变化，其变化量为____。"
+        )
+        return {"exercises": [item]}
+
+    _patch_runtime(monkeypatch, fake_call)
+    payload = _payload(1)
+    payload["plan"]["blueprint"]["exercise_plan"][0]["question_type"] = "填空题"
+
+    result = exercise_generation.generate_practice_from_plan(payload)
+
+    assert calls == 3
+    assert result["exercises"][0]["generation_status"] == "completed"
+    assert "____" in result["exercises"][0]["stem"]
+    assert result["generation"]["batch_diagnostics"][0]["content_gate_retries"][0]["status"] == "repaired"
+
+
+@pytest.mark.parametrize(
+    "blank",
+    [
+        r"$C=\underline{\hspace{1.2cm}}$",
+        r"$C=\underbrace{\hspace{1.2cm}}$",
+    ],
+)
+def test_latex_fill_in_slot_is_accepted_without_regeneration(monkeypatch, blank: str) -> None:
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        item = _exercise(1)
+        item["question_type"] = "填空题"
+        item["stem"] = f"根据给定条件计算独立组分数并填空：{blank}。"
+        return {"exercises": [item]}
+
+    _patch_runtime(monkeypatch, fake_call)
+    payload = _payload(1)
+    payload["plan"]["blueprint"]["exercise_plan"][0]["question_type"] = "填空题"
+
+    result = exercise_generation.generate_practice_from_plan(payload)
+
+    assert calls == 1
+    assert result["exercises"][0]["generation_status"] == "completed"
+    assert result["generation"]["batch_diagnostics"][0].get("content_gate_retries") is None
 
 
 def test_partial_success_survives_configuration_block_and_continuation_only_fills_missing(tmp_path, monkeypatch) -> None:
@@ -313,6 +374,59 @@ def test_transport_retry_reconnects_responses_before_any_protocol_fallback(monke
     assert attempts[0]["error_code"] == "provider_tls_connection_failed"
     assert attempts[-1]["same_protocol_retry"] is True
     assert attempts[-1]["protocol_fallback"] is False
+
+
+def test_invalid_json_uses_four_progressively_stricter_gemini_attempts(monkeypatch) -> None:
+    primary = SimpleNamespace(config=SimpleNamespace(name="lingsuan_google"))
+    fallback = SimpleNamespace(config=SimpleNamespace(name="lingsuan_google"))
+    observed = []
+
+    def fake_call(client, messages, **kwargs):
+        observed.append({"client": client, "messages": messages, "thinking": kwargs["thinking"]})
+        if len(observed) < 4:
+            raise LLMError("专项练习 JSON 解析失败：模型返回了思考摘要。")
+        return {"exercises": [_exercise(1)]}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    attempts = []
+
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        primary,
+        [{"role": "user", "content": "请生成 JSON。"}],
+        model="gemini-3.6-flash",
+        temperature=0,
+        thinking=None,
+        timeout_seconds=480,
+        attempts=4,
+        backoff_seconds=0,
+        attempt_log=attempts,
+    )
+
+    assert result["exercises"]
+    assert [item["thinking"] for item in observed] == [None, "minimal", "minimal", "minimal"]
+    assert [item["client"] for item in observed] == [primary, primary, primary, fallback]
+    assert [item["strict_json_contract"] for item in attempts] == [False, False, True, True]
+
+
+def test_split_question_budgets_inherit_batch_calls_without_sharing_remaining_attempts() -> None:
+    coordinator = exercise_generation._GenerationRetryCoordinator({})
+    parent = "plan_item_01|plan_item_02"
+    for _ in range(2):
+        coordinator.reserve(parent, limit=4, phase="initial_batch")
+        coordinator.record(parent, phase="initial_batch", detail={"code": "provider_http_524", "signature": "provider_http_524"})
+
+    first = coordinator.prepare_item_budget(parent, "plan_item_01")
+    second = coordinator.prepare_item_budget(parent, "plan_item_02")
+    coordinator.reserve(first, limit=4, phase="single_item")
+    coordinator.record(first, phase="single_item", detail=None)
+    coordinator.reserve(first, limit=4, phase="single_item")
+    coordinator.record(first, phase="single_item", detail=None)
+
+    assert coordinator.remaining(first) == 0
+    assert coordinator.remaining(second) == 2
+    assert coordinator.summary()["total_model_calls"] == 4
 
 
 def test_retry_budget_persists_across_same_job_recovery(tmp_path, monkeypatch) -> None:

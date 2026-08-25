@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -152,10 +153,24 @@ def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_dow
         context = browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
         page = context.new_page()
         job_id = "practice_word_aaaaaaaaaaaaaaaaaaaaaaaa"
-        calls = {"status": 0, "download": 0}
+        calls = {"status": 0, "check": 0, "download": 0}
 
         def export_route(route):
-            if route.request.url.endswith("/download"):
+            requested_url = urlsplit(route.request.url)
+            if requested_url.path.endswith("/download"):
+                query = parse_qs(requested_url.query)
+                if query.get("check") == ["1"]:
+                    calls["check"] += 1
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({
+                            "ok": True,
+                            "filename": (query.get("filename") or ["服务端默认名.docx"])[0],
+                            "size_bytes": len(b"word-export-fixture"),
+                        }, ensure_ascii=False),
+                    )
+                    return
                 calls["download"] += 1
                 route.fulfill(
                     status=200,
@@ -218,12 +233,14 @@ def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_dow
         with page.expect_download() as download_info:
             first.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "独立文件A.docx"
+        assert Path(download_info.value.path()).read_bytes() == b"word-export-fixture"
         page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
         assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
         assert "本页无法确认最终保存路径" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogConfirm").click()
         page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").get_by_role("button", name="再次下载").wait_for()
         assert page.locator(".practice-word-recovery-item").filter(has_text="独立文件B.docx").is_visible()
+        assert calls["check"] == 1
         assert calls["download"] == 1
 
         remaining_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
@@ -245,9 +262,16 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         context = browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
         page = context.new_page()
         job_id = "practice_word_bbbbbbbbbbbbbbbbbbbbbbbb"
-        state = {"status": "missing", "download_fails": True, "retry_calls": 0, "download_calls": 0}
+        state = {
+            "status": "missing",
+            "download_fails": True,
+            "retry_calls": 0,
+            "download_calls": 0,
+            "binary_downloads": 0,
+        }
 
         def export_route(route):
+            requested_url = urlsplit(route.request.url)
             if route.request.method == "POST" and route.request.url.endswith("/retry"):
                 state["retry_calls"] += 1
                 state["status"] = "completed"
@@ -257,16 +281,33 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
                     body=json.dumps({"ok": True, "job": {"job_id": job_id, "status": "queued"}}),
                 )
                 return
-            if route.request.url.endswith("/download"):
-                state["download_calls"] += 1
-                if state["download_fails"]:
-                    route.fulfill(
-                        status=503,
-                        content_type="application/json",
-                        body=json.dumps({"error": '{"internal":"storage failed","request_id":"SECRET-123"}'}),
-                    )
-                else:
-                    route.fulfill(status=200, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", body=b"retried-word")
+            if requested_url.path.endswith("/download"):
+                query = parse_qs(requested_url.query)
+                if query.get("check") == ["1"]:
+                    state["download_calls"] += 1
+                    if state["download_fails"]:
+                        route.fulfill(
+                            status=503,
+                            content_type="application/json",
+                            body=json.dumps({"error": '{"internal":"storage failed","request_id":"SECRET-123"}'}),
+                        )
+                    else:
+                        route.fulfill(
+                            status=200,
+                            content_type="application/json",
+                            body=json.dumps({
+                                "ok": True,
+                                "filename": (query.get("filename") or ["失败后重试.docx"])[0],
+                                "size_bytes": len(b"retried-word"),
+                            }, ensure_ascii=False),
+                        )
+                    return
+                state["binary_downloads"] += 1
+                route.fulfill(
+                    status=200,
+                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    body=b"retried-word",
+                )
                 return
             if state["status"] == "missing":
                 route.fulfill(status=404, content_type="application/json", body=json.dumps({"error": "missing"}))
@@ -338,6 +379,7 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         with page.expect_download() as download_info:
             completed_item.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "失败后重试.docx"
+        assert Path(download_info.value.path()).read_bytes() == b"retried-word"
         page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
         assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
         page.locator("#platformDialogConfirm").click()
@@ -345,6 +387,7 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         assert "失败后重试.docx" in remaining_storage
         assert "last_download_triggered_at" in remaining_storage
         assert state["download_calls"] == 2
+        assert state["binary_downloads"] == 1
         browser.close()
 
 

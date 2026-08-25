@@ -879,13 +879,13 @@ def test_partial_batch_fails_only_slot_still_missing_after_one_bounded_probe() -
     ):
         result = generate_practice_from_plan(payload)
 
-    assert len(calls) == 2
+    assert len(calls) == 4
     assert [item["generation_status"] for item in result["exercises"]] == ["failed", "completed", "completed"]
     failed = result["exercises"][0]["generation_error"]
     assert failed["code"] == "generation_response_invalid"
     assert failed["message"] == "模型未完整返回本题，逐题补生后仍未成功。"
     assert "首次实际返回 [2, 3]" in failed["detail"]
-    assert "经 1 次独立补生仍未返回" in failed["detail"]
+    assert "用尽该题独立生成机会后仍未返回" in failed["detail"]
     assert [row["plan_item_id"] for row in result["generation"]["batch_errors"]] == ["plan_item_01"]
     diagnostic = result["generation"]["batch_diagnostics"][0]
     assert diagnostic["final_accepted_indexes"] == [2, 3]

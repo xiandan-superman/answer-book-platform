@@ -26,6 +26,20 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             "lingsuan_xai": "LINGSUAN_XAI_API_KEY",
             "lingsuan_anthropic": "LINGSUAN_ANTHROPIC_API_KEY",
         }
+        thinking_defaults = {
+            "lingsuan_openai": "auto",
+            "lingsuan_image": "auto",
+            "lingsuan_google": "auto",
+            "lingsuan_xai": "auto",
+            "lingsuan_anthropic": "auto",
+        }
+        expected_protocols = {
+            "lingsuan_openai": "responses",
+            "lingsuan_image": "responses",
+            "lingsuan_google": "chat_completions",
+            "lingsuan_xai": "responses",
+            "lingsuan_anthropic": "anthropic_messages",
+        }
 
         self.assertNotIn("lingsuan", providers)
         self.assertNotIn("yunwu", providers)
@@ -33,10 +47,11 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             with self.subTest(provider=name):
                 provider = providers[name]
                 self.assertEqual("https://lingsuan.top/v1", provider.base_url)
-                self.assertEqual("responses", provider.api_protocol)
-                self.assertTrue(provider.responses_streaming)
-                self.assertFalse(provider.responses_fallback_to_chat)
-                self.assertEqual("high", provider.thinking_mode)
+                self.assertEqual(expected_protocols[name], provider.api_protocol)
+                if expected_protocols[name] == "responses":
+                    self.assertTrue(provider.responses_streaming)
+                    self.assertFalse(provider.responses_fallback_to_chat)
+                self.assertEqual(thinking_defaults[name], provider.thinking_mode)
                 self.assertEqual(env_name, provider.api_key_env)
                 self.assertEqual(env_name, provider.redacted()["api_key_env"])
                 self.assertFalse(provider.allow_custom_model)
@@ -79,6 +94,22 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             provider = get_provider("lingsuan")
 
         self.assertEqual("lingsuan_openai", provider.name)
+
+    def test_stale_local_high_defaults_do_not_override_vendor_defaults(self) -> None:
+        import json
+
+        from app.settings import list_providers
+
+        raw = json.loads((ROOT / "config" / "providers.example.json").read_text(encoding="utf-8"))
+        for name in ("lingsuan_openai", "lingsuan_google", "lingsuan_image"):
+            raw["providers"][name]["thinking_mode"] = "high"
+
+        with patch("app.settings.load_provider_config_file", return_value=raw):
+            providers = list_providers()
+
+        self.assertEqual("auto", providers["lingsuan_openai"].thinking_mode)
+        self.assertEqual("auto", providers["lingsuan_google"].thinking_mode)
+        self.assertEqual("auto", providers["lingsuan_image"].thinking_mode)
 
     def test_frontend_names_and_saves_each_supplier_key(self) -> None:
         source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

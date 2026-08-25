@@ -12,12 +12,13 @@ import traceback
 from collections import Counter, deque
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
 from .capabilities.quality_budget import QualityExecutionBudget
-from .concurrency import model_request_context, model_request_snapshot
+from .concurrency import ensure_model_request_active, model_request_context, model_request_snapshot
 from .paths import DATA_ROOT, LOGS_DIR, PROJECT_ROOT, TASKS_DIR, ensure_project_dirs
 from .redaction import redact_credentials
 from .resource_ids import bounded_resource_path
@@ -350,6 +351,69 @@ def _append_model_ledger(record: dict[str, Any]) -> None:
         pass
 
 
+def _provider_circuit_cooldown_seconds() -> float:
+    try:
+        return max(0.0, min(300.0, float(os.environ.get("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "20"))))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def _model_execution_budget(context: dict[str, str]) -> QualityExecutionBudget:
+    budget = QualityExecutionBudget.from_environment()
+    if (
+        str(context.get("task_id") or "").startswith("generation_")
+        and str(context.get("stage") or "") == "generating"
+        and "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN" not in os.environ
+    ):
+        # Practice generation may contain many independently retried questions.
+        # Its parent task has its own deadline; the answer-review default must
+        # not silently terminate the entire batch after only 30 minutes.
+        return replace(budget, max_model_wall_seconds_per_run=7200)
+    return budget
+
+
+def _wait_for_provider_circuit_probe(
+    budget_key: tuple[str, str],
+    provider: str,
+    budget: QualityExecutionBudget,
+) -> bool:
+    """Let one request probe a failed provider after a shared cooldown."""
+
+    logged = False
+    while True:
+        ensure_model_request_active()
+        with _MODEL_LOCK:
+            state = _RUN_MODEL_BUDGETS.get(budget_key)
+            if not isinstance(state, dict):
+                return False
+            failures = int((state.get("provider_failures") or {}).get(provider, 0) or 0)
+            if failures < budget.provider_failure_circuit_breaker:
+                return False
+            elapsed = max(0.0, time.monotonic() - float(state.get("started_monotonic") or time.monotonic()))
+            if elapsed >= budget.max_model_wall_seconds_per_run:
+                raise RuntimeError(f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)")
+            circuits = state.setdefault("provider_circuits", {})
+            circuit = circuits.setdefault(provider, {
+                "opened_monotonic": time.monotonic(),
+                "probe_in_flight": False,
+            })
+            cooldown = _provider_circuit_cooldown_seconds()
+            remaining = cooldown - max(0.0, time.monotonic() - float(circuit.get("opened_monotonic") or 0))
+            if remaining <= 0 and not circuit.get("probe_in_flight"):
+                circuit["probe_in_flight"] = True
+                return True
+            wait_seconds = min(0.5, max(0.05, remaining if remaining > 0 else 0.25))
+        if not logged:
+            append_runtime_log(
+                "model_budget",
+                f"provider circuit cooling down for {provider}; probing again after {cooldown:g}s",
+                level="warning",
+                payload={"task_id": budget_key[0], "run_id": budget_key[1], "provider": provider},
+            )
+            logged = True
+        time.sleep(wait_seconds)
+
+
 @contextmanager
 def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -> Iterator[dict[str, Any]]:
     global _MODEL_SEQUENCE
@@ -372,18 +436,25 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
             pass
     budget_key = (str(context.get("task_id") or ""), str(context.get("run_id") or ""))
     budget: QualityExecutionBudget | None = None
-    with _MODEL_LOCK:
-        if all(budget_key):
-            budget = QualityExecutionBudget.from_environment()
-            state = _RUN_MODEL_BUDGETS.setdefault(
+    circuit_probe = False
+    if all(budget_key):
+        budget = _model_execution_budget(context)
+        with _MODEL_LOCK:
+            _RUN_MODEL_BUDGETS.setdefault(
                 budget_key,
                 {
                     "started_monotonic": time.monotonic(),
                     "call_count": 0,
                     "token_count": 0,
                     "provider_failures": {},
+                    "provider_circuits": {},
                 },
             )
+        circuit_probe = _wait_for_provider_circuit_probe(budget_key, provider, budget)
+    with _MODEL_LOCK:
+        if all(budget_key):
+            assert budget is not None
+            state = _RUN_MODEL_BUDGETS[budget_key]
             elapsed = max(0.0, time.monotonic() - float(state["started_monotonic"]))
             provider_failures = int((state.get("provider_failures") or {}).get(provider, 0) or 0)
             exhausted_reason = ""
@@ -393,7 +464,7 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
                 exhausted_reason = f"model token budget exhausted ({budget.max_model_tokens_per_run})"
             elif elapsed >= budget.max_model_wall_seconds_per_run:
                 exhausted_reason = f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)"
-            elif provider_failures >= budget.provider_failure_circuit_breaker:
+            elif provider_failures >= budget.provider_failure_circuit_breaker and not circuit_probe:
                 exhausted_reason = (
                     f"provider circuit breaker open for {provider} after {provider_failures} consecutive failures"
                 )
@@ -420,6 +491,7 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
             "active_item": _safe_text(context.get("active_item"), 120),
             "started_at": _now(),
             "timeout_seconds": max(1, int(timeout or 1)),
+            "circuit_probe": circuit_probe,
         }
         _MODEL_ACTIVE[call_id] = record
     outcome = "succeeded"
@@ -454,6 +526,14 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
                     failures = dict(state.get("provider_failures") or {})
                     failures[provider] = 0 if outcome == "succeeded" else int(failures.get(provider, 0) or 0) + 1
                     state["provider_failures"] = failures
+                    circuits = state.setdefault("provider_circuits", {})
+                    if outcome == "succeeded":
+                        circuits.pop(provider, None)
+                    elif failures[provider] >= budget.provider_failure_circuit_breaker:
+                        circuits[provider] = {
+                            "opened_monotonic": time.monotonic(),
+                            "probe_in_flight": False,
+                        }
                 if len(_RUN_MODEL_BUDGETS) > 200:
                     oldest_key = min(
                         _RUN_MODEL_BUDGETS,

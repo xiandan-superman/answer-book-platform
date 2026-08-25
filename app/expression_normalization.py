@@ -40,6 +40,13 @@ FORMULA_CONTINUATION_RE = re.compile(
     r"^(?P<continuation>(?:[×·]\s*10\s*)?[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+)"
 )
 OUTER_MATH_DELIMITERS = ((r"\[", r"\]"), (r"\(", r"\)"), ("$$", "$$"), ("$", "$"))
+ESCAPED_JSON_CONTROL_RE = re.compile(r"\\u00(?:0[0-9A-Fa-f]|1[0-9A-Fa-f])")
+_ESCAPED_CONTROL_BEFORE_TEX_RE = re.compile(
+    r"\\u00(?:0[0-9A-Fa-f]|1[0-9A-Fa-f])(?=(?:"
+    + "|".join(sorted(SUPPORTED_CONTROL_WORDS, key=len, reverse=True))
+    + r")(?![A-Za-z]))"
+)
+_DAMAGED_FOUR_WRAPPER_RE = re.compile(r"^4(?P<body>\\[A-Za-z]+\b.+)4$", re.DOTALL)
 
 
 def repair_json_escaped_latex(value: str) -> str:
@@ -56,6 +63,13 @@ def repair_json_escaped_latex(value: str) -> str:
     source = str(value or "")
     for damaged, repaired in repairs.items():
         source = source.replace(damaged, repaired)
+    # Some OpenAI-compatible gateways preserve damaged JSON control escapes as
+    # visible ``\u0000`` text. Before a known TeX word the escape replaced its
+    # command slash; elsewhere it is only a transport artifact and must vanish.
+    source = _ESCAPED_CONTROL_BEFORE_TEX_RE.sub(lambda _match: "\\", source)
+    source = ESCAPED_JSON_CONTROL_RE.sub("", source)
+    if wrapped := _DAMAGED_FOUR_WRAPPER_RE.fullmatch(source.strip()):
+        source = wrapped.group("body")
     return source
 
 

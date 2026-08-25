@@ -684,6 +684,17 @@ def _practice_export_filename(export_data: dict[str, object], *, review_candidat
     return f"{safe(title, '专项练习')}-{safe(model, 'model')}-{stamp}-题目{suffix}.docx"
 
 
+def _practice_download_filename(value: str, fallback: str) -> str:
+    """Keep a browser-selected DOCX name safe for attachment headers."""
+
+    candidate = re.split(r"[\\/]", str(value or ""))[-1]
+    candidate = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", candidate).strip().rstrip(". ")
+    if not candidate:
+        candidate = fallback
+    stem = candidate[:-5] if candidate.lower().endswith(".docx") else candidate
+    return f"{stem[:175].strip().rstrip('. ') or '专项练习-题目'}.docx"
+
+
 class PlatformHandler(BaseHTTPRequestHandler):
     server_version = "AnswerBookPlatform/1.0"
     MAX_JSON_BODY_BYTES = 8 * 1024 * 1024
@@ -1000,6 +1011,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
             return
         if len(parts) == 5 and parts[:3] == ["api", "practice", "export-jobs"] and parts[4] == "download":
             target, filename = practice_export_download(parts[3])
+            query = parse_qs(parsed.query)
+            filename = _practice_download_filename((query.get("filename") or [filename])[0], filename)
+            size_bytes = target.stat().st_size
+            if size_bytes <= 0:
+                raise ValueError("Word 文件为空，请重新生成后再下载。")
+            if (query.get("check") or [""])[0].lower() in {"1", "true", "yes"}:
+                self.send_json({"ok": True, "filename": filename, "size_bytes": size_bytes})
+                return
             data = target.read_bytes()
             self.send_response(200)
             self.send_header(

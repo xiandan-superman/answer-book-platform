@@ -21,6 +21,22 @@ def test_frontend_prepares_polls_and_downloads_background_word_job() -> None:
     assert "/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/download" in APP_JS
 
 
+def test_browser_download_preflights_json_and_navigates_directly_once() -> None:
+    start = APP_JS.index("async function downloadRememberedPracticeWord")
+    end = APP_JS.index("async function openRememberedPracticeWordFolder", start)
+    delivery_flow = APP_JS[start:end]
+    helper_start = APP_JS.index("function downloadPracticeWord(")
+    helper_end = APP_JS.index("async function waitForPracticeWordExportJob", helper_start)
+    helper = APP_JS[helper_start:helper_end]
+
+    assert "?check=1&filename=${requestedFilename}" in delivery_flow
+    assert "Number(checked.size_bytes || 0) <= 0" in delivery_flow
+    assert "downloadPracticeWord(`${downloadPath}?filename=${encodeURIComponent(filename)}`, filename)" in delivery_flow
+    assert "response.blob()" not in delivery_flow
+    assert "URL.createObjectURL" not in helper
+    assert "URL.revokeObjectURL" not in helper
+
+
 def test_server_keeps_sync_export_and_adds_background_job_routes() -> None:
     assert '"/api/practice/export", "/api/practice/export/prepare"' in SERVER
     assert '["api", "practice", "export-jobs"]' in SERVER

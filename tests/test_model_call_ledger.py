@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app import runtime_monitor
 from app.concurrency import run_limited_concurrent
 
@@ -66,3 +68,50 @@ def test_run_level_model_call_budget_stops_unbounded_retries(tmp_path, monkeypat
             assert "model call budget exhausted" in str(exc)
         else:
             raise AssertionError("run-level model budget did not stop the 11th call")
+
+
+def test_provider_circuit_allows_one_recovery_probe_and_resets_after_success(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "circuit.jsonl")
+    monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "0")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="circuit-task", run_id="circuit-run"):
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="temporary failure"):
+                with runtime_monitor.track_model_call(provider="lingsuan_google", model="gemini", purpose="chat", timeout=10):
+                    raise RuntimeError("temporary failure")
+        with runtime_monitor.track_model_call(provider="lingsuan_google", model="gemini", purpose="probe", timeout=10) as probe:
+            assert probe["circuit_probe"] is True
+        with runtime_monitor.track_model_call(provider="lingsuan_google", model="gemini", purpose="next", timeout=10) as next_call:
+            assert next_call["circuit_probe"] is False
+
+    state = runtime_monitor._RUN_MODEL_BUDGETS[("circuit-task", "circuit-run")]
+    assert state["provider_failures"]["lingsuan_google"] == 0
+    assert "lingsuan_google" not in state["provider_circuits"]
+
+
+def test_practice_generation_gets_its_own_long_task_wall_clock_budget(monkeypatch) -> None:
+    monkeypatch.delenv("QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", raising=False)
+
+    generation = runtime_monitor._model_execution_budget({
+        "task_id": "generation_20260825_test",
+        "stage": "generating",
+    })
+    regular = runtime_monitor._model_execution_budget({
+        "task_id": "regular-task",
+        "stage": "answer_generation",
+    })
+
+    assert generation.max_model_wall_seconds_per_run == 7200
+    assert regular.max_model_wall_seconds_per_run == 1800
+
+
+def test_explicit_task_wall_clock_override_remains_authoritative(monkeypatch) -> None:
+    monkeypatch.setenv("QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", "2100")
+
+    budget = runtime_monitor._model_execution_budget({
+        "task_id": "generation_20260825_test",
+        "stage": "generating",
+    })
+
+    assert budget.max_model_wall_seconds_per_run == 2100

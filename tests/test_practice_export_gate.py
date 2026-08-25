@@ -38,6 +38,41 @@ class PracticeExportGateTests(unittest.TestCase):
         self.assertIn(r"\nabla", normalized)
         self.assertIn(r"\nu", normalized)
 
+    def test_fill_in_math_blanks_are_moved_outside_math_without_touching_subscripts(self):
+        normalized = normalize_practice_markup(
+            r"物种数 $S=________$，限制数 $R'=____$，组分 $x_{\mathrm{CO}}$。"
+        )
+
+        self.assertEqual(
+            normalized,
+            r"物种数 $S=$ ________，限制数 $R'=$ ____，组分 $x_{\mathrm{CO}}$。",
+        )
+        self.assertEqual(normalize_practice_markup(normalized), normalized)
+
+    def test_nested_math_blanks_use_a_renderable_underline(self):
+        normalized = normalize_practice_markup(r"设 $x_{____}=2$。")
+
+        self.assertEqual(normalized, r"设 $x_{\underline{\hspace{2em}}}=2$。")
+
+    def test_historical_fill_in_math_blanks_pass_the_word_export_gate(self):
+        from app.practice_export import validate_practice_export
+
+        data = {
+            "quality": {"status": "passed", "release_level": "formal", "blocking_issues": []},
+            "exercises": [{
+                "number": 9,
+                "question_type": "填空题",
+                "stem": r"物种数 $S=________$，独立反应数 $R'=____$。",
+                "generation_status": "completed",
+            }],
+        }
+
+        report = validate_practice_export(data)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual("formal", report["release_level"])
+        self.assertIn(r"$S=________$", data["exercises"][0]["stem"])
+
     def test_fill_in_formula_bank_is_blocked_as_answer_leak(self):
         from app.practice_export import validate_practice_export
 

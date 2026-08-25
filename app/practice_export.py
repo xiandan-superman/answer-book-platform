@@ -102,7 +102,12 @@ def practice_stem_answer_leak_reasons(item: dict[str, Any]) -> list[str]:
     """Detect structured stem assets that expose what the student must supply."""
     question_type = str(item.get("question_type") or "").strip()
     stem = str(item.get("stem") or "")
-    has_blank = bool(re.search(r"_{2,}|[（(]\s*[）)]", stem))
+    has_blank = bool(
+        re.search(
+            r"_{2,}|[（(]\s*[）)]|\\(?:underline|underbrace)\s*\{",
+            stem,
+        )
+    )
     reasons: list[str] = []
     for index, formula in enumerate(item.get("formulas") or [], start=1):
         if not isinstance(formula, dict) or not _matches_location(formula.get("location"), "stem"):
@@ -680,6 +685,43 @@ _BARE_LATEX_BRACED_COMMANDS = {
     "sqrt": 1,
     "frac": 2,
 }
+_MATH_FILL_BLANK_RE = re.compile(r"(?<![\\_])_{2,}(?!_)")
+
+
+def _normalize_inline_math_fill_blanks(match: re.Match[str]) -> str:
+    """Keep answer blanks visible without treating underscores as subscripts."""
+
+    original_latex = next((group for group in match.groups() if group is not None), "")
+    latex = repair_json_escaped_latex(original_latex)
+
+    if match.group(1) is not None:
+        opening, closing = "$$", "$$"
+    elif match.group(2) is not None:
+        opening, closing = r"\[", r"\]"
+    elif match.group(3) is not None:
+        opening, closing = "$", "$"
+    else:
+        opening, closing = r"\(", r"\)"
+
+    blanks = list(_MATH_FILL_BLANK_RE.finditer(latex))
+    if not blanks:
+        return match.group(0) if latex == original_latex else f"{opening}{latex}{closing}"
+
+    trailing_blank = blanks[-1]
+    prefix = latex[: trailing_blank.start()].rstrip()
+    suffix = latex[trailing_blank.end() :]
+    if not suffix.strip() and prefix.count("{") == prefix.count("}"):
+        normalized_prefix = _MATH_FILL_BLANK_RE.sub(
+            lambda _match: r"\underline{\hspace{2em}}", prefix
+        )
+        equation = f"{opening}{normalized_prefix}{closing}" if normalized_prefix else ""
+        separator = " " if equation else ""
+        return f"{equation}{separator}{trailing_blank.group(0)}{suffix}"
+
+    normalized = _MATH_FILL_BLANK_RE.sub(
+        lambda _match: r"\underline{\hspace{2em}}", latex
+    )
+    return f"{opening}{normalized}{closing}"
 
 
 def preflight_practice_inline_expressions(data: dict[str, Any]) -> list[str]:
@@ -687,7 +729,7 @@ def preflight_practice_inline_expressions(data: dict[str, Any]) -> list[str]:
 
     issues: list[str] = []
     for index, item in enumerate(data.get("exercises") or [], start=1):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("generation_status") == "failed":
             continue
         number = str(item.get("number") or index)
         fields: list[tuple[str, Any]] = [("题干", item.get("stem"))]
@@ -703,7 +745,7 @@ def preflight_practice_inline_expressions(data: dict[str, Any]) -> list[str]:
                 if isinstance(row, list):
                     fields.extend((f"表格 {table_index} 第 {row_index} 行", value) for value in row)
         for field, value in fields:
-            text = _text(value, 12000)
+            text = normalize_practice_markup(value, limit=12000)
             for match in _INLINE_MATH_RE.finditer(text):
                 latex = next((group for group in match.groups() if group is not None), "").strip()
                 if not latex:
@@ -809,18 +851,17 @@ def _repair_bare_latex_segment(text: str) -> str:
 
 
 def normalize_practice_markup(value: Any, *, limit: int = 12000) -> str:
-    """Repair safely-recognizable bare LaTeX while preserving existing math.
+    """Repair bare LaTeX and keep fill-in blanks out of invalid math syntax.
 
-    Existing ``$...$``, ``\\(...\\)`` and display delimiters are copied as-is.
-    This makes the normalization safe to apply at generation time as well as
-    again immediately before export.
+    Existing mathematical notation is otherwise preserved.  The same
+    normalization is safe both for new generations and for historical exports.
     """
     text = _text(value, limit)
     parts: list[str] = []
     cursor = 0
     for match in _INLINE_MATH_RE.finditer(text):
         parts.append(_repair_bare_latex_segment(text[cursor : match.start()]))
-        parts.append(match.group(0))
+        parts.append(_normalize_inline_math_fill_blanks(match))
         cursor = match.end()
     parts.append(_repair_bare_latex_segment(text[cursor:]))
     return "".join(parts)
@@ -944,7 +985,7 @@ def _inline_export_text(value: Any, limit: int = 10000) -> str:
 
 def _add_rich_text(paragraph, value: Any, *, limit: int = 10000) -> None:
     """Write text and inline LaTeX without leaking raw dollar delimiters."""
-    text = _inline_export_text(value, limit)
+    text = normalize_practice_markup(_inline_export_text(value, limit), limit=limit)
     cursor = 0
     for match in _INLINE_MATH_RE.finditer(text):
         plain = text[cursor : match.start()]

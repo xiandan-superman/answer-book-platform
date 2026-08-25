@@ -6571,21 +6571,27 @@ async function downloadRememberedPracticeWord(pointer, button) {
     await platformAlert(`已保存到：${result.path}`, { title: "Word 已保存", tone: "success" });
     return result;
   }
-  const response = await fetch(`/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/download`, { cache: "no-store" });
+  const downloadPath = `/api/practice/export-jobs/${encodeURIComponent(pointer.job_id)}/download`;
+  const requestedFilename = encodeURIComponent(pointer.filename);
+  const response = await fetch(`${downloadPath}?check=1&filename=${requestedFilename}`, { cache: "no-store" });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     window.setTimeout(() => resumeRememberedPracticeWordExports().catch(() => {}), 0);
     throw new Error(practiceWordDownloadError(payload.error, pointer.filename));
   }
-  const blob = await response.blob();
-  downloadPracticeWord(blob, pointer.filename);
+  const checked = await response.json().catch(() => null);
+  if (!checked?.ok || Number(checked.size_bytes || 0) <= 0) {
+    throw new Error(practiceWordDownloadError("Word 文件为空或尚未准备完成，请重新生成。", pointer.filename));
+  }
+  const filename = String(checked.filename || pointer.filename);
+  downloadPracticeWord(`${downloadPath}?filename=${encodeURIComponent(filename)}`, filename);
   updatePracticeWordExportPointer(pointer.export_key, {
     last_download_triggered_at: new Date().toISOString(),
     download_trigger_count: Number(pointer.download_trigger_count || 0) + 1,
   });
   renderPracticeWordRecoveryNotice();
-  await platformAlert(`Word 已生成：${pointer.filename}。下载请求已交给浏览器，可在全局恢复区再次下载；本页不会冒充确认浏览器的最终磁盘落盘结果。`, { title: "Word 已生成", tone: "success" });
-  return { status: "download_started", filename: pointer.filename };
+  await platformAlert(`Word 已生成：${pointer.filename}。下载请求已交给浏览器，可在全局恢复区再次下载；本页无法确认最终保存路径，请查看浏览器下载记录。`, { title: "Word 已开始下载", tone: "success" });
+  return { status: "download_started", filename };
 }
 
 async function openRememberedPracticeWordFolder(pointer) {
@@ -6712,15 +6718,13 @@ function practiceWordFilename(data = latestPracticeSet, scopeLabel = "题目") {
   return `${safe(rawTitle, "专项练习")}-${safe(rawModel, "model")}-${stamp || "export"}-${safe(scopeLabel, "题目")}.docx`;
 }
 
-function downloadPracticeWord(blob, filename) {
-  const url = URL.createObjectURL(blob);
+function downloadPracticeWord(url, filename) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function waitForPracticeWordExportJob(initialJob, exportKey) {

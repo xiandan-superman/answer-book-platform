@@ -6,12 +6,14 @@ import email.utils
 import http.client
 import json
 import os
+import re
 import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -76,7 +78,7 @@ def _transport_timeout(name: str, default: int, hard_timeout: int) -> int:
 def _first_byte_timeout(hard_timeout: int) -> int:
     """Scale preparation wait for long stages while retaining a short connect timeout."""
 
-    adaptive_default = min(180, max(45, int(hard_timeout) // 4))
+    adaptive_default = min(420, max(120, int(hard_timeout) * 3 // 4))
     return _transport_timeout("PRACTICE_MODEL_FIRST_BYTE_TIMEOUT_SECONDS", adaptive_default, hard_timeout)
 
 
@@ -200,7 +202,7 @@ def _open_provider_response(
         raise LLMError("模型请求超过单次硬截止时间。", transport_phase="hard_timeout")
     try:
         if urlopen is _DEFAULT_URLOPEN:
-            opener = urllib.request.build_opener(
+            handlers: list[Any] = [
                 _LayeredHTTPHandler(
                     connect_timeout=min(float(connect_timeout), remaining),
                     first_byte_timeout=min(float(first_byte_timeout), remaining),
@@ -211,7 +213,15 @@ def _open_provider_response(
                     first_byte_timeout=min(float(first_byte_timeout), remaining),
                     hard_deadline_monotonic=hard_deadline_monotonic,
                 ),
-            )
+            ]
+            host = str(urllib.parse.urlparse(request.full_url).hostname or "").lower()
+            allow_proxy = str(os.environ.get("ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY") or "").strip().lower()
+            if host == "lingsuan.top" and allow_proxy not in {"1", "true", "yes"}:
+                # Local proxy interception has caused TLS EOFs and misleading
+                # gateway 502s. TUN/fake-IP routing still belongs to the OS, but
+                # urllib must not add a second configured proxy hop by default.
+                handlers.insert(0, urllib.request.ProxyHandler({}))
+            opener = urllib.request.build_opener(*handlers)
             return opener.open(request, timeout=min(float(connect_timeout), remaining))
         return urlopen(request, timeout=min(float(first_byte_timeout), remaining))
     except LLMError:
@@ -327,11 +337,194 @@ class LLMClientProtocol(Protocol):
     def generate_image(self, prompt: str, output: Path, **kwargs: Any) -> ImageGenerationResult: ...
 
 
+_THINKING_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+
+
+def _model_profile(config: ProviderConfig, model: str) -> dict[str, Any]:
+    profiles = getattr(config, "model_profiles", {}) or {}
+    exact = profiles.get(str(model or "").strip())
+    return dict(exact) if isinstance(exact, dict) else {}
+
+
+def _model_api_protocol(config: ProviderConfig, model: str) -> str:
+    profile = _model_profile(config, model)
+    return str(profile.get("api_protocol") or getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
+
+
+def _model_omitted_parameters(config: ProviderConfig, model: str) -> set[str]:
+    return {
+        str(value).strip().lower()
+        for value in (_model_profile(config, model).get("omit_parameters") or [])
+        if str(value).strip()
+    }
+
+
+def _model_thinking_mode(config: ProviderConfig, model: str, requested: Any) -> str:
+    mode = _normalize_thinking_mode(requested)
+    minimum = _normalize_thinking_mode(_model_profile(config, model).get("thinking_minimum"))
+    if minimum not in _THINKING_ORDER:
+        return mode
+    if mode in {"disabled", "auto"}:
+        return minimum if mode == "disabled" else "auto"
+    if mode == "enabled":
+        mode = "medium"
+    return minimum if _THINKING_ORDER.get(mode, -1) < _THINKING_ORDER[minimum] else mode
+
+
+def _effective_model_max_tokens(
+    config: ProviderConfig,
+    model: str,
+    requested_tokens: Any,
+    thinking_mode: str,
+) -> int:
+    calculated = _effective_max_tokens(config, requested_tokens, thinking_mode)
+    cap = _model_profile(config, model).get("max_tokens")
+    try:
+        return min(calculated, max(1, int(cap))) if cap is not None else calculated
+    except (TypeError, ValueError):
+        return calculated
+
+
+def _client_for_model_protocol(config: ProviderConfig, model: str, protocol: str) -> "OpenAICompatibleClient":
+    profiles = {key: dict(value) for key, value in (getattr(config, "model_profiles", {}) or {}).items()}
+    profile = dict(profiles.get(model) or {})
+    profile["api_protocol"] = protocol
+    profiles[model] = profile
+    return OpenAICompatibleClient(
+        replace(config, api_protocol=protocol, default_model=model, model_profiles=profiles)
+    )
+
+
+def _is_gemini_model(config: ProviderConfig, model: str) -> bool:
+    return str(model or "").lower().startswith("gemini-") or str(config.name).lower() == "lingsuan_google"
+
+
+def _is_grok_model(config: ProviderConfig, model: str) -> bool:
+    return str(model or "").lower().startswith("grok-") or str(config.name).lower() == "lingsuan_xai"
+
+
+def _chat_reasoning_effort(thinking_mode: str) -> str:
+    normalized = _normalize_thinking_mode(thinking_mode)
+    return normalized if normalized in _THINKING_ORDER else ""
+
+
+def _strip_think_blocks(content: str) -> str:
+    return re.sub(r"<think>[\s\S]*?</think>", "", str(content or ""), flags=re.IGNORECASE).strip()
+
+
+def _message_plain_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    return "\n".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"}
+    )
+
+
+def _anthropic_message_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = str(part.get("type") or "")
+        if part_type in {"text", "input_text", "output_text"}:
+            parts.append({"type": "text", "text": str(part.get("text") or "")})
+            continue
+        if part_type not in {"image_url", "input_image"}:
+            continue
+        raw_url = part.get("image_url")
+        url = raw_url.get("url") if isinstance(raw_url, dict) else raw_url
+        if not url:
+            url = part.get("url")
+        url = str(url or "")
+        data_match = re.fullmatch(r"data:([^;,]+);base64,(.+)", url, flags=re.DOTALL)
+        source = (
+            {"type": "base64", "media_type": data_match.group(1), "data": data_match.group(2)}
+            if data_match
+            else {"type": "url", "url": url}
+        )
+        if url:
+            parts.append({"type": "image", "source": source})
+    return parts or _message_plain_text(content)
+
+
+def _json_schema_from_contract(value: Any, *, field_name: str = "") -> dict[str, Any]:
+    if isinstance(value, dict):
+        properties = {
+            str(key): _json_schema_from_contract(item, field_name=str(key))
+            for key, item in value.items()
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "items": _json_schema_from_contract(value[0], field_name=field_name) if value else {"type": "string"},
+        }
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    if field_name == "batch_index":
+        return {"type": "integer"}
+    if field_name == "knowledge_points":
+        return {"type": "array", "items": {"type": "string"}}
+    return {"type": "string"}
+
+
+def _anthropic_output_schema(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    marker = re.compile(r"(?:^|\n)\s*(?:#{1,3}\s*)?输出结构\s*[：:]?\s*\n")
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        content = _message_plain_text(message.get("content"))
+        for match in reversed(list(marker.finditer(content))):
+            try:
+                contract, _ = decoder.raw_decode(content[match.end():].lstrip())
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(contract, dict):
+                continue
+            if isinstance(contract.get("item_schema"), dict) and isinstance(contract.get("exercises"), str):
+                item_schema = _json_schema_from_contract(contract["item_schema"])
+                conditional = contract.get("conditional_fields")
+                if isinstance(conditional, dict):
+                    for key, entry in conditional.items():
+                        if isinstance(entry, dict) and "schema" in entry:
+                            item_schema["properties"][str(key)] = _json_schema_from_contract(
+                                entry["schema"], field_name=str(key)
+                            )
+                return {
+                    "type": "object",
+                    "properties": {"exercises": {"type": "array", "items": item_schema}},
+                    "required": ["exercises"],
+                    "additionalProperties": False,
+                }
+            return _json_schema_from_contract(contract)
+    return None
+
+
 class OpenAICompatibleClient:
     def __new__(cls, config: ProviderConfig):
         protocol = str(getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
         if cls is OpenAICompatibleClient and protocol in {"responses", "responses_api"}:
             return super().__new__(ResponsesAPIClient)
+        if cls is OpenAICompatibleClient and protocol in {"anthropic_messages", "messages"}:
+            return super().__new__(AnthropicMessagesClient)
         if cls is OpenAICompatibleClient and protocol not in {"chat_completions", "openai_compatible", ""}:
             raise ValueError(f"Unsupported API protocol: {protocol}")
         return super().__new__(cls)
@@ -406,14 +599,29 @@ class OpenAICompatibleClient:
         timeout: int = 120,
         use_response_format: bool = True,
     ) -> LLMResult:
-        thinking_mode = _normalize_thinking_mode(thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"))
+        target_model = str(model or self.config.default_model).strip()
+        protocol = _model_api_protocol(self.config, target_model)
+        if protocol not in {"chat_completions", "openai_compatible", ""}:
+            delegated = _client_for_model_protocol(self.config, target_model, protocol)
+            delegated._urlopen = self._urlopen
+            return delegated._chat_json_once(
+                messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
+                thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+            )
+        thinking_mode = _model_thinking_mode(
+            self.config,
+            target_model,
+            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"),
+        )
         requested_tokens = self.config.max_tokens if max_tokens is None else max_tokens
         payload = {
-            "model": model or self.config.default_model,
+            "model": target_model,
             "messages": messages,
-            "temperature": self.config.temperature if temperature is None else temperature,
-            "max_tokens": _effective_max_tokens(self.config, requested_tokens, thinking_mode),
+            "max_tokens": _effective_model_max_tokens(self.config, target_model, requested_tokens, thinking_mode),
         }
+        omitted = _model_omitted_parameters(self.config, target_model)
+        if "temperature" not in omitted:
+            payload["temperature"] = self.config.temperature if temperature is None else temperature
         if use_response_format:
             payload["response_format"] = {"type": "json_object"}
         if thinking_mode in {"enabled", "disabled"}:
@@ -422,6 +630,18 @@ class OpenAICompatibleClient:
         if reasoning_effort:
             payload["thinking"] = {"type": "enabled"}
             payload["reasoning_effort"] = reasoning_effort
+        if _is_gemini_model(self.config, target_model):
+            payload.pop("thinking", None)
+            gemini_effort = _chat_reasoning_effort(thinking_mode)
+            if gemini_effort:
+                payload["reasoning_effort"] = gemini_effort
+                reasoning_effort = gemini_effort
+        if _is_grok_model(self.config, target_model):
+            payload.pop("thinking", None)
+            grok_effort = _chat_reasoning_effort(thinking_mode)
+            if grok_effort:
+                payload["reasoning_effort"] = grok_effort
+                reasoning_effort = grok_effort
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"{self.config.base_url}/chat/completions",
@@ -481,9 +701,19 @@ class OpenAICompatibleClient:
             raise LLMError(f"Provider request failed: {exc}") from exc
 
         try:
-            content = raw["choices"][0]["message"]["content"]
+            message = raw["choices"][0]["message"]
+            content = message["content"]
         except Exception as exc:
             raise LLMError(f"Unexpected provider response shape: {raw}") from exc
+        if isinstance(content, list):
+            content = "".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") in {"text", "output_text"}
+                and part.get("thought") is not True
+                and part.get("is_thinking") is not True
+            )
         if isinstance(raw, dict):
             raw["_request"] = {
                 "response_format": "json_object" if use_response_format else "prompt_only_json",
@@ -496,6 +726,10 @@ class OpenAICompatibleClient:
             raise LLMError(f"Model returned empty JSON content; {detail}" if detail else "Model returned empty JSON content")
         if not isinstance(content, str):
             raise LLMError(f"Model content must be a string, got {type(content).__name__}")
+        if _is_gemini_model(self.config, target_model):
+            content = _separate_gateway_final_json(content)
+        if bool(_model_profile(self.config, target_model).get("strip_think_blocks")):
+            content = _strip_think_blocks(content)
         return LLMResult(
             provider=self.config.name,
             model=str(payload["model"]),
@@ -651,12 +885,19 @@ class OpenAICompatibleClient:
         }
         return ImageGenerationResult(self.config.name, model, output, raw)
 
-    def _post_json(self, url: str, payload: dict[str, Any], *, timeout: int) -> dict[str, Any]:
+    def _post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        timeout: int,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=data,
-            headers=_provider_request_headers(self.config),
+            headers=headers or _provider_request_headers(self.config),
             method="POST",
         )
         try:
@@ -875,23 +1116,36 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         timeout: int = 120,
         use_response_format: bool = True,
     ) -> LLMResult:
-        thinking_mode = _normalize_thinking_mode(
-            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto")
+        target_model = str(model or self.config.default_model).strip()
+        protocol = _model_api_protocol(self.config, target_model)
+        if protocol not in {"responses", "responses_api"}:
+            delegated = _client_for_model_protocol(self.config, target_model, protocol)
+            delegated._urlopen = self._urlopen
+            return delegated._chat_json_once(
+                messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
+                thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+            )
+        thinking_mode = _model_thinking_mode(
+            self.config,
+            target_model,
+            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"),
         )
         requested_tokens = self.config.max_tokens if max_tokens is None else max_tokens
         responses_input = _responses_input_items(messages)
         if use_response_format and not _value_mentions_json(responses_input):
             responses_input.insert(0, {"role": "system", "content": "Return one valid JSON object."})
         payload: dict[str, Any] = {
-            "model": model or self.config.default_model,
+            "model": target_model,
             "input": responses_input,
-            "max_output_tokens": _effective_max_tokens(self.config, requested_tokens, thinking_mode),
-            "store": False,
+            "max_output_tokens": _effective_model_max_tokens(self.config, target_model, requested_tokens, thinking_mode),
         }
+        omitted = _model_omitted_parameters(self.config, target_model)
+        if "store" not in omitted:
+            payload["store"] = False
         # Reasoning models may not accept sampling parameters. Preserve an
         # explicit caller override, but do not forward the Chat Completions
         # provider default automatically.
-        if temperature is not None:
+        if temperature is not None and "temperature" not in omitted:
             payload["temperature"] = temperature
         if use_response_format:
             payload["text"] = {"format": {"type": "json_object"}}
@@ -906,7 +1160,9 @@ class ResponsesAPIClient(OpenAICompatibleClient):
                 raw = self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
         except LLMError as exc:
             if bool(getattr(self.config, "responses_fallback_to_chat", True)) and _is_responses_endpoint_unsupported(str(exc)):
-                fallback = super()._chat_json_once(
+                fallback_client = _client_for_model_protocol(self.config, target_model, "chat_completions")
+                fallback_client._urlopen = self._urlopen
+                fallback = fallback_client._chat_json_once(
                     messages,
                     model=model,
                     temperature=temperature,
@@ -933,7 +1189,7 @@ class ResponsesAPIClient(OpenAICompatibleClient):
                 "response_format": "json_object" if use_response_format else "prompt_only_json",
                 "thinking": thinking_mode,
                 "max_output_tokens": payload["max_output_tokens"],
-                "store": False,
+                "store": payload.get("store", "omitted"),
                 "stream": bool(getattr(self.config, "responses_streaming", True)),
                 "reasoning_effort": reasoning_effort or "provider_default",
             }
@@ -948,6 +1204,116 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         )
 
 
+class AnthropicMessagesClient(OpenAICompatibleClient):
+    """Native Anthropic Messages adapter with final-text-only extraction."""
+
+    def _chat_json_once(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        thinking: str | None = None,
+        timeout: int = 120,
+        use_response_format: bool = True,
+    ) -> LLMResult:
+        target_model = str(model or self.config.default_model).strip()
+        protocol = _model_api_protocol(self.config, target_model)
+        if protocol not in {"anthropic_messages", "messages"}:
+            delegated = _client_for_model_protocol(self.config, target_model, protocol)
+            delegated._urlopen = self._urlopen
+            return delegated._chat_json_once(
+                messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
+                thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+            )
+        thinking_mode = _model_thinking_mode(
+            self.config,
+            target_model,
+            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"),
+        )
+        system_parts: list[str] = []
+        anthropic_messages: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "user").lower()
+            content = message.get("content")
+            if role in {"system", "developer"}:
+                system_parts.append(_message_plain_text(content))
+                continue
+            anthropic_messages.append({
+                "role": "assistant" if role == "assistant" else "user",
+                "content": _anthropic_message_content(content),
+            })
+        if use_response_format:
+            system_parts.append("Return only one valid JSON object as the final answer, with no markdown fence or commentary.")
+        requested_tokens = self.config.max_tokens if max_tokens is None else max_tokens
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "max_tokens": _effective_model_max_tokens(self.config, target_model, requested_tokens, thinking_mode),
+            "messages": anthropic_messages,
+        }
+        if system_parts:
+            payload["system"] = "\n\n".join(part for part in system_parts if part)
+        omitted = _model_omitted_parameters(self.config, target_model)
+        if temperature is not None and "temperature" not in omitted and thinking_mode in {"auto", "disabled"}:
+            payload["temperature"] = temperature
+        if thinking_mode == "disabled":
+            payload["thinking"] = {"type": "disabled"}
+        elif thinking_mode != "auto":
+            effort = "medium" if thinking_mode == "enabled" else thinking_mode
+            payload["thinking"] = {"type": "adaptive", "display": "omitted"}
+            payload["output_config"] = {"effort": effort}
+        output_schema = _anthropic_output_schema(messages) if use_response_format else None
+        if output_schema:
+            payload.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": output_schema,
+            }
+        headers = _provider_request_headers(self.config)
+        headers["x-api-key"] = self.config.api_key
+        headers["anthropic-version"] = "2023-06-01"
+        try:
+            raw = self._post_json(
+                f"{self.config.base_url}/messages",
+                payload,
+                timeout=timeout,
+                headers=headers,
+            )
+        except LLMError as exc:
+            profile = _model_profile(self.config, target_model)
+            if bool(profile.get("messages_fallback_to_chat")) and _is_responses_endpoint_unsupported(str(exc)):
+                fallback_client = _client_for_model_protocol(self.config, target_model, "chat_completions")
+                fallback_client._urlopen = self._urlopen
+                fallback = fallback_client._chat_json_once(
+                    messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
+                    thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+                )
+                fallback.raw.setdefault("_request", {}).update({
+                    "protocol_requested": "anthropic_messages",
+                    "protocol_used": "chat_completions",
+                    "protocol_fallback_reason": _safe_protocol_fallback_reason(str(exc)),
+                })
+                return fallback
+            raise
+        parts = raw.get("content") if isinstance(raw, dict) else None
+        content = "".join(
+            str(part.get("text") or "")
+            for part in (parts or [])
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+        if not content:
+            raise LLMError(f"Model returned empty Messages content; {_raw_provider_response_detail(raw)}")
+        raw["_request"] = {
+            "endpoint": "/messages",
+            "protocol_used": "anthropic_messages",
+            "response_format": "json_schema" if output_schema else "prompt_only_json" if use_response_format else "text",
+            "thinking": thinking_mode,
+            "max_tokens": payload["max_tokens"],
+        }
+        return LLMResult(provider=self.config.name, model=target_model, content=content, raw=raw)
+
+
 def create_llm_client(config: ProviderConfig) -> LLMClientProtocol:
     """Create a client from provider configuration without changing defaults."""
     protocol = str(getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
@@ -955,6 +1321,8 @@ def create_llm_client(config: ProviderConfig) -> LLMClientProtocol:
         return ResponsesAPIClient(config)
     if protocol in {"chat_completions", "openai_compatible", ""}:
         return OpenAICompatibleClient(config)
+    if protocol in {"anthropic_messages", "messages"}:
+        return AnthropicMessagesClient(config)
     raise ValueError(f"Unsupported API protocol: {protocol}")
 
 
@@ -1051,6 +1419,7 @@ def _normalize_thinking_mode(value: Any) -> str:
         "enable": "enabled",
         "enabled": "enabled",
         "true": "enabled",
+        "minimal": "minimal",
         "low": "low",
         "medium": "medium",
         "high": "high",
@@ -1085,7 +1454,7 @@ def _deepseek_reasoning_effort(config: ProviderConfig, thinking_mode: str) -> st
 def _responses_reasoning_effort(thinking_mode: str) -> str:
     """Map the UI's thinking choice to the Responses API effort field."""
     normalized = _normalize_thinking_mode(thinking_mode)
-    if normalized in {"low", "medium", "high", "xhigh"}:
+    if normalized in {"minimal", "low", "medium", "high", "xhigh"}:
         return normalized
     if normalized == "enabled":
         return "medium"
@@ -1132,6 +1501,8 @@ def _consume_responses_sse(
     text_deltas: list[str] = []
     terminal_texts: list[str] = []
     data_lines: list[str] = []
+    reasoning_item_ids: set[str] = set()
+    step_types: dict[str, str] = {}
 
     def consume_event() -> None:
         nonlocal final_response
@@ -1147,8 +1518,38 @@ def _consume_responses_sse(
             raise LLMError(f"Provider returned invalid streaming event: {data_text[:500]}") from exc
         if not isinstance(event, dict):
             return
-        event_type = str(event.get("type") or "")
+        event_type = str(event.get("type") or event.get("event_type") or "")
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") in {"reasoning", "thought", "thinking"}:
+                item_id = str(item.get("id") or event.get("item_id") or "")
+                if item_id:
+                    reasoning_item_ids.add(item_id)
+                return
+        if event_type == "step.start":
+            step = event.get("step")
+            if isinstance(step, dict):
+                step_types[str(event.get("index", ""))] = str(step.get("type") or "")
+            return
+        if event_type == "step.delta":
+            delta = event.get("delta")
+            if (
+                isinstance(delta, dict)
+                and step_types.get(str(event.get("index", ""))) == "model_output"
+                and delta.get("type") in {"text", "output_text"}
+            ):
+                text = delta.get("text")
+                if isinstance(text, str):
+                    text_deltas.append(text)
+                    record_model_stream_progress(call_record, text)
+            return
         if event_type == "response.output_text.delta":
+            if (
+                str(event.get("item_id") or "") in reasoning_item_ids
+                or event.get("thought") is True
+                or event.get("is_thinking") is True
+            ):
+                return
             delta = event.get("delta")
             if isinstance(delta, str):
                 text_deltas.append(delta)
@@ -1161,7 +1562,13 @@ def _consume_responses_sse(
             return
         if event_type == "response.content_part.done":
             part = event.get("part")
-            if isinstance(part, dict):
+            if (
+                isinstance(part, dict)
+                and part.get("type") in {"text", "output_text"}
+                and part.get("thought") is not True
+                and part.get("is_thinking") is not True
+                and str(event.get("item_id") or "") not in reasoning_item_ids
+            ):
                 text = part.get("text")
                 if isinstance(text, str) and text.strip():
                     terminal_texts.append(text)
@@ -1442,27 +1849,68 @@ def _raw_provider_response_detail(raw: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _separate_gateway_final_json(text: str) -> str:
+    """Recover a final JSON answer when a gateway mislabeled thought as output."""
+
+    cleaned = str(text or "").strip()
+    if not cleaned or cleaned.startswith("{"):
+        return text
+
+    starts = list(re.finditer(r"\{(?=\s*\")", cleaned))
+    for match in reversed(starts[-200:]):
+        candidate = _extract_json_object(cleaned[match.start():])
+        if not candidate:
+            continue
+        suffix = cleaned[match.start() + len(candidate):].strip()
+        if suffix and not re.fullmatch(r"(?:```(?:json)?\s*)+", suffix, flags=re.IGNORECASE):
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            # The practice parser owns safe LaTeX backslash repair. Preserve
+            # that repair path when a complete exercises object is apparent.
+            if re.match(r'\{\s*"exercises"\s*:', candidate):
+                return candidate
+            continue
+        if isinstance(parsed, dict):
+            return candidate
+    return text
+
+
 def _responses_output_text(raw: dict[str, Any]) -> str:
     """Extract text from a Responses output array without exposing reasoning items."""
-    direct = raw.get("output_text") if isinstance(raw, dict) else None
-    if isinstance(direct, str) and direct.strip():
-        return direct
-    output = raw.get("output") if isinstance(raw, dict) else None
-    if not isinstance(output, list):
+    if not isinstance(raw, dict):
         return ""
+    output = raw.get("output")
+    steps = raw.get("steps")
     parts: list[str] = []
-    for item in output:
-        if not isinstance(item, dict) or item.get("type") != "message":
+    for items, accepted_type in ((output, "message"), (steps, "model_output")):
+        if not isinstance(items, list):
             continue
-        content = item.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if isinstance(part, dict) and part.get("type") in {"output_text", "text"}:
-                text = part.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-    return "".join(parts)
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != accepted_type:
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") in {"output_text", "text"}
+                    and part.get("thought") is not True
+                    and part.get("is_thinking") is not True
+                ):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+        if parts:
+            return _separate_gateway_final_json("".join(parts))
+    # A populated structured output containing only reasoning must never be
+    # replaced with a gateway's convenience field, which may be a thought summary.
+    if (isinstance(output, list) and output) or (isinstance(steps, list) and steps):
+        return ""
+    direct = raw.get("output_text")
+    return _separate_gateway_final_json(direct) if isinstance(direct, str) and direct.strip() else ""
 
 
 def _responses_input_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

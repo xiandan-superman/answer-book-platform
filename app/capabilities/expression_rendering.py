@@ -104,6 +104,11 @@ def _preflight_render_latex(render_latex: str, expression_kind: str) -> str:
         return str(exc)[:500]
     if not list(rendered):
         return "OMML renderer returned an empty math object"
+    if any(
+        str(node.tag).endswith("}t") and any(marker in str(node.text or "") for marker in ("$", "\\"))
+        for node in rendered.iter()
+    ):
+        return "OMML renderer preserved unconverted LaTeX or JSON escape markers"
     return ""
 
 

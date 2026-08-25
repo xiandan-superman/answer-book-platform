@@ -2027,6 +2027,32 @@ def test_normalize_practice_set_reports_incomplete_generation():
     assert all("解析" not in issue for issue in result["quality"]["blocking_issues"])
 
 
+def test_generation_quality_blocks_inline_math_that_word_cannot_render():
+    quality = recompute_practice_quality({
+        "requested_count": 1,
+        "exercises": [_exercise(number=1, stem=r"判断错误公式 $\left(x$。")],
+    })
+
+    assert quality["status"] == "blocked"
+    assert quality["checks"]["word_formula_renderable"] is False
+    assert any("第 1 题" in issue and "行内公式" in issue for issue in quality["blocking_issues"])
+
+
+def test_new_fill_in_questions_normalize_word_safe_answer_blanks():
+    result = normalize_practice_set(
+        {"exercises": [_exercise(
+            plan_item_id="plan_item_01",
+            question_type="填空题",
+            stem=r"请填写组分数 $S=________$ 与限制数 $R'=____$。",
+        )]},
+        requested_count=1,
+        subject="化学",
+    )
+
+    assert result["exercises"][0]["stem"] == r"请填写组分数 $S=$ ________ 与限制数 $R'=$ ____。"
+    assert result["quality"]["checks"]["word_formula_renderable"] is True
+
+
 def test_normalize_practice_set_drops_model_answers_and_solutions():
     result = normalize_practice_set(
         {"exercises": [_exercise(plan_item_id="plan_item_01", answer="2", solution_steps=["计算过程"])]},
@@ -2307,6 +2333,21 @@ def test_practice_parser_repairs_latex_backslashes_and_think_block():
     )
 
     assert parsed["stem"] == "计算 $\\mathbf{a}_1$ 与 \\mu 的关系"
+
+
+def test_practice_parser_separates_unmarked_gateway_reasoning_from_final_exercises():
+    content = (
+        '**Analyzing Phase Equilibria**\n\n'
+        'A discarded draft looked like {"notes":{"phase":"thought"}}.\n\n'
+        '```json\n'
+        '{"exercises":[{"batch_index":1,"stem":"计算 \\mathrm{CO_2} 的相平衡。"}]}\n'
+        '```'
+    )
+
+    parsed = _parse_practice_json(content)
+
+    assert parsed["exercises"][0]["batch_index"] == 1
+    assert parsed["exercises"][0]["stem"] == '计算 \\mathrm{CO_2} 的相平衡。'
 
 
 @pytest.mark.parametrize(
@@ -3351,7 +3392,7 @@ def test_generation_rejects_output_missing_required_knowledge_points(monkeypatch
         "generation_concurrency": 1,
     })
 
-    assert len(calls) == 2
+    assert len(calls) == 4
     assert result["exercises"][0]["generation_status"] == "failed"
     assert result["quality"]["status"] == "blocked"
 

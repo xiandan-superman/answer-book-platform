@@ -50,6 +50,14 @@ def _job(tmp_path, monkeypatch):
     )
 
 
+def test_generation_deadline_leaves_room_for_multiple_eight_minute_requests(tmp_path, monkeypatch) -> None:
+    job = _job(tmp_path, monkeypatch)
+    deadline = datetime.fromisoformat(job["generation_deadline_at"])
+    remaining = (deadline - datetime.now().astimezone()).total_seconds()
+
+    assert 7195 <= remaining <= 7200
+
+
 def test_pause_invalidates_lease_and_resume_keeps_original_deadline(tmp_path, monkeypatch) -> None:
     job = _job(tmp_path, monkeypatch)
     practice_jobs.update_practice_job(job["job_id"], status="running")

@@ -6,7 +6,7 @@
       "api_protocol": "responses",
       "responses_streaming": true,
       "responses_fallback_to_chat": false,
-      "base_url": "https://api.deepseek.com/v1",
+      "base_url": "https://api.deepseek.com",
       "api_key_env": "DEEPSEEK_API_KEY",
       "api_key": "",
       "default_model": "deepseek-v4-flash",
@@ -16,6 +16,10 @@
       "model_capabilities": {
         "deepseek-v4-flash": ["text"],
         "deepseek-v4-flash-vision-exp": ["text", "vision"]
+      },
+      "model_profiles": {
+        "deepseek-v4-flash": {"api_protocol": "responses", "omit_parameters": ["store"]},
+        "deepseek-v4-flash-vision-exp": {"api_protocol": "chat_completions"}
       },
       "image_model": "",
       "image_size": "1024x1024",
@@ -67,6 +71,10 @@
         "glm-5-2-260617": "GLM-5.2",
         "kimi-k2": "Kimi-K2"
       },
+      "model_profiles": {
+        "glm-5-2-260617": {"api_protocol": "chat_completions"},
+        "kimi-k2": {"api_protocol": "chat_completions"}
+      },
       "allow_custom_model": true,
       "model_hint": "可填写火山方舟文档中的 Model ID，或控制台 API 调用页复制的 ep- 接入点 ID。",
       "temperature": 0.1,
@@ -93,6 +101,12 @@
         "qwen-vl-max": ["text", "vision"],
         "qwen-vl-plus": ["text", "vision"],
         "qwen-vl-ocr": ["text", "vision"]
+      },
+      "model_profiles": {
+        "qwen3-vl-flash": {"api_protocol": "chat_completions"},
+        "qwen-vl-max": {"api_protocol": "chat_completions"},
+        "qwen-vl-plus": {"api_protocol": "chat_completions"},
+        "qwen-vl-ocr": {"api_protocol": "chat_completions", "max_tokens": 4096}
       },
       "image_model_env": "BAILIAN_IMAGE_MODEL",
       "image_model": "qwen-image-2.0-pro",
@@ -248,6 +262,10 @@
         "z-ai/glm-5.2:free": "GLM 5.2 Free（文本，免费池可能限流）",
         "minimax/minimax-m3:free": "MiniMax M3 Free（文本与多模态理解）"
       },
+      "model_profiles": {
+        "z-ai/glm-5.2:free": {"api_protocol": "chat_completions"},
+        "minimax/minimax-m3:free": {"api_protocol": "chat_completions", "strip_think_blocks": true}
+      },
       "allow_custom_model": false,
       "model_hint": "使用 OpenRouter Responses API。MiniMax M3 Free 已实测通过文本、JSON 与图片输入；GLM 5.2 Free 的上游免费共享池可能临时限流。",
       "thinking_mode": "auto",
@@ -328,7 +346,7 @@
       },
       "allow_custom_model": false,
       "model_hint": "仅使用灵算 OpenAI 供应商分组的密钥，不与 Gemini、Grok 或 Claude 共用。",
-      "thinking_mode": "high",
+      "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576
     },
@@ -350,15 +368,13 @@
       "model_options": [],
       "allow_custom_model": false,
       "model_hint": "仅用于灵算 OpenAI 图片生成接口；图片 Key 与 GPT 文本模型 Key 独立保存。",
-      "thinking_mode": "high",
+      "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576
     },
     "lingsuan_google": {
       "type": "openai_compatible",
-      "api_protocol": "responses",
-      "responses_streaming": true,
-      "responses_fallback_to_chat": false,
+      "api_protocol": "chat_completions",
       "base_url": "https://lingsuan.top/v1",
       "api_key_env": "LINGSUAN_GOOGLE_API_KEY",
       "api_key": "",
@@ -370,6 +386,10 @@
         "gemini-3.6-flash": ["text", "vision"],
         "gemini-3.5-flash": ["text", "vision"]
       },
+      "model_profiles": {
+        "gemini-3.6-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"]},
+        "gemini-3.5-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"]}
+      },
       "supports_image_generation": false,
       "image_model": "",
       "model_options": ["gemini-3.6-flash", "gemini-3.5-flash"],
@@ -379,7 +399,7 @@
       },
       "allow_custom_model": false,
       "model_hint": "仅使用灵算 Google Gemini 供应商分组的密钥，不与 GPT、Grok 或 Claude 共用。",
-      "thinking_mode": "high",
+      "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576
     },
@@ -396,21 +416,20 @@
       "vision_model_options": ["grok-4.5"],
       "supports_vision": true,
       "model_capabilities": {"grok-4.5": ["text", "vision"]},
+      "model_profiles": {"grok-4.5": {"thinking_minimum": "low"}},
       "supports_image_generation": false,
       "image_model": "",
       "model_options": ["grok-4.5"],
       "model_option_labels": {"grok-4.5": "Grok 4.5"},
       "allow_custom_model": false,
       "model_hint": "仅使用灵算 xAI 供应商分组的密钥。",
-      "thinking_mode": "high",
+      "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576
     },
     "lingsuan_anthropic": {
       "type": "openai_compatible",
-      "api_protocol": "responses",
-      "responses_streaming": true,
-      "responses_fallback_to_chat": false,
+      "api_protocol": "anthropic_messages",
       "base_url": "https://lingsuan.top/v1",
       "api_key_env": "LINGSUAN_ANTHROPIC_API_KEY",
       "api_key": "",
@@ -419,13 +438,14 @@
       "vision_model_options": ["claude-opus-5"],
       "supports_vision": true,
       "model_capabilities": {"claude-opus-5": ["text", "vision"]},
+      "model_profiles": {"claude-opus-5": {"api_protocol": "anthropic_messages", "messages_fallback_to_chat": true}},
       "supports_image_generation": false,
       "image_model": "",
       "model_options": ["claude-opus-5"],
       "model_option_labels": {"claude-opus-5": "Claude Opus 5"},
       "allow_custom_model": false,
       "model_hint": "仅使用灵算 Anthropic 供应商分组的密钥。",
-      "thinking_mode": "high",
+      "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576
     }

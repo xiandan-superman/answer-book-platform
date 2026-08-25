@@ -467,13 +467,16 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
             "size": int(item.get("size") or 0),
             "data_url": data_url if data_url.startswith("data:") else "",
         }
+        resource_id = str(item.get("resource_id") or "").strip()
+        if re.fullmatch(r"psrc_[0-9a-f]{64}", resource_id):
+            row["resource_id"] = resource_id
         upload_item_id = str(item.get("upload_item_id") or "")[:200]
         sha256 = str(item.get("sha256") or "").strip().lower()
         if upload_item_id:
             row["upload_item_id"] = upload_item_id
         if re.fullmatch(r"[0-9a-f]{64}", sha256):
             row["sha256"] = sha256
-        if not row["data_url"]:
+        if not row["data_url"] and not row.get("resource_id"):
             missing_sources.append(name)
         source_files.append(row)
     source_status = "ready" if source_files and not missing_sources else ("blocked" if source_files or request.get("source_file_names") else "not_required")

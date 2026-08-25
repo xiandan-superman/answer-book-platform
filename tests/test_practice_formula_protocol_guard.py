@@ -149,6 +149,35 @@ def test_control_gate_rejects_formula_escape_controls_but_allows_newline():
     }
 
 
+@pytest.mark.parametrize("damaged_prefix", ["\x00", "\x02", "\x05"])
+def test_luna_gateway_corrupted_formula_prefixes_are_repaired_safely(damaged_prefix):
+    damaged = {
+        "exercises": [{
+            "stem": (
+                f"${damaged_prefix}mathrm{{CO_2(g)}}$ 与 ${damaged_prefix}mathrm{{H_2(g)}}$ 建立 "
+                f"${damaged_prefix}mathrm{{CO_2}}" + "\r" + "ightleftharpoons " + f"{damaged_prefix}mathrm{{CO}}$。"
+            ),
+        }],
+    }
+
+    parsed = exercise_generation._parse_safe_practice_json(json.dumps(damaged, ensure_ascii=False))
+    stem = parsed["exercises"][0]["stem"]
+
+    assert r"\mathrm{CO_2(g)}" in stem
+    assert r"\mathrm{H_2(g)}" in stem
+    assert r"\rightleftharpoons" in stem
+    assert exercise_generation._practice_control_character_issues(parsed) == []
+
+
+def test_unrepairable_formula_controls_still_use_the_questions_json_retry_budget():
+    error = LLMError("专项练习模型输出包含非法控制字符，已拒绝保存：U+0008")
+
+    detail = exercise_generation._generation_error_detail(error)
+
+    assert detail["code"] == "generation_response_invalid"
+    assert detail["retryable"] is True
+
+
 def test_normalization_refuses_contaminated_data_before_persistence():
     with pytest.raises(ValueError, match="不能进入规范化或保存"):
         exercise_generation.normalize_practice_set(

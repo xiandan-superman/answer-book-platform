@@ -22,6 +22,7 @@ from .practice_export import (
     has_unrenderable_practice_markup,
     normalize_practice_markup,
     normalize_practice_question_text,
+    preflight_practice_inline_expressions,
     practice_stem_answer_leak_reasons,
 )
 from .practice_inputs import parse_practice_sources
@@ -1921,7 +1922,12 @@ def _normalize_options(value: Any) -> list[dict[str, str]]:
 def _has_fill_in_blank(stem: Any) -> bool:
     """Return whether a fill-in question visibly provides a response slot."""
     text = _clean(stem, 6000)
-    return bool(re.search(r"_{2,}|[（(]\s*[）)]", text))
+    return bool(
+        re.search(
+            r"_{2,}|[（(]\s*[）)]|\\(?:underline|underbrace)\s*\{",
+            text,
+        )
+    )
 
 
 def _question_structure_issue(
@@ -3418,6 +3424,8 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         bool(semantic_review) and semantic_review_status not in {"not_required", "disabled"}
         and bool(complex_review_candidates) and not semantic_review_completed
     )
+    word_formula_issues = preflight_practice_inline_expressions({"exercises": exercises})
+    blocking_issues.extend(word_formula_issues)
     checks = {
         "scope_coverage": not any("蓝图" in issue or "来源未全部覆盖" in issue for issue in blocking_issues),
         "field_structure": not any("题干" in issue or "选项" in issue or "填空" in issue for issue in blocking_issues),
@@ -3431,6 +3439,7 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         "semantic_review_completed": semantic_review_completed,
         "semantic_review_passed": semantic_review_completed and not actionable_semantic_risks,
         "subject_matter_review_required": subject_review_required,
+        "word_formula_renderable": not word_formula_issues,
     }
     release_level = "blocked" if blocking_issues else ("review_candidate" if warnings else "formal")
     return {
@@ -3552,7 +3561,11 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     elif any(token in lowered for token in ("ssl", "tls", "eof occurred", "connection", "remote end closed", "empty reply", "network")):
         code = "provider_tls_connection_failed" if any(token in lowered for token in ("ssl", "tls", "eof occurred")) else "provider_network_connection_failed"
         message = "与模型服务的网络连接中断。"
-    elif "专项练习 json 解析失败" in lowered or "chat 修复后仍失败" in lowered:
+    elif (
+        "专项练习 json 解析失败" in lowered
+        or "chat 修复后仍失败" in lowered
+        or "输出包含非法控制字符" in raw
+    ):
         code = "generation_response_invalid"
         message = "模型已返回内容，但没有提供可解析的题目 JSON。"
     elif isinstance(exc, ValueError):
@@ -3841,6 +3854,13 @@ def _parse_practice_json(content: str) -> dict[str, Any]:
         extracted = cleaned[start : end + 1]
         if extracted != cleaned:
             candidates.append(extracted)
+        # Gemini compatibility gateways sometimes prepend unmarked English
+        # reasoning containing their own example JSON objects. The final
+        # exercises object is authoritative, not the first brace in thought.
+        for match in reversed(list(re.finditer(r'\{\s*"exercises"\s*:', cleaned))[-30:]):
+            extracted_answer = cleaned[match.start() : end + 1]
+            if extracted_answer not in candidates:
+                candidates.append(extracted_answer)
     last_error: Exception | None = None
     for candidate in candidates:
         repaired_candidate = _escape_invalid_json_backslashes(candidate)
@@ -3882,9 +3902,38 @@ def _practice_control_character_issues(value: Any, path: str = "$") -> list[dict
     return issues[:20]
 
 
+def _repair_gateway_latex_control_characters(value: Any) -> Any:
+    """Repair identifiable escaped-LaTeX corruption without weakening the gate."""
+
+    if isinstance(value, dict):
+        return {key: _repair_gateway_latex_control_characters(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_repair_gateway_latex_control_characters(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    repaired = re.sub(r"[\x00-\x07](?=[A-Za-z\[\]()])", lambda _match: "\\", value)
+    repaired = re.sub(r"[\x00-\x07]", "", repaired)
+    for control, command_prefix, suffixes in (
+        ("\r", "r", r"ight|m\b|angle|ho"),
+        ("\b", "b", r"eta|oldsymbol|egin"),
+        ("\f", "f", r"rac"),
+        ("\t", "t", r"heta|ext|imes|o\b"),
+    ):
+        repaired = re.sub(
+            re.escape(control) + rf"(?=(?:{suffixes}))",
+            lambda _match, prefix=command_prefix: "\\" + prefix,
+            repaired,
+        )
+    return repaired
+
+
 def _parse_safe_practice_json(content: str) -> dict[str, Any]:
     raw = _parse_practice_json(content)
     issues = _practice_control_character_issues(raw)
+    if any(re.fullmatch(r"U\+000[0-7]", str(issue.get("code") or "")) for issue in issues):
+        raw = _repair_gateway_latex_control_characters(raw)
+        issues = _practice_control_character_issues(raw)
     if issues:
         raise LLMError(
             "专项练习模型输出包含非法控制字符，已拒绝保存："
@@ -4709,15 +4758,26 @@ def _primary_model_runtime(payload: dict[str, Any]):
     return primary, resolve_provider_model(primary, _clean(payload.get("model"), 200) or None)
 
 
-def _chat_protocol_provider(provider):
+def _chat_protocol_provider(provider, model: str = ""):
     """Clone a provider onto Chat Completions without mutating shared config."""
-    if str(getattr(provider, "api_protocol", "") or "").strip().lower() in {
+    selected = str(model or getattr(provider, "default_model", "") or "").strip()
+    profiles = {key: dict(value) for key, value in (getattr(provider, "model_profiles", {}) or {}).items()}
+    effective = str((profiles.get(selected) or {}).get("api_protocol") or getattr(provider, "api_protocol", "") or "").strip().lower()
+    if effective in {
         "chat_completions",
         "openai_compatible",
         "",
     }:
         return provider
-    return replace(provider, api_protocol="chat_completions", responses_streaming=False)
+    profile = dict(profiles.get(selected) or {})
+    profile["api_protocol"] = "chat_completions"
+    profiles[selected] = profile
+    return replace(
+        provider,
+        api_protocol="chat_completions",
+        responses_streaming=False,
+        model_profiles=profiles,
+    )
 
 
 def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:
@@ -4729,9 +4789,9 @@ def _chat_fallback_client(client: OpenAICompatibleClient) -> OpenAICompatibleCli
     """Move a failed Responses result to Chat and discard the unsafe result."""
     config = getattr(client, "config", None)
     protocol = str(getattr(config, "api_protocol", "") or "").strip().lower()
-    if config is None or protocol not in {"responses", "responses_api"}:
+    if config is None or protocol in {"chat_completions", "openai_compatible", ""}:
         return client
-    return OpenAICompatibleClient(_chat_protocol_provider(config))
+    return OpenAICompatibleClient(_chat_protocol_provider(config, getattr(config, "default_model", "")))
 
 
 def _model_route(payload: dict[str, Any], has_images: bool, provider, model: str) -> str:
@@ -4761,6 +4821,7 @@ def _call_practice_json(
     max_tokens: int | None = None,
     timeout_seconds: int | None = None,
     ensure_active: Callable[[], None] | None = None,
+    repair_invalid_json: bool = True,
 ) -> dict[str, Any]:
     if timeout_seconds is None:
         timeout_seconds = _practice_stage_timeout("general", 300)
@@ -4781,6 +4842,8 @@ def _call_practice_json(
     try:
         raw = _parse_safe_practice_json(result.content)
     except LLMError as first_error:
+        if not repair_invalid_json:
+            raise
         repair_client = _chat_fallback_client(client)
         repair_messages = [
             *messages,
@@ -4805,7 +4868,7 @@ def _call_practice_json(
                 model=model,
                 temperature=0,
                 max_tokens=output_token_budget,
-                thinking="disabled",
+                thinking=_practice_retry_thinking(repair_client, model),
                 timeout=timeout_seconds,
             )
         if ensure_active is not None:
@@ -5272,6 +5335,33 @@ def _is_transport_generation_error(exc: Exception) -> bool:
     return isinstance(exc, LLMError) and _generation_error_detail(exc)["retryable"] is True
 
 
+def _practice_retry_thinking(client: Any, model: str) -> str:
+    """Choose the lowest reasoning effort the selected model actually accepts."""
+
+    provider = str(getattr(getattr(client, "config", None), "name", "") or "").lower()
+    selected = str(model or "").lower()
+    if provider == "lingsuan_google" or selected.startswith("gemini-"):
+        return "minimal"
+    if provider == "lingsuan_xai" or selected.startswith("grok-4.5"):
+        return "low"
+    return "disabled"
+
+
+def _strict_practice_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        *messages,
+        {
+            "role": "user",
+            "content": (
+                "这是一次结构化结果重试。只返回最终答案对应的单个 JSON 对象；"
+                "不要输出思考摘要、分析、解释、Markdown 或代码围栏。"
+                "第一个字符必须是 {，最后一个字符必须是 }；"
+                "严格满足前文定义的 exercises 数组、batch_index 和每题字段结构。"
+            ),
+        },
+    ]
+
+
 def _call_practice_json_with_transport_retry(
     client: OpenAICompatibleClient,
     messages: list[dict[str, Any]],
@@ -5290,32 +5380,54 @@ def _call_practice_json_with_transport_retry(
     max_retry_after_seconds: float = 30.0,
     same_protocol_retries: int = 0,
     allow_chat_fallback: bool = True,
+    retry_invalid_json: bool = True,
+    initial_json_error: bool = False,
+    attempt_offset: int = 0,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
+    retrying_invalid_json = initial_json_error
     for attempt in range(1, max(1, attempts) + 1):
+        overall_attempt = attempt + max(0, int(attempt_offset))
         if ensure_active is not None:
             ensure_active()
         if before_attempt is not None:
             before_attempt(attempt)
-        use_primary_protocol = attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_chat_fallback
+        use_primary_protocol = (
+            overall_attempt < 4 or not allow_chat_fallback
+            if retrying_invalid_json
+            else attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_chat_fallback
+        )
         attempt_client = client if use_primary_protocol else _chat_fallback_client(client)
+        attempt_thinking = (
+            _practice_retry_thinking(attempt_client, model)
+            if retrying_invalid_json and overall_attempt >= 2
+            else thinking
+        )
+        attempt_messages = (
+            _strict_practice_json_messages(messages)
+            if retrying_invalid_json and overall_attempt >= 3
+            else messages
+        )
         try:
             result = _call_practice_json(
                 attempt_client,
-                messages,
+                attempt_messages,
                 model=model,
                 temperature=temperature,
-                thinking=thinking,
+                thinking=attempt_thinking,
                 max_tokens=max_tokens,
                 timeout_seconds=timeout_seconds,
                 ensure_active=ensure_active,
+                repair_invalid_json=False,
             )
             if attempt_log is not None:
                 attempt_log.append({
-                    "attempt": attempt,
+                    "attempt": overall_attempt,
                     "status": "succeeded",
                     "protocol_fallback": attempt_client is not client,
                     "same_protocol_retry": attempt > 1 and attempt_client is client,
+                    "thinking": attempt_thinking,
+                    "strict_json_contract": attempt_messages is not messages,
                 })
             if after_attempt is not None:
                 after_attempt(attempt, None)
@@ -5343,7 +5455,7 @@ def _call_practice_json_with_transport_retry(
             detail = _generation_error_detail(exc)
             if attempt_log is not None:
                 attempt_log.append({
-                    "attempt": attempt,
+                    "attempt": overall_attempt,
                     "status": "failed",
                     "error_code": detail["code"],
                     "retryable": retryable,
@@ -5351,14 +5463,15 @@ def _call_practice_json_with_transport_retry(
                     "signature": detail["signature"],
                     "protocol_fallback": attempt_client is not client,
                     "same_protocol_retry": attempt > 1 and attempt_client is client,
+                    "thinking": attempt_thinking,
+                    "strict_json_contract": attempt_messages is not messages,
                 })
             if after_attempt is not None:
                 after_attempt(attempt, detail)
-            # A syntactically invalid answer needs a smaller one-item blast
-            # radius, not another equally large whole-batch request. The
-            # caller will split the batch and independently retry every slot.
             if detail.get("code") == "generation_response_invalid":
-                raise
+                if not retry_invalid_json:
+                    raise
+                retrying_invalid_json = True
             if not retryable or attempt >= max(1, attempts):
                 raise
             delay = max(0.0, float(backoff_seconds)) * (2 ** (attempt - 1))
@@ -5375,7 +5488,7 @@ class _GenerationRetryBudgetExceeded(LLMError):
 
 
 class _GenerationRetryCoordinator:
-    """Durable, thread-safe call budget shared by every recovery of one parent batch."""
+    """Durable retry accounting with four independent opportunities per question."""
 
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload
@@ -5426,7 +5539,7 @@ class _GenerationRetryCoordinator:
         try:
             from .practice_jobs import update_practice_job
             calls = sum(
-                int(row.get("calls_used") or 0)
+                max(0, int(row.get("calls_used") or 0) - int(row.get("inherited_calls") or 0))
                 for row in (self.state.get("batches") or {}).values()
                 if isinstance(row, dict)
             )
@@ -5465,12 +5578,12 @@ class _GenerationRetryCoordinator:
             if int(row.get("calls_used") or 0) >= max(int(row.get("limit") or 0), limit):
                 return {
                     "code": "generation_retry_budget_exhausted",
-                    "message": "本批次已达到生成调用上限，已停止继续尝试。",
+                    "message": "本题已达到独立生成调用上限，已停止继续尝试。",
                     "retryable": True,
                     "requires_configuration": False,
                     "pending": True,
                     "signature": "generation_retry_budget_exhausted",
-                    "detail": "调用预算已跨拆分与补生共享保留，可由用户稍后继续未完成项。",
+                    "detail": "每道题拥有独立的四次生成机会，不会占用其他题目的额度。",
                 }
             return None
 
@@ -5480,6 +5593,38 @@ class _GenerationRetryCoordinator:
         with self.lock:
             self.state["configuration_block"] = copy.deepcopy(detail)
             self._persist()
+
+    def prepare_item_budget(self, parent_key: str, item_key: str, *, limit: int = 4) -> str:
+        """Charge previous batch attempts to this item without sharing sibling retries."""
+
+        if not item_key or item_key == parent_key:
+            return parent_key
+        with self.lock:
+            batches = self.state.setdefault("batches", {})
+            if item_key in batches:
+                return item_key
+            parent = batches.get(parent_key)
+            inherited = min(limit, int(parent.get("calls_used") or 0)) if isinstance(parent, dict) else 0
+            attempts = [
+                {**copy.deepcopy(attempt), "inherited": True}
+                for attempt in (parent.get("attempts") or [])[:inherited]
+                if isinstance(attempt, dict)
+            ] if isinstance(parent, dict) else []
+            batches[item_key] = {
+                "calls_used": inherited,
+                "inherited_calls": inherited,
+                "limit": limit,
+                "attempts": attempts,
+                "circuit": None,
+            }
+            self._persist()
+        return item_key
+
+    def remaining(self, root_key: str, *, limit: int = 4) -> int:
+        with self.lock:
+            row = (self.state.get("batches") or {}).get(root_key)
+            used = int(row.get("calls_used") or 0) if isinstance(row, dict) else 0
+            return max(0, max(int(row.get("limit") or 0), limit) - used) if isinstance(row, dict) else limit
 
     def reserve(self, root_key: str, *, limit: int, phase: str) -> None:
         with self.lock:
@@ -5496,7 +5641,7 @@ class _GenerationRetryCoordinator:
             if isinstance(circuit, dict):
                 raise _GenerationRetryBudgetExceeded("本批次已触发稳定错误熔断，不再继续消耗模型调用。")
             if int(row.get("calls_used") or 0) >= int(row["limit"]):
-                raise _GenerationRetryBudgetExceeded("本批次已达到生成调用上限，不再继续消耗模型调用。")
+                raise _GenerationRetryBudgetExceeded("本题已达到四次独立生成上限，不再继续消耗模型调用。")
             row["calls_used"] = int(row.get("calls_used") or 0) + 1
             row["attempts"].append({
                 "call": row["calls_used"],
@@ -5571,7 +5716,11 @@ class _GenerationRetryCoordinator:
             batches = self.state.get("batches") if isinstance(self.state.get("batches"), dict) else {}
             return {
                 "schema_version": 2,
-                "total_model_calls": sum(int(row.get("calls_used") or 0) for row in batches.values() if isinstance(row, dict)),
+                "total_model_calls": sum(
+                    max(0, int(row.get("calls_used") or 0) - int(row.get("inherited_calls") or 0))
+                    for row in batches.values()
+                    if isinstance(row, dict)
+                ),
                 "batches": copy.deepcopy(batches),
                 "configuration_blocked": isinstance(self.state.get("configuration_block"), dict),
             }
@@ -7866,6 +8015,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         retry_root_key: str = "",
         probe_signature: str = "",
         is_probe: bool = False,
+        invalid_response_retry: bool = False,
     ) -> tuple[int, list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
         ensure_practice_generation_active(payload)
         batch_count = len(batch_plan)
@@ -7879,7 +8029,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             for index, item in enumerate(parent_batch_plan)
             if isinstance(item, dict)
         )
-        retry_limit = max(3, min(12, 2 + len(parent_batch_plan)))
+        retry_limit = 4
         configuration_error = retry_coordinator.configuration_error()
         if configuration_error:
             failures = {
@@ -8058,11 +8208,20 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "batch_index": target_index,
                 "attempts": [],
             }
-            for recovery_attempt in range(1, 2):
+            target_item_id = (
+                _clean(batch_plan[target_index - 1].get("plan_item_id"), 80)
+                or f"plan_item_{batch_start + target_index:02d}"
+            )
+            item_retry_key = retry_coordinator.prepare_item_budget(root_key, target_item_id, limit=retry_limit)
+            recovery_limit = retry_coordinator.remaining(item_retry_key, limit=retry_limit)
+            for recovery_attempt in range(1, recovery_limit + 1):
+                if retry_coordinator.remaining(item_retry_key, limit=retry_limit) <= 0:
+                    break
                 ensure_practice_generation_active(payload)
                 batch_diagnostic["recovery_attempt_count"] += 1
                 try:
                     recovery_phase = f"missing_{target_index}_{phase}"
+                    remaining_attempts = retry_coordinator.remaining(item_retry_key, limit=retry_limit)
                     recovered_raw = _call_practice_json_with_transport_retry(
                         _practice_generation_client(provider, model),
                         [
@@ -8073,15 +8232,17 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         model=model,
                         temperature=0.3 if recovery_attempt == 1 else 0.15,
                         thinking=_clean(payload.get("thinking"), 20) or None,
-                        timeout_seconds=_practice_stage_timeout("generation", 180),
+                        timeout_seconds=_practice_stage_timeout("generation", 480),
                         ensure_active=lambda: ensure_practice_generation_active(payload),
-                        attempts=1,
+                        attempts=remaining_attempts,
                         before_attempt=lambda _attempt, current_phase=recovery_phase: retry_coordinator.reserve(
-                            root_key, limit=retry_limit, phase=current_phase
+                            item_retry_key, limit=retry_limit, phase=current_phase
                         ),
                         after_attempt=lambda _attempt, detail, current_phase=recovery_phase: retry_coordinator.record(
-                            root_key, phase=current_phase, detail=detail
+                            item_retry_key, phase=current_phase, detail=detail
                         ),
+                        initial_json_error=True,
+                        attempt_offset=retry_limit - remaining_attempts,
                     )
                     recovered_rows, recovered_shape = _partition_batch_rows(recovered_raw)
                     attempt_report["attempts"].append({
@@ -8144,23 +8305,6 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                             pending=rest_target != target_index,
                         )
                     break
-                if not shape["actual_indexes"] and missing_position == 0:
-                    stable_invalid = {
-                        "code": "generation_response_invalid",
-                        "message": "模型持续返回空题目结构。",
-                        "retryable": True,
-                        "requires_configuration": False,
-                        "signature": "generation_response_invalid:empty",
-                    }
-                    retry_coordinator.open_circuit(root_key, stable_invalid)
-                    structural_failures[target_index - 1] = {
-                        **stable_invalid,
-                        "pending": False,
-                        "detail": "批次响应为空，单题探测仍为空。",
-                    }
-                    for rest_target in missing_before_recovery[missing_position + 1:]:
-                        structural_failures[rest_target - 1] = _retry_circuit_error(stable_invalid)
-                    break
                 total_number = batch_start + target_index
                 structural_failures[target_index - 1] = {
                     "code": "generation_response_invalid",
@@ -8169,9 +8313,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "detail": (
                         f"第 {batch_start + 1}-{batch_start + batch_count} 题批次期望临时序号 "
                         f"{list(range(1, batch_count + 1))}，首次实际返回 {shape['actual_indexes']}；"
-                        f"第 {total_number} 题对应的临时序号 {target_index} 经 1 次独立补生仍未返回。"
+                        f"第 {total_number} 题对应的临时序号 {target_index} 用尽该题独立生成机会后仍未返回。"
                     ),
-                    "signature": "generation_response_invalid",
+                    "signature": "generation_response_invalid:empty" if not shape["actual_indexes"] else "generation_response_invalid",
                 }
             response_report["final_indexes"] = sorted(rows_by_index)
             response_report["failed_indexes"] = [index + 1 for index in sorted(structural_failures)]
@@ -8187,14 +8331,21 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 model=model,
                 temperature=0.35,
                 thinking=_clean(payload.get("thinking"), 20) or None,
-                timeout_seconds=_practice_stage_timeout("generation", 180),
-                attempts=1 if is_probe else max(1, min(2, _nonnegative_int(payload.get("generation_transport_attempts"), 2))),
+                timeout_seconds=_practice_stage_timeout("generation", 480),
+                attempts=(
+                    max(1, min(4, retry_coordinator.remaining(root_key, limit=retry_limit)))
+                    if batch_count == 1
+                    else max(1, min(2, _nonnegative_int(payload.get("generation_transport_attempts"), 2)))
+                ),
                 backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
                 attempt_log=batch_diagnostic["transport_attempts"],
                 ensure_active=lambda: ensure_practice_generation_active(payload),
                 before_attempt=lambda _attempt: retry_coordinator.reserve(root_key, limit=retry_limit, phase=transport_phase),
                 after_attempt=lambda _attempt, detail: retry_coordinator.record(root_key, phase=transport_phase, detail=detail),
                 max_retry_after_seconds=float(payload.get("generation_retry_after_cap_seconds") or 30),
+                retry_invalid_json=batch_count == 1,
+                initial_json_error=invalid_response_retry,
+                attempt_offset=retry_limit - retry_coordinator.remaining(root_key, limit=retry_limit),
             )
         except Exception as exc:
             error_detail = _generation_error_detail(exc)
@@ -8227,12 +8378,18 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         split_failures[rest_id] = _configuration_blocked_error(config_error, pending=True)
                     break
                 try:
+                    item_id = (
+                        _clean(planned_item.get("plan_item_id"), 80)
+                        or f"plan_item_{batch_start + local_index + 1:02d}"
+                    )
+                    item_retry_key = retry_coordinator.prepare_item_budget(root_key, item_id, limit=retry_limit)
                     _, restored, failures, diagnostic = generate_batch(
                         batch_start + local_index,
                         [planned_item],
-                        retry_root_key=root_key,
+                        retry_root_key=item_retry_key,
                         probe_signature=error_detail.get("signature") if local_index == 0 else "",
                         is_probe=local_index == 0,
+                        invalid_response_retry=error_detail.get("code") == "generation_response_invalid",
                     )
                     split_restored.extend(restored)
                     split_failures.update(failures)
@@ -8367,31 +8524,55 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 try:
                     ensure_practice_generation_active(payload)
                     repair_phase = f"content_repair_{target_index}"
-                    repaired_raw = _call_practice_json_with_transport_retry(
-        _practice_generation_client(provider, model),
-                        [
-                            *messages,
-                            {"role": "assistant", "content": json.dumps(raw_batch, ensure_ascii=False)},
-                            {"role": "user", "content": repair_prompt},
-                        ],
-                        model=model,
-                        temperature=0.45,
-                        thinking=_clean(payload.get("thinking"), 20) or None,
-                        timeout_seconds=_practice_stage_timeout("generation", 180),
-                        attempts=2,
-                        backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
-                        attempt_log=transport_attempts,
-                        ensure_active=lambda: ensure_practice_generation_active(payload),
-                        before_attempt=lambda _attempt, phase=repair_phase: retry_coordinator.reserve(root_key, limit=retry_limit, phase=phase),
-                        after_attempt=lambda _attempt, detail, phase=repair_phase: retry_coordinator.record(root_key, phase=phase, detail=detail),
-                        max_retry_after_seconds=float(payload.get("generation_retry_after_cap_seconds") or 30),
+                    target_item_id = (
+                        _clean(batch_plan[target_index - 1].get("plan_item_id"), 80)
+                        or f"plan_item_{batch_start + target_index:02d}"
                     )
-                    repaired_rows, repaired_shape = _partition_batch_rows(repaired_raw)
-                    repaired_item = repaired_rows.get(target_index)
-                    retry_report["actual_indexes"] = repaired_shape["actual_indexes"]
-                    retry_report["status"] = "repaired" if repaired_item is not None else "invalid_response"
-                    if repaired_item is not None:
+                    item_retry_key = retry_coordinator.prepare_item_budget(root_key, target_item_id, limit=retry_limit)
+                    while retry_coordinator.remaining(item_retry_key, limit=retry_limit):
+                        remaining_attempts = retry_coordinator.remaining(item_retry_key, limit=retry_limit)
+                        repaired_raw = _call_practice_json_with_transport_retry(
+                            _practice_generation_client(provider, model),
+                            [
+                                *messages,
+                                {"role": "assistant", "content": json.dumps(raw_batch, ensure_ascii=False)},
+                                {"role": "user", "content": repair_prompt},
+                            ],
+                            model=model,
+                            temperature=0.45,
+                            thinking=_clean(payload.get("thinking"), 20) or None,
+                            timeout_seconds=_practice_stage_timeout("generation", 480),
+                            attempts=remaining_attempts,
+                            backoff_seconds=float(payload.get("generation_retry_backoff_seconds") or 0.5),
+                            attempt_log=transport_attempts,
+                            ensure_active=lambda: ensure_practice_generation_active(payload),
+                            before_attempt=lambda _attempt, phase=repair_phase, key=item_retry_key: retry_coordinator.reserve(
+                                key, limit=retry_limit, phase=phase
+                            ),
+                            after_attempt=lambda _attempt, detail, phase=repair_phase, key=item_retry_key: retry_coordinator.record(
+                                key, phase=phase, detail=detail
+                            ),
+                            max_retry_after_seconds=float(payload.get("generation_retry_after_cap_seconds") or 30),
+                            initial_json_error=True,
+                            attempt_offset=retry_limit - remaining_attempts,
+                        )
+                        repaired_rows, repaired_shape = _partition_batch_rows(repaired_raw)
+                        repaired_item = repaired_rows.get(target_index)
+                        retry_report["actual_indexes"] = repaired_shape["actual_indexes"]
+                        if repaired_item is None:
+                            retry_report["status"] = "invalid_response"
+                            continue
+                        remaining_item_issues = [
+                            issue for issue in batch_content_issues([repaired_item])
+                            if str(issue.get("batch_index")) == str(target_index)
+                        ]
+                        if remaining_item_issues:
+                            retry_report["status"] = "still_invalid"
+                            retry_report["remaining_issues"] = remaining_item_issues
+                            continue
                         rows_by_index[target_index] = repaired_item
+                        retry_report["status"] = "repaired"
+                        break
                 except PracticeGenerationStopped:
                     raise
                 except Exception as exc:

@@ -137,7 +137,7 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn('"generate_from_plan": bounded_env_int("PRACTICE_GENERATE_JOB_TIMEOUT_SECONDS", 14400', jobs)
         self.assertIn("内容较长，模型仍在生成完整结果", jobs)
         self.assertNotIn("timeout_seconds=600", generation)
-        self.assertIn('_practice_stage_timeout("generation", 180)', generation)
+        self.assertIn('_practice_stage_timeout("generation", 480)', generation)
 
     def test_partial_generation_has_visible_error_cards_and_keeps_export_enabled(self) -> None:
         self.assertIn('item.generation_status === "failed"', self.js)
@@ -201,7 +201,7 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn("function setPracticeExportButtonsEnabled(enabled, data = latestPracticeSet)", self.js)
         self.assertIn("setPracticeExportButtonsEnabled(isPassed, data)", self.js)
         self.assertIn("async function prepareOrDownloadPracticeWord", self.js)
-        self.assertIn("downloadPracticeWord(blob, filename)", self.js)
+        self.assertIn("downloadPracticeWord(url, filename)", self.js)
         self.assertIn("下载请求已交给浏览器", self.js)
         self.assertIn("function downloadPracticeWord", self.js)
         self.assertIn('title: "题目 Word 操作未完成"', self.js)

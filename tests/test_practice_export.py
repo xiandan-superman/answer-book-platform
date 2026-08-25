@@ -118,6 +118,44 @@ def test_practice_export_converts_inline_latex_and_sets_portable_chinese_font():
     assert "w:doNotExpandShiftReturn" not in settings
 
 
+def test_practice_export_preserves_fill_in_blanks_and_visible_question_content():
+    data = _practice()
+    data["exercises"][0]["question_type"] = "填空题"
+    data["exercises"][0]["stem"] = (
+        r"请填写物种数 $S=________$ 与独立限制 $R'=____$，"
+        r"并保留真实下标 $x_{\mathrm{CO}}$。"
+    )
+
+    content = build_practice_question_docx(data)
+    report = validate_docx_output(content, data)
+    visible_text = _text(content)
+    formulas = _omml_texts(content)
+
+    assert report["ok"] is True
+    assert "请填写物种数" in visible_text
+    assert "________" in visible_text
+    assert "____" in visible_text
+    assert any("S=" in formula for formula in formulas)
+    assert any("CO" in formula for formula in formulas)
+
+
+def test_practice_export_repairs_gateway_control_escapes_before_word_integrity_audit():
+    data = _practice()
+    data["exercises"][0]["stem"] = (
+        r"反应为 $\mathrm{CaCO_3(s)}\rightleftharpoons\u0000mathrm{CaO(s)}"
+        r"+\u0000mathrm{CO_2(g)}$，物种 $4\mathrm{ZnCO_3(s)}\u00024$。"
+    )
+
+    content = build_practice_question_docx(data)
+    report = validate_docx_output(content, data)
+    formulas = _omml_texts(content)
+
+    assert report["ok"] is True
+    assert all("\\u000" not in formula and "\\mathrm" not in formula for formula in formulas)
+    assert any("CaCO3" in formula and "CaO" in formula for formula in formulas)
+    assert any("ZnCO3" in formula for formula in formulas)
+
+
 def test_practice_export_formats_choice_options_without_bold_or_blank_lines():
     data = _practice()
     data["exercises"][0]["question_type"] = "单选题"

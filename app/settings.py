@@ -23,6 +23,13 @@ BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
 )
 REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
 LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
+LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
+    "lingsuan_openai": "auto",
+    "lingsuan_image": "auto",
+    "lingsuan_google": "auto",
+    "lingsuan_xai": "auto",
+    "lingsuan_anthropic": "auto",
+}
 BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "deepseek",
     "ark",
@@ -31,14 +38,14 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "yuanheng",
     "lingsuan_openai",
     "lingsuan_image",
-    "lingsuan_google",
     "lingsuan_xai",
-    "lingsuan_anthropic",
 }
 BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
     "sensenova",
     "bai",
+    "lingsuan_google",
 }
+BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES = {"lingsuan_anthropic"}
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,7 @@ class ProviderConfig:
     vision_model_options: tuple[str, ...] = ()
     supports_vision: bool = False
     model_capabilities: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    model_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     thinking_mode: str = "auto"
     json_mode_unsupported_models: tuple[str, ...] = ()
     api_protocol: str = "chat_completions"
@@ -97,6 +105,7 @@ class ProviderConfig:
             "vision_model_options": list(self.vision_model_options),
             "supports_vision": self.supports_vision,
             "model_capabilities": {key: list(value) for key, value in self.model_capabilities.items()},
+            "model_profiles": {key: dict(value) for key, value in self.model_profiles.items()},
             "thinking_mode": self.thinking_mode,
             "json_mode_unsupported_models": list(self.json_mode_unsupported_models),
             "api_protocol": self.api_protocol,
@@ -163,6 +172,10 @@ def list_providers() -> dict[str, ProviderConfig]:
         # the Responses-to-Chat double request fallback after an application update.
         builtin_responses = name in BUILTIN_RESPONSES_PROVIDER_NAMES
         builtin_chat_completions = name in BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES
+        builtin_anthropic_messages = name in BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES
+        base_url = str(item.get("base_url", "")).rstrip("/")
+        if name == "deepseek" and re.fullmatch(r"https://api\.deepseek\.com/v1", base_url, re.IGNORECASE):
+            base_url = "https://api.deepseek.com"
         env_name = str(item.get("api_key_env", "")).strip()
         # Frontend key saving writes to .env. Let that saved value override
         # legacy providers.local.json entries so replacing a bad key takes effect.
@@ -207,7 +220,7 @@ def list_providers() -> dict[str, ProviderConfig]:
         providers[name] = ProviderConfig(
             name=name,
             type=str(item.get("type", "openai_compatible")),
-            base_url=str(item.get("base_url", "")).rstrip("/"),
+            base_url=base_url,
             api_key=api_key,
             api_key_env=env_name,
             default_model=str(item.get("default_model", "")),
@@ -239,11 +252,21 @@ def list_providers() -> dict[str, ProviderConfig]:
                 for model, capabilities in dict(item.get("model_capabilities", {})).items()
                 if str(model).strip() and isinstance(capabilities, (list, tuple))
             },
-            thinking_mode=str(item.get("thinking_mode", "") or os.environ.get("ANSWER_BOOK_THINKING_MODE", "") or "auto"),
+            model_profiles={
+                str(model): dict(profile)
+                for model, profile in dict(item.get("model_profiles", {})).items()
+                if str(model).strip() and isinstance(profile, dict)
+            },
+            thinking_mode=LINGSUAN_OFFICIAL_THINKING_DEFAULTS.get(
+                name,
+                str(item.get("thinking_mode", "") or os.environ.get("ANSWER_BOOK_THINKING_MODE", "") or "auto"),
+            ),
             json_mode_unsupported_models=tuple(json_mode_unsupported_models),
             api_protocol=(
                 "responses"
                 if builtin_responses
+                else "anthropic_messages"
+                if builtin_anthropic_messages
                 else "chat_completions"
                 if builtin_chat_completions
                 else str(item.get("api_protocol", "chat_completions") or "chat_completions").strip().lower()
