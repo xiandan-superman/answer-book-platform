@@ -8,7 +8,6 @@ import pytest
 
 from scripts.extract_release_notes import extract_version_section
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,13 +28,14 @@ def test_missing_version_is_rejected() -> None:
 
 
 def test_release_note_script_writes_only_requested_section(tmp_path: Path) -> None:
+    version = (ROOT / "APP_VERSION").read_text(encoding="utf-8").strip()
     output = tmp_path / "release-notes.md"
     result = subprocess.run(
         [
             sys.executable,
             str(ROOT / "scripts" / "extract_release_notes.py"),
             "--version",
-            "0.9.21",
+            version,
             "--output",
             str(output),
         ],
@@ -47,5 +47,5 @@ def test_release_note_script_writes_only_requested_section(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     notes = output.read_text(encoding="utf-8")
-    assert notes.startswith("## [0.9.21]")
+    assert notes.startswith(f"## [{version}]")
     assert "## [0.9.20]" not in notes
