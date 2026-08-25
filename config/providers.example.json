@@ -141,6 +141,80 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "sensenova": {
+      "type": "openai_compatible",
+      "api_protocol": "chat_completions",
+      "base_url": "https://token.sensenova.cn/v1",
+      "api_key_env": "SENSENOVA_API_KEY",
+      "api_key": "",
+      "default_model": "sensenova-6.8-flash-lite",
+      "vision_model": "sensenova-6.8-flash-lite",
+      "vision_model_options": ["sensenova-6.8-flash-lite"],
+      "supports_vision": true,
+      "model_capabilities": {
+        "sensenova-6.8-flash-lite": ["text", "vision"],
+        "deepseek-v4-flash": ["text"],
+        "glm-5.2": ["text"]
+      },
+      "supports_image_generation": true,
+      "image_model": "sensenova-u1.5-lite",
+      "image_model_options": ["sensenova-u1.5-lite"],
+      "image_model_option_labels": {
+        "sensenova-u1.5-lite": "SenseNova U1.5 Lite（图片生成）"
+      },
+      "image_size": "2048x2048",
+      "model_options": [
+        "sensenova-6.8-flash-lite",
+        "deepseek-v4-flash",
+        "glm-5.2"
+      ],
+      "model_option_labels": {
+        "sensenova-6.8-flash-lite": "SenseNova 6.8 Flash Lite（多模态）",
+        "deepseek-v4-flash": "DeepSeek V4 Flash（文本）",
+        "glm-5.2": "GLM-5.2（文本）"
+      },
+      "allow_custom_model": false,
+      "model_hint": "商汤日日新 Token Plan：SenseNova 6.8 Flash Lite 支持文本和图片输入；U1.5 Lite 用于图片生成。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
+    "bai": {
+      "type": "openai_compatible",
+      "api_protocol": "chat_completions",
+      "base_url": "https://api.b.ai/v1",
+      "api_key_env": "BAI_API_KEY",
+      "api_key": "",
+      "default_model": "deepseek-v4-flash",
+      "vision_model": "deepseek-v4-flash-vision-exp",
+      "vision_model_options": ["deepseek-v4-flash-vision-exp"],
+      "supports_vision": true,
+      "model_capabilities": {
+        "deepseek-v4-flash": ["text"],
+        "deepseek-v4-flash-vision-exp": ["text", "vision"],
+        "hy3": ["text"],
+        "mimo-v2.5": ["text"]
+      },
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": [
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+        "hy3",
+        "mimo-v2.5"
+      ],
+      "model_option_labels": {
+        "deepseek-v4-flash": "DeepSeek V4 Flash（文本）",
+        "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision Exp（多模态）",
+        "hy3": "Tencent Hy3（文本）",
+        "mimo-v2.5": "MiMo V2.5（文本）"
+      },
+      "allow_custom_model": false,
+      "model_hint": "仅展示已在 B.AI 实测通过文本或图片输入、且支持 JSON 结构化输出的模型。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
     "lingsuan_openai": {
       "type": "openai_compatible",
       "api_protocol": "responses",

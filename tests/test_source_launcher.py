@@ -46,6 +46,66 @@ def test_pending_source_update_replaces_code_and_retains_backup(tmp_path) -> Non
     assert not plan.exists()
 
 
+def test_pending_source_update_reports_offline_install_phases(tmp_path) -> None:
+    project = tmp_path / "program"
+    (project / "scripts").mkdir(parents=True)
+    (project / "scripts" / "start_platform.py").write_text("old", encoding="utf-8")
+    (project / "app").mkdir()
+    (project / "web").mkdir()
+    data = tmp_path / "data"
+    archive = data / "runtime" / "source.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("answer-book-platform/scripts/start_platform.py", "new")
+        bundle.writestr("answer-book-platform/app/__init__.py", "")
+        bundle.writestr("answer-book-platform/web/index.html", "new")
+        bundle.writestr("answer-book-platform/start_platform_windows.bat", "launcher")
+    plan = data / "runtime" / "pending-source-update.json"
+    plan.write_text(json.dumps({"archive": str(archive), "version": "1.0.3"}), encoding="utf-8")
+    events = []
+
+    source_launcher.apply_pending_source_update(
+        project,
+        data,
+        lambda status, percent, message, **details: events.append((status, percent, message, details)),
+    )
+
+    phases = []
+    for event in events:
+        if not phases or phases[-1] != event[0]:
+            phases.append(event[0])
+    assert phases == ["extracting", "backing_up", "installing", "verifying_install"]
+    assert events[-1][1] == 98
+
+
+def test_failed_update_plan_is_quarantined_instead_of_retried_forever(tmp_path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    plan = runtime / "pending-source-update.json"
+    plan.write_text("{}", encoding="utf-8")
+
+    failed = source_launcher.quarantine_failed_update(tmp_path)
+
+    assert failed is not None and failed.is_file()
+    assert failed.name.startswith("failed-source-update-")
+    assert not plan.exists()
+
+
+def test_restore_update_backup_only_uses_valid_backup_root(tmp_path) -> None:
+    project = tmp_path / "program"
+    (project / "scripts").mkdir(parents=True)
+    (project / "scripts" / "start_platform.py").write_text("new", encoding="utf-8")
+    data = tmp_path / "data"
+    backup = data / "runtime" / "source-backups" / "0.9.19-test"
+    (backup / "scripts").mkdir(parents=True)
+    (backup / "scripts" / "start_platform.py").write_text("old", encoding="utf-8")
+    recovery = data / "runtime" / "source-update-recovery.json"
+    recovery.write_text(json.dumps({"backup": str(backup)}), encoding="utf-8")
+
+    assert source_launcher.restore_update_backup(project, data) is True
+    assert (project / "scripts" / "start_platform.py").read_text(encoding="utf-8") == "old"
+
+
 def test_failed_source_replacement_restores_code_without_touching_user_data(monkeypatch, tmp_path) -> None:
     project = tmp_path / "program"
     (project / "scripts").mkdir(parents=True)

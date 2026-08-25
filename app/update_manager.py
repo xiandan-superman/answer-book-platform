@@ -518,6 +518,7 @@ def _stage_source_archive_update(
     temporary.write_text(json.dumps({
         "schema_version": "answer_book.pending_source_update.v1",
         "archive": str(target),
+        "current_version": get_app_version(),
         "version": status.get("latest_version"),
         "dependency_update_required": bool(status.get("dependency_update_required")),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -637,7 +638,10 @@ def update_progress() -> dict[str, Any]:
             "message": "尚未开始更新。",
         }
     target_version = str(current.get("latest_version") or "")
-    if target_version and current.get("status") in {"restarting", "awaiting_restart"}:
+    if target_version and current.get("status") in {
+        "restarting", "awaiting_restart", "extracting", "backing_up",
+        "installing", "verifying_install", "dependencies", "starting",
+    }:
         if not is_newer_version(target_version, get_app_version()):
             return _set_update_progress(
                 "completed",

@@ -33,6 +33,10 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "lingsuan_xai",
     "lingsuan_anthropic",
 }
+BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
+    "sensenova",
+    "bai",
+}
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,7 @@ def list_providers() -> dict[str, ProviderConfig]:
         # A stale local overlay must not silently restore the old protocol or
         # the Responses-to-Chat double request fallback after an application update.
         builtin_responses = name in BUILTIN_RESPONSES_PROVIDER_NAMES
+        builtin_chat_completions = name in BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES
         env_name = str(item.get("api_key_env", "")).strip()
         # Frontend key saving writes to .env. Let that saved value override
         # legacy providers.local.json entries so replacing a bad key takes effect.
@@ -235,6 +240,8 @@ def list_providers() -> dict[str, ProviderConfig]:
             api_protocol=(
                 "responses"
                 if builtin_responses
+                else "chat_completions"
+                if builtin_chat_completions
                 else str(item.get("api_protocol", "chat_completions") or "chat_completions").strip().lower()
             ),
             responses_fallback_to_chat=(

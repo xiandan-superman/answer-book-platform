@@ -92,6 +92,9 @@ def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert "function checkPlatformUpdateSilently()" in APP_JS
     assert "showPlatformUpdateNotice(status)" in APP_JS
     assert "API Key、教材、任务和输出不会被覆盖" in APP_JS
+    assert 'backing_up: "备份当前版本"' in APP_JS
+    assert 'title: "任务完成后再更新"' in APP_JS
+    assert "独立更新窗口正在执行备份和安装" in APP_JS
 
 
 def test_runtime_monitor_exposes_an_explicit_default_off_hybrid_switch() -> None:

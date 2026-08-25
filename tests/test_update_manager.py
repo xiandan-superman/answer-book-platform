@@ -6,6 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+from app import server as app_server
 from app import update_manager
 from scripts.build_update_manifest import build_manifest
 
@@ -20,6 +21,20 @@ def test_version_comparison_handles_beta_and_stable_versions() -> None:
 def test_platform_asset_keys_are_stable() -> None:
     assert update_manager.platform_asset_key(system="Darwin", machine="arm64") == "macos-arm64"
     assert update_manager.platform_asset_key(system="Windows", machine="AMD64") == "windows-x86_64"
+
+
+def test_update_guard_only_blocks_running_and_queued_tasks(monkeypatch) -> None:
+    monkeypatch.setattr(app_server, "build_system_status", lambda: {
+        "tasks": {"running": [
+            {"task_id": "running-1", "status": "running", "title": "正在生成"},
+            {"task_id": "queued-1", "status": "queued", "title": "等待生成"},
+            {"task_id": "paused-1", "status": "paused", "title": "等待用户确认"},
+        ]}
+    })
+
+    tasks = app_server._active_update_tasks()
+
+    assert [task["task_id"] for task in tasks] == ["running-1", "queued-1"]
 
 
 def test_update_status_selects_verified_platform_asset(monkeypatch) -> None:
@@ -153,6 +168,7 @@ def test_source_archive_apply_stages_supervisor_plan(tmp_path, monkeypatch) -> N
     plan = update_manager._read_json(tmp_path / "data" / "runtime" / "pending-source-update.json")
     assert result["automatic_restart"] is True
     assert plan["archive"] == str(archive)
+    assert plan["current_version"] == update_manager.get_app_version()
     assert plan["dependency_update_required"] is True
 
 
@@ -254,3 +270,21 @@ def test_update_progress_persists_without_credentials(tmp_path, monkeypatch) -> 
     assert persisted["percent"] == 42
     assert persisted["downloaded_bytes"] == 12
     assert not any("key" in key.lower() or "token" in key.lower() for key in persisted)
+
+
+def test_offline_install_stage_is_completed_after_new_version_starts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager, "get_app_version", lambda: "1.0.0")
+    update_manager._UPDATE_PROGRESS.clear()
+    update_manager._persist_update_progress({
+        "status": "starting",
+        "percent": 99,
+        "current_version": "0.9.19",
+        "latest_version": "1.0.0",
+    })
+
+    progress = update_manager.update_progress()
+
+    assert progress["status"] == "completed"
+    assert progress["percent"] == 100
+    assert progress["current_version"] == "0.9.19"

@@ -1,6 +1,6 @@
 # 真题解析与生题平台
 
-本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.19。
+本项目是可独立运行的本地真题解析、知识点出题和专项练习平台。`APP_VERSION` 是用户可见正式版本号的唯一来源，`VERSION` 与发布清单必须保持一致；当前版本为 0.9.20。
 
 ## 普通用户安装与使用
 
@@ -76,12 +76,13 @@ python3 scripts/start_platform.py
 ## 源码更新
 
 - 网页启动后静默检查稳定更新；发现版本时显示可稍后关闭的更新提醒，不会未经用户确认修改本机。
-- 用户确认后，更新在后台执行，页面显示真实下载字节、校验、准备替换和重启阶段；服务重启期间页面会自动尝试重新连接。
+- 用户确认前，程序会检查是否有运行中或排队任务；存在时停止更新并提示任务完成后重试，避免重启中断任务。
+- 用户确认后，页面显示真实下载字节与校验进度；服务退出后由独立的“安全更新”窗口继续显示解压、备份、覆盖、依赖检查和新版启动状态，原网页自动等待恢复，不会重复打开新标签页。
 - 只有仓库创建与 `APP_VERSION` 一致的版本标签后，普通用户才会收到更新；普通 `main` push 不会下发。
 - 用户确认后，程序下载源码 ZIP、校验大小和 SHA256、退出旧服务，在安装目录旁完整准备新源码，备份旧源码后原位覆盖并自动重启；不会在跨磁盘复制期间留下空程序目录。
 - Git clone 用户使用安全的 `fetch + fast-forward merge`；本地有源码修改、分支不符或历史分叉时会拒绝自动更新。
 - 新版本若改变依赖清单，确认框会提前说明；重启时检查并安装缺失依赖。依赖没有变化时不会重复安装。
-- 更新失败会恢复旧源码。API Key、教材、任务、日志和输出位于 macOS `~/Library/Application Support/Answer Book Platform` 或 Windows `%LOCALAPPDATA%\Answer Book Platform`。
+- 更新失败会恢复旧源码并重新启动旧版，网页和独立更新窗口会明确显示回滚结果；失败计划会隔离保存，不会在每次启动时无限重试。API Key、教材、任务、日志和输出位于 macOS `~/Library/Application Support/Answer Book Platform` 或 Windows `%LOCALAPPDATA%\Answer Book Platform`。
 - 旧数据迁移只复制用户数据目录中尚不存在的文件；已有 API Key、教材、任务、输出和配置不会被同名旧文件或新版程序包覆盖。
 
 开发与发布细节见 [源码分发与更新架构](docs/SOURCE_DISTRIBUTION_AND_UPDATE.md)。
@@ -112,6 +113,8 @@ export OPENAI_API_KEY="..."
 export DEEPSEEK_API_KEY="..."
 export ARK_API_KEY="..."
 export DASHSCOPE_API_KEY="..."
+export SENSENOVA_API_KEY="..."
+export BAI_API_KEY="..."
 export ARK_IMAGE_MODEL="doubao-seedream-5-0-260128"
 export BAILIAN_IMAGE_MODEL="qwen-image-2.0-pro"
 export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
@@ -120,13 +123,17 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 旧版 `.env` 和 `config/providers.local.json` 中已有的 Key 会在首次启动时自动迁移。
 这两个旧文件仍兼容，但新版本以独立 Key 文件为主要配置入口。
 
-“API 配置”页面集中管理 OpenAI、DeepSeek、火山方舟、智谱、阿里云百炼和云雾等已接入平台。新 Key 必须先通过连接测试才能保存；模型配置页面只负责选择具体模型，不再重复输入 Key。页面和接口只返回 `api_key_set`，不会回显已保存密钥；发布包脚本会排除真实 Key 文件。
+“API 配置”页面集中管理 DeepSeek、火山方舟、阿里云百炼、商汤日日新、B.AI 和灵算等已接入平台。新 Key 必须先通过连接测试才能保存；模型配置页面只负责选择具体模型，不再重复输入 Key。页面和接口只返回 `api_key_set`，不会回显已保存密钥；发布包脚本会排除真实 Key 文件。
 
 真题模型配置中可单独选择“高风险正确性复核”模型。它仅用于计算/作图综合题的证据复核，以及硬校验失败题的单题纠错；不配置时自动复用结构化解析模型，不会额外引入另一条隐式模型路线。命令行可用 `--correctness-provider` 和 `--correctness-model` 显式指定。
 
 火山方舟使用 OpenAI 兼容接口，默认地址为 `https://ark.cn-beijing.volces.com/api/v3`。模型选择处可以直接填写方舟控制台里的模型 ID 或推理接入点 ID，例如 `doubao-seed-1-6-250615` 或 `ep-...`。
 
 阿里云百炼使用 OpenAI 兼容 Chat Completions 接口调用通义千问多模态模型，默认地址为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如需使用百炼业务空间专属域名，可在 `providers.local.json` 中把 `bailian.base_url` 改为 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。百炼图片生成默认使用 Qwen-Image `qwen-image-2.0-pro`，通过 DashScope 多模态生成接口调用。
+
+商汤日日新使用 `https://token.sensenova.cn/v1` 的 OpenAI 兼容接口。文本模型包含多模态的 `sensenova-6.8-flash-lite`（支持图片输入）、`deepseek-v4-flash` 和 `glm-5.2`；图片生成使用 `sensenova-u1.5-lite`，结果以 PNG/Base64 接收并立即保存到本地。按产品要求未接入 `sensenova-u1-fast`。
+
+B.AI 使用 `https://api.b.ai/v1` 的 OpenAI 兼容 Chat Completions 接口。仅内置已完成真实请求和 JSON 结构化输出验证的 `deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`hy3` 与 `mimo-v2.5`；其中只有 `deepseek-v4-flash-vision-exp` 启用图片输入。需要充值解锁的 `gpt-5.6-luna` 不在可选模型中。
 
 作图题会优先使用图片模型直接生成 PNG，再插入最终文档；如果图片接口不可用，会自动回退到程序绘图。图片模型可在 `providers.local.json` 中配置 `image_model`，或用 `ARK_IMAGE_MODEL` / `ANSWER_BOOK_IMAGE_MODEL` 环境变量指定。
 
@@ -258,7 +265,7 @@ python3 scripts/data_inventory.py
 - macOS / Windows 启动入口。
 - 依赖安装脚本。
 - Windows 专用依赖文件 `requirements-windows.txt`，用于 Word COM 自动化。
-- OpenAI / DeepSeek / 火山方舟 / 阿里云百炼 provider 配置。
+- DeepSeek / 火山方舟 / 阿里云百炼 / 商汤日日新 / B.AI / 灵算 provider 配置。
 - 独立 API 配置页面，按平台测试并保存到程序数据目录的 `config/api_keys.json`，所有模型模块统一读取且不回显密钥。
 - `/api/version` 版本接口与 Web 顶部版本显示。
 - API Key 脱敏读取。

@@ -34,6 +34,8 @@ class LocalConfigTests(unittest.TestCase):
         }
         self.assertTrue(set(supplier_keys).issubset(ALLOWED_API_KEY_NAMES))
         self.assertNotIn("LINGSUAN_API_KEY", ALLOWED_API_KEY_NAMES)
+        self.assertIn("SENSENOVA_API_KEY", ALLOWED_API_KEY_NAMES)
+        self.assertIn("BAI_API_KEY", ALLOWED_API_KEY_NAMES)
         with tempfile.TemporaryDirectory() as raw_tmp:
             project_root = Path(raw_tmp)
             key_file = project_root / "config" / "api_keys.json"

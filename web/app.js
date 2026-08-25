@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 let taskPollTimer = null;
 let platformUpdateProgressTimer = null;
 let platformUpdateInProgress = false;
+let platformUpdateReconnectStartedAt = 0;
 let taskManagerPollTimer = null;
 let taskManagerPollInFlight = false;
 let systemMonitorPollTimer = null;
@@ -1240,6 +1241,8 @@ function providerEnvKey(providerName) {
     deepseek: "DEEPSEEK_API_KEY",
     ark: "ARK_API_KEY",
     bailian: "DASHSCOPE_API_KEY",
+    sensenova: "SENSENOVA_API_KEY",
+    bai: "BAI_API_KEY",
     lingsuan_openai: "LINGSUAN_OPENAI_API_KEY",
     lingsuan_image: "LINGSUAN_IMAGE_API_KEY",
     lingsuan_google: "LINGSUAN_GOOGLE_API_KEY",
@@ -1254,6 +1257,8 @@ function displayProviderName(name) {
     deepseek: "DeepSeek",
     ark: "火山方舟",
     bailian: "阿里云百炼",
+    sensenova: "商汤日日新 · SenseNova",
+    bai: "B.AI",
     lingsuan_openai: "灵算 · OpenAI",
     lingsuan_image: "灵算 · OpenAI 图片",
     lingsuan_google: "灵算 · Google Gemini",
@@ -2194,6 +2199,13 @@ async function checkPlatformUpdate() {
       });
       return;
     }
+    if (Number(status.active_task_count || 0) > 0) {
+      await platformAlert(
+        `当前有 ${status.active_task_count} 个任务正在运行或排队。请等待任务完成后再更新，避免重启中断任务。`,
+        { title: "任务完成后再更新", tone: "warning" }
+      );
+      return;
+    }
     const notes = String(status.release_notes || "本次更新包含稳定性与质量改进。").trim();
     const actionText = status.action === "pull_source"
       ? "程序将仅在源码无未保存修改时执行快进拉取，完成后自动重启。"
@@ -2234,7 +2246,12 @@ const PLATFORM_UPDATE_STAGE_LABELS = {
   downloading: "下载更新",
   verifying: "安全校验",
   preparing: "准备替换",
+  extracting: "解压更新包",
+  backing_up: "备份当前版本",
   installing: "安装更新",
+  verifying_install: "验证安装结果",
+  dependencies: "准备运行依赖",
+  starting: "启动新版程序",
   restarting: "自动重启",
   awaiting_restart: "等待重启",
   completed: "更新完成",
@@ -2262,9 +2279,17 @@ function renderPlatformUpdateProgress(progress = {}) {
   const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
   const downloaded = Number(progress.downloaded_bytes || 0);
   const total = Number(progress.total_bytes || 0);
-  const detail = downloaded > 0
-    ? `${formatBytes(downloaded)}${total > 0 ? ` / ${formatBytes(total)}` : ""} · API Key、教材、任务和输出保持不变`
-    : "更新期间 API Key、教材、任务和输出不会被删除。";
+  const fromVersion = String(progress.current_version || "").trim();
+  const toVersion = String(progress.latest_version || "").trim();
+  const detail = status === "failed"
+    ? progress.rollback_succeeded
+      ? "原版本已保留或恢复，可以继续使用；API Key、教材、任务和输出未受影响。"
+      : "程序文件和用户数据均有备份，请保留启动窗口并重新启动后重试。"
+    : status === "completed" && toVersion
+      ? `${fromVersion ? `${fromVersion} → ` : ""}${toVersion} · 用户数据保持不变`
+      : downloaded > 0
+        ? `${formatBytes(downloaded)}${total > 0 ? ` / ${formatBytes(total)}` : ""} · API Key、教材、任务和输出保持不变`
+        : "更新期间 API Key、教材、任务和输出不会被删除。";
   if (card) card.dataset.status = status;
   setText("platformUpdateProgressStage", PLATFORM_UPDATE_STAGE_LABELS[status] || "处理更新");
   setText("platformUpdateProgressPercent", `${Math.round(percent)}%`);
@@ -2273,7 +2298,7 @@ function renderPlatformUpdateProgress(progress = {}) {
   if ($("platformUpdateProgressBar")) $("platformUpdateProgressBar").style.width = `${percent}%`;
   $("platformUpdateProgressTrack")?.setAttribute("aria-valuenow", String(Math.round(percent)));
   const close = $("platformUpdateProgressClose");
-  if (close) close.textContent = ["completed", "awaiting_restart", "failed"].includes(status) ? "关闭" : "在后台继续";
+  if (close) close.textContent = ["completed", "awaiting_restart", "failed"].includes(status) ? "关闭" : "隐藏进度";
   const title = status === "failed"
     ? "更新未完成"
     : status === "completed"
@@ -2282,6 +2307,9 @@ function renderPlatformUpdateProgress(progress = {}) {
         ? "更新已准备好"
         : "正在提升使用体验";
   setText("platformUpdateProgressTitle", title);
+  const updateButton = $("checkUpdateBtn");
+  const updateLabel = updateButton?.querySelector("span");
+  if (platformUpdateInProgress && updateLabel) updateLabel.textContent = `更新中 ${Math.round(percent)}%`;
 }
 
 function openPlatformUpdateProgress(progress = {}) {
@@ -2300,6 +2328,7 @@ function finishPlatformUpdatePolling(progress = {}) {
   if (button) button.disabled = false;
   if (label) label.textContent = progress.status === "completed" ? "已是最新版" : "检查更新";
   if (progress.status === "completed") button?.classList.remove("update-available");
+  platformUpdateReconnectStartedAt = 0;
 }
 
 async function pollPlatformUpdateProgress() {
@@ -2312,11 +2341,19 @@ async function pollPlatformUpdateProgress() {
       return;
     }
   } catch (_error) {
+    if (!platformUpdateReconnectStartedAt) platformUpdateReconnectStartedAt = Date.now();
+    const reconnectSeconds = Math.round((Date.now() - platformUpdateReconnectStartedAt) / 1000);
     renderPlatformUpdateProgress({
-      status: "restarting",
-      percent: 97,
-      message: "本地服务正在重启，页面会自动重新连接。"
+      status: reconnectSeconds >= 1200 ? "failed" : "restarting",
+      percent: 99,
+      message: reconnectSeconds >= 1200
+        ? "新版服务长时间未恢复。请查看独立更新窗口；关闭后重新双击启动文件，程序会保留或恢复原版本。"
+        : "本地服务已停止，独立更新窗口正在执行备份和安装；完成后本页面会自动恢复。"
     });
+    if (reconnectSeconds >= 1200) {
+      finishPlatformUpdatePolling({ status: "failed" });
+      return;
+    }
   }
   platformUpdateProgressTimer = window.setTimeout(pollPlatformUpdateProgress, 650);
 }

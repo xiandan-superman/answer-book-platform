@@ -620,6 +620,23 @@ def _safe_task_file(task_id: str, raw_path: str) -> Path:
     raise FileNotFoundError("file is not inside this task outputs")
 
 
+def _active_update_tasks() -> list[dict[str, str]]:
+    """Return tasks that would be interrupted by a service restart."""
+    try:
+        rows = build_system_status().get("tasks", {}).get("running", [])
+    except Exception:
+        return []
+    return [
+        {
+            "task_id": str(row.get("task_id") or ""),
+            "status": str(row.get("status") or ""),
+            "title": str(row.get("title") or row.get("display_name") or "正在执行的任务")[:120],
+        }
+        for row in rows
+        if str(row.get("status") or "") in {"running", "queued"}
+    ]
+
+
 def _index_version_label() -> str:
     """Inject the formal user-facing app version without internal build labels."""
     return f"v{get_app_version()}"
@@ -660,7 +677,8 @@ def _practice_export_filename(export_data: dict[str, object], *, review_candidat
         or ("知识点模拟题" if str(export_data.get("source_mode") or "exam") == "knowledge" else "按题出题")
     ).strip()
     model = str(generation.get("model") or export_data.get("model") or "model").strip()
-    safe = lambda value, fallback: (re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", value).strip()[:48] or fallback)
+    def safe(value: str, fallback: str) -> str:
+        return re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", value).strip()[:48] or fallback
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     suffix = "-待复核" if review_candidate else ""
     return f"{safe(title, '专项练习')}-{safe(model, 'model')}-{stamp}-题目{suffix}.docx"
@@ -870,7 +888,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             refresh = parse_qs(parsed.query).get("refresh", ["0"])[0] in {"1", "true", "yes"}
             try:
-                self.send_json(check_for_updates(refresh=refresh))
+                status = check_for_updates(refresh=refresh)
+                active_tasks = _active_update_tasks()
+                status["active_task_count"] = len(active_tasks)
+                status["active_tasks"] = active_tasks[:5]
+                self.send_json(status)
             except UpdateError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
@@ -1181,6 +1203,19 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/update/apply":
                 if not self.is_local_client():
                     self.send_json({"ok": False, "error": "只能在运行程序的本机安装更新。"}, status=403)
+                    return
+                active_tasks = _active_update_tasks()
+                if active_tasks:
+                    self.send_json(
+                        {
+                            "ok": False,
+                            "error": f"当前有 {len(active_tasks)} 个任务正在运行或排队。请等待任务完成后再更新，避免重启中断任务。",
+                            "error_code": "active_tasks_block_update",
+                            "active_task_count": len(active_tasks),
+                            "active_tasks": active_tasks[:5],
+                        },
+                        status=409,
+                    )
                     return
                 try:
                     result = start_update()

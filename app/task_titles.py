@@ -40,6 +40,12 @@ def short_model_label(model: Any, provider: Any = "") -> str:
         return "Gemini"
     if "deepseek" in lowered:
         return "DeepSeek"
+    if "sensenova" in lowered:
+        return "SenseNova"
+    if lowered == "hy3" or lowered.startswith("hy3-"):
+        return "Hy3"
+    if "mimo" in lowered:
+        return "MiMo"
     if "claude" in lowered:
         return "Claude"
     if "qwen" in lowered:
@@ -57,6 +63,8 @@ def short_model_label(model: Any, provider: Any = "") -> str:
         "bailian": "百炼",
         "ark": "方舟",
         "zhipu": "智谱",
+        "sensenova": "SenseNova",
+        "bai": "B.AI",
     }
     return provider_labels.get(provider_text, "")
 

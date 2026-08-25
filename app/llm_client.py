@@ -577,6 +577,11 @@ class OpenAICompatibleClient:
             }
             if use_response_format:
                 payload["response_format"] = "b64_json"
+            if self.config.name == "sensenova" and image_model == "sensenova-u1.5-lite":
+                payload["output_format"] = "png"
+                # Generated teaching figures must not contain a provider logo.
+                # SenseNova documents this option and recommends setting it explicitly.
+                payload["watermark"] = False
             try:
                 raw = self._post_json(f"{self.config.base_url}/images/generations", payload, timeout=timeout)
                 image_bytes = _image_bytes_from_response(raw)
