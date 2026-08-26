@@ -1,9 +1,9 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析平台",
-  "version": "0.9.27",
+  "version": "0.9.28",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.27",
+  "source_revision": "release-v0.9.28",
   "build_kind": "stable-source-release",
   "created_at": "2026-08-27T00:00:00+08:00",
   "validation": {

@@ -323,9 +323,10 @@ def build_text_expression_render_plans(
         if match.rule_id not in RENDERABLE_TEXT_RULES:
             continue
         if match.rule_id == "core.text_equation":
-            match = _narrow_text_equation_match(match)
-            if match is None:
+            narrowed_match = _narrow_text_equation_match(match)
+            if narrowed_match is None:
                 continue
+            match = narrowed_match
         if any(
             start <= match.start and match.end <= end
             for start, end in protected_quantity_spans
