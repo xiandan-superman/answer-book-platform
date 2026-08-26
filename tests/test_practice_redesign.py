@@ -525,7 +525,7 @@ class PracticeRedesignTests(unittest.TestCase):
         render_body = self.js.split("function renderPracticePlan(plan) {", 1)[1].split("\nasync function regeneratePracticePlan", 1)[0]
         self.assertIn('<details class="practice-plan-edit-row"', render_body)
         self.assertIn('data-plan-summary="target_skill"', render_body)
-        self.assertIn('index < 2 ? " open" : ""', render_body)
+        self.assertIn('index === 0 ? " open" : ""', render_body)
         self.assertIn(".practice-plan-review-toolbar", self.styles)
         self.assertIn(".practice-plan-review-actions { position: sticky;", self.styles)
 

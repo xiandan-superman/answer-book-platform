@@ -12,6 +12,8 @@ const selectedTaskIds = new Set();
 let providerConfigs = {};
 let apiKeyFileInfo = {};
 let apiKeyConfigLoadState = { providers: "loading", keyFile: "loading", recoveryAvailable: false };
+let activeKeyProviderFilter = "all";
+let keyProviderSearchQuery = "";
 let hybridExecutionSettings = {};
 const keyConfigTests = {};
 let libraryFiles = { exams: [], textbooks: [], exams_root: "", textbooks_root: "" };
@@ -314,7 +316,7 @@ function setPracticeWorkspaceMode(mode = "exam") {
       if (overall) overall.checked = true;
     }
   }
-  setText("practiceWorkspaceEyebrow", "模拟出题 · 两阶段生成");
+  setText("practiceWorkspaceEyebrow", "模拟出题 · 5 步流程");
   setText("practiceWorkspaceTitle", knowledgeMode ? "知识点出题" : "按题生题");
   setText(
     "practiceWorkspaceSubtitle",
@@ -3438,7 +3440,16 @@ function openPracticeScopeDrawer() {
   drawer.setAttribute("aria-hidden", "false");
   $("practiceScopeResume")?.classList.add("hidden");
   syncPracticeWorkflowActions("scope");
-  requestAnimationFrame(() => drawer.scrollIntoView({ behavior: "smooth", block: "start" }));
+  requestAnimationFrame(() => scrollPracticePanelIntoView(drawer));
+}
+
+function scrollPracticePanelIntoView(target) {
+  if (!target) return;
+  const navBottom = document.querySelector(".app-nav")?.getBoundingClientRect().bottom || 90;
+  let documentTop = 0;
+  for (let node = target; node; node = node.offsetParent) documentTop += node.offsetTop || 0;
+  const top = Math.max(0, documentTop - navBottom - 16);
+  window.scrollTo({ top, behavior: "smooth" });
 }
 
 function closePracticeScopeDrawer() {
@@ -3587,6 +3598,7 @@ function setPracticeStage(stage) {
   });
   const grid = document.querySelector("#page-practice .workbench-grid");
   grid?.classList.toggle("practice-focus-stage", stage !== "submit");
+  $("practiceQualityBadge")?.classList.toggle("hidden", stage !== "results");
   setPracticeSourceEntryVisibility(stage === "submit");
   syncPracticeWorkflowActions(stage);
 }
@@ -3978,6 +3990,7 @@ function renderPracticeResults(data) {
   // still held in memory from the same page session.
   closePracticeScopeDrawer();
   $("practiceScopeResume")?.classList.add("hidden");
+  requestAnimationFrame(() => scrollPracticePanelIntoView($("practiceResults")));
   setPracticeStage("results");
   markAllPracticeStagesDone();
   setPracticeStageDescription("练习结果已保留，可继续下载、编辑或回到蓝图调整。");
@@ -4066,6 +4079,17 @@ function renderPracticeResults(data) {
     const generationErrorDetail = generationErrorDetailCodes.has(String(item.generation_error?.code || ""))
       ? (item.generation_error?.detail || "")
       : "";
+    const generationErrorSummary = auditNeedsReview
+      ? "蓝图检查未通过，这一题暂未生成。"
+      : configurationNeedsReview
+        ? "当前模型配置不可用，这一题暂未生成。"
+        : generationErrorDetailCodes.has(String(item.generation_error?.code || ""))
+          ? "模型返回的内容不完整，这一题暂未生成。"
+          : generationError;
+    const generationTechnicalDetail = uniquePracticeLabels([
+      generationErrorSummary !== generationError ? generationError : "",
+      generationErrorDetail
+    ].filter(Boolean)).join("；");
     const semanticRisks = (semanticReviewByNumber.get(String(item.number || idx + 1))?.risks || [])
       .filter((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()));
     const semanticFixInstruction = semanticRisks
@@ -4108,7 +4132,7 @@ function renderPracticeResults(data) {
       ${generationFailed ? `
         <div class="practice-generation-error" role="alert">
           <i class="fas fa-triangle-exclamation"></i>
-          <div><strong>第 ${escapeHtml(item.number || String(idx + 1))} 题${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : "生成失败"}</strong><p>${escapeHtml(generationError)}</p>${generationErrorDetail ? `<small class="practice-generation-error__detail">${escapeHtml(generationErrorDetail)}</small>` : ""}<small>${auditNeedsReview ? "本题尚未调用生成模型；点击右上角“复审并生成本题”只处理这一项，其他题目不受影响。" : configurationNeedsReview ? "本题尚未完成；请先检查 API 配置，再使用“继续未完成项”，已生成题目不会重复调用或被覆盖。" : "已保留蓝图位置；可点击右上角“重新生成本题”补齐，其他题目不受影响。"}</small></div>
+          <div><strong>第 ${escapeHtml(item.number || String(idx + 1))} 题${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : "生成失败"}</strong><p>${escapeHtml(generationErrorSummary)}</p><small>${auditNeedsReview ? "本题尚未调用生成模型；点击右上角“复审并生成本题”只处理这一项，其他题目不受影响。" : configurationNeedsReview ? "本题尚未完成；请先检查 API 配置，再使用“继续未完成项”，已生成题目不会重复调用或被覆盖。" : "已保留蓝图位置；可点击右上角“重新生成本题”补齐，其他题目不受影响。"}</small>${generationTechnicalDetail ? `<details class="practice-generation-error__details"><summary>查看技术详情</summary><small class="practice-generation-error__detail">${escapeHtml(generationTechnicalDetail)}</small></details>` : ""}</div>
         </div>
       ` : `
         <div class="practice-stem">${practiceMarkdown(item.stem)}</div>
@@ -4507,7 +4531,7 @@ function renderPracticeScopeQuestionList(allUnits) {
         <input type="checkbox" name="practiceSourceQuestion" value="${escapeHtml(item.source_question_id)}" checked>
         <span>
           <b>${escapeHtml(item.number || item.source_question_id)}</b>
-          <div><strong>${escapeHtml(item.title || "未命名题目")}</strong><small>${escapeHtml([item.question_type, item.source_difficulty ? `来源难度：${item.source_difficulty}` : "来源难度待确认", ...(item.knowledge_points || []), item.source_ref?.page ? `页码 p${item.source_ref.page}` : ""].filter(Boolean).join(" · "))}</small><p>${escapeHtml(item.stem_excerpt || "")}</p></div>
+          <div><strong>${escapeHtml(item.title || "未命名题目")}</strong><small>${escapeHtml([item.question_type, item.source_difficulty ? `来源难度：${item.source_difficulty}` : "", ...(item.knowledge_points || []), item.source_ref?.page ? `页码 p${item.source_ref.page}` : ""].filter(Boolean).join(" · "))}</small><p>${escapeHtml(item.stem_excerpt || "")}</p></div>
         </span>
       </label>
       <div class="practice-source-unit__actions">
@@ -4949,6 +4973,7 @@ function renderPracticePlan(plan) {
   $("practiceResults")?.classList.add("hidden");
   $("practiceSourceSelection")?.classList.add("hidden");
   $("practicePlanReview")?.classList.remove("hidden");
+  requestAnimationFrame(() => scrollPracticePanelIntoView($("practicePlanReview")));
   setText("practicePlanGoal", plan.blueprint?.training_goal || "训练蓝图");
   const planItems = plan.blueprint?.exercise_plan || [];
   // Visible fallbacks must be written into the plan object before submit.
@@ -4991,7 +5016,7 @@ function renderPracticePlan(plan) {
   const sourceCatalog = plan.selected_source_questions || plan.source_scope?.questions || [];
   planItems.forEach((item) => syncPlanItemRequiredKnowledgePoints(item, sourceCatalog, plan.blueprint?.generation_strategy));
   $("practicePlanList").innerHTML = planItems.map((item, index) => `
-    <details class="practice-plan-edit-row" data-plan-index="${index}"${index < 2 ? " open" : ""}>
+    <details class="practice-plan-edit-row" data-plan-index="${index}"${index === 0 ? " open" : ""}>
       <summary>
         <b>${item.number}</b>
         <div><strong data-plan-summary="target_skill">${escapeHtml(item.target_skill || "核心能力")}</strong><span><em data-plan-summary="question_type">${escapeHtml(item.question_type || "自动题型")}</em><em data-plan-summary="difficulty">${escapeHtml(item.difficulty || "进阶")}</em><em>${escapeHtml(item.coverage_role || (comprehensiveMode ? "连接" : "变式"))} · ${(item.source_refs || [item.source_question_id]).filter(Boolean).length} 来源</em>${fallbackPlanItemIds.has(item.plan_item_id) ? '<em class="practice-plan-fallback">细化失败，已保留全局方案</em>' : ""}${auditReviewPlanItemIds.has(item.plan_item_id) ? '<em class="practice-plan-fallback">本项待复核，整批可继续</em>' : ""}</span></div>
@@ -8570,6 +8595,41 @@ function keyProviderStatus(card, kind, title, detail = "") {
   status.innerHTML = `<strong>${escapeHtml(title)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}`;
 }
 
+function applyKeyProviderFilters() {
+  const grid = $("keyProviderGrid");
+  if (!grid) return;
+  const cards = Array.from(grid.querySelectorAll(".key-provider-card"));
+  const query = keyProviderSearchQuery.trim().toLocaleLowerCase("zh-CN");
+  let visibleCount = 0;
+  cards.forEach((card) => {
+    const saved = card.dataset.keySaved === "true";
+    const statusMatch = activeKeyProviderFilter === "all"
+      || (activeKeyProviderFilter === "saved" && saved)
+      || (activeKeyProviderFilter === "unsaved" && !saved);
+    const haystack = `${card.dataset.keyLabel || ""} ${card.dataset.keyCapabilities || ""}`.toLocaleLowerCase("zh-CN");
+    const matches = statusMatch && (!query || haystack.includes(query));
+    card.classList.toggle("hidden", !matches);
+    if (matches) visibleCount += 1;
+  });
+  document.querySelectorAll("[data-key-filter]").forEach((button) => {
+    const active = button.dataset.keyFilter === activeKeyProviderFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  setText("keyProviderFilterSummary", cards.length ? `显示 ${visibleCount} / ${cards.length} 个平台` : "");
+  $("keyProviderFilterEmpty")?.classList.toggle("hidden", cards.length === 0 || visibleCount > 0);
+}
+
+function filterKeyProviders(filter) {
+  activeKeyProviderFilter = ["all", "saved", "unsaved"].includes(filter) ? filter : "all";
+  applyKeyProviderFilters();
+}
+
+function searchKeyProviders(value) {
+  keyProviderSearchQuery = String(value || "");
+  applyKeyProviderFilters();
+}
+
 function renderKeyProviderCards() {
   const grid = $("keyProviderGrid");
   if (!grid) return;
@@ -8591,7 +8651,10 @@ function renderKeyProviderCards() {
     grid.querySelector("[data-key-config-recover]")?.addEventListener("click", recoverDamagedApiConfiguration);
     return;
   }
-  const entries = Object.entries(providerConfigs || {});
+  const entries = Object.entries(providerConfigs || {}).sort((left, right) => {
+    const savedDifference = Number(Boolean(right[1]?.api_key_set)) - Number(Boolean(left[1]?.api_key_set));
+    return savedDifference;
+  });
   if (!entries.length) {
     grid.innerHTML = '<p class="empty-hint">当前没有可配置的平台。</p>';
     return;
@@ -8604,7 +8667,7 @@ function renderKeyProviderCards() {
       ${apiKeyConfigLoadState.recoveryAvailable ? '<button type="button" class="outline-button danger-text" data-key-config-recover><i class="fas fa-shield-halved"></i>备份损坏配置并重建</button>' : ""}
     </div>` : "";
   grid.innerHTML = keyFileWarning + entries.map(([name, cfg]) => `
-    <form class="key-provider-card" data-key-provider="${escapeHtml(name)}" autocomplete="off">
+    <form class="key-provider-card" data-key-provider="${escapeHtml(name)}" data-key-label="${escapeHtml(displayProviderName(name))}" data-key-capabilities="${escapeHtml(keyProviderCapabilityText(cfg))}" data-key-saved="${cfg.api_key_set ? "true" : "false"}" autocomplete="off">
       <header>
         <span class="key-provider-mark"><i class="fas fa-cloud"></i></span>
         <div>
@@ -8630,6 +8693,7 @@ function renderKeyProviderCards() {
       <div class="key-provider-status idle" data-key-status><strong>等待测试</strong><span>新 Key 必须测试成功后才能保存。</span></div>
     </form>
   `).join("");
+  applyKeyProviderFilters();
   grid.querySelector("[data-key-config-retry]")?.addEventListener("click", () => loadApiConfiguration());
   grid.querySelector("[data-key-config-recover]")?.addEventListener("click", recoverDamagedApiConfiguration);
   grid.querySelectorAll("form[data-key-provider]").forEach((form) => {
@@ -9589,13 +9653,20 @@ function renderTaskManager(tasks = latestTasks) {
   const visible = filteredVisible.slice(pageStart, pageStart + TASK_MANAGER_PAGE_SIZE);
   const animateAllVisible = currentPage === "tasks" && taskManagerMotionEntrancePending;
   const animatedItems = [];
+  const shell = list.closest(".task-manager-shell");
+  const hasNoTasks = !taskManagerLoading && tasks.length === 0;
+  shell?.classList.toggle("task-manager-empty-view", hasNoTasks);
   list.innerHTML = "";
   if (empty) {
     const title = empty.querySelector("h3");
     const detail = empty.querySelector("p");
     const action = empty.querySelector("button");
     if (title) title.textContent = taskManagerLoading ? "正在读取任务" : "暂无任务";
-    if (detail) detail.textContent = taskManagerLoading ? "正在同步任务状态，请稍候…" : "当前筛选条件下没有找到任务";
+    if (detail) detail.textContent = taskManagerLoading
+      ? "正在同步任务状态，请稍候…"
+      : hasNoTasks
+        ? "还没有创建过任务，请从上方选择一种任务类型开始。"
+        : "当前筛选条件下没有找到任务";
     action?.classList.toggle("hidden", taskManagerLoading);
     empty.classList.toggle("hidden", visible.length > 0);
   }
@@ -9692,14 +9763,19 @@ function renderTaskManager(tasks = latestTasks) {
             <span class="task-status-chip status-${normalized}"><i class="${meta.icon}"></i>${escapeHtml(meta.label)}</span>
             ${["running", "queued"].includes(normalized) && taskHealth.health_status ? `<span class="task-health-chip health-${escapeHtml(taskHealthState)}"><i class="${taskHealthMeta.icon}"></i>${escapeHtml(taskHealthMeta.label)}</span>` : ""}
             ${qualityMeta && !reviewPending && qualityMeta.label !== meta.label ? `<span class="task-quality-chip quality-${qualityMeta.className}"><i class="${qualityMeta.icon}"></i>${qualityMeta.label}</span>` : ""}
-            <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制阶段任务 ID"><i class="fas fa-hashtag"></i><span>阶段</span><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
-            ${practiceBatchId ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(practiceBatchId)}" title="复制完整流程批次 ID"><i class="fas fa-diagram-project"></i><span>流程</span><strong>${escapeHtml(compactTaskId(practiceBatchId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
             <span title="任务开始时间"><i class="far fa-clock"></i>开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}</span>
-            <span title="包含排队、模型处理和重试"><i class="fas fa-hourglass-half"></i>总耗时 ${escapeHtml(taskDurationText(task))}</span>
-            ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
-            ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
             <span><i class="fas fa-layer-group"></i>${escapeHtml(displayCurrentStageText)}</span>
           </div>
+          <details class="task-technical-details">
+            <summary><i class="fas fa-circle-info"></i>运行详情</summary>
+            <div>
+              <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制阶段任务 ID"><i class="fas fa-hashtag"></i><span>阶段</span><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
+              ${practiceBatchId ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(practiceBatchId)}" title="复制完整流程批次 ID"><i class="fas fa-diagram-project"></i><span>流程</span><strong>${escapeHtml(compactTaskId(practiceBatchId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
+              <span title="包含排队、模型处理和重试"><i class="fas fa-hourglass-half"></i>总耗时 ${escapeHtml(taskDurationText(task))}</span>
+              ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
+              ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
+            </div>
+          </details>
         </div>
       </div>
       <div class="task-manager-side">

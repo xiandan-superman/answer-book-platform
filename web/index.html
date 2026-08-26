@@ -25,20 +25,20 @@
         </span>
       </button>
       <div class="nav-actions">
-        <button id="supportFeedbackBtn" class="ghost-button" type="button" onclick="submitSupportFeedback('page', {}, this)">
+        <button id="supportFeedbackBtn" class="ghost-button" type="button" title="反馈问题" aria-label="反馈问题" onclick="submitSupportFeedback('page', {}, this)">
           <i class="fas fa-bug"></i><span>反馈问题</span>
         </button>
-        <button class="ghost-button" type="button" onclick="goToPage('keys')">
+        <button class="ghost-button" type="button" title="API 配置" aria-label="API 配置" onclick="goToPage('keys')">
           <i class="fas fa-key"></i>API 配置
         </button>
-        <button id="checkUpdateBtn" class="ghost-button" type="button" onclick="checkPlatformUpdate()">
+        <button id="checkUpdateBtn" class="ghost-button" type="button" title="检查更新" aria-label="检查更新" onclick="checkPlatformUpdate()">
           <i class="fas fa-cloud-arrow-down"></i><span>检查更新</span>
         </button>
-        <button class="ghost-button nav-task-button" type="button" onclick="openTaskManager()" aria-label="打开任务管理">
+        <button class="ghost-button nav-task-button" type="button" title="任务管理" onclick="openTaskManager()" aria-label="打开任务管理">
           <i class="fas fa-tasks"></i>任务管理
           <span id="taskReviewBadge" class="nav-review-badge hidden">1项待处理</span>
         </button>
-        <button class="ghost-button" type="button" onclick="goToPage('monitor'); loadSystemStatus();"><i class="fas fa-server"></i>运行监控</button>
+        <button class="ghost-button" type="button" title="运行监控" aria-label="运行监控" onclick="goToPage('monitor'); loadSystemStatus();"><i class="fas fa-server"></i>运行监控</button>
       </div>
     </div>
   </nav>
@@ -112,7 +112,7 @@
                   <span>开始解析</span><i class="fas fa-arrow-right"></i>
                 </button>
                 <button class="home-model-link" type="button" onclick="goToPage('env')">
-                  模型设置<i class="fas fa-chevron-right"></i>
+                  高级模型设置<i class="fas fa-chevron-right"></i>
                 </button>
               </div>
             </div>
@@ -138,7 +138,7 @@
                   <span>按题出题</span><i class="fas fa-arrow-right"></i>
                 </button>
                 <button class="generation-model-link" type="button" onclick="goToPage('practice-models')">
-                  按题模型设置<i class="fas fa-chevron-right"></i>
+                  按题高级设置<i class="fas fa-chevron-right"></i>
                 </button>
               </div>
               <div class="generation-mode-row">
@@ -146,7 +146,7 @@
                   <span>知识点出题</span><i class="fas fa-arrow-right"></i>
                 </button>
                 <button class="generation-model-link" type="button" onclick="goToPage('knowledge-models')">
-                  知识点模型设置<i class="fas fa-chevron-right"></i>
+                  知识点高级设置<i class="fas fa-chevron-right"></i>
                 </button>
               </div>
             </div>
@@ -212,8 +212,26 @@
             <p>软件更新不会覆盖；页面不会回显已经保存的完整 Key，也不会把 Key 写入任务日志和导出文件。</p>
           </div>
         </div>
+        <div class="key-provider-toolbar" aria-label="筛选 API 平台">
+          <div class="key-provider-filter-tabs" role="group" aria-label="按配置状态筛选">
+            <button class="key-provider-filter active" type="button" data-key-filter="all" onclick="filterKeyProviders('all')">全部平台</button>
+            <button class="key-provider-filter" type="button" data-key-filter="saved" onclick="filterKeyProviders('saved')">已配置</button>
+            <button class="key-provider-filter" type="button" data-key-filter="unsaved" onclick="filterKeyProviders('unsaved')">未配置</button>
+          </div>
+          <label class="key-provider-search">
+            <span class="visually-hidden">搜索 API 平台</span>
+            <i class="fas fa-search" aria-hidden="true"></i>
+            <input id="keyProviderSearch" type="search" placeholder="搜索平台或能力" oninput="searchKeyProviders(this.value)">
+          </label>
+          <span id="keyProviderFilterSummary" class="key-provider-filter-summary" aria-live="polite"></span>
+        </div>
         <div id="keyProviderGrid" class="key-provider-grid">
           <p class="empty-hint">正在加载已接入的平台...</p>
+        </div>
+        <div id="keyProviderFilterEmpty" class="key-provider-filter-empty hidden">
+          <i class="fas fa-search"></i>
+          <strong>没有符合条件的平台</strong>
+          <span>请尝试其他关键词或切换配置状态。</span>
         </div>
         <div id="keyConfigNotice" class="result-card muted-card">请选择平台并填写 API Key。</div>
         <div class="page-actions reference-actions">
@@ -228,16 +246,32 @@
         <div class="page-title reference-title knowledge-title">
           <span class="knowledge-title-icon"><i class="fas fa-lightbulb"></i></span>
           <div>
+            <p class="model-page-eyebrow">模拟出题 · 5 步流程</p>
             <h2>知识点出题</h2>
             <p>输入一个知识点，或上传教材原文与资料，生成有梯度、可复核的针对性模拟题。</p>
           </div>
         </div>
 
-        <div class="knowledge-mode-guide">
-          <article><i class="fas fa-tag"></i><div><strong>只有知识点名称</strong><span>例如“晶胞 / 点阵参数”，平台会先补全合理的知识边界。</span></div></article>
-          <article><i class="fas fa-align-left"></i><div><strong>粘贴简介或教材原文</strong><span>适合包含定义、公式、推导和注意事项的材料。</span></div></article>
-          <article><i class="fas fa-file-arrow-up"></i><div><strong>上传一批资料</strong><span>支持图片、PDF、Word、TXT 和 Markdown，可混合上传。</span></div></article>
-        </div>
+        <section class="knowledge-workflow-overview" aria-label="知识点出题进度">
+          <div><i class="fas fa-route"></i><strong>任务进度</strong><span>当前：提交知识材料</span></div>
+          <ol>
+            <li class="is-active"><b>1</b><span>提交材料</span></li>
+            <li><b>2</b><span>解析知识</span></li>
+            <li><b>3</b><span>范围确认</span></li>
+            <li><b>4</b><span>审查蓝图</span></li>
+            <li><b>5</b><span>生成练习</span></li>
+          </ol>
+          <p>这一页只需提供知识点名称、原文或文件；题量、题型和难度在解析后统一确认。</p>
+        </section>
+
+        <details class="knowledge-mode-guide-details">
+          <summary><i class="fas fa-circle-info"></i>可以提交哪些材料？</summary>
+          <div class="knowledge-mode-guide">
+            <article><i class="fas fa-tag"></i><div><strong>只有知识点名称</strong><span>例如“晶胞 / 点阵参数”，平台会先补全合理的知识边界。</span></div></article>
+            <article><i class="fas fa-align-left"></i><div><strong>粘贴简介或教材原文</strong><span>适合包含定义、公式、推导和注意事项的材料。</span></div></article>
+            <article><i class="fas fa-file-arrow-up"></i><div><strong>上传一批资料</strong><span>支持图片、PDF、Word、TXT 和 Markdown，可混合上传。</span></div></article>
+          </div>
+        </details>
 
         <form id="knowledgeForm" class="knowledge-form">
           <section class="knowledge-input-card">
@@ -260,19 +294,24 @@
               <input id="knowledgeFileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,.pdf,.docx,.txt,.md" hidden>
             </label>
             <div id="knowledgeFilePreview" class="knowledge-file-preview"><span>尚未选择文件</span></div>
-            <label class="practice-blueprint-toggle">
-              <span><strong>审查出题蓝图</strong><small>开启后可逐题调整题型、难度和设计意图；关闭后从范围确认直接生题。</small></span>
-              <input id="knowledgeBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
-            </label>
-            <label class="practice-blueprint-toggle">
-              <span><strong>严格教研审查</strong><small>默认关闭以快速出题；开启后增加一次模型语义审查，适合正式下发前复核。</small></span>
-              <input id="knowledgeSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
-            </label>
-            <label class="practice-blueprint-toggle practice-source-content-toggle">
-              <span><strong>正式生题时参考来源材料</strong><small>开启后会参考教材原文、公式、图表和上传文件中的相关内容。</small></span>
-              <input id="knowledgeIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
-            </label>
-            <p id="knowledgeSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+            <details class="knowledge-advanced-settings">
+              <summary><span><i class="fas fa-sliders"></i><strong>高级生成设置</strong></span><small>蓝图审查已开启 · 快速教研模式</small></summary>
+              <div>
+                <label class="practice-blueprint-toggle">
+                  <span><strong>审查出题蓝图</strong><small>开启后可逐题调整题型、难度和设计意图；关闭后从范围确认直接生题。</small></span>
+                  <input id="knowledgeBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
+                </label>
+                <label class="practice-blueprint-toggle">
+                  <span><strong>严格教研审查</strong><small>默认关闭以快速出题；开启后增加一次模型语义审查，适合正式下发前复核。</small></span>
+                  <input id="knowledgeSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
+                </label>
+                <label class="practice-blueprint-toggle practice-source-content-toggle">
+                  <span><strong>正式生题时参考来源材料</strong><small>开启后会参考教材原文、公式、图表和上传文件中的相关内容。</small></span>
+                  <input id="knowledgeIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
+                </label>
+                <p id="knowledgeSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+              </div>
+            </details>
           </section>
 
           <section class="knowledge-config-card">
@@ -301,10 +340,14 @@
             </div>
             <p id="knowledgeError" class="practice-error hidden" role="alert"></p>
             <button id="knowledgeConfigurationAction" class="secondary-button hidden" type="button">前往 API 配置</button>
-            <button id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit">
-              <i class="fas fa-magnifying-glass-chart"></i>解析知识点与范围
-            </button>
           </section>
+          <footer class="knowledge-workflow-actions">
+            <div><span>第 1 步 · 提交材料</span><strong>确认材料后开始解析知识单元与范围</strong></div>
+            <div>
+              <button class="secondary-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
+              <button id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit"><i class="fas fa-magnifying-glass-chart"></i>解析知识点与范围</button>
+            </div>
+          </footer>
         </form>
       </div>
     </section>
@@ -525,7 +568,7 @@
               <!-- Page Header -->
               <header class="practice-workspace-heading flex items-start justify-between gap-3">
                 <div class="min-w-0">
-                  <p id="practiceWorkspaceEyebrow" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">模拟出题 · 两阶段生成</p>
+                  <p id="practiceWorkspaceEyebrow" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">模拟出题 · 5 步流程</p>
                   <h1 id="practiceWorkspaceTitle" class="mt-1 text-[24px] font-bold leading-tight text-[var(--brand-foreground)]">按题生题</h1>
                   <p id="practiceWorkspaceSubtitle" class="mt-1 text-[13px] text-[var(--brand-muted-foreground)]">提交一道题或一套题，确认考点范围后生成针对性专项练习。</p>
                 </div>
@@ -571,19 +614,24 @@
                 <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择文件，也可以直接粘贴截图</span></div>
                 </div>
 
-                <label class="practice-blueprint-toggle">
-                  <span><strong>审查出题蓝图</strong><small>开启后可逐题调整蓝图；关闭后从范围确认直接生题。</small></span>
-                  <input id="practiceBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
-                </label>
-                <label class="practice-blueprint-toggle">
-                  <span><strong>严格教研审查</strong><small>默认使用快速模式；开启后生成完成会再调用模型检查语义边界。</small></span>
-                  <input id="practiceSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
-                </label>
-                <label class="practice-blueprint-toggle practice-source-content-toggle">
-                  <span><strong>正式生题时参考来源材料</strong><small>开启后会参考原题题面或知识材料中的图文、公式和表格。</small></span>
-                  <input id="practiceIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
-                </label>
-                <p id="practiceSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+                <details class="practice-submit-advanced-settings">
+                  <summary><span><i class="fas fa-sliders"></i><strong>高级生成设置</strong></span><small>蓝图审查已开启 · 快速教研模式</small></summary>
+                  <div>
+                    <label class="practice-blueprint-toggle">
+                      <span><strong>审查出题蓝图</strong><small>开启后可逐题调整蓝图；关闭后从范围确认直接生题。</small></span>
+                      <input id="practiceBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
+                    </label>
+                    <label class="practice-blueprint-toggle">
+                      <span><strong>严格教研审查</strong><small>默认使用快速模式；开启后生成完成会再调用模型检查语义边界。</small></span>
+                      <input id="practiceSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
+                    </label>
+                    <label class="practice-blueprint-toggle practice-source-content-toggle">
+                      <span><strong>正式生题时参考来源材料</strong><small>开启后会参考原题题面或知识材料中的图文、公式和表格。</small></span>
+                      <input id="practiceIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
+                    </label>
+                    <p id="practiceSourceContentWarning" class="practice-source-content-warning hidden"><i class="fas fa-triangle-exclamation"></i>关闭后题目发散性更强，不适合严格平行题、原题变式、依赖图表任务。</p>
+                  </div>
+                </details>
 
                 <p class="flex items-center gap-1.5 text-[12px] text-[var(--brand-muted-foreground)]">
                   <i data-lucide="paperclip" class="h-3.5 w-3.5"></i><span id="practicePasteHint">也可以直接粘贴截图 (Cmd+V)</span>
@@ -791,15 +839,15 @@
                 <p class="practice-plan-edit-hint"><i class="fas fa-pen-to-square"></i>下方内容可直接修改；若整体方向不合理，可重新生成整份蓝图。</p>
               </header>
               <section id="practicePlanCandidateActions" class="hidden mb-4 rounded-[var(--brand-radius-md)] border border-[#bfdbfe] bg-[#eff6ff] p-3 text-[13px] text-[#1e3a5f]"><strong>新版蓝图候选已生成</strong><p class="mt-1">原蓝图仍保留，请选择采用新版或恢复原版。</p><div class="mt-2 flex gap-2"><button id="practicePlanAdoptCandidateBtn" type="button" class="primary-button">采用新版</button><button id="practicePlanKeepOriginalBtn" type="button" class="secondary-button">保留原版</button></div></section>
-              <section id="practicePlanAnalysis" class="mb-4 rounded-[var(--brand-radius-md)] bg-[var(--brand-muted)] p-3 text-[13px]"></section>
-              <section id="practicePlanCoverage" class="practice-plan-coverage mb-4 hidden rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] p-3 text-[13px]">
-                <div class="mb-1 flex items-center justify-between">
-                  <strong><i class="fas fa-table-cells"></i> 范围覆盖</strong>
-                  <span id="practicePlanCoverageBadge"></span>
-                </div>
-                <p id="practicePlanCoverageText"></p>
-              </section>
-              <section class="practice-plan-multi-question mb-4" aria-labelledby="practiceBlueprintMultiQuestionTitle">
+              <details class="practice-plan-evidence mb-4">
+                <summary><span><i class="fas fa-shield-halved"></i><strong>查看分析依据与范围覆盖</strong></span><small id="practicePlanCoverageBadge">正在检查</small></summary>
+                <div id="practicePlanAnalysis" class="rounded-[var(--brand-radius-md)] bg-[var(--brand-muted)] p-3 text-[13px]"></div>
+                <section id="practicePlanCoverage" class="practice-plan-coverage hidden rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] p-3 text-[13px]">
+                  <p id="practicePlanCoverageText"></p>
+                </section>
+              </details>
+              <details class="practice-plan-multi-question mb-4" aria-labelledby="practiceBlueprintMultiQuestionTitle">
+                <summary><span><i class="fas fa-layer-group"></i><strong>高级：每个蓝图生成多道变式</strong></span><small>默认每项生成 1 题</small></summary>
                 <label class="practice-blueprint-toggle">
                   <span><strong id="practiceBlueprintMultiQuestionTitle">每个蓝图生成多道题</strong><small>关闭时保持当前一项蓝图生成一题；开启后每项生成 2～3 道具有实质差异的变式题。</small></span>
                   <input id="practiceBlueprintMultiQuestionEnabled" type="checkbox" role="switch"><i></i>
@@ -809,7 +857,7 @@
                   <label>训练方式<select id="practiceBlueprintVariantMode"><option value="progressive" selected>递进训练（自动安排难度梯度）</option><option value="same_difficulty">同难度变式</option></select></label>
                   <p id="practiceBlueprintMultiQuestionSummary" role="status"></p>
                 </div>
-              </section>
+              </details>
               <p id="practicePlanDraftSummary" class="practice-plan-draft-summary hidden"></p>
               <p id="practicePlanError" class="practice-error hidden" role="alert"></p>
               <div class="practice-plan-review-toolbar">
@@ -940,7 +988,7 @@
 
       <div id="practiceScopeDrawer" class="practice-scope-drawer hidden" aria-hidden="true">
         <div class="practice-scope-drawer__scrim" data-practice-scope-scrim></div>
-        <aside class="practice-scope-drawer__panel" role="dialog" aria-modal="true" aria-labelledby="practiceSourceSetTitle" tabindex="-1">
+        <aside class="practice-scope-drawer__panel" role="region" aria-labelledby="practiceSourceSetTitle" tabindex="-1">
           <header class="practice-scope-drawer__head">
             <div>
               <span id="practiceScopeEyebrow">考点 / 范围确认</span>
@@ -1033,12 +1081,15 @@
                   <option value="atomic">原子单元</option>
                 </select>
               </label>
-              <div>
-                <button id="practiceAddSourceUnit" type="button"><i class="fas fa-plus"></i>新增</button>
+              <div class="practice-source-primary-actions">
                 <button id="practiceSelectAllSources" type="button">全选</button>
                 <button id="practiceClearSources" type="button">清空</button>
               </div>
             </header>
+            <details class="practice-source-edit-disclosure">
+              <summary><i class="fas fa-pen-to-square"></i>高级：修正识别结果</summary>
+              <div><p>仅当题目被错误合并、拆分或命名时使用；日常出题只需勾选参与范围。</p><button id="practiceAddSourceUnit" type="button"><i class="fas fa-plus"></i>新增来源单元</button></div>
+            </details>
             <div id="practiceSourceQuestionList" class="practice-source-question-list"></div>
           </div>
           <section id="practiceSourceDiagnostics" class="helper-box warning-box hidden" aria-live="polite">
@@ -2005,13 +2056,13 @@
       </footer>
     </section>
   </div>
-  <link rel="stylesheet" href="/platform-theme.css?v=20260730-readable-density-11">
+  <link rel="stylesheet" href="/platform-theme.css?v=20260826-flow-ui-3">
   <script src="/vendor/gsap.min.js"></script>
   <script src="/motion.js?v=20260823-motion-pilot-1"></script>
   <script src="/support-telemetry.js"></script>
   <script src="/platform-api.js"></script>
   <script src="/task-contract-ui.js"></script>
   <script src="/upload-file-selection.js"></script>
-  <script src="/app.js?v=20260730-readable-density-11"></script>
+  <script src="/app.js?v=20260826-flow-ui-3"></script>
 </body>
 </html>
