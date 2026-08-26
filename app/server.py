@@ -41,6 +41,7 @@ from .http_errors import public_error_payload
 from .hybrid_client import HybridClientError, hybrid_settings_payload, save_hybrid_enabled
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
 from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
+from .storage_cleanup import cleanup_storage, storage_overview
 from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
 from .local_config import update_dotenv_values
 from .page_map_admin import page_map_summary, write_page_map_rows
@@ -1063,6 +1064,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/system/logs":
             self.send_json({"logs": read_runtime_logs()})
             return
+        if parsed.path == "/api/storage/overview":
+            self.send_json(storage_overview())
+            return
         if parsed.path == "/api/support/status":
             self.send_json(support_status())
             return
@@ -1090,6 +1094,30 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 }
 
             self.send_json(READ_SNAPSHOTS.get("task_list", build_task_list))
+            return
+        if parsed.path == "/api/tasks/live-details":
+            # One coalesced read for the task manager poller: live exam tasks
+            # with their progress/audit summaries in a single response instead
+            # of one request per running task every refresh cycle.
+            def build_live_details() -> dict:
+                rows = []
+                for task in list_tasks():
+                    task_id = str(task.get("task_id") or "")
+                    status = str(task.get("status") or "")
+                    if status not in {"running", "paused", "queued"}:
+                        continue
+                    quality_summary = _task_quality_summary(task_id)
+                    rows.append(
+                        {
+                            **build_exam_run(_enrich_task_row(task), quality_summary),
+                            "pipeline_status": _read_json_if_exists(stage_dir(task_id) / "pipeline_status.json"),
+                            "current_progress": _task_current_progress(task_id, task.get("current_stage")),
+                            "quality_summary": quality_summary,
+                        }
+                    )
+                return {"ok": True, "live_tasks": rows}
+
+            self.send_json(READ_SNAPSHOTS.get("task_live_details", build_live_details))
             return
         if len(parts) == 3 and parts[:2] == ["api", "tasks"]:
             task_id = parts[2]
@@ -1766,6 +1794,20 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0") or "0")
                 saved = save_library_upload_stream(kind, filename, self.rfile, length)
                 self.send_json({"ok": True, "file": saved, "library": scan_library_files()})
+                return
+            if parsed.path == "/api/storage/cleanup":
+                body = self.read_json()
+                kind = str(body.get("kind") or "")
+                ids = body.get("ids")
+                if ids is not None and not (isinstance(ids, list) and all(isinstance(x, str) for x in ids)):
+                    raise ValueError("ids must be a list of strings or null")
+                result = cleanup_storage(kind, ids)
+                append_runtime_log(
+                    "storage_cleanup",
+                    f"清理 {kind} 缓存：删除 {len(result['deleted'])} 项，释放 {result['freed_bytes']} 字节",
+                    payload={"deleted": result["deleted"][:50], "skipped": result["skipped"][:20]},
+                )
+                self.send_json({**result, "overview": storage_overview()})
                 return
             if parsed.path == "/api/environment/repair":
                 body = self.read_json()

@@ -271,6 +271,7 @@ function goToPage(page) {
   if (page === "monitor") {
     loadSystemStatus().catch(() => {});
     startSystemMonitorPolling();
+    loadStorageOverview().catch(() => {});
   }
   if (page === "keys") {
     renderKeyProviderCards();
@@ -9975,6 +9976,126 @@ async function loadSystemStatus() {
   return data;
 }
 
+
+function formatStorageBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(0)} KB`;
+  return `${value} B`;
+}
+
+let storageOverviewData = null;
+
+async function loadStorageOverview({ silent = false } = {}) {
+  if (!silent) {
+    $("storageHeadline").textContent = "正在读取磁盘占用";
+    $("storageDescription").textContent = "统计教材解压缓存和索引缓存的占用情况。";
+  }
+  try {
+    storageOverviewData = await api("/api/storage/overview");
+    renderStorageOverview(storageOverviewData);
+  } catch (err) {
+    $("storageHeadline").innerHTML = '<i class="fas fa-triangle-exclamation"></i> 磁盘占用读取失败';
+    $("storageDescription").textContent = String(err).replace(/^Error:\s*/, "");
+  }
+}
+
+const STORAGE_AREA_LABELS = {
+  textbook_packages: "教材解压缓存",
+  textbook_indexes: "教材索引缓存",
+};
+
+function renderStorageOverview(overview) {
+  if (!overview?.ok) return;
+  const cleanable = Number(overview.cleanable_bytes || 0);
+  $("storageHeadline").textContent = cleanable > 0
+    ? `可释放 ${formatStorageBytes(cleanable)} 缓存空间`
+    : "当前没有可清理的缓存";
+  $("storageIcon").innerHTML = cleanable > 0
+    ? '<i class="fas fa-hard-drive"></i>'
+    : '<i class="fas fa-circle-check"></i>';
+  $("storageOverview").className = `system-health-overview ${cleanable > 0 ? "health-waiting" : "health-normal"}`;
+  const areasRoot = $("storageAreas");
+  areasRoot.innerHTML = "";
+  for (const area of overview.areas || []) {
+    const deletableEntries = (area.entries || []).filter((entry) => entry.deletable);
+    const card = document.createElement("div");
+    card.className = "storage-area-card";
+    card.dataset.kind = area.kind;
+    const header = document.createElement("div");
+    header.className = "storage-area-header";
+    header.innerHTML = `
+      <h4>${STORAGE_AREA_LABELS[area.kind] || area.kind}</h4>
+      <span class="storage-total">共 ${area.entries.length} 项 · ${formatStorageBytes(area.total_bytes)}（可删 ${deletableEntries.length} 项 · ${formatStorageBytes(deletableEntries.reduce((sum, e) => sum + Number(e.size_bytes || 0), 0))}）</span>
+    `;
+    card.appendChild(header);
+    const entries = (area.entries || []).slice().sort((a, b) => Number(b.size_bytes || 0) - Number(a.size_bytes || 0));
+    for (const entry of entries.slice(0, 30)) {
+      const row = document.createElement("div");
+      row.className = "storage-entry";
+      const name = entry.title || entry.file_names?.join("、") || entry.id || entry.key;
+      const inUseTag = entry.in_use ? '<span class="storage-entry-inuse"><i class="fas fa-lock"></i> 使用中</span>' : "";
+      row.innerHTML = `
+        <label class="flex items-center gap-1.5 flex-shrink-0">
+          <input type="checkbox" class="storage-entry-check" data-kind="${area.kind}" data-id="${entry.id || entry.key}" ${entry.deletable ? "" : "disabled"}>
+        </label>
+        <span class="storage-entry-name" title="${escapeHtml(String(name || ""))}">${escapeHtml(String(name || "-"))}</span>
+        ${inUseTag}
+        <span class="storage-entry-meta">${formatStorageBytes(entry.size_bytes)}${entry.age_days !== undefined ? ` · ${Number(entry.age_days).toFixed(0)} 天前` : ""}</span>
+      `;
+      card.appendChild(row);
+    }
+    if (entries.length > 30) {
+      const more = document.createElement("p");
+      more.className = "text-[12px] text-[var(--brand-muted-foreground)] mt-1";
+      more.textContent = `其余 ${entries.length - 30} 项未逐条显示，可用“清理可删除项”统一处理。`;
+      card.appendChild(more);
+    }
+    areasRoot.appendChild(card);
+  }
+}
+
+async function cleanupStorageEntries(kind, ids) {
+  const payload = { kind };
+  if (Array.isArray(ids)) payload.ids = ids;
+  const data = await api("/api/storage/cleanup", { method: "POST", body: JSON.stringify(payload) });
+  storageOverviewData = data.overview || storageOverviewData;
+  renderStorageOverview(storageOverviewData);
+  const freedText = formatStorageBytes(data.freed_bytes);
+  await platformAlert(`已删除 ${data.deleted.length} 项，释放 ${freedText}。${data.skipped.length ? `有 ${data.skipped.length} 项因仍在使用被跳过。` : ""}`, { title: "清理完成", tone: "success" });
+  return data;
+}
+
+function confirmCleanupStorage(selectedOnly) {
+  const kindChecks = selectedOnly
+    ? Array.from(document.querySelectorAll(".storage-entry-check:checked"))
+    : Array.from(document.querySelectorAll(".storage-entry-check")).filter((check) => !check.disabled);
+  const grouped = {};
+  for (const check of kindChecks) {
+    (grouped[check.dataset.kind] ||= []).push(check.dataset.id);
+  }
+  const totalIds = Object.values(grouped).reduce((sum, list) => sum + list.length, 0);
+  if (!totalIds) {
+    platformAlert(selectedOnly ? "请先勾选要清理的条目。" : "当前没有可清理的缓存。", { title: "没有可清理内容", tone: "info" });
+    return;
+  }
+  platformConfirm({
+    title: "确认清理磁盘缓存",
+    message: `将删除 ${totalIds} 项缓存。教材原文件不受影响；删除后再次使用对应教材时会自动重新解压或重建索引（可能需要几分钟）。`,
+    confirmText: "开始清理",
+  }).then((ok) => {
+    if (!ok) return;
+    Promise.all(Object.entries(grouped).map(([kind, ids]) => cleanupStorageEntries(kind, ids)))
+      .catch((err) => platformAlert(String(err).replace(/^Error:\s*/, ""), { title: "清理失败", tone: "error" }));
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("refreshStorageBtn")?.addEventListener("click", () => loadStorageOverview());
+  $("cleanupStorageBtn")?.addEventListener("click", () => confirmCleanupStorage(false));
+});
+
 function renderHybridExecutionSettings(data = {}) {
   hybridExecutionSettings = data || {};
   const enabled = Boolean(data?.enabled);
@@ -11511,21 +11632,31 @@ function maybeOpenActiveReviewDecision(task) {
   }
 }
 
+function applyLiveTaskDetail(task, detail) {
+  Object.assign(task, detail.task || {});
+  if (detail.current_progress) task.current_progress = detail.current_progress;
+  if (detail.pipeline_status) task.pipeline_status = detail.pipeline_status;
+  if (detail.quality_summary) task.quality_summary = detail.quality_summary;
+  if (detail.task?.effective_current_stage) task.effective_current_stage = detail.task.effective_current_stage;
+}
+
 async function hydrateLiveTaskDetails(tasks) {
   const liveTasks = (tasks || []).filter(
     (task) => task?.task_id && isLiveTask(task) && !task.is_generation_job
   );
-  await Promise.all(liveTasks.map(async (task) => {
-    try {
-      const data = await api(`/api/tasks/${encodeURIComponent(task.task_id)}`);
-      Object.assign(task, data.task || {});
-      if (data.current_progress) task.current_progress = data.current_progress;
-      if (data.pipeline_status) task.pipeline_status = data.pipeline_status;
-      if (data.task?.effective_current_stage) task.effective_current_stage = data.task.effective_current_stage;
-    } catch (err) {
+  const liveById = new Map(liveTasks.map((task) => [String(task.task_id), task]));
+  try {
+    const data = await api("/api/tasks/live-details");
+    for (const row of data.live_tasks || []) {
+      const id = String(row.task_id || "");
+      const target = liveById.get(id);
+      if (target) applyLiveTaskDetail(target, row);
+    }
+  } catch (err) {
+    for (const task of liveTasks) {
       task.manager_refresh_error = String(err).replace(/^Error:\s*/, "");
     }
-  }));
+  }
 }
 
 async function loadTasks(options = {}) {
@@ -11904,6 +12035,7 @@ function startTaskManagerPolling() {
 function startTaskPolling(taskId) {
   if (taskPollTimer) clearInterval(taskPollTimer);
   taskPollTimer = setInterval(async () => {
+    if (document.hidden) return;
     try {
       const data = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
       activeTaskId = taskId;

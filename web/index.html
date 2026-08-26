@@ -1866,6 +1866,29 @@
             </div>
           </details>
         </article>
+
+        <article class="system-monitor-panel" id="storagePanel">
+          <div class="system-monitor-header">
+            <div>
+              <h3><i class="fas fa-hard-drive"></i>磁盘空间管理</h3>
+              <p id="storageSubtitle">管理教材缓存占用的磁盘空间。删除缓存不会丢失教材文件，需要时会自动重建。</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="refreshStorageBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新</button>
+              <button id="cleanupStorageBtn" class="task-card-button danger-action" type="button"><i class="fas fa-broom"></i>清理可删除项</button>
+            </div>
+          </div>
+          <div id="storageOverview" class="system-health-overview health-unknown">
+            <span id="storageIcon"><i class="fas fa-circle-question"></i></span>
+            <div>
+              <strong id="storageHeadline">正在读取磁盘占用</strong>
+              <p id="storageDescription">统计教材解压缓存和索引缓存的占用情况。</p>
+            </div>
+          </div>
+          <div id="storageAreas" class="storage-areas">
+            <p class="text-[13px] text-[var(--brand-muted-foreground)]">读取中……</p>
+          </div>
+        </article>
       </div>
     </section>
   </main>
