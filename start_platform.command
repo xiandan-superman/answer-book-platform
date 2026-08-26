@@ -7,12 +7,5 @@ if ! command -v python3 >/dev/null 2>&1; then
   fi
   exit 2
 fi
-python3 scripts/source_launcher.py
-status=$?
-if [[ $status -ne 0 ]]; then
-  echo ""
-  echo "启动未完成，错误码：$status"
-  echo "修复后可再次双击此文件。"
-  read "?按回车键关闭窗口。"
-fi
-exit $status
+nohup python3 scripts/source_launcher_gui.py >/dev/null 2>&1 &
+exit 0

@@ -2213,21 +2213,17 @@ async function checkPlatformUpdate() {
       );
       return;
     }
-    const notes = String(status.release_notes || "本次更新包含稳定性与质量改进。").trim();
-    const actionText = status.action === "pull_source"
-      ? "程序将仅在源码无未保存修改时执行快进拉取，完成后自动重启。"
-      : status.action === "replace_source"
-        ? "程序将下载并校验源码更新包，保留用户数据后替换程序文件并自动重启。"
-        : "程序将下载、校验并打开当前系统的安装包。";
-    const dependencyText = status.dependency_update_required
-      ? "本次更新包含依赖变化；重启时将检查缺失依赖并在安装前提示。"
-      : "本次更新未检测到依赖清单变化。";
+    const notes = window.PlatformUpdateNotes?.formatReleaseSummary(status.release_notes, { maxItems: 4 })
+      || "本次更新包含体验和稳定性改进。";
+    const actionText = status.action === "download_installer"
+      ? "点击“下载更新”后，将打开新版安装包。"
+      : "点击“立即更新”后，程序会自动安装并重启，本地数据会保留。";
     const confirmed = await platformConfirm({
       eyebrow: `当前 ${status.current_version} → 新版 ${status.latest_version}`,
-      title: "发现可用更新",
-      message: `${notes.slice(0, 1200)}\n\n${actionText}\n${dependencyText}\nAPI Key、教材、任务和输出不会被覆盖。`,
-      confirmText: status.action === "pull_source" ? "拉取更新" : status.action === "replace_source" ? "更新源码" : "下载更新",
-      cancelText: "稍后再说"
+      title: `发现新版本 ${status.latest_version}`,
+      message: `${notes}\n\n${actionText}`,
+      confirmText: status.action === "download_installer" ? "下载更新" : "立即更新",
+      cancelText: "关闭"
     });
     if (!confirmed) return;
     $("platformUpdateNotice")?.classList.add("hidden");
@@ -13627,7 +13623,7 @@ function initPlatformDialog() {
   elements.cancel.addEventListener("click", () => finishPlatformDialog(false));
   elements.close.addEventListener("click", () => finishPlatformDialog(false));
   elements.overlay.addEventListener("click", (event) => {
-    if (event.target === elements.overlay && platformDialogActive?.kind === "alert") finishPlatformDialog(false);
+    if (event.target === elements.overlay) finishPlatformDialog(false);
   });
   document.addEventListener("keydown", (event) => {
     if (!platformDialogActive) return;

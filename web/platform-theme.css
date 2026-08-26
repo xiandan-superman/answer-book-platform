@@ -2429,6 +2429,9 @@ body.platform-dialog-open {
 
 .platform-dialog-card {
   width: min(520px, 100%);
+  max-height: min(720px, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(175, 193, 221, .58);
   border-radius: 22px;
@@ -2446,6 +2449,7 @@ body.platform-dialog-open {
 }
 
 .platform-dialog-header {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr) 38px;
   gap: 14px;
@@ -2520,6 +2524,10 @@ body.platform-dialog-open {
 }
 
 .platform-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 0 24px 24px;
 }
 
@@ -2570,6 +2578,7 @@ body.platform-dialog-open {
 }
 
 .platform-dialog-actions {
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
@@ -2804,6 +2813,7 @@ input[type="number"]::-webkit-outer-spin-button {
   }
 
   .platform-dialog-card {
+    max-height: calc(100dvh - 24px);
     border-radius: 20px;
   }
 

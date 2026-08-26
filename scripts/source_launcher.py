@@ -136,8 +136,16 @@ def dependency_fingerprint(project_root: Path) -> str:
     return runtime_dependency_fingerprint(project_root, sys.version_info[:2], platform_name=sys.platform)
 
 
+def gui_subprocess_kwargs() -> dict[str, Any]:
+    if sys.platform.startswith("win") and os.environ.get("ANSWER_BOOK_GUI_LAUNCHER") == "1":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def dependencies_healthy(python: Path) -> bool:
     probe = "import docx,lxml,latex2mathml,PIL,pydantic,pypdfium2,bm25s,huey,matplotlib"
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        probe += ",webview,pystray"
     result = subprocess.run([str(python), "-c", probe], capture_output=True, timeout=30)
     if result.returncode != 0:
         return False
@@ -147,6 +155,13 @@ def dependencies_healthy(python: Path) -> bool:
 
 def confirm_dependency_install() -> bool:
     message = "检测到新版本需要补充或更新 Python 依赖。是否现在安装？"
+    if sys.platform.startswith("win") and os.environ.get("ANSWER_BOOK_GUI_LAUNCHER") == "1":
+        try:
+            from tkinter import messagebox
+
+            return bool(messagebox.askyesno("真题解析与生题平台", message))
+        except Exception:
+            return False
     if sys.platform == "darwin" and shutil.which("osascript"):
         script = f'display dialog "{message}" buttons {{"取消", "安装"}} default button "安装" with title "真题解析与生题平台"'
         return subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
@@ -186,7 +201,7 @@ def ensure_dependencies(
         else:
             command.extend(["-r", str(requirements)])
     print("首次启动需要准备运行环境，正在安装 Python 依赖，请保持此窗口打开……" if first_install else "正在补充或更新 Python 依赖，请保持此窗口打开……", flush=True)
-    process = subprocess.Popen(command, cwd=project_root)
+    process = subprocess.Popen(command, cwd=project_root, **gui_subprocess_kwargs())
     while process.poll() is None:
         if progress:
             progress("dependencies", 99, "正在安装新版所需依赖，请保持更新窗口打开。")
@@ -314,7 +329,6 @@ def apply_pending_source_update(
                 raise RuntimeError("新源码缺少启动入口。")
             if not (staging / "start_platform_windows.bat").is_file():
                 raise RuntimeError("新源码缺少 Windows 启动入口。")
-
             if progress:
                 progress("backing_up", 94, "正在保留当前版本备份，程序目录保持原位。")
             _copytree_with_progress(
@@ -401,6 +415,12 @@ def server_ready(url: str) -> bool:
         return False
 
 
+def local_service_url(host: str, port: int) -> str:
+    """Return a browser/health URL even when the server listens on all interfaces."""
+    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    return f"http://{browser_host}:{port}"
+
+
 def open_browser(url: str) -> bool:
     try:
         if webbrowser.open(url):
@@ -461,7 +481,7 @@ def main() -> int:
     project_root = Path(args.project_root).resolve()
     data_root = user_data_root().resolve()
     data_root.mkdir(parents=True, exist_ok=True)
-    url = f"http://{args.host}:{args.port}"
+    url = local_service_url(args.host, args.port)
     if server_ready(url):
         open_browser(url)
         return 0
@@ -525,6 +545,7 @@ def main() -> int:
             [str(python), str(project_root / "scripts" / "start_platform.py"), "--host", args.host, "--port", str(args.port)],
             cwd=project_root,
             env=env,
+            **gui_subprocess_kwargs(),
         )
         if update_progress.enabled and not update_failed:
             update_progress.update("starting", 99, "新版程序正在启动，完成后原网页会自动恢复。")
