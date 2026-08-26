@@ -22,7 +22,6 @@ from .paths import PROJECT_ROOT, ensure_project_dirs
 from .render_fonts import project_font_diagnostics
 from .settings import list_providers
 
-
 _STATIC_PROBE_CACHE_LOCK = threading.Lock()
 _STATIC_PROBE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 

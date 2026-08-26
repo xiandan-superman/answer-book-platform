@@ -1,14 +1,14 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析平台",
-  "version": "0.9.26",
+  "version": "0.9.27",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.26",
+  "source_revision": "release-v0.9.27",
   "build_kind": "stable-source-release",
   "created_at": "2026-08-27T00:00:00+08:00",
   "validation": {
     "pytest": "changed-scope and cross-line suites passed; broad local Windows/Python 3.13 diagnostic run reached 1631 passed, 1 skipped and 13 intentionally deselected, with remaining failures isolated to local permission, symlink, TLS, file-lock and subprocess-encoding constraints; the tagged release still requires the locked Python 3.11 full gate",
-    "platform_quality_gate": "source compilation, version consistency, formula/Word, evidence, delivery, recovery, responsive layout and release-focused regressions passed; GitHub source-release workflow is the final full-gate authority",
+    "platform_quality_gate": "source compilation, Ruff, version consistency, formula/Word, evidence, delivery, recovery, responsive layout and release-focused regressions passed; GitHub source-release workflow is the final full-gate authority",
     "version_consistency": "passed",
     "saved_real_task_replay": "offline true-exam, per-question and knowledge-generation baselines passed for the changed gates and recovery paths",
     "cross_subject_regressions": "passed across true-exam, per-question and knowledge-generation contracts, including formula prose boundaries, evidence fallback, subset diversity and DOCX textbook extraction",
