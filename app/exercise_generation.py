@@ -3800,6 +3800,41 @@ def _type_plan(selected: list[str], count: int) -> list[str]:
     return plan[:count]
 
 
+def _extract_balanced_json_object(text: str) -> str | None:
+    """Return one brace-balanced JSON object candidate from ``text``.
+
+    Unlike a naive slice to the last closing brace, this stops at the matching
+    close of the opening brace, so trailing commentary after the final answer
+    cannot corrupt the candidate. String literals and escapes are respected;
+    malformed input returns ``None``.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
 def _escape_invalid_json_backslashes(value: str) -> str:
     """Escape model-produced LaTeX backslashes that are invalid in JSON strings."""
     output: list[str] = []
@@ -3858,9 +3893,13 @@ def _parse_practice_json(content: str) -> dict[str, Any]:
         # reasoning containing their own example JSON objects. The final
         # exercises object is authoritative, not the first brace in thought.
         for match in reversed(list(re.finditer(r'\{\s*"exercises"\s*:', cleaned))[-30:]):
-            extracted_answer = cleaned[match.start() : end + 1]
-            if extracted_answer not in candidates:
-                candidates.append(extracted_answer)
+            balanced = _extract_balanced_json_object(cleaned[match.start():])
+            if balanced is None:
+                # Fall back to the historical whole-tail slice so existing
+                # recoveries keep working when brace balancing cannot close.
+                balanced = cleaned[match.start() : end + 1]
+            if balanced not in candidates:
+                candidates.append(balanced)
     last_error: Exception | None = None
     for candidate in candidates:
         repaired_candidate = _escape_invalid_json_backslashes(candidate)

@@ -2341,7 +2341,6 @@ def fragment_from_analysis_draft(
     draft, normalized_zero_based_formula_refs = normalize_formula_reference_base(draft)
     qid = str(question.get("question_id") or draft.get("question_id") or "").strip()
     formulas = _draft_formulas(draft, qid)
-    kind = question_kind(question)
     has_calculation_part = is_calculation_question(question)
     depth_profile = build_answer_depth_profile(question)
     if has_calculation_part:

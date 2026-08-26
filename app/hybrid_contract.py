@@ -100,7 +100,6 @@ def _copy_textbook_assets(stage: Path) -> int:
         rows = list(reader)
     if "asset_path" not in fieldnames:
         return 0
-    asset_dir = stage / "hybrid_textbook_assets"
     copied: dict[str, str] = {}
     for row in rows:
         source_text = str(row.get("asset_path") or "").strip()

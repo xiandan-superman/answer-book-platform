@@ -2369,7 +2369,6 @@ def draw_spherulite_schematic(spec: dict[str, Any], output: Path) -> None:
     ax.axhline(0, color="#111", lw=1.0)
     ax.axvline(0, color="#111", lw=1.0)
     for angle in range(0, 180, 20):
-        import math
         x = math.cos(math.radians(angle))
         y = math.sin(math.radians(angle))
         ax.plot([-x, x], [-y, y], color="#2563eb", lw=0.8, alpha=0.75)

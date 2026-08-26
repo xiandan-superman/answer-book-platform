@@ -632,6 +632,9 @@ class OpenAICompatibleClient:
             payload["reasoning_effort"] = reasoning_effort
         if _is_gemini_model(self.config, target_model):
             payload.pop("thinking", None)
+            # "minimal"/"low" effort values follow the lingsuan.top gateway's
+            # OpenAI-compatible extension; the official Gemini compatibility
+            # layer only documents low/medium/high and may reject "minimal".
             gemini_effort = _chat_reasoning_effort(thinking_mode)
             if gemini_effort:
                 payload["reasoning_effort"] = gemini_effort
