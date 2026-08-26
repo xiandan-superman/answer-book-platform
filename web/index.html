@@ -345,7 +345,7 @@
             <div><span>第 1 步 · 提交材料</span><strong>确认材料后开始解析知识单元与范围</strong></div>
             <div>
               <button class="secondary-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
-              <button id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit"><i class="fas fa-magnifying-glass-chart"></i>解析知识点与范围</button>
+              <button id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit" disabled aria-disabled="true" title="请先填写知识点、粘贴材料或上传文件"><i class="fas fa-magnifying-glass-chart"></i>解析知识点与范围</button>
             </div>
           </footer>
         </form>
@@ -569,14 +569,14 @@
               <header class="practice-workspace-heading flex items-start justify-between gap-3">
                 <div class="min-w-0">
                   <p id="practiceWorkspaceEyebrow" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">模拟出题 · 5 步流程</p>
-                  <h1 id="practiceWorkspaceTitle" class="mt-1 text-[24px] font-bold leading-tight text-[var(--brand-foreground)]">按题生题</h1>
+                  <h1 id="practiceWorkspaceTitle" class="mt-1 text-[24px] font-bold leading-tight text-[var(--brand-foreground)]">按题出题</h1>
                   <p id="practiceWorkspaceSubtitle" class="mt-1 text-[13px] text-[var(--brand-muted-foreground)]">提交一道题或一套题，确认考点范围后生成针对性专项练习。</p>
                 </div>
                 <span class="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-[var(--state-success-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--state-success)]">
                   <i data-lucide="check-circle-2" class="h-3.5 w-3.5"></i><span id="practiceAvailability">当前可用：上传题目</span>
                 </span>
               </header>
-              <section class="practice-entry-guide" aria-label="按题生题说明">
+              <section class="practice-entry-guide" aria-label="按题出题说明">
                 <article><i data-lucide="clipboard-paste"></i><div><strong id="practiceGuideOneTitle">提交原题材料</strong><span id="practiceGuideOneCopy">粘贴题目文字、截图，或上传图片、PDF、Word 等文件。</span></div></article>
                 <article><i data-lucide="scan-search"></i><div><strong id="practiceGuideTwoTitle">识别考点与范围</strong><span id="practiceGuideTwoCopy">平台先拆解原题结构和考查范围，再由你确认参与出题的内容。</span></div></article>
                 <article><i data-lucide="graduation-cap"></i><div><strong id="practiceGuideThreeTitle">生成专项练习</strong><span id="practiceGuideThreeCopy">按确认的范围、难度与题型设计可编辑的训练蓝图和练习题。</span></div></article>
@@ -638,7 +638,7 @@
                 </p>
               </form>
 
-              <aside class="practice-next-step-card" aria-label="按题生题模型与解析设置">
+              <aside class="practice-next-step-card" aria-label="按题出题模型与解析设置">
                 <div class="practice-next-step-card__heading">
                   <span><i data-lucide="sliders-horizontal"></i></span>
                   <div>
@@ -648,7 +648,7 @@
                 </div>
                 <button id="practiceModelSettingsLink" type="button" class="practice-current-model-strip" onclick="openCurrentPracticeModelSettings()" title="打开按题出题模型配置">
                   <i data-lucide="cpu" class="h-3.5 w-3.5"></i>
-                  <span>按题生题专用模型</span>
+                  <span>按题出题专用模型</span>
                   <strong id="practiceCurrentModelBadge">正在读取...</strong>
                   <i data-lucide="chevron-right" class="h-3.5 w-3.5"></i>
                 </button>
@@ -1482,7 +1482,7 @@
     <section id="page-exam" class="page">
       <div class="page-title">
         <h2>选择真题</h2>
-        <p>选择已有真题或上传新的真题 DOCX。教材只允许使用上一步已建立索引的内容。</p>
+        <p>选择已有真题或上传新的真题 DOCX。教材只允许使用已在教材管理中建立索引的内容。</p>
       </div>
       <div id="currentTextbookDisplay" class="selection-bar">当前教材：正在读取选择结果。</div>
       <article class="panel-card">
@@ -1561,6 +1561,7 @@
           <label class="reference-extra">当前任务 ID</label>
           <input id="taskIdInput" class="reference-extra" placeholder="创建任务后自动填入，也可以从任务列表选择">
           <label class="inline-check reference-extra"><input id="renderCheck" type="checkbox" checked>生成 PDF/PNG 渲染复核</label>
+          <label class="inline-check reference-extra"><input id="documentDiagnosticsCheck" type="checkbox">即使答案均不可用也保留 Word/PDF/PNG 取证（仅用于排查文档或渲染问题）</label>
           <div class="action-row primary-actions reference-extra">
             <button id="runTaskBtn" type="button"><i class="fas fa-play"></i>开始生成</button>
             <button id="runTaskReuseBtn" class="secondary-button reference-extra" type="button">用已修正结果重新生成</button>

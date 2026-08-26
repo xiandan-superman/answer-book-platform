@@ -4825,10 +4825,12 @@ def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:
 
 
 def _chat_fallback_client(client: OpenAICompatibleClient) -> OpenAICompatibleClient:
-    """Move a failed Responses result to Chat and discard the unsafe result."""
+    """Use Chat only when the selected provider explicitly permits that fallback."""
     config = getattr(client, "config", None)
     protocol = str(getattr(config, "api_protocol", "") or "").strip().lower()
     if config is None or protocol in {"chat_completions", "openai_compatible", ""}:
+        return client
+    if not bool(getattr(config, "responses_fallback_to_chat", True)):
         return client
     return OpenAICompatibleClient(_chat_protocol_provider(config, getattr(config, "default_model", "")))
 

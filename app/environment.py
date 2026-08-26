@@ -7,6 +7,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from copy import deepcopy
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,39 @@ from .omml_input import clear_omml_input_caches, find_omml2mathml_xsl
 from .paths import PROJECT_ROOT, ensure_project_dirs
 from .render_fonts import project_font_diagnostics
 from .settings import list_providers
+
+
+_STATIC_PROBE_CACHE_LOCK = threading.Lock()
+_STATIC_PROBE_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+
+
+def _static_probe_cache_seconds() -> float:
+    try:
+        return max(0.0, min(300.0, float(os.environ.get("ENVIRONMENT_STATIC_PROBE_CACHE_SECONDS", "30"))))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def clear_environment_probe_cache() -> None:
+    with _STATIC_PROBE_CACHE_LOCK:
+        _STATIC_PROBE_CACHE.clear()
+
+
+def _cached_static_probe(name: str, probe: Any) -> dict[str, Any]:
+    """Reuse expensive local capability probes while keeping provider state live."""
+
+    ttl = _static_probe_cache_seconds()
+    if ttl <= 0:
+        return probe()
+    key = (name, id(probe))
+    now = time.monotonic()
+    with _STATIC_PROBE_CACHE_LOCK:
+        cached = _STATIC_PROBE_CACHE.get(key)
+        if cached is not None and now - cached[0] < ttl:
+            return deepcopy(cached[1])
+        result = probe()
+        _STATIC_PROBE_CACHE[key] = (time.monotonic(), deepcopy(result))
+        return result
 
 
 def _package_data_file_exists(package: str, relative_path: str) -> bool:
@@ -268,6 +304,7 @@ def repair_environment(action: str) -> dict[str, Any]:
         raise ValueError(f"未知修复动作：{action}")
     clear_omml_caches()
     clear_omml_input_caches()
+    clear_environment_probe_cache()
     return {"ok": bool(result.get("ok")), "action": action, "result": result, "environment": check_environment()}
 
 
@@ -277,8 +314,8 @@ def check_environment() -> dict[str, Any]:
     xsl = find_mathml2omml_xsl()
     input_xsl = find_omml2mathml_xsl()
     word_mac = _check_word_mac()
-    word_windows = _check_word_windows()
-    drawing_runtime = _check_drawing_runtime()
+    word_windows = _cached_static_probe("word_windows", _check_word_windows)
+    drawing_runtime = _cached_static_probe("drawing_runtime", _check_drawing_runtime)
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     latex2mathml_data_available = _package_data_file_exists("latex2mathml", "unimathsymbols.txt")
     python_packages = {

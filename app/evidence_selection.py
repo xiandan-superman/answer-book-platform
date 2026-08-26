@@ -566,29 +566,37 @@ def _normalize_selection(question: dict[str, Any], plan: dict[str, Any], data: d
 
 
 def _program_selection(question: dict[str, Any], plan: dict[str, Any], candidates: list[EvidenceCandidate], reason: str = "") -> dict[str, Any]:
+    """Preserve ranked candidates without treating an unconfirmed fallback as proof."""
+
     points = _strings(plan.get("knowledge_points")) or ["考查点"]
+    candidate_evidence_ids = [str(candidate.evidence_id or "").strip() for candidate in candidates if str(candidate.evidence_id or "").strip()]
+    confirmation_incomplete = bool(candidate_evidence_ids)
+    confirmation_reason = clean_text(reason) or (
+        "未完成教材证据确认；已保留检索候选顺序供复核，不能将候选直接作为正式教材依据。"
+        if confirmation_incomplete
+        else "未检索到候选教材依据。"
+    )
     normalized_points: list[dict[str, Any]] = []
-    used: set[str] = set()
-    for index, point in enumerate(points):
-        evidence_id = ""
-        if candidates:
-            candidate = candidates[min(index, len(candidates) - 1)]
-            evidence_id = candidate.evidence_id
-            used.add(evidence_id)
+    for point in points:
         normalized_points.append(
             {
                 "knowledge_point": point,
-                "selected_evidence_ids": [evidence_id] if evidence_id else [],
+                "selected_evidence_ids": [],
                 "rejected_evidence_ids": [],
-                "support_type": "direct_support" if evidence_id else "background_only",
-                "support_type_label": SUPPORT_TYPE_LABELS["direct_support"] if evidence_id else SUPPORT_TYPE_LABELS["background_only"],
-                "evidence_support_types": {evidence_id: "direct_support"} if evidence_id else {},
+                # Candidates remain reviewable in the original retrieval
+                # order, but an exception or skipped model confirmation must
+                # never silently create a direct/confirmed textbook citation.
+                "candidate_evidence_ids": list(candidate_evidence_ids),
+                "support_type": "background_only",
+                "support_type_label": SUPPORT_TYPE_LABELS["background_only"],
+                "evidence_support_types": {},
                 "non_direct_evidence_ids": [],
                 "non_direct_evidence": False,
-                "reason": reason or "程序按考查点顺序选择当前最相关候选证据。",
-                "no_suitable_evidence_reason": "" if evidence_id else "未检索到候选教材依据。",
-                "needs_expansion": False,
-                "evidence_status": "confirmed" if evidence_id else "unavailable",
+                "reason": confirmation_reason,
+                "no_suitable_evidence_reason": confirmation_reason,
+                "needs_expansion": not candidate_evidence_ids,
+                "evidence_status": "unavailable",
+                "confirmation_status": "unconfirmed" if confirmation_incomplete else "unavailable",
             }
         )
     return {
@@ -600,6 +608,8 @@ def _program_selection(question: dict[str, Any], plan: dict[str, Any], candidate
 
 def selection_needs_expansion(selection: dict[str, Any]) -> bool:
     for point in selection.get("knowledge_points", []):
+        if isinstance(point, dict) and point.get("confirmation_status") == "unconfirmed":
+            continue
         if isinstance(point, dict) and (point.get("needs_expansion") or not point.get("selected_evidence_ids")):
             return True
     return False
@@ -609,6 +619,8 @@ def unresolved_knowledge_points(selection: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for point in selection.get("knowledge_points", []):
         if not isinstance(point, dict):
+            continue
+        if point.get("confirmation_status") == "unconfirmed":
             continue
         knowledge_point = clean_text(point.get("knowledge_point") or "")
         if knowledge_point and (point.get("needs_expansion") or not point.get("selected_evidence_ids")):
@@ -646,7 +658,11 @@ def _apply_formula_evidence_guard(selection: dict[str, Any], plan: dict[str, Any
     repaired_points: list[str] = []
     for raw in selection.get("knowledge_points", []):
         point = dict(raw) if isinstance(raw, dict) else raw
-        if not isinstance(point, dict) or point.get("selected_evidence_ids"):
+        if (
+            not isinstance(point, dict)
+            or point.get("selected_evidence_ids")
+            or point.get("confirmation_status") == "unconfirmed"
+        ):
             guarded_points.append(point)
             continue
         name = clean_text(point.get("knowledge_point") or "")
@@ -709,6 +725,7 @@ def _selection_trace_copy(selection: dict[str, Any]) -> dict[str, Any]:
                 "knowledge_point": point.get("knowledge_point", ""),
                 "selected_evidence_ids": list(point.get("selected_evidence_ids", []) or []),
                 "rejected_evidence_ids": list(point.get("rejected_evidence_ids", []) or []),
+                "candidate_evidence_ids": list(point.get("candidate_evidence_ids", []) or []),
                 "support_type": point.get("support_type", ""),
                 "support_type_label": point.get("support_type_label", ""),
                 "evidence_support_types": dict(point.get("evidence_support_types", {}) or {}),
@@ -717,6 +734,8 @@ def _selection_trace_copy(selection: dict[str, Any]) -> dict[str, Any]:
                 "reason": point.get("reason", ""),
                 "no_suitable_evidence_reason": point.get("no_suitable_evidence_reason", ""),
                 "needs_expansion": bool(point.get("needs_expansion")),
+                "evidence_status": point.get("evidence_status", ""),
+                "confirmation_status": point.get("confirmation_status", ""),
             }
             for point in selection.get("knowledge_points", [])
             if isinstance(point, dict)
@@ -736,7 +755,21 @@ def _select_one(
     expanded: bool = False,
 ) -> dict[str, Any]:
     if client is None:
-        return _program_selection(question, plan, candidates, "未调用模型，程序按检索排序临时确认候选依据。")
+        selection = _program_selection(
+            question,
+            plan,
+            candidates,
+            "未调用模型，教材证据确认未完成；候选仅供复核，未作为正式教材依据。",
+        )
+        selection["_meta"] = {
+            "provider": provider.name,
+            "model": model,
+            "fallback": True,
+            "confirmation_status": "unconfirmed",
+            "model_confirmation_attempted": False,
+            "expanded_candidate_pool": expanded,
+        }
+        return selection
     try:
         fallback_model = next((item for item in provider.model_options if item != model), None)
         include_visual_assets = provider_model_supports_vision(provider, model)
@@ -769,11 +802,18 @@ def _select_one(
         }
         return selection
     except (LLMError, Exception) as exc:
-        selection = _program_selection(question, plan, candidates, f"模型教材引用确认失败，程序临时选择候选依据：{exc}")
+        selection = _program_selection(
+            question,
+            plan,
+            candidates,
+            f"模型教材引用确认失败；候选仅供复核，未作为正式教材依据：{exc}",
+        )
         selection["_meta"] = {
             "provider": provider.name,
             "model": model,
             "fallback": True,
+            "confirmation_status": "unconfirmed",
+            "model_confirmation_attempted": True,
             "expanded_candidate_pool": expanded,
             "multimodal_evidence_confirmation": provider_model_supports_vision(provider, model),
             "llm_retry": getattr(client, "last_json_retry_report", {}),

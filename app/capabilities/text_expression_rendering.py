@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from ..expression_normalization import (
@@ -35,6 +35,24 @@ RENDERABLE_TEXT_RULES = frozenset(
 )
 ASCII_CHEMICAL_FORMULA_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Z][a-z]?\d*){2,}(?![A-Za-z0-9.])"
+)
+# ``core.text_equation`` intentionally starts at the first possible formula
+# character so it can recognize compact notation without model cleanup.  Its
+# permissive character vocabulary also includes ASCII letters and spaces, which
+# can turn an English sentence containing one relation into one broad match.
+# Keep that recognizer available to audits, but only promote a locally bounded
+# mathematical span into a Word math object.
+_EQUATION_PROSE_WORD_RE = re.compile(r"(?<!\\)\b[A-Za-z]{4,}\b")
+_EQUATION_RELATION_RE = re.compile(r"(?:=|≈|≠|≤|≥|∝|→|⇌)")
+_EQUATION_SPAN_BOUNDARIES = frozenset(" \t\r\n,，;；:：.!?！？。")
+_EQUATION_TRAILING_PROSE_PUNCTUATION = ".。!?！？,，;；:："
+_EQUATION_ASCII_IDENTIFIER_RE = re.compile(r"(?<!\\)[A-Za-z]+")
+_EQUATION_WORD_FUNCTIONS = frozenset({"sin", "cos", "tan", "log", "ln", "exp", "max", "min", "det"})
+_EQUATION_ROMANIZED_GREEK = frozenset({"rho", "phi", "psi", "eta", "tau", "mu", "nu", "xi", "chi"})
+_EQUATION_PROSE_CONNECTIVES = frozenset(
+    {
+        "a", "an", "as", "at", "by", "for", "if", "in", "is", "of", "on", "or", "the", "to", "use", "via", "we", "with"
+    }
 )
 # IUPAC element symbols. Validating tokens against this closed vocabulary
 # prevents identifiers such as L12 or BCC from being formatted as chemistry.
@@ -176,6 +194,108 @@ def _text_match_to_latex(match: ExpressionMatch) -> tuple[str, bool]:
     return latex, preserve_parentheses
 
 
+def _trim_equation_candidate(value: str) -> str:
+    """Drop sentence punctuation, never formula punctuation, from one span."""
+
+    return str(value or "").strip().rstrip(_EQUATION_TRAILING_PROSE_PUNCTUATION).rstrip()
+
+
+def _contains_nonformula_ascii_identifier(value: str) -> bool:
+    """Reject short English connective words that a length-only check misses."""
+
+    for found in _EQUATION_ASCII_IDENTIFIER_RE.finditer(value):
+        token = found.group(0)
+        lowered = token.lower()
+        if lowered in _EQUATION_PROSE_CONNECTIVES:
+            return True
+        if len(token) == 1 or token in IUPAC_ELEMENT_SYMBOLS:
+            continue
+        if len(token) <= 3 and not any(char.isspace() for char in value):
+            continue
+        if len(token) <= 3 and found.end() < len(value) and value[found.end()] in "^_":
+            continue
+        if lowered in _EQUATION_WORD_FUNCTIONS or lowered in _EQUATION_ROMANIZED_GREEK:
+            continue
+        if any(char.isupper() for char in token) and not (token[0].isupper() and token[1:].islower()):
+            continue
+        return True
+    return False
+
+
+def _has_english_prose_context(value: str) -> bool:
+    """Detect prose around an equation without penalizing compact variables."""
+
+    if _EQUATION_PROSE_WORD_RE.search(value):
+        return True
+    for found in _EQUATION_ASCII_IDENTIFIER_RE.finditer(value):
+        token = found.group(0)
+        if token.lower() in _EQUATION_PROSE_CONNECTIVES:
+            return True
+        if len(token) > 1 and token[0].isupper() and token[1:].islower() and token not in IUPAC_ELEMENT_SYMBOLS:
+            return True
+    return False
+
+
+def _narrow_text_equation_match(match: ExpressionMatch) -> ExpressionMatch | None:
+    """Keep a compact equation inside English prose, or leave prose untouched.
+
+    The capability registry deliberately favors recall and can return one broad
+    ``core.text_equation`` match such as ``Explain ... pV=nRT.``. Rendering that
+    entire span as Office Math loses readable word spacing. A promotion is safe
+    only when the relation can be bounded to a span without unescaped multi-word
+    English prose. When that boundary cannot be proved deterministically,
+    ordinary Word text is safer than a malformed math object.
+    """
+
+    source = str(match.value or "")
+    if not _has_english_prose_context(source):
+        return match
+
+    candidates: list[tuple[int, int, str]] = []
+    for relation in _EQUATION_RELATION_RE.finditer(source):
+        starts = [0] + [
+            index + 1
+            for index, char in enumerate(source[: relation.start()])
+            if char in _EQUATION_SPAN_BOUNDARIES
+        ]
+        ends = [
+            index
+            for index, char in enumerate(source[relation.end() :], start=relation.end())
+            if char in _EQUATION_SPAN_BOUNDARIES
+        ] + [len(source)]
+        for start in starts:
+            for end in ends:
+                if start >= relation.start() or end <= relation.end():
+                    continue
+                candidate = _trim_equation_candidate(source[start:end])
+                if (
+                    not candidate
+                    or _EQUATION_PROSE_WORD_RE.search(candidate)
+                    or _contains_nonformula_ascii_identifier(candidate)
+                ):
+                    continue
+                relation_in_candidate = _EQUATION_RELATION_RE.search(candidate)
+                if relation_in_candidate is None:
+                    continue
+                left = candidate[: relation_in_candidate.start()]
+                right = candidate[relation_in_candidate.end() :]
+                if not re.search(r"[A-Za-zΑ-ω∂δΔ∆ΘΓΛΣΠΩ0-9]", left):
+                    continue
+                if not re.search(r"[A-Za-zΑ-ω∂δΔ∆ΘΓΛΣΠΩ0-9]", right):
+                    continue
+                candidates.append((start, start + len(candidate), candidate))
+
+    if not candidates:
+        return None
+    start, end, candidate = max(candidates, key=lambda item: (len(item[2]), -item[0]))
+    return replace(
+        match,
+        value=candidate,
+        start=match.start + start,
+        end=match.start + end,
+    )
+
+
 def build_text_expression_render_plans(
     text: str,
     *,
@@ -202,6 +322,10 @@ def build_text_expression_render_plans(
     for match in registry.match_expressions(text, source_format="text", context=context):
         if match.rule_id not in RENDERABLE_TEXT_RULES:
             continue
+        if match.rule_id == "core.text_equation":
+            match = _narrow_text_equation_match(match)
+            if match is None:
+                continue
         if any(
             start <= match.start and match.end <= end
             for start, end in protected_quantity_spans

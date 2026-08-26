@@ -286,7 +286,7 @@ class PracticeRedesignTests(unittest.TestCase):
 
     def test_question_entry_matches_the_two_column_generation_flow(self) -> None:
         self.assertIn('id="practiceWorkspaceTitle"', self.html)
-        self.assertIn('>按题生题</h1>', self.html)
+        self.assertIn('>按题出题</h1>', self.html)
         self.assertIn('class="practice-entry-guide"', self.html)
         self.assertIn('class="practice-next-step-card"', self.html)
         self.assertIn('id="practiceModelSettingsLink"', self.html)

@@ -34,7 +34,10 @@ _GENERATION_DEADLINE_SECONDS = bounded_env_int(
 _MAX_CONCURRENT_JOBS = practice_job_max_concurrency()
 _COMPLETED_HISTORY_RETENTION_DAYS = bounded_env_int("PRACTICE_COMPLETED_JOB_RETENTION_DAYS", 1, 1, 30)
 _TERMINAL_JOB_RETENTION_DAYS = bounded_env_int("PRACTICE_TERMINAL_JOB_RETENTION_DAYS", 30, 7, 365)
-_MISSING_API_KEY_ERROR = re.compile(r"API key is not configured for provider:\s*ark", re.IGNORECASE)
+_MISSING_API_KEY_ERROR = re.compile(
+    r"API key is not configured for provider:\s*(?P<provider>[a-z0-9_.-]+)",
+    re.IGNORECASE,
+)
 
 
 def _terminal_model_usage(job_id: str) -> dict[str, Any]:
@@ -52,10 +55,12 @@ def _clean_task_title(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()[:80]
 
 
-def _is_missing_ark_api_key(record: dict[str, Any], error: str) -> bool:
-    """Recognize only the explicit local Ark configuration failure."""
-    provider = str(record.get("provider") or (record.get("payload") or {}).get("provider") or "").strip().lower()
-    return provider == "ark" and _MISSING_API_KEY_ERROR.fullmatch(str(error or "").strip()) is not None
+def _missing_api_key_provider(record: dict[str, Any], error: str) -> str:
+    """Return the selected provider only for an explicit local missing-key failure."""
+    selected = str(record.get("provider") or (record.get("payload") or {}).get("provider") or "").strip().lower()
+    match = _MISSING_API_KEY_ERROR.fullmatch(str(error or "").strip())
+    failed = str(match.group("provider") if match else "").strip().lower()
+    return failed if selected and failed == selected else ""
 
 
 def _is_generated_upload_title(value: Any) -> bool:
@@ -767,7 +772,7 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
         latest = load_practice_job(job_id)
         if latest.get("status") == "running" and int(latest.get("control_epoch") or 0) == lease_epoch:
             exception_text = redact_credentials(str(exc) or exc.__class__.__name__)
-            missing_ark_api_key = _is_missing_ark_api_key(latest, exception_text)
+            missing_api_key_provider = _missing_api_key_provider(latest, exception_text)
             exception_traceback = redact_credentials(traceback.format_exc())
             try:
                 pinned_model_traces = pin_model_diagnostics_for_failure(job_id)
@@ -784,9 +789,9 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                 current_stage="failed",
                 support_id=_new_support_id(),
                 error=exception_text,
-                requires_configuration=missing_ark_api_key,
-                configuration_provider="ark" if missing_ark_api_key else "",
-                configuration_reason="missing_api_key" if missing_ark_api_key else "",
+                requires_configuration=bool(missing_api_key_provider),
+                configuration_provider=missing_api_key_provider,
+                configuration_reason="missing_api_key" if missing_api_key_provider else "",
                 failure_context=failure_context,
                 diagnostic_context={
                     "pinned_model_traces": pinned_model_traces,

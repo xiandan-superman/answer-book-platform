@@ -5,6 +5,11 @@ from unittest.mock import patch
 
 
 class DrawingRuntimeEnvironmentTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        from app.environment import clear_environment_probe_cache
+
+        clear_environment_probe_cache()
+
     def test_environment_exposes_project_font_render_readiness(self) -> None:
         from app.environment import check_environment
 
@@ -91,3 +96,32 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
 
         self.assertEqual({"first": True, "second": True}, result["by_provider"])
         self.assertEqual([], result["unreachable_providers"])
+
+    def test_environment_reuses_only_expensive_static_probes(self) -> None:
+        from app.environment import check_environment, clear_environment_probe_cache
+
+        clear_environment_probe_cache()
+        with patch.dict("os.environ", {"ENVIRONMENT_STATIC_PROBE_CACHE_SECONDS": "30"}), patch(
+            "app.environment.ensure_project_dirs"
+        ), patch("app.environment.list_providers", side_effect=[{}, {}, {}]) as providers, patch(
+            "app.environment.find_mathml2omml_xsl", return_value=None
+        ), patch("app.environment.find_omml2mathml_xsl", return_value=None), patch(
+            "app.environment._package_data_file_exists", return_value=False
+        ), patch("app.environment._check_word_mac", return_value={"applicable": False}), patch(
+            "app.environment._check_word_windows", return_value={"applicable": False}
+        ) as word, patch(
+            "app.environment._check_drawing_runtime", return_value={"ok": True}
+        ) as drawing, patch("app.environment._check_network", return_value={"ok": False}) as network, patch(
+            "app.environment.project_font_diagnostics", return_value={}
+        ), patch("app.environment.find_spec", return_value=None), patch(
+            "app.environment.shutil.which", return_value=None
+        ), patch("app.environment.platform.system", return_value="Linux"):
+            check_environment()
+            check_environment()
+            clear_environment_probe_cache()
+            check_environment()
+
+        self.assertEqual(2, word.call_count)
+        self.assertEqual(2, drawing.call_count)
+        self.assertEqual(3, providers.call_count)
+        self.assertEqual(3, network.call_count)

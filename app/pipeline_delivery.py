@@ -7,7 +7,12 @@ from .audit_review_gate import enforce_unattended_audit_report
 from .capabilities.shadow_quality import build_shadow_quality_report
 from .document_contracts import DOCUMENT_CONTRACT_VERSION
 from .figure_size_audit import audit_docx_figure_sizes
-from .final_acceptance import build_final_acceptance_report
+from .final_acceptance import (
+    answer_fragment_blocking_findings,
+    answer_fragment_delivery_summary,
+    build_final_acceptance_report,
+    read_json,
+)
 from .model_usage_report import build_model_usage_report
 from .question_review_docx import (
     build_figure_review_docx,
@@ -54,6 +59,133 @@ def finalize_primary_docx_filename(
     return docx_path, ""
 
 
+def _existing_document_failure_files(stage_dir: Path) -> list[str]:
+    """Keep a document/renderer investigation on its original code path."""
+
+    failed: list[str] = []
+    for name in ("docx_audit.json", "render_audit.json"):
+        report = read_json(stage_dir / name)
+        if isinstance(report, dict) and report.get("ok") is False and not report.get("skipped"):
+            failed.append(name)
+    return failed
+
+
+def heavy_document_delivery_skip_decision(
+    stage_dir: Path,
+    *,
+    preserve_document_diagnostics: bool = False,
+) -> dict[str, Any]:
+    """Decide whether a known all-unusable answer set warrants no document work.
+
+    This deliberately asks for positive answer-stage evidence.  A missing or
+    ambiguous answer payload is not enough to bypass Word/PDF diagnostics.
+    """
+
+    summary = answer_fragment_delivery_summary(stage_dir)
+    blocked_findings = answer_fragment_blocking_findings(stage_dir)
+    existing_document_failures = _existing_document_failure_files(stage_dir)
+    result = {
+        "schema_version": "answer_book.document_delivery_skip.v1",
+        "status": "not_applicable",
+        "skip_heavy_delivery": False,
+        "answer_fragment_delivery_summary": summary,
+        "blocked_answer_findings": blocked_findings[:30],
+        "existing_document_failure_files": existing_document_failures,
+        "preserve_document_diagnostics": preserve_document_diagnostics,
+        "reason": "",
+    }
+    if preserve_document_diagnostics:
+        result["reason"] = "explicit_document_diagnostics_requested"
+        return result
+    if existing_document_failures:
+        result["reason"] = "existing_document_or_render_failure_requires_investigation"
+        return result
+    if int(summary.get("usable_count") or 0) > 0:
+        result["reason"] = "usable_answer_exists"
+        return result
+    fragment_count = int(summary.get("fragment_count") or 0)
+    failed_count = int(summary.get("failed_count") or 0)
+    if fragment_count <= 0 or failed_count != fragment_count:
+        result["reason"] = "answer_unavailability_not_proven"
+        return result
+    if not blocked_findings:
+        result["reason"] = "answer_stage_or_configuration_failure_not_proven"
+        return result
+    result.update(
+        {
+            "status": "skipped",
+            "skip_heavy_delivery": True,
+            "reason": "all_answer_fragments_unusable_after_answer_stage_or_configuration_failure",
+            "preserved": [
+                "answer_fragments.json",
+                "content_quality_audit.json",
+                "final_acceptance_report.json",
+                "pipeline checkpoints and retry controls",
+            ],
+        }
+    )
+    return result
+
+
+def _finish_unusable_answer_delivery(
+    *,
+    task_id: str,
+    stage_dir: Path,
+    output_dir: Path,
+    render_with_word: bool,
+    content_quality: dict[str, Any],
+    skip_decision: dict[str, Any],
+    mark: Callable[[str, str, Any], None],
+    write_json: Callable[[Path, Any], None],
+) -> dict[str, Any]:
+    """Write durable diagnostics before failing an intentionally undeliverable run."""
+
+    checkpoint(task_id)
+    update_task(task_id, current_stage="delivery_short_circuit")
+    write_json(stage_dir / "document_delivery_skip.json", skip_decision)
+    mark("delivery_short_circuit", "skipped", skip_decision)
+
+    report = {
+        "task_id": task_id,
+        "status": "completed_with_issues",
+        "execution_status": "skipped",
+        "docx": "",
+        "pipeline_status": str(stage_dir / "pipeline_status.json"),
+        "rendered": False,
+        "render_requested": render_with_word,
+        "document_delivery_skipped": True,
+        "document_delivery_skip_reason": skip_decision["reason"],
+        "content_quality_review_required": not content_quality.get("ok", False),
+    }
+    checkpoint(task_id)
+    update_task(task_id, current_stage="acceptance")
+    mark("acceptance", "started", {"message": "答案不可用，保留诊断并跳过文档交付。"})
+    write_json(stage_dir / "acceptance_report.json", report)
+    mark("acceptance", "completed_with_issues", report)
+
+    checkpoint(task_id)
+    update_task(task_id, current_stage="model_usage_report")
+    mark("model_usage_report", "started", {"message": "开始生成模型调用汇总文档。"})
+    model_usage_report = build_model_usage_report(stage_dir, output_dir, task_id)
+    mark("model_usage_report", "passed", {"report": str(model_usage_report)})
+
+    checkpoint(task_id)
+    update_task(task_id, current_stage="final_acceptance")
+    mark("final_acceptance", "started", {"require_render": False, "document_delivery_skipped": True})
+    final_report = build_final_acceptance_report(stage_dir, output_dir, require_render=False)
+    write_json(stage_dir / "final_acceptance_report.json", final_report)
+    mark(
+        "final_acceptance",
+        "failed",
+        {
+            "issues": final_report["issues"][:30],
+            "document_delivery_skipped": True,
+            "reason": skip_decision["reason"],
+        },
+    )
+    raise RuntimeError("Final acceptance audit failed")
+
+
 def complete_pipeline_delivery(
     *,
     task_id: str,
@@ -68,11 +200,34 @@ def complete_pipeline_delivery(
     use_model: bool,
     render_with_word: bool,
     content_quality: dict[str, Any],
+    preserve_document_diagnostics: bool = False,
     mark: Callable[[str, str, Any], None],
     write_json: Callable[[Path, Any], None],
     build_docx_with_repair: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     """Build and audit either a formal deliverable or a labelled review candidate."""
+
+    skip_decision = heavy_document_delivery_skip_decision(
+        stage_dir,
+        preserve_document_diagnostics=preserve_document_diagnostics,
+    )
+    if skip_decision["skip_heavy_delivery"]:
+        return _finish_unusable_answer_delivery(
+            task_id=task_id,
+            stage_dir=stage_dir,
+            output_dir=output_dir,
+            render_with_word=render_with_word,
+            content_quality=content_quality,
+            skip_decision=skip_decision,
+            mark=mark,
+            write_json=write_json,
+        )
+    # A recovery run may follow a previous all-unusable attempt.  Keep the
+    # previous record from suppressing document gates once this run is again
+    # allowed to build a candidate or formal document.
+    stale_skip_record = stage_dir / "document_delivery_skip.json"
+    if stale_skip_record.exists():
+        write_json(stale_skip_record, skip_decision)
 
     checkpoint(task_id)
     update_task(task_id, current_stage="docx")

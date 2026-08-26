@@ -350,6 +350,27 @@ def test_explicit_ark_missing_key_has_precise_sanitized_configuration_contract()
     assert "API key is not configured" not in str(payload)
 
 
+def test_explicit_deepseek_missing_key_has_precise_sanitized_configuration_contract() -> None:
+    from app.server import _practice_job_api_payload
+
+    payload = _practice_job_api_payload({
+        "job_id": "job-missing-deepseek-key",
+        "status": "failed",
+        "provider": "deepseek",
+        "current_stage": "analyze",
+        "error": "API key is not configured for provider: deepseek",
+        "requires_configuration": True,
+        "configuration_provider": "deepseek",
+        "configuration_reason": "missing_api_key",
+        "support_id": "PJ-DSNOKEY01",
+    })
+
+    assert payload["error_presentation"]["kind"] == "provider_missing_api_key"
+    assert payload["error_presentation"]["title"] == "DeepSeek API Key 尚未配置"
+    assert payload["error"] == "尚未配置DeepSeek API Key，本次任务没有发出模型请求。"
+    assert "API key is not configured" not in str(payload)
+
+
 def test_provider_timeout_has_scenario_specific_recovery_copy() -> None:
     presentation = present_error("Provider HTTP 524: error code: 524", stage="generating")
 

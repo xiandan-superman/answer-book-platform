@@ -19,6 +19,7 @@ AUDIT_FILES = {
 }
 
 PENDING_REVIEW_ANSWERS = {"", "待复核", "待补充", "未完成", "未知"}
+DOCUMENT_DELIVERY_SKIP_FILENAME = "document_delivery_skip.json"
 NON_DIRECT_SUPPORT_LABELS = {
     "general_principle_support": "通用原理证据",
     "transferable_support": "可迁移证据",
@@ -42,6 +43,17 @@ def read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def document_delivery_skip_record(stage_dir: Path) -> dict[str, Any] | None:
+    """Return an intentional pre-document short-circuit, never a stale report."""
+
+    data = read_json(stage_dir / DOCUMENT_DELIVERY_SKIP_FILENAME)
+    if not isinstance(data, dict):
+        return None
+    if data.get("status") != "skipped" or data.get("skip_heavy_delivery") is not True:
+        return None
+    return data
 
 
 def audit_ok(name: str, data: dict[str, Any] | None, require_render: bool) -> tuple[bool, list[str], list[str]]:
@@ -483,13 +495,25 @@ def figure_delivery_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str]
 def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_render: bool = True) -> dict[str, Any]:
     acceptance = read_json(stage_dir / "acceptance_report.json")
     pipeline = read_json(stage_dir / "pipeline_status.json")
+    document_delivery_skip = document_delivery_skip_record(stage_dir)
+    document_delivery_skipped = bool(document_delivery_skip)
+    effective_require_render = require_render and not document_delivery_skipped
     gates: dict[str, dict[str, Any]] = {}
     issues: list[str] = []
     formal_issues: list[str] = []
     warnings: list[str] = []
     for name, filename in AUDIT_FILES.items():
+        if document_delivery_skipped and name in {"docx", "figure_size", "render"}:
+            gates[name] = {
+                "ok": True,
+                "skipped": True,
+                "issue_count": 0,
+                "warning_count": 0,
+                "path": str(stage_dir / filename),
+            }
+            continue
         data = read_json(stage_dir / filename)
-        ok, gate_issues, gate_warnings = audit_ok(name, data, require_render)
+        ok, gate_issues, gate_warnings = audit_ok(name, data, effective_require_render)
         gates[name] = {
             "ok": ok,
             "issue_count": len(gate_issues),
@@ -507,9 +531,9 @@ def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_ren
 
     docx = output_dir / "answer_book.docx"
     pdf = output_dir / "word_rendered" / "answer_book.pdf"
-    if not docx.exists():
+    if not document_delivery_skipped and not docx.exists():
         issues.append(f"output missing: {docx}")
-    if require_render and not pdf.exists():
+    if effective_require_render and not pdf.exists():
         issues.append(f"rendered PDF missing: {pdf}")
 
     if not acceptance or acceptance.get("status") not in {
@@ -599,6 +623,8 @@ def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_ren
         "figure_delivery_summary": figure_delivery_summary,
         "answer_fragment_delivery_summary": answer_delivery_summary,
         "require_render": require_render,
+        "document_delivery_skipped": document_delivery_skipped,
+        "document_delivery_skip": document_delivery_skip or {},
         "gates": gates,
         "issue_count": len(issues) + len(formal_issues),
         "delivery_issue_count": len(issues),

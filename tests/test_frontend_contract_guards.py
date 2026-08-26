@@ -4,6 +4,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 MOTION_JS = (ROOT / "web" / "motion.js").read_text(encoding="utf-8")
+PLATFORM_THEME_CSS = (ROOT / "web" / "platform-theme.css").read_text(encoding="utf-8")
 
 
 def test_practice_formula_renderer_strips_provider_delimiters_before_wrapping() -> None:
@@ -91,7 +92,7 @@ def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert 'role="progressbar"' in INDEX_HTML
     assert "function checkPlatformUpdateSilently()" in APP_JS
     assert "showPlatformUpdateNotice(status)" in APP_JS
-    assert "API Key、教材、任务和输出不会被覆盖" in APP_JS
+    assert "API Key、教材、任务和输出不会被删除" in APP_JS
     assert 'backing_up: "备份当前版本"' in APP_JS
     assert 'title: "任务完成后再更新"' in APP_JS
     assert "独立更新窗口正在执行备份和安装" in APP_JS
@@ -221,10 +222,10 @@ def test_resumed_practice_job_uses_public_error_presentation() -> None:
     assert 'String(presentation?.kind || "")' in APP_JS
 
 
-def test_missing_ark_key_action_requires_explicit_backend_contract() -> None:
-    assert "function practiceErrorExplicitlyNeedsArkConfiguration(subject = {})" in APP_JS
+def test_missing_key_action_requires_explicit_backend_contract() -> None:
+    assert "function practiceErrorExplicitlyNeedsConfiguration(subject = {})" in APP_JS
     assert 'subject?.requires_configuration === true' in APP_JS
-    assert 'String(subject?.configuration_provider || "").toLowerCase() === "ark"' in APP_JS
+    assert 'Boolean(String(subject?.configuration_provider || "").trim())' in APP_JS
     assert 'String(subject?.configuration_reason || "") === "missing_api_key"' in APP_JS
     assert INDEX_HTML.count("前往 API 配置") == 2
 
@@ -336,12 +337,27 @@ def test_task_manager_terminal_copy_and_unknown_network_statistics_are_truthful(
     assert '"调用预算统计中"' in APP_JS
     assert '"剩余等待上限暂无数据"' in APP_JS
     assert "Number(task.network_attempted_count || 0)" not in APP_JS
+    assert "function taskProgressPresentation(task, normalized, progress)" in APP_JS
+    assert 'return { label: "调用状态", value: "未发起调用", showBar: false };' in APP_JS
+    assert 'return { label: "任务状态", value: "已取消", showBar: false };' in APP_JS
+    assert 'progressPresentation.showBar ? `<div class="manager-progress-track">' in APP_JS
     paused_start = APP_JS.index('if (job.status === "paused")')
     paused_end = APP_JS.index("latestPracticeRequest = job.payload", paused_start)
     paused_copy = APP_JS[paused_start:paused_end]
     assert "Number(job.network_attempted_count || 0)" not in paused_copy
     assert 'job.network_call_budget !== null' in paused_copy
     assert '"暂无数据"' in paused_copy
+
+
+def test_mobile_navigation_keeps_all_critical_actions_visible_and_targetable() -> None:
+    mobile_start = PLATFORM_THEME_CSS.index("@media (max-width: 720px)")
+    mobile_end = PLATFORM_THEME_CSS.index("@media", mobile_start + 1)
+    mobile_css = PLATFORM_THEME_CSS[mobile_start:mobile_end]
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in mobile_css
+    assert "min-height: 108px;" in mobile_css
+    assert "min-height: 42px;" in mobile_css
+    assert ".nav-actions { display: none" not in mobile_css
+    assert ".nav-actions .ghost-button { display: none" not in mobile_css
 
 
 def test_exam_task_list_tooltips_never_render_storage_paths() -> None:
@@ -527,6 +543,56 @@ def test_pre_generation_workspace_is_persisted_by_mode_and_stage() -> None:
     assert "practiceWorkspaceDraftEpochs[normalizedMode] += 1" in APP_JS
 
 
+def test_workspace_restore_uses_a_stable_candidate_and_confirms_before_overwrite() -> None:
+    assert 'PRACTICE_WORKSPACE_RESTORE_CANDIDATE_SCHEMA = "practice_workspace_restore_candidate.v1"' in APP_JS
+    assert "const practiceWorkspaceRestoreCandidates = { exam: null, knowledge: null };" in APP_JS
+    assert "function discoverPracticeWorkspaceRestoreCandidate(" in APP_JS
+    assert "practiceWorkspaceRestoreCandidateKey(normalizedMode)" in APP_JS
+    assert "candidate.source === \"active\"" in APP_JS
+    assert 'title: "恢复草稿会替换当前输入"' in APP_JS
+    assert 'cancelText: "保留当前输入"' in APP_JS
+    assert "restorePersistentPracticeWorkspace(normalizedMode, sessionVersion, stableRecord)" in APP_JS
+    assert "clearPracticeWorkspaceRestoreCandidate(normalizedMode)" in APP_JS
+
+
+def test_workspace_restore_falls_back_to_latest_archive_for_both_modes() -> None:
+    discovery_start = APP_JS.index("async function discoverPracticeWorkspaceRestoreCandidate(")
+    discovery_end = APP_JS.index("function capturePracticeScopeConfig", discovery_start)
+    discovery = APP_JS[discovery_start:discovery_end]
+    assert 'source = "archive";' in discovery
+    assert "Number(right.archived_at || 0) - Number(left.archived_at || 0)" in discovery
+    assert 'mode === "knowledge" ? "knowledge" : "exam"' in APP_JS
+    assert "rememberPracticeWorkspaceEntryBaseline(mode, sessionVersion)" in APP_JS
+    assert 'rememberPracticeWorkspaceEntryBaseline("knowledge", sessionVersion)' in APP_JS
+
+
+def test_knowledge_submission_matches_practice_empty_material_guard() -> None:
+    assert 'id="knowledgePlanBtn" class="primary-button knowledge-submit" type="submit" disabled aria-disabled="true"' in INDEX_HTML
+    assert "function syncKnowledgeSubmitAvailability()" in APP_JS
+    assert '$("knowledgeTitleInput")?.value.trim()' in APP_JS
+    assert '$("knowledgeTextInput")?.value.trim()' in APP_JS
+    assert "knowledgeSourceFiles.length > 0" in APP_JS
+    assert 'button.title = ready ? "解析知识材料并确认范围" : "请先填写知识点、粘贴材料或上传文件"' in APP_JS
+    assert '$("knowledgeTitleInput")?.focus();' in APP_JS
+
+
+def test_exam_material_page_points_to_the_visible_library_action() -> None:
+    assert "教材只允许使用已在教材管理中建立索引的内容" in INDEX_HTML
+    assert "请点击上方“打开教材管理”，上传教材并建立索引" in APP_JS
+    assert "上一步已建立索引" not in INDEX_HTML
+    assert "右上角“教材管理”" not in APP_JS
+
+
+def test_saved_api_key_cards_render_as_configured_instead_of_waiting_for_test() -> None:
+    key_cards_start = APP_JS.index("function renderKeyProviderCards()")
+    key_cards_end = APP_JS.index("async function recoverDamagedApiConfiguration", key_cards_start)
+    key_cards = APP_JS[key_cards_start:key_cards_end]
+
+    assert '${cfg.api_key_set ? "已配置" : "等待测试"}' in key_cards
+    assert "已保存，可直接使用；如需替换，请输入新 Key 并重新测试。" in key_cards
+    assert '<div class="key-provider-status idle" data-key-status><strong>等待测试</strong>' not in key_cards
+
+
 def test_practice_requests_include_the_configured_image_route() -> None:
     practice_start = APP_JS.index("function practiceRequestPayload()")
     knowledge_start = APP_JS.index("function knowledgeRequestPayload()", practice_start)
@@ -535,6 +601,17 @@ def test_practice_requests_include_the_configured_image_route() -> None:
     for flow in (practice_flow, knowledge_flow):
         assert 'image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : ""' in flow
         assert "image_model: imageConfigured ? selectedImageModel()" in flow
+
+
+def test_practice_and_knowledge_preflight_missing_model_configuration_before_job_submission() -> None:
+    assert "function practiceSubmissionConfigurationIssue(" in APP_JS
+    assert "showPracticeSubmissionConfigurationIssue(sourceMode, configurationIssue)" in APP_JS
+    assert 'showPracticeSubmissionConfigurationIssue("knowledge", configurationIssue)' in APP_JS
+    assert "缺少 ${providerLabel} API Key" in APP_JS
+    assert 'id="practiceConfigurationAction"' in INDEX_HTML
+    assert 'id="knowledgeConfigurationAction"' in INDEX_HTML
+    assert 'title: "需要先完成 API 配置"' in APP_JS
+    assert 'caps.retry && !configurationRequired' in APP_JS
 
 
 def test_practice_drawing_question_explains_why_answer_image_is_not_generated() -> None:

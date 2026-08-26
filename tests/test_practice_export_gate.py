@@ -294,6 +294,52 @@ class PracticeExportGateTests(unittest.TestCase):
         from app.practice_export import validate_practice_export
         self.assertTrue(validate_practice_export(resolved)["ok"])
 
+    def test_selected_export_rechecks_duplicates_inside_selected_subset(self):
+        from app.practice_export import validate_practice_export
+
+        repeated = "请根据给定条件分析理想气体等温膨胀过程，并说明压力与体积的定量关系。"
+        latest = {
+            "history_id": "practice_demo",
+            "quality": {"blocking_issues": ["旧的整套质量结果。"]},
+            "exercises": [
+                {"plan_item_id": "p1", "number": 1, "stem": repeated, "generation_status": "completed"},
+                {"plan_item_id": "p2", "number": 2, "stem": repeated, "generation_status": "completed"},
+                {"plan_item_id": "p3", "number": 3, "stem": "合法的第三题。", "generation_status": "completed"},
+            ],
+        }
+
+        resolved = resolve_practice_export_payload(
+            {"export_scope": "selected", "selected_exercise_ids": ["p1", "p2"]},
+            latest,
+        )
+        report = validate_practice_export(resolved)
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("实质近似" in issue for issue in report["blocking_issues"]))
+
+    def test_selected_export_allows_a_nonduplicate_subset_from_a_blocked_whole_set(self):
+        from app.practice_export import validate_practice_export
+
+        latest = {
+            "history_id": "practice_demo",
+            "quality": {"blocking_issues": ["未选择题目的旧问题。"]},
+            "exercises": [
+                {"plan_item_id": "p1", "number": 1, "stem": "解释理想气体状态方程的适用条件。", "generation_status": "completed"},
+                {"plan_item_id": "p2", "number": 2, "stem": "说明角速度与线速度之间的关系。", "generation_status": "completed"},
+                {"plan_item_id": "p3", "number": 3, "stem": "失败占位。", "generation_status": "failed"},
+            ],
+        }
+
+        resolved = resolve_practice_export_payload(
+            {"export_scope": "selected", "selected_exercise_ids": ["p1", "p2"]},
+            latest,
+        )
+        report = validate_practice_export(resolved)
+
+        self.assertEqual({}, resolved["quality"])
+        self.assertTrue(report["ok"])
+        self.assertEqual("formal", report["release_level"])
+
     def test_empty_selected_export_is_blocked(self):
         from app.practice_export import validate_practice_export
 

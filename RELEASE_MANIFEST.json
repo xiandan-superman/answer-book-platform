@@ -1,19 +1,19 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析平台",
-  "version": "0.9.25",
+  "version": "0.9.26",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.25",
+  "source_revision": "release-v0.9.26",
   "build_kind": "stable-source-release",
-  "created_at": "2026-08-26T00:00:00+08:00",
+  "created_at": "2026-08-27T00:00:00+08:00",
   "validation": {
-    "pytest": "1614 passed, 13 intentionally deselected",
-    "platform_quality_gate": "passed for source compilation, version consistency, formula OMML, project completeness, responsive desktop layout and release-focused regression",
+    "pytest": "changed-scope and cross-line suites passed; broad local Windows/Python 3.13 diagnostic run reached 1631 passed, 1 skipped and 13 intentionally deselected, with remaining failures isolated to local permission, symlink, TLS, file-lock and subprocess-encoding constraints; the tagged release still requires the locked Python 3.11 full gate",
+    "platform_quality_gate": "source compilation, version consistency, formula/Word, evidence, delivery, recovery, responsive layout and release-focused regressions passed; GitHub source-release workflow is the final full-gate authority",
     "version_consistency": "passed",
-    "saved_real_task_replay": "passed with the repository-contained historical replay fixture",
-    "cross_subject_regressions": "passed: mathematics, physics, chemistry, biology and generic chart intent cases",
-    "paid_model_regression": "real Luna and Gemini full-flow replays each generated all 15 requested questions; historical and new Word exports were verified as non-empty with native formulas",
-    "cost_model_routing": "provider-and-model protocol profiles, official thinking defaults, four isolated attempts per question, 20-second circuit probing and bounded generation deadlines enabled",
+    "saved_real_task_replay": "offline true-exam, per-question and knowledge-generation baselines passed for the changed gates and recovery paths",
+    "cross_subject_regressions": "passed across true-exam, per-question and knowledge-generation contracts, including formula prose boundaries, evidence fallback, subset diversity and DOCX textbook extraction",
+    "paid_model_regression": "Terra completed six bounded knowledge-planning calls; Terra and Gemini connection tests passed; B.AI recorded two successful calls and one 120-second long-tail timeout; final answer and Word/PDF quality were not generalized beyond completed deterministic regressions",
+    "cost_model_routing": "provider concurrency defaults were not changed; Responses-only routing respects disabled chat fallback, static environment probes are cached for 30 seconds and known all-unusable answer sets skip heavy document work unless diagnostics are explicitly requested",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

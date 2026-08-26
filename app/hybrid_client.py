@@ -387,7 +387,12 @@ def _record_hybrid_failure(task_id: str, exc: Exception) -> None:
     _event(task_id, "hybrid_failed", phase=phase, error=str(exc))
 
 
-def run_hybrid_task(task_id: str, *, render_with_word: bool) -> dict[str, Any]:
+def run_hybrid_task(
+    task_id: str,
+    *,
+    render_with_word: bool,
+    preserve_document_diagnostics: bool = False,
+) -> dict[str, Any]:
     config = load_hybrid_config()
     if not hybrid_enabled():
         raise HybridClientError("混合云尚未启用。")
@@ -406,7 +411,12 @@ def run_hybrid_task(task_id: str, *, render_with_word: bool) -> dict[str, Any]:
         record = load_task(task_id)
         if record.cloud_status == "completed" and import_receipt.is_file():
             _event(task_id, "local_delivery_resumed", cloud_job_id=record.cloud_job_id)
-            return complete_hybrid_local_delivery(task_id, render_with_word=render_with_word, use_model=True)
+            return complete_hybrid_local_delivery(
+                task_id,
+                render_with_word=render_with_word,
+                use_model=True,
+                preserve_document_diagnostics=preserve_document_diagnostics,
+            )
 
         job: dict[str, Any] | None = None
         if record.cloud_job_id and record.cloud_status not in {"failed", "cancelled"}:
@@ -450,7 +460,12 @@ def run_hybrid_task(task_id: str, *, render_with_word: bool) -> dict[str, Any]:
         if not import_receipt.is_file():
             raise HybridClientError("云端报告完成，但没有可验证的结果包，已禁止进入 Word 阶段。")
         update_task_hybrid(task_id, hybrid_phase="local_delivery", cloud_status="completed", cloud_error="")
-        return complete_hybrid_local_delivery(task_id, render_with_word=render_with_word, use_model=True)
+        return complete_hybrid_local_delivery(
+            task_id,
+            render_with_word=render_with_word,
+            use_model=True,
+            preserve_document_diagnostics=preserve_document_diagnostics,
+        )
     except TaskCancelled:
         raise
     except Exception as exc:

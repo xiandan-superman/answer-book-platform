@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from app.pipeline import PipelineOptions, run_pipeline
 from app.process_lock import ProcessLockUnavailable, platform_process_lock
 from app.task_control import clear_task_control
+from app.task_store import remember_task_run_options
 
 
 def main() -> int:
@@ -26,6 +27,15 @@ def main() -> int:
         with platform_process_lock(purpose=f"run-task {args.task_id}"):
             # Invoking this CLI is an explicit new run, so discard a control
             # left by a previous run before entering the cancellation-aware pipeline.
+            # Keep the durable task options aligned with this CLI invocation.
+            # Otherwise an interrupted `--no-model` / no-render run can be
+            # recovered later with the task record's stale GUI defaults.
+            remember_task_run_options(
+                args.task_id,
+                use_model=not args.no_model,
+                render=args.render,
+                reuse_fragments=args.reuse_fragments,
+            )
             clear_task_control(args.task_id)
             result = run_pipeline(
                 args.task_id,

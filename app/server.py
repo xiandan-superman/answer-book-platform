@@ -1946,7 +1946,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     )
                     return
                 body = self.read_json()
-                render = bool(body.get("render"))
+                document_diagnostics = bool(body.get("document_diagnostics"))
+                render = bool(body.get("render")) or document_diagnostics
                 use_model = not bool(body.get("no_model"))
                 reuse_fragments = bool(body.get("reuse_fragments"))
                 if render:
@@ -1965,13 +1966,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                             status=400,
                         )
                         return
-                append_runtime_log("pipeline", f"启动任务 {task_id}", payload={"task_id": task_id, "render": render, "use_model": use_model, "reuse_fragments": reuse_fragments})
+                append_runtime_log("pipeline", f"启动任务 {task_id}", payload={"task_id": task_id, "render": render, "document_diagnostics": document_diagnostics, "use_model": use_model, "reuse_fragments": reuse_fragments})
 
                 start_exam_task(
                     task_id,
                     use_model=use_model,
                     render=render,
                     reuse_fragments=reuse_fragments,
+                    document_diagnostics=document_diagnostics,
                 )
                 self.send_json({"ok": True, "task_id": task_id, "status": "started"})
                 return
@@ -2231,6 +2233,7 @@ def run(host: str = "127.0.0.1", port: int = 8766) -> None:
                         str(record["task_id"]),
                         use_model=bool(record.get("use_model", True)),
                         render=bool(record.get("render", True)),
+                        document_diagnostics=bool(record.get("document_diagnostics", False)),
                         reuse_fragments=True,
                         remember_options=False,
                         thread_name_prefix="exam-resume",

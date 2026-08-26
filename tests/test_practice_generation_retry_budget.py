@@ -347,6 +347,38 @@ def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monk
     assert attempts[-1]["protocol_fallback"] is True
 
 
+def test_transport_retry_respects_provider_protocol_fallback_policy(monkeypatch) -> None:
+    provider = SimpleNamespace(
+        name="lingsuan_openai",
+        api_protocol="responses",
+        responses_fallback_to_chat=False,
+        default_model="gpt-5.6-terra",
+        model_profiles={},
+    )
+    primary = SimpleNamespace(config=provider)
+    clients = []
+
+    def fake_call(client, *_args, **_kwargs):
+        clients.append(client)
+        if len(clients) == 1:
+            raise LLMError("Responses stream exceeded total wall-clock deadline", status_code=524)
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    attempts = []
+
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        primary, [], model="gpt-5.6-terra", temperature=0, thinking="low", timeout_seconds=30,
+        attempts=2, backoff_seconds=0, attempt_log=attempts,
+    )
+
+    assert result == {"ok": True}
+    assert clients == [primary, primary]
+    assert attempts[-1]["same_protocol_retry"] is True
+    assert attempts[-1]["protocol_fallback"] is False
+
+
 def test_transport_retry_reconnects_responses_before_any_protocol_fallback(monkeypatch) -> None:
     primary = object()
     fallback = object()

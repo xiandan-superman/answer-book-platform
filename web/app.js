@@ -49,6 +49,8 @@ const practiceWorkspaceDraftTimers = { exam: null, knowledge: null };
 const practiceWorkspaceDraftEpochs = { exam: 0, knowledge: 0 };
 const practiceWorkspaceWriteChains = { exam: Promise.resolve(), knowledge: Promise.resolve() };
 const practiceWorkspaceRestorePromises = { exam: Promise.resolve(false), knowledge: Promise.resolve(false) };
+const practiceWorkspaceRestoreCandidates = { exam: null, knowledge: null };
+const practiceWorkspaceEntryBaselines = { exam: null, knowledge: null };
 let practiceWorkspaceRestoreInProgress = false;
 let latestPracticeSourceScope = null;
 let latestPracticeSourceAnalysis = null;
@@ -317,7 +319,7 @@ function setPracticeWorkspaceMode(mode = "exam") {
     }
   }
   setText("practiceWorkspaceEyebrow", "模拟出题 · 5 步流程");
-  setText("practiceWorkspaceTitle", knowledgeMode ? "知识点出题" : "按题生题");
+  setText("practiceWorkspaceTitle", knowledgeMode ? "知识点出题" : "按题出题");
   setText(
     "practiceWorkspaceSubtitle",
     knowledgeMode ? "提交知识材料，确认知识单元范围后生成可复核的针对性模拟题。" : "提交一道题或一套题，确认考点范围后生成针对性专项练习。"
@@ -518,6 +520,7 @@ function restorePracticeWorkspaceDraft(mode) {
 
 const PRACTICE_WORKSPACE_DB_NAME = "answerBook.practiceWorkspace.v1";
 const PRACTICE_WORKSPACE_STORE = "drafts";
+const PRACTICE_WORKSPACE_RESTORE_CANDIDATE_SCHEMA = "practice_workspace_restore_candidate.v1";
 
 function openPracticeWorkspaceDatabase() {
   return new Promise((resolve, reject) => {
@@ -551,17 +554,114 @@ async function practiceWorkspaceDatabaseOperation(mode, operation, value = null)
   }
 }
 
-function queuePracticeWorkspaceDatabaseOperation(mode, operation, value = null) {
+function queuePracticeWorkspaceDatabaseOperation(mode, operation, value = null, storageKey = "") {
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  const requestedKey = storageKey || normalizedMode;
   const queuedOperation = practiceWorkspaceWriteChains[normalizedMode]
     .catch(() => {})
-    .then(() => practiceWorkspaceDatabaseOperation(normalizedMode, operation, value));
+    .then(() => practiceWorkspaceDatabaseOperation(requestedKey, operation, value));
   practiceWorkspaceWriteChains[normalizedMode] = queuedOperation;
   return queuedOperation;
 }
 
 function copyPracticeWorkspaceValue(value) {
   try { return JSON.parse(JSON.stringify(value)); } catch (_error) { return null; }
+}
+
+function practiceWorkspaceRestoreCandidateKey(mode) {
+  return `${mode === "knowledge" ? "knowledge" : "exam"}:restore-candidate`;
+}
+
+function validPracticeWorkspaceDraft(record) {
+  return Boolean(record && record.schema === "practice_workspace_draft.v1");
+}
+
+function practiceWorkspaceCandidateId(record = {}, source = "active") {
+  return [source, record.mode, record.practice_batch_id, record.archived_at || record.updated_at].map((value) => String(value || "")).join(":");
+}
+
+function currentPracticeWorkspaceEntryInput(mode) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  if (normalizedMode === "knowledge" && currentPage === "knowledge") return captureKnowledgeInputWorkspace();
+  capturePracticeWorkspaceDraft(normalizedMode);
+  return copyPracticeWorkspaceValue(practiceWorkspaceDrafts[normalizedMode] || {});
+}
+
+function rememberPracticeWorkspaceEntryBaseline(mode, sessionVersion) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  practiceWorkspaceEntryBaselines[normalizedMode] = {
+    session_version: sessionVersion,
+    input: currentPracticeWorkspaceEntryInput(normalizedMode),
+  };
+}
+
+function practiceWorkspaceHasNewInput(mode) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  const baseline = practiceWorkspaceEntryBaselines[normalizedMode];
+  if (!baseline || baseline.session_version !== practiceSessionVersion) return false;
+  return JSON.stringify(currentPracticeWorkspaceEntryInput(normalizedMode)) !== JSON.stringify(baseline.input);
+}
+
+async function storePracticeWorkspaceRestoreCandidate(mode, candidate) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  const stableCandidate = {
+    ...candidate,
+    record: copyPracticeWorkspaceValue(candidate.record),
+    session_version: practiceSessionVersion,
+  };
+  practiceWorkspaceRestoreCandidates[normalizedMode] = stableCandidate;
+  await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
+    mode: practiceWorkspaceRestoreCandidateKey(normalizedMode),
+    schema: PRACTICE_WORKSPACE_RESTORE_CANDIDATE_SCHEMA,
+    source: stableCandidate.source,
+    candidate_id: stableCandidate.candidate_id,
+    captured_at: Date.now(),
+    record: stableCandidate.record,
+  }).catch(() => {});
+  return stableCandidate;
+}
+
+async function clearPracticeWorkspaceRestoreCandidate(mode) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  practiceWorkspaceRestoreCandidates[normalizedMode] = null;
+  await queuePracticeWorkspaceDatabaseOperation(
+    normalizedMode,
+    "delete",
+    null,
+    practiceWorkspaceRestoreCandidateKey(normalizedMode),
+  ).catch(() => {});
+}
+
+async function discoverPracticeWorkspaceRestoreCandidate(mode, sessionVersion) {
+  const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
+  const candidateKey = practiceWorkspaceRestoreCandidateKey(normalizedMode);
+  const pinned = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get", null, candidateKey).catch(() => null);
+  if (sessionVersion !== practiceSessionVersion) return null;
+  if (pinned?.schema === PRACTICE_WORKSPACE_RESTORE_CANDIDATE_SCHEMA && validPracticeWorkspaceDraft(pinned.record)) {
+    return storePracticeWorkspaceRestoreCandidate(normalizedMode, {
+      source: pinned.source === "archive" ? "archive" : "active",
+      candidate_id: String(pinned.candidate_id || practiceWorkspaceCandidateId(pinned.record, pinned.source)),
+      record: pinned.record,
+      session_version: sessionVersion,
+    });
+  }
+  const active = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get").catch(() => null);
+  let source = "active";
+  let record = validPracticeWorkspaceDraft(active) ? active : null;
+  if (!record) {
+    const records = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "getAll").catch(() => []);
+    source = "archive";
+    record = (records || [])
+      .filter((item) => item?.workspace_mode === normalizedMode && validPracticeWorkspaceDraft(item))
+      .sort((left, right) => Number(right.archived_at || 0) - Number(left.archived_at || 0))[0] || null;
+  }
+  if (!record || sessionVersion !== practiceSessionVersion) return null;
+  return storePracticeWorkspaceRestoreCandidate(normalizedMode, {
+    source,
+    candidate_id: practiceWorkspaceCandidateId(record, source),
+    record,
+    session_version: sessionVersion,
+  });
 }
 
 function capturePracticeScopeConfig() {
@@ -717,13 +817,17 @@ function persistUploadSelectionDraft(mode = currentPracticeSourceMode) {
   return persistPracticeWorkspaceDraft(normalizedMode, record);
 }
 
-async function restorePersistentPracticeWorkspace(mode, sessionVersion) {
+async function restorePersistentPracticeWorkspace(mode, sessionVersion, stableRecord = null) {
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
   let record;
-  try {
-    record = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get");
-  } catch (_error) {
-    return false;
+  if (stableRecord) {
+    record = copyPracticeWorkspaceValue(stableRecord);
+  } else {
+    try {
+      record = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get");
+    } catch (_error) {
+      return false;
+    }
   }
   if (!record || record.schema !== "practice_workspace_draft.v1" || sessionVersion !== practiceSessionVersion) return false;
   practiceWorkspaceRestoreInProgress = true;
@@ -781,6 +885,7 @@ async function clearPersistentPracticeWorkspace(mode) {
   if (practiceWorkspaceDraftTimers[normalizedMode]) clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
   practiceWorkspaceDraftTimers[normalizedMode] = null;
   try { await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "delete"); } catch (_error) {}
+  await clearPracticeWorkspaceRestoreCandidate(normalizedMode);
   $("practiceWorkspaceDraftNotice")?.classList.add("hidden");
   $("knowledgeWorkspaceDraftNotice")?.classList.add("hidden");
   $("practiceWorkspaceDraftClearActive")?.classList.add("hidden");
@@ -792,12 +897,24 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
   practiceWorkspaceDraftTimers[normalizedMode] = null;
   const currentRecord = capturePersistentPracticeWorkspace(normalizedMode);
   const archivedAt = Date.now();
-  await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
-    ...currentRecord,
-    mode: `${normalizedMode}:archive:${archivedAt}`,
-    workspace_mode: normalizedMode,
-    archived_at: archivedAt,
-  }).catch(() => {});
+  const candidate = practiceWorkspaceRestoreCandidates[normalizedMode];
+  if (candidate?.source === "active" && validPracticeWorkspaceDraft(candidate.record)) {
+    await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
+      ...copyPracticeWorkspaceValue(candidate.record),
+      mode: `${normalizedMode}:archive:${archivedAt}`,
+      workspace_mode: normalizedMode,
+      archived_at: archivedAt,
+    }).catch(() => {});
+  }
+  if (!candidate || practiceWorkspaceHasNewInput(normalizedMode)) {
+    const currentArchivedAt = candidate ? archivedAt + 1 : archivedAt;
+    await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
+      ...currentRecord,
+      mode: `${normalizedMode}:archive:${currentArchivedAt}`,
+      workspace_mode: normalizedMode,
+      archived_at: currentArchivedAt,
+    }).catch(() => {});
+  }
   await clearPersistentPracticeWorkspace(mode);
   if (mode === "knowledge" && knowledgeInputPage) openKnowledgeEntry();
   else openPracticeEntry(mode);
@@ -805,34 +922,59 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
 
 async function restorePreviousPracticeWorkspace(mode, knowledgeInputPage = false) {
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
-  const records = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "getAll").catch(() => []);
-  const archived = (records || [])
-    .filter((record) => record?.workspace_mode === normalizedMode && record?.schema === "practice_workspace_draft.v1")
-    .sort((left, right) => Number(right.archived_at || 0) - Number(left.archived_at || 0))[0];
-  if (!archived) {
+  let candidate = practiceWorkspaceRestoreCandidates[normalizedMode];
+  if (!candidate || candidate.session_version !== practiceSessionVersion) {
+    candidate = await discoverPracticeWorkspaceRestoreCandidate(normalizedMode, practiceSessionVersion);
+  }
+  if (!candidate || !validPracticeWorkspaceDraft(candidate.record)) {
     await platformAlert("还没有可恢复的历史草稿。", { title: "恢复草稿" });
     return;
   }
+  if (practiceWorkspaceHasNewInput(normalizedMode)) {
+    const confirmed = await platformConfirm({
+      eyebrow: "草稿恢复",
+      title: "恢复草稿会替换当前输入",
+      message: `当前页面已经有新输入。继续后将用${candidate.source === "active" ? "进入本页前发现的未完成草稿" : "最近保存的历史草稿"}替换这些内容。`,
+      confirmText: "继续恢复",
+      cancelText: "保留当前输入",
+      tone: "warning",
+    });
+    if (!confirmed) return;
+  }
   if (practiceWorkspaceDraftTimers[normalizedMode]) clearTimeout(practiceWorkspaceDraftTimers[normalizedMode]);
   practiceWorkspaceDraftTimers[normalizedMode] = null;
-  await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
-    ...archived,
+  practiceWorkspaceDraftEpochs[normalizedMode] += 1;
+  const stableRecord = {
+    ...copyPracticeWorkspaceValue(candidate.record),
     mode: normalizedMode,
     workspace_mode: undefined,
     archived_at: undefined,
+  };
+  await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
+    ...stableRecord,
   });
   if (normalizedMode === "knowledge" && knowledgeInputPage) openKnowledgeEntry();
   else openPracticeEntry(normalizedMode);
   await practiceWorkspaceRestorePromises[normalizedMode].catch(() => false);
   const sessionVersion = practiceSessionVersion;
-  practiceWorkspaceRestorePromises[normalizedMode] = restorePersistentPracticeWorkspace(normalizedMode, sessionVersion).catch(() => false);
+  const restored = await restorePersistentPracticeWorkspace(normalizedMode, sessionVersion, stableRecord).catch(() => false);
+  if (restored) {
+    await clearPracticeWorkspaceRestoreCandidate(normalizedMode);
+    rememberPracticeWorkspaceEntryBaseline(normalizedMode, sessionVersion);
+  }
+  practiceWorkspaceRestorePromises[normalizedMode] = Promise.resolve(restored);
 }
 
 async function announceAvailablePracticeWorkspaceDraft(mode, sessionVersion) {
   const normalizedMode = mode === "knowledge" ? "knowledge" : "exam";
-  const record = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get").catch(() => null);
-  if (!record || record.schema !== "practice_workspace_draft.v1" || sessionVersion !== practiceSessionVersion) return false;
-  showPracticeWorkspaceDraftNotice(normalizedMode, "发现上次未完成的草稿；当前已保持新任务空白，需要时可主动点击“恢复上一份”。");
+  const candidate = await discoverPracticeWorkspaceRestoreCandidate(normalizedMode, sessionVersion);
+  if (!candidate || sessionVersion !== practiceSessionVersion) return false;
+  showPracticeWorkspaceDraftNotice(
+    normalizedMode,
+    candidate.source === "active"
+      ? "发现上次未完成的草稿；当前已保持新任务空白，需要时可点击“恢复上一份”。"
+      : "发现最近保存的历史草稿；当前已保持新任务空白，需要时可点击“恢复上一份”。",
+  );
   return true;
 }
 
@@ -882,6 +1024,8 @@ function openPracticeEntry(mode = "exam", openModelSettings = false) {
   setPracticeWorkspaceMode(mode);
   goToPage("practice");
   const sessionVersion = practiceSessionVersion;
+  practiceWorkspaceRestoreCandidates[mode] = null;
+  rememberPracticeWorkspaceEntryBaseline(mode, sessionVersion);
   practiceWorkspaceRestorePromises[mode] = announceAvailablePracticeWorkspaceDraft(mode, sessionVersion).catch(() => false);
 }
 
@@ -899,6 +1043,8 @@ function openKnowledgeEntry() {
   $("knowledgeError")?.classList.add("hidden");
   goToPage("knowledge");
   const sessionVersion = practiceSessionVersion;
+  practiceWorkspaceRestoreCandidates.knowledge = null;
+  rememberPracticeWorkspaceEntryBaseline("knowledge", sessionVersion);
   practiceWorkspaceRestorePromises.knowledge = announceAvailablePracticeWorkspaceDraft("knowledge", sessionVersion).catch(() => false);
 }
 
@@ -1781,6 +1927,7 @@ function practiceRecoveryNoticeKey(job = {}) {
 
 function practiceErrorNeedsConfiguration(presentation = {}) {
   return [
+    "provider_missing_api_key",
     "provider_authentication",
     "provider_permission",
     "provider_target_not_found",
@@ -1788,10 +1935,53 @@ function practiceErrorNeedsConfiguration(presentation = {}) {
   ].includes(String(presentation?.kind || ""));
 }
 
-function practiceErrorExplicitlyNeedsArkConfiguration(subject = {}) {
+function practiceErrorExplicitlyNeedsConfiguration(subject = {}) {
   return subject?.requires_configuration === true
-    && String(subject?.configuration_provider || "").toLowerCase() === "ark"
+    && Boolean(String(subject?.configuration_provider || "").trim())
     && String(subject?.configuration_reason || "") === "missing_api_key";
+}
+
+function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模拟出题") {
+  const providerName = String(request.provider || "").trim();
+  const model = String(request.model || "").trim();
+  const providerLabel = displayProviderName(providerName || "未选择供应商");
+  const routeLabel = [providerLabel, model].filter(Boolean).join(" / ");
+  if (!providerName) {
+    return {
+      provider: "",
+      message: `无法开始${workflowLabel}：尚未选择模型供应商。请先调整模型并配置 API Key；当前材料已保留。`,
+    };
+  }
+  if (!model) {
+    return {
+      provider: providerName,
+      message: `无法开始${workflowLabel}：当前供应商 ${providerLabel} 尚未选择模型。请先调整模型；当前材料已保留。`,
+    };
+  }
+  if (providerConfigs?.[providerName]?.api_key_set !== true) {
+    return {
+      provider: providerName,
+      message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 缺少 ${providerLabel} API Key。请前往 API 配置填写并验证后重试；当前材料已保留。`,
+    };
+  }
+  return null;
+}
+
+function showPracticeSubmissionConfigurationIssue(mode, issue) {
+  const knowledgeMode = mode === "knowledge";
+  const errorBox = $(knowledgeMode ? "knowledgeError" : "practiceError");
+  const configurationButton = $(knowledgeMode ? "knowledgeConfigurationAction" : "practiceConfigurationAction");
+  if (errorBox) {
+    errorBox.textContent = String(issue?.message || "当前模型配置不可用，请先完成 API 配置。");
+    errorBox.classList.remove("hidden");
+    errorBox.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  configurationButton?.classList.remove("hidden");
+}
+
+function hidePracticeConfigurationAction(mode) {
+  const id = mode === "knowledge" ? "knowledgeConfigurationAction" : "practiceConfigurationAction";
+  $(id)?.classList.add("hidden");
 }
 
 function practicePublicErrorText(presentation = {}, fallback = "任务执行失败。", { includeAction = true } = {}) {
@@ -1837,7 +2027,7 @@ function practiceRecoveryNoticeMeta(job = {}, { navigationChanged = false } = {}
   }
   if (status === "failed") {
     const presentation = job.error_presentation || {};
-    const configurationAction = practiceErrorExplicitlyNeedsArkConfiguration(job);
+    const configurationAction = practiceErrorExplicitlyNeedsConfiguration(job);
     return {
       eyebrow: "后台任务未完成",
       title: taskName,
@@ -1925,7 +2115,7 @@ function renderStoppedPracticeRecoveryJob(job = {}) {
   }
   const errorBox = $(stoppedKnowledgeAnalyze ? "knowledgeError" : "practiceError");
   const configurationButton = $(stoppedKnowledgeAnalyze ? "knowledgeConfigurationAction" : "practiceConfigurationAction");
-  configurationButton?.classList.toggle("hidden", !practiceErrorExplicitlyNeedsArkConfiguration(job));
+  configurationButton?.classList.toggle("hidden", !practiceErrorExplicitlyNeedsConfiguration(job));
   if (errorBox) {
     errorBox.textContent = job.status === "cancelled"
       ? (job.error_presentation?.message || job.error || "后台出题任务已取消。")
@@ -1941,7 +2131,7 @@ async function openPracticeRecoveryNoticeJob() {
   rememberPracticeJob("");
   const job = await api(`/api/practice/jobs/${encodeURIComponent(remembered.job_id)}?detail=1`);
   const completion = practiceCompletionContract(job.result || job);
-  if (String(job.status || "") === "failed" && practiceErrorExplicitlyNeedsArkConfiguration(job)) {
+  if (String(job.status || "") === "failed" && practiceErrorExplicitlyNeedsConfiguration(job)) {
     goToPage("keys");
     return;
   }
@@ -2573,9 +2763,20 @@ function syncPracticeSubmitAvailability() {
   return ready;
 }
 
-function syncKnowledgeUploadAvailability() {
+function syncKnowledgeSubmitAvailability() {
   const button = $("knowledgePlanBtn");
-  if (button && uploadFileReadPending.knowledge > 0) button.disabled = true;
+  const hasMaterial = Boolean(
+    $("knowledgeTitleInput")?.value.trim()
+    || $("knowledgeTextInput")?.value.trim()
+    || knowledgeSourceFiles.length > 0
+  );
+  const ready = hasMaterial && uploadFileReadPending.knowledge === 0;
+  if (button) {
+    button.disabled = !ready;
+    button.setAttribute("aria-disabled", ready ? "false" : "true");
+    button.title = ready ? "解析知识材料并确认范围" : "请先填写知识点、粘贴材料或上传文件";
+  }
+  return ready;
 }
 
 async function readPracticeFiles(fileList) {
@@ -2624,9 +2825,13 @@ async function readPracticeFiles(fileList) {
 
 function renderKnowledgeFilePreview() {
   const preview = $("knowledgeFilePreview");
-  if (!preview) return;
+  if (!preview) {
+    syncKnowledgeSubmitAvailability();
+    return;
+  }
   if (!knowledgeSourceFiles.length) {
     preview.innerHTML = "<span>尚未选择文件</span>";
+    syncKnowledgeSubmitAvailability();
     return;
   }
   preview.innerHTML = knowledgeSourceFiles.map((file, index) => `
@@ -2645,6 +2850,7 @@ function renderKnowledgeFilePreview() {
       persistUploadSelectionDraft("knowledge");
     });
   });
+  syncKnowledgeSubmitAvailability();
 }
 
 async function readKnowledgeFiles(fileList) {
@@ -2652,7 +2858,7 @@ async function readKnowledgeFiles(fileList) {
   if (!files.length) return { files: knowledgeSourceFiles, added: [], duplicates: [] };
   const sessionVersion = practiceSessionVersion;
   uploadFileReadPending.knowledge += 1;
-  syncKnowledgeUploadAvailability();
+  syncKnowledgeSubmitAvailability();
   try {
     await practiceWorkspaceRestorePromises.knowledge;
     return await queueUploadFileRead("knowledge", async () => {
@@ -2671,7 +2877,7 @@ async function readKnowledgeFiles(fileList) {
     });
   } finally {
     uploadFileReadPending.knowledge = Math.max(0, uploadFileReadPending.knowledge - 1);
-    if (uploadFileReadPending.knowledge === 0) $("knowledgePlanBtn").disabled = false;
+    syncKnowledgeSubmitAvailability();
   }
 }
 
@@ -4370,11 +4576,18 @@ async function planKnowledgePractice(event) {
   clearUploadFeedback("knowledge");
   const errorBox = $("knowledgeError");
   if (!request.question_text && !request.source_files.length) {
+    hidePracticeConfigurationAction("knowledge");
     errorBox.textContent = "请填写知识点名称、粘贴知识材料，或上传至少一个文件。";
     errorBox.classList.remove("hidden");
-    $("practiceQuestionText")?.focus();
+    $("knowledgeTitleInput")?.focus();
     return;
   }
+  const configurationIssue = practiceSubmissionConfigurationIssue(request, "知识点出题");
+  if (configurationIssue) {
+    showPracticeSubmissionConfigurationIssue("knowledge", configurationIssue);
+    return;
+  }
+  hidePracticeConfigurationAction("knowledge");
   errorBox.classList.add("hidden");
   const button = $("knowledgePlanBtn");
   const original = button.innerHTML;
@@ -4395,11 +4608,16 @@ async function planKnowledgePractice(event) {
     setPracticeStageDescription("知识材料已拆分为可选知识单元；请确认整体综合或逐项出题方式。");
   } catch (error) {
     goToPage("knowledge");
-    errorBox.textContent = String(error).replace(/^Error:\s*/, "");
+    const failedJob = error?.practiceJob && typeof error.practiceJob === "object" ? error.practiceJob : {};
+    const needsConfiguration = practiceErrorExplicitlyNeedsConfiguration(failedJob);
+    $("knowledgeConfigurationAction")?.classList.toggle("hidden", !needsConfiguration);
+    errorBox.textContent = needsConfiguration
+      ? practicePublicErrorText(failedJob.error_presentation || {}, failedJob.error || "当前模型配置不可用。")
+      : String(error).replace(/^Error:\s*/, "");
     errorBox.classList.remove("hidden");
   } finally {
-    button.disabled = false;
     button.innerHTML = original;
+    syncKnowledgeSubmitAvailability();
   }
 }
 
@@ -5222,10 +5440,20 @@ async function planPractice(event) {
   clearUploadFeedback("practice");
   const errorBox = $("practiceError");
   if (!request.question_text && !request.source_files.length) {
+    hidePracticeConfigurationAction(sourceMode);
     errorBox.textContent = currentPracticeSourceMode === "knowledge" ? "请粘贴知识材料或上传知识点文件。" : "请粘贴题目文字或上传题目文件。";
     errorBox.classList.remove("hidden");
     return;
   }
+  const configurationIssue = practiceSubmissionConfigurationIssue(
+    request,
+    sourceMode === "knowledge" ? "知识点出题" : "按题出题",
+  );
+  if (configurationIssue) {
+    showPracticeSubmissionConfigurationIssue(sourceMode, configurationIssue);
+    return;
+  }
+  hidePracticeConfigurationAction(sourceMode);
   errorBox.classList.add("hidden");
   showPracticeOperationLoading(currentPracticeSourceMode === "knowledge" ? "正在解析知识材料与知识单元" : "正在解析原题、考点与范围", "analyze");
   setPracticeStageDescription(currentPracticeSourceMode === "knowledge" ? "正在识别核心概念、能力层次与知识单元。" : "正在识别原题结构、考点与可参与出题的范围。");
@@ -5245,7 +5473,12 @@ async function planPractice(event) {
     $("practiceLoading")?.classList.add("hidden");
     $("practiceEmpty")?.classList.remove("hidden");
     setPracticeStage("submit");
-    errorBox.textContent = String(error).replace(/^Error:\s*/, "");
+    const failedJob = error?.practiceJob && typeof error.practiceJob === "object" ? error.practiceJob : {};
+    const needsConfiguration = practiceErrorExplicitlyNeedsConfiguration(failedJob);
+    $("practiceConfigurationAction")?.classList.toggle("hidden", !needsConfiguration);
+    errorBox.textContent = needsConfiguration
+      ? practicePublicErrorText(failedJob.error_presentation || {}, failedJob.error || "当前模型配置不可用。")
+      : String(error).replace(/^Error:\s*/, "");
     errorBox.classList.remove("hidden");
   } finally {
     button.innerHTML = `<i class="fas fa-magnifying-glass-chart"></i><span id="practiceGenerateLabel">解析考点与范围</span>`;
@@ -7116,7 +7349,7 @@ function renderLibraryFiles() {
     if (taskTextbookChecklist) {
       const taskEmpty = document.createElement("p");
       taskEmpty.className = "empty-hint";
-      taskEmpty.textContent = "还没有可选教材。请先通过右上角“教材管理”上传教材并建立索引。";
+      taskEmpty.textContent = "还没有可选教材。请点击上方“打开教材管理”，上传教材并建立索引。";
       taskTextbookChecklist.appendChild(taskEmpty);
     }
   } else {
@@ -8686,7 +8919,10 @@ function renderKeyProviderCards() {
         <button type="button" class="secondary-button" data-key-save="${escapeHtml(name)}" disabled><i class="fas fa-floppy-disk"></i>保存</button>
         ${cfg.api_key_set ? `<button type="button" class="text-button danger-text" data-key-delete="${escapeHtml(name)}" aria-label="删除 ${escapeHtml(displayProviderName(name))} API Key">删除</button>` : ""}
       </div>
-      <div class="key-provider-status idle" data-key-status><strong>等待测试</strong><span>新 Key 必须测试成功后才能保存。</span></div>
+      <div class="key-provider-status ${cfg.api_key_set ? "ok" : "idle"}" data-key-status>
+        <strong>${cfg.api_key_set ? "已配置" : "等待测试"}</strong>
+        <span>${cfg.api_key_set ? "已保存，可直接使用；如需替换，请输入新 Key 并重新测试。" : "新 Key 必须测试成功后才能保存。"}</span>
+      </div>
     </form>
   `).join("");
   applyKeyProviderFilters();
@@ -9432,6 +9668,27 @@ function taskProgressSummary(task) {
   };
 }
 
+function taskProgressPresentation(task, normalized, progress) {
+  const attemptedCountKnown = task?.network_attempted_count !== null
+    && task?.network_attempted_count !== undefined
+    && Number.isFinite(Number(task.network_attempted_count));
+  const failedBeforeModelCall = normalized === "failed" && (
+    (attemptedCountKnown && Number(task.network_attempted_count) === 0)
+    || task?.error_presentation?.kind === "provider_missing_api_key"
+  );
+  if (failedBeforeModelCall) {
+    return { label: "调用状态", value: "未发起调用", showBar: false };
+  }
+  if (normalized === "cancelled") {
+    return { label: "任务状态", value: "已取消", showBar: false };
+  }
+  return {
+    label: ["completed", "completed_with_issues"].includes(normalized) ? "完成进度" : normalized === "queued" ? "等待执行" : "当前进度",
+    value: `${progress.percent}%`,
+    showBar: true
+  };
+}
+
 function displayAttemptStatus(status) {
   const map = {
     preparing: "准备请求",
@@ -9679,6 +9936,7 @@ function renderTaskManager(tasks = latestTasks) {
     const baseStatusMeta = taskStatusMeta(normalized);
     const progress = taskProgressSummary(task);
     const percent = progress.percent;
+    const progressPresentation = taskProgressPresentation(task, normalized, progress);
     const taskHealth = task.health || {};
     const taskHealthState = String(taskHealth.health_status || "unknown");
     const taskHealthMeta = healthPresentation(taskHealthState);
@@ -9780,10 +10038,10 @@ function renderTaskManager(tasks = latestTasks) {
       </div>
       <div class="task-manager-progress">
         <div>
-          <span>${["completed", "completed_with_issues"].includes(normalized) ? "完成进度" : normalized === "queued" ? "等待执行" : "当前进度"}</span>
-          <strong>${percent}%</strong>
+          <span>${progressPresentation.label}</span>
+          <strong>${progressPresentation.value}</strong>
         </div>
-        <div class="manager-progress-track"><span style="width: ${percent}%"></span></div>
+        ${progressPresentation.showBar ? `<div class="manager-progress-track"><span style="width: ${percent}%"></span></div>` : ""}
         <p>${escapeHtml(progressMessage)}</p>
       </div>
     `;
@@ -10310,11 +10568,12 @@ function taskManagerActions(task = {}, reviewPending = false) {
     add(caps.delete, "format-delete", "gray-action", "fas fa-trash", "删除");
   } else if (task.is_generation_task) {
     if (task.is_generation_job) {
+      const configurationRequired = practiceErrorNeedsConfiguration(task.error_presentation);
       add(caps.view_result, "job-result", "blue-action", "fas fa-eye", task.operation === "plan" ? "审查蓝图" : task.operation === "analyze" ? "审查范围" : "查看题目");
       add(caps.view_progress && !caps.view_result, "job-status", "blue-action", task.status === "running" ? "fas fa-spinner fa-spin" : "fas fa-eye", task.status === "failed" ? "查看原因" : "查看进度");
       add(caps.view_quality && task.status === "failed", "job-status", "red-action", "fas fa-triangle-exclamation", "查看原因");
-      add(caps.retry && practiceErrorNeedsConfiguration(task.error_presentation), "job-config", "blue-action", "fas fa-key", "检查 API 配置");
-      add(caps.retry, "job-retry", "green-action", "fas fa-rotate", "从检查点重试");
+      add(caps.retry && configurationRequired, "job-config", "blue-action", "fas fa-key", "检查 API 配置");
+      add(caps.retry && !configurationRequired, "job-retry", "green-action", "fas fa-rotate", "从检查点重试");
       add(caps.pause, "job-pause", "yellow-action", "fas fa-pause", "暂停");
       add(caps.resume, "job-resume", "green-action", "fas fa-play", "继续");
       add(caps.cancel, "job-cancel", "red-action", "fas fa-times", "取消任务");
@@ -10364,10 +10623,14 @@ function generationTaskManagerActions(task = {}) {
       return `<button type="button" class="task-card-button blue-action" data-action="job-result"><i class="fas fa-eye"></i>${resultLabel}</button>`;
     }
     if (task.status === "failed") {
-      const configAction = practiceErrorNeedsConfiguration(task.error_presentation)
+      const configurationRequired = practiceErrorNeedsConfiguration(task.error_presentation);
+      const configAction = configurationRequired
         ? '<button type="button" class="task-card-button blue-action" data-action="job-config"><i class="fas fa-key"></i>检查 API 配置</button>'
         : "";
-      return `<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>查看原因</button>${configAction}<button type="button" class="task-card-button green-action" data-action="job-retry"><i class="fas fa-rotate"></i>重试任务</button>`;
+      const retryAction = configurationRequired
+        ? ""
+        : '<button type="button" class="task-card-button green-action" data-action="job-retry"><i class="fas fa-rotate"></i>重试任务</button>';
+      return `<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>查看原因</button>${configAction}${retryAction}`;
     }
     if (task.status === "paused") {
       return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-eye"></i>查看进度</button><button type="button" class="task-card-button green-action" data-action="job-resume"><i class="fas fa-play"></i>继续</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
@@ -10557,7 +10820,12 @@ async function retryExamTask(task, reopenReview = false) {
   if (!confirmed) return;
   await api(`/api/tasks/${encodeURIComponent(task.task_id)}/run`, {
     method: "POST",
-    body: JSON.stringify({ no_model: false, reuse_fragments: !reopenReview, render: true })
+    body: JSON.stringify({
+      no_model: false,
+      reuse_fragments: !reopenReview,
+      render: true,
+      document_diagnostics: Boolean($("documentDiagnosticsCheck")?.checked)
+    })
   });
   await openTaskDetail(task);
   startTaskPolling(task.task_id);
@@ -10568,6 +10836,22 @@ async function retryGenerationJob(task) {
   const failed = await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}?detail=1`);
   if (requestedSessionVersion !== practiceSessionVersion) return;
   if (!failed.payload || !failed.operation) throw new Error("原任务参数不完整，无法自动重试。");
+  const configurationIssue = practiceSubmissionConfigurationIssue(
+    failed.payload,
+    failed.task_kind === "knowledge" ? "知识点出题" : "按题出题",
+  );
+  if (configurationIssue) {
+    const configureNow = await platformConfirm({
+      eyebrow: "任务恢复",
+      title: "需要先完成 API 配置",
+      message: configurationIssue.message,
+      confirmText: "前往 API 配置",
+      cancelText: "暂不处理",
+      tone: "warning",
+    });
+    if (configureNow) goToPage("keys");
+    return;
+  }
   const operationHints = {
     analyze: "将从范围解析重新执行，不复用尚未确认的范围结果。",
     plan: "将复用原始材料和已确认范围，重新设计蓝图。",
@@ -11782,7 +12066,12 @@ async function runTask(noModel = false, reuseFragments = false) {
     const taskId = $("taskIdInput").value.trim();
     const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/run`, {
       method: "POST",
-      body: JSON.stringify({ no_model: noModel, reuse_fragments: reuseFragments, render: $("renderCheck").checked })
+      body: JSON.stringify({
+        no_model: noModel,
+        reuse_fragments: reuseFragments,
+        render: $("renderCheck").checked,
+        document_diagnostics: Boolean($("documentDiagnosticsCheck")?.checked)
+      })
     });
     activeTaskId = taskId;
     clearTaskDiagnostics();
@@ -13000,8 +13289,14 @@ $("practiceQuestionText")?.addEventListener("paste", (event) => {
 $("practiceQuestionText")?.addEventListener("input", syncPracticeSubmitAvailability);
 $("practiceForm")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practiceForm")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
-$("knowledgeForm")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave("knowledge"));
-$("knowledgeForm")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave("knowledge"));
+$("knowledgeForm")?.addEventListener("input", () => {
+  syncKnowledgeSubmitAvailability();
+  schedulePracticeWorkspaceDraftSave("knowledge");
+});
+$("knowledgeForm")?.addEventListener("change", () => {
+  syncKnowledgeSubmitAvailability();
+  schedulePracticeWorkspaceDraftSave("knowledge");
+});
 $("practiceScopeDrawer")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practiceScopeDrawer")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practicePlanReview")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));

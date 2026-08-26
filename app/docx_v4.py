@@ -465,6 +465,15 @@ def _crystallographic_formula_candidates(text: str) -> list[tuple[int, int, str]
 
 def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
     candidates: list[tuple[int, int, str]] = []
+    # Generic equality patterns are intentionally broad so legacy compact
+    # answers keep working. Their promotion boundary must nevertheless match
+    # the shared Word planner: otherwise a prose sentence rejected there can
+    # still be turned into a formula_ref before this renderer is reached.
+    shared_text_equations = {
+        (plan.start, plan.end): plan
+        for plan in build_text_expression_render_plans(text)
+        if plan.rule_id == "core.text_equation"
+    }
     for match in DOLLAR_LATEX_SUMMARY_RE.finditer(text):
         latex = match.group(1).strip()
         if latex:
@@ -490,9 +499,13 @@ def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
     for match in RELATION_SUMMARY_RE.finditer(text):
         candidates.append((match.start(), match.end(), _latex_relation(match)))
     for match in SYMBOLIC_EQUATION_SUMMARY_RE.finditer(text):
-        candidates.append((match.start(), match.end(), _latex_symbolic_equation(match)))
+        plan = shared_text_equations.get((match.start(), match.end()))
+        if plan is not None:
+            candidates.append((match.start(), match.end(), plan.render_latex))
     for match in EQUATION_SUMMARY_RE.finditer(text):
-        candidates.append((match.start(), match.end(), _latex_equation(match)))
+        plan = shared_text_equations.get((match.start(), match.end()))
+        if plan is not None:
+            candidates.append((match.start(), match.end(), plan.render_latex))
     for match in UNICODE_LARGE_OPERATOR_RE.finditer(text):
         operator = r"\prod" if match.group("operator") == "Π" else r"\sum"
         subscript = match.group("braced") or match.group("plain") or ""

@@ -76,7 +76,13 @@ def prepare_hybrid_input(task_id: str) -> dict:
         raise
 
 
-def complete_hybrid_local_delivery(task_id: str, *, render_with_word: bool, use_model: bool = True) -> dict:
+def complete_hybrid_local_delivery(
+    task_id: str,
+    *,
+    render_with_word: bool,
+    use_model: bool = True,
+    preserve_document_diagnostics: bool = False,
+) -> dict:
     """Build, Word-render, and accept a cloud-computed task on the originating computer."""
 
     record = load_task(task_id)
@@ -164,6 +170,7 @@ def complete_hybrid_local_delivery(task_id: str, *, render_with_word: bool, use_
             use_model=use_model,
             render_with_word=render_with_word,
             content_quality=content_quality,
+            preserve_document_diagnostics=preserve_document_diagnostics,
             mark=mark,
             write_json=write_json,
             build_docx_with_repair=build_and_audit_docx_with_repair,

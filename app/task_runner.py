@@ -55,6 +55,7 @@ def resume_exam_task(task_id: str) -> dict[str, Any]:
                 task_id,
                 use_model=record.last_run_use_model,
                 render=record.last_run_render,
+                document_diagnostics=record.last_run_document_diagnostics,
                 reuse_fragments=True,
                 remember_options=False,
                 thread_name_prefix="exam-resume",
@@ -90,6 +91,7 @@ def run_exam_task(
     use_model: bool,
     render: bool,
     reuse_fragments: bool,
+    document_diagnostics: bool = False,
 ) -> None:
     """Run one exam pipeline with a consistent logging boundary."""
     current = load_task(task_id)
@@ -106,7 +108,14 @@ def run_exam_task(
             from .hybrid_client import hybrid_enabled, run_hybrid_task
 
             if use_model and hybrid_enabled():
-                run_hybrid_task(task_id, render_with_word=render)
+                if document_diagnostics:
+                    run_hybrid_task(
+                        task_id,
+                        render_with_word=render,
+                        preserve_document_diagnostics=True,
+                    )
+                else:
+                    run_hybrid_task(task_id, render_with_word=render)
             else:
                 run_pipeline(
                     task_id,
@@ -114,6 +123,7 @@ def run_exam_task(
                         use_model=use_model,
                         allow_demo_without_key=not use_model,
                         render_with_word=render,
+                        preserve_document_diagnostics=document_diagnostics,
                         reuse_fragments=reuse_fragments,
                     ),
                 )
@@ -156,6 +166,7 @@ def start_exam_task(
     use_model: bool,
     render: bool,
     reuse_fragments: bool,
+    document_diagnostics: bool = False,
     remember_options: bool = True,
     thread_name_prefix: str = "exam-run",
     expected_status: str | None = None,
@@ -186,6 +197,7 @@ def start_exam_task(
                 use_model=use_model,
                 render=render,
                 reuse_fragments=reuse_fragments,
+                document_diagnostics=document_diagnostics,
             )
         # Retrying a cancelled task is an explicit new run over the same task
         # identity. Remove the old cancellation request before it is queued;
@@ -205,6 +217,7 @@ def start_exam_task(
             use_model=use_model,
             render=render,
             reuse_fragments=reuse_fragments,
+            document_diagnostics=document_diagnostics,
         )
         _ACTIVE_RUNS[task_id] = future
         future.add_done_callback(lambda completed: _release_active_run(task_id, completed))

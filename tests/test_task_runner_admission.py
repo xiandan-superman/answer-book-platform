@@ -156,6 +156,7 @@ def test_detached_pause_resume_is_atomically_requeued_with_saved_options(tmp_pat
             "task_id": record.task_id,
             "use_model": False,
             "render": False,
+            "document_diagnostics": False,
             "reuse_fragments": True,
         }
     ]

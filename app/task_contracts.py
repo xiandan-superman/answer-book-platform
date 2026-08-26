@@ -387,12 +387,32 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
         or "超时" in text
     ):
         return public("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。")
-    if re.fullmatch(r"api key is not configured for provider:\s*ark", text, flags=re.IGNORECASE):
+    missing_key_match = re.fullmatch(
+        r"api key is not configured for provider:\s*([a-z0-9_.-]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if missing_key_match:
+        provider_name = missing_key_match.group(1).lower()
+        provider_label = {
+            "deepseek": "DeepSeek",
+            "ark": "火山方舟",
+            "bailian": "阿里云百炼",
+            "sensenova": "商汤日日新 · SenseNova",
+            "bai": "B.AI",
+            "openrouter": "OpenRouter",
+            "yuanheng": "元衡 API",
+            "lingsuan_openai": "灵算 · OpenAI",
+            "lingsuan_image": "灵算 · OpenAI 图片",
+            "lingsuan_google": "灵算 · Google Gemini",
+            "lingsuan_xai": "灵算 · xAI",
+            "lingsuan_anthropic": "灵算 · Anthropic",
+        }.get(provider_name, "当前供应商")
         return public(
             "provider_missing_api_key",
-            "火山方舟 API Key 尚未配置",
-            "尚未配置火山方舟 API Key，本次任务没有发出模型请求。",
-            "请前往 API 配置填写并验证火山方舟 Key，验证成功后再重试。",
+            f"{provider_label} API Key 尚未配置",
+            f"尚未配置{provider_label} API Key，本次任务没有发出模型请求。",
+            f"请前往 API 配置填写并验证{provider_label} Key，验证成功后再重试。",
         )
     if re.search(r"\b401\b", lowered) or any(marker in lowered for marker in ("unauthorized", "authentication failed", "invalid api key", "invalid_api_key")):
         return public(

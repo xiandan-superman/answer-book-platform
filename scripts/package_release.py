@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT.parent / "answer_book_platform_v1_release.zip"
 
 EXCLUDED_DIRS = {
+    ".artifacts",
     ".git",
     ".mypy_cache",
     ".playwright-cli",
@@ -67,8 +69,9 @@ EXCLUDED_SUFFIXES = {".pyc"}
 RELEASE_MANIFEST_NAME = "RELEASE_MANIFEST.json"
 
 
-def should_include(path: Path) -> bool:
-    rel = path.relative_to(ROOT)
+def should_include(path: Path, root: Path | None = None) -> bool:
+    source_root = root or ROOT
+    rel = path.relative_to(source_root)
     parts = set(rel.parts)
     if parts & EXCLUDED_DIRS:
         return False
@@ -90,8 +93,28 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def release_source_files(root: Path = ROOT) -> list[Path]:
+    """Return only files already present in Git's index, failing closed."""
+
+    proc = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        capture_output=True,
+        check=True,
+    )
+    files: list[Path] = []
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = raw.decode("utf-8")
+        path = root / relative
+        if should_include(path, root):
+            files.append(path)
+    return sorted(files)
+
+
 def build_release(output: Path) -> dict:
-    files = [p for p in sorted(ROOT.rglob("*")) if should_include(p)]
+    files = release_source_files(ROOT)
     included_files = [p.relative_to(ROOT).as_posix() for p in files]
     forbidden = []
     for rel in included_files:

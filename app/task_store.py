@@ -52,6 +52,7 @@ class TaskRecord:
     suggested_action: str = ""
     last_run_use_model: bool = True
     last_run_render: bool = True
+    last_run_document_diagnostics: bool = False
     last_run_reuse_fragments: bool = False
     interrupted_stage: str = ""
     run_started_at: str = ""
@@ -186,6 +187,7 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("suggested_action", "")
     data.setdefault("last_run_use_model", True)
     data.setdefault("last_run_render", True)
+    data.setdefault("last_run_document_diagnostics", False)
     data.setdefault("last_run_reuse_fragments", False)
     data.setdefault("interrupted_stage", "")
     data.setdefault("run_started_at", "")
@@ -258,11 +260,13 @@ def remember_task_run_options(
     use_model: bool,
     render: bool,
     reuse_fragments: bool,
+    document_diagnostics: bool = False,
 ) -> TaskRecord:
     with _STORE_LOCK:
         record = load_task(task_id)
         record.last_run_use_model = bool(use_model)
         record.last_run_render = bool(render)
+        record.last_run_document_diagnostics = bool(document_diagnostics)
         record.last_run_reuse_fragments = bool(reuse_fragments)
         record.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
         save_task(record)
@@ -402,6 +406,7 @@ def recover_interrupted_tasks(reason: str = "server_startup") -> list[dict[str, 
             "message": message,
             "use_model": record.last_run_use_model,
             "render": record.last_run_render,
+            "document_diagnostics": record.last_run_document_diagnostics,
             "reuse_fragments": True,
         }
         append_event(task_id, "task_recovery_queued", payload)

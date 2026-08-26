@@ -155,6 +155,25 @@ def resolve_practice_export_payload(
         resolved["requested_count"] = len(resolved["exercises"])
         resolved["export_scope"] = "selected"
         resolved["selected_exercise_ids"] = selected_ids
+        # Whole-set blockers from unselected questions must not leak into a
+        # subset export, but clearing them must not also clear defects that are
+        # still present inside the selected subset. Reuse the existing
+        # deterministic diversity gate on exactly the questions being exported.
+        from .exercise_generation import practice_diversity_issues
+
+        subset_diversity_blockers = [
+            str(issue.get("message") or "").strip()
+            for issue in practice_diversity_issues(resolved)
+            if isinstance(issue, dict)
+            and issue.get("blocking") is True
+            and str(issue.get("message") or "").strip()
+        ]
+        if subset_diversity_blockers:
+            resolved["quality"] = {
+                "status": "blocked",
+                "release_level": "blocked",
+                "blocking_issues": list(dict.fromkeys(subset_diversity_blockers)),
+            }
     return resolved
 
 

@@ -43,8 +43,8 @@ def _module_available(name: str) -> bool:
 
 
 def platform_python_files(root: Path = ROOT) -> list[str]:
-    files = [str(path.relative_to(root)) for path in sorted((root / "app").rglob("*.py"))]
-    files.extend(str(path.relative_to(root)) for path in sorted((root / "scripts").glob("*.py")))
+    files = [path.relative_to(root).as_posix() for path in sorted((root / "app").rglob("*.py"))]
+    files.extend(path.relative_to(root).as_posix() for path in sorted((root / "scripts").glob("*.py")))
     return [path for path in files if path not in FROZEN_APP_PYTHON_PATHS]
 
 

@@ -25,6 +25,7 @@ STAGE_LABELS = {
     "docx": "Word 文档生成",
     "question_review": "存疑审查文档生成",
     "render": "PDF/PNG 渲染复核",
+    "delivery_short_circuit": "答案不可用，跳过文档渲染",
     "final_acceptance": "最终验收",
     "acceptance": "交付验收",
     "pipeline": "生产流程",
@@ -55,6 +56,7 @@ STAGE_FILES = {
     "content_quality": ["content_quality_audit.json", "question_review_docx.json", "figure_generation_audit.json", "figure_visual_qa.json"],
     "docx": ["docx_audit.json"],
     "render": ["render_audit.json"],
+    "delivery_short_circuit": ["document_delivery_skip.json"],
     "final_acceptance": ["final_acceptance_report.json", "acceptance_report.json"],
 }
 

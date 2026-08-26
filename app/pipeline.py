@@ -172,6 +172,7 @@ class PipelineOptions:
     use_model: bool = True
     allow_demo_without_key: bool = False
     render_with_word: bool = False
+    preserve_document_diagnostics: bool = False
     reuse_fragments: bool = False
     require_preferred_formula_chain: bool = True
     preprocessed_input: bool = False
@@ -2696,6 +2697,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             use_model=options.use_model,
             render_with_word=options.render_with_word,
             content_quality=content_quality,
+            preserve_document_diagnostics=options.preserve_document_diagnostics,
             mark=mark,
             write_json=write_json,
             build_docx_with_repair=build_and_audit_docx_with_repair,

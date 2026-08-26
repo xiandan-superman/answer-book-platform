@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from docx import Document
+
 from .mineru_content import rows_from_mineru_content_list
 from .text_utils import clean_text
 from .textbook_package import is_textbook_package, prepare_textbook_package
@@ -417,6 +419,95 @@ def rows_from_text(name: str, path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _text_row(
+    *,
+    name: str,
+    path: Path,
+    block_index: int,
+    text: str,
+    block_type: str = "text",
+    table_rows: str = "",
+) -> dict[str, Any]:
+    """Create one page-unknown textual Word block for retrieval.
+
+    DOCX does not reliably expose printed-page boundaries without rendering, so
+    the Word source stays on a single logical page.  The text itself remains
+    fully retrievable; citation-page verification remains intentionally false.
+    """
+    clean = clean_text(text)
+    return {
+        "block_id": f"{name}:p0:b{block_index}",
+        "textbook": name,
+        "source_file": str(path),
+        "page_idx": 0,
+        "block_index": block_index,
+        "reading_order": block_index,
+        "block_type": block_type,
+        "source_type": source_type_for_block(block_type),
+        "chapter_section": "",
+        "bbox": "",
+        "text": clean,
+        "caption": "",
+        "ocr_text": "",
+        "asset_path": "",
+        "table_html": "",
+        "visual_summary": "",
+        "visual_status": "",
+        "visual_unreadable_reason": "",
+        "table_rows": table_rows,
+        "surrounding_text_refs": "",
+        "surrounding_text_preview": "",
+        "retrieval_text": "",
+        "char_count": len(clean),
+    }
+
+
+def rows_from_docx(name: str, path: Path) -> list[dict[str, Any]]:
+    """Extract ordinary Word textbook prose and table cells deterministically.
+
+    Library uploads advertise DOCX as a supported textbook type.  Reading the
+    ZIP package as plain text previously produced blank binary rows, which
+    made an apparently indexed textbook unretrievable.  Keep the extraction
+    deliberately text-only: image-only Word content still has no invented OCR
+    or page number.
+    """
+    document = Document(path)
+    rows: list[dict[str, Any]] = []
+    block_index = 0
+    for paragraph in document.paragraphs:
+        text = clean_text(paragraph.text)
+        if not text:
+            continue
+        block_index += 1
+        rows.append(_text_row(name=name, path=path, block_index=block_index, text=text))
+
+    for table in document.tables:
+        table_lines: list[str] = []
+        for row in table.rows:
+            cells: list[str] = []
+            for cell in row.cells:
+                value = clean_text(cell.text)
+                if value:
+                    cells.append(value)
+            if cells:
+                table_lines.append(" | ".join(cells))
+        table_text = clean_text("\n".join(table_lines))
+        if not table_text:
+            continue
+        block_index += 1
+        rows.append(
+            _text_row(
+                name=name,
+                path=path,
+                block_index=block_index,
+                text=table_text,
+                block_type="table",
+                table_rows=table_text,
+            )
+        )
+    return rows
+
+
 def bind_surrounding_text(rows: list[dict[str, Any]], window: int = 1) -> list[dict[str, Any]]:
     by_page: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for row in rows:
@@ -492,7 +583,7 @@ def textbook_name_from_file(path: Path) -> str:
 
 
 def discover_textbooks(textbooks_dir: Path) -> list[Path]:
-    allowed = {".json", ".md", ".markdown", ".txt", ".zip"}
+    allowed = {".docx", ".json", ".md", ".markdown", ".txt", ".zip"}
     return sorted(
         p
         for p in textbooks_dir.iterdir()
@@ -738,6 +829,8 @@ def build_textbook_index_for_files(
                     pass
         elif path.suffix.lower() == ".json":
             rows.extend(rows_from_json(name, path))
+        elif path.suffix.lower() == ".docx":
+            rows.extend(rows_from_docx(name, path))
         else:
             rows.extend(rows_from_text(name, path))
     rows = enrich_rows_with_sections(rows)

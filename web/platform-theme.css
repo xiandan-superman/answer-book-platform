@@ -2265,13 +2265,33 @@ body[data-active-page="result"] .step-track {
   }
 
   .step-indicator {
-    top: 76px;
+    top: 120px;
   }
 
   .nav-inner,
   body:has(#page-home.active) .nav-inner {
-    height: 66px;
-    padding: 0 15px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 8px;
+    height: auto;
+    min-height: 108px;
+    padding: 8px 15px 10px;
+  }
+
+  .brand-button,
+  body:has(#page-home.active) .brand-button {
+    min-width: 0;
+    justify-self: start;
+  }
+
+  .nav-actions,
+  body:has(#page-home.active) .nav-actions {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
   }
 
   .brand-mark,
@@ -2289,7 +2309,9 @@ body[data-active-page="result"] .step-track {
 
   .nav-actions .ghost-button,
   body:has(#page-home.active) .nav-actions .ghost-button {
-    width: 40px;
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
     padding: 0;
     font-size: 0;
   }
@@ -4319,7 +4341,7 @@ body[data-active-page="practice"] .app-shell {
   .practice-difficulty-counts > span, .practice-difficulty-counts strong { grid-column: 1; }
 }
 
-/* 按题生题首步与知识点出题保持同一信息层级：标题、说明、步骤，再进入左右工作区。 */
+/* 按题出题首步与知识点出题保持同一信息层级：标题、说明、步骤，再进入左右工作区。 */
 #page-practice .practice-workspace-heading {
   align-items: center;
   margin: 0 0 18px;
