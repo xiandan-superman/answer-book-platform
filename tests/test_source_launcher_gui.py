@@ -150,6 +150,7 @@ def test_runtime_handoff_preserves_windows_paths_with_spaces(monkeypatch, tmp_pa
     calls = []
     monkeypatch.setattr(source_launcher_gui.sys, "platform", "win32")
     monkeypatch.setattr(source_launcher_gui.sys, "argv", ["source_launcher_gui.py", "--mode", "local"])
+    monkeypatch.setattr(source_launcher_gui.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     monkeypatch.setattr(
         source_launcher_gui.subprocess,
         "run",
