@@ -42,7 +42,10 @@ def show_bootstrap_error(message: str) -> None:
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(0, message, "真题解析与生题平台 · 启动失败", 0x10)
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            raise OSError("Windows message box is unavailable")
+        windll.user32.MessageBoxW(0, message, "真题解析与生题平台 · 启动失败", 0x10)
     except Exception:
         print(message, file=sys.stderr)
 
