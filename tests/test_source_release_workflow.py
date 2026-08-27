@@ -8,10 +8,33 @@ DESKTOP_RELEASE = (ROOT / ".github" / "workflows" / "desktop-release.yml").read_
 QUALITY = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
 
 
-def test_source_release_requires_full_quality_gate_before_packaging() -> None:
-    assert "python scripts/run_quality_gates.py --full" in SOURCE_RELEASE
-    assert SOURCE_RELEASE.index("run_quality_gates.py --full") < SOURCE_RELEASE.index("scripts/package_release.py")
+def test_source_release_runs_only_after_the_complete_main_quality_workflow() -> None:
+    assert "workflow_run:" in SOURCE_RELEASE
+    assert 'workflows: ["Platform quality gates"]' in SOURCE_RELEASE
+    assert "branches: [main]" in SOURCE_RELEASE
+    assert "github.event.workflow_run.conclusion == 'success'" in SOURCE_RELEASE
+    assert "github.event.workflow_run.event == 'push'" in SOURCE_RELEASE
+    assert "github.event.workflow_run.head_branch == 'main'" in SOURCE_RELEASE
+    assert "workflow_dispatch:" not in SOURCE_RELEASE
+    assert "tags:" not in SOURCE_RELEASE
     assert "scripts/verify_release_package.py" in SOURCE_RELEASE
+
+
+def test_source_release_creates_the_tag_only_after_packaging_and_smoke() -> None:
+    assert SOURCE_RELEASE.index("scripts/package_release.py") < SOURCE_RELEASE.index("git tag")
+    assert SOURCE_RELEASE.index("Verify packaged source starts") < SOURCE_RELEASE.index("git tag")
+    assert 'git push origin "refs/tags/${RELEASE_TAG}"' in SOURCE_RELEASE
+
+
+def test_source_release_is_idempotent_and_verifies_the_public_result() -> None:
+    assert "Release and stable feed already exist" in SOURCE_RELEASE
+    assert "mode=recover-feed" in SOURCE_RELEASE
+    assert "refusing to downgrade" in SOURCE_RELEASE
+    assert "--clobber" in SOURCE_RELEASE
+    assert "bounded retries" in SOURCE_RELEASE
+    assert "Download and verify the public release and stable feed" in SOURCE_RELEASE
+    assert "published != stable" in SOURCE_RELEASE
+    assert "published source asset checksum" in SOURCE_RELEASE
 
 
 def test_source_release_smoke_starts_the_packaged_zip_with_isolated_data() -> None:

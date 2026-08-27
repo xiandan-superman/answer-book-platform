@@ -19,7 +19,7 @@
 
 ## 3. 门禁与容易遗漏的测试契约
 
-1. 快速检查可先运行 `python scripts/run_quality_gates.py`，但创建第一个正式标签前，必须在锁定 Python 3.11 完整开发依赖环境运行 `python scripts/run_quality_gates.py --full` 并通过。标签工作流会再次运行同一完整门禁；定向测试、普通门禁或“交给 CI 再发现”均不能代替本地完整门禁。
+1. 快速检查可先运行 `python scripts/run_quality_gates.py`，但提交正式版本元数据前，必须在锁定 Python 3.11 完整开发依赖环境运行 `python scripts/run_quality_gates.py --full` 并通过。推送后 GitHub 还会独立运行 Python 3.9、3.11 和 Chromium 门禁；定向测试、普通门禁或“交给 CI 再发现”均不能代替本地完整门禁。
 2. 必须实际运行仓库锁定版本的 `ruff check .`（或确认质量门禁已执行到 Ruff 且通过）；不能用 `py_compile`、`git diff --check` 或功能测试替代 import/格式检查。
 3. 新增持久化任务字段或函数参数时，不仅要修改数据类和调用方，还要更新恢复路径、历史数据默认值以及 mock/精确字典断言。否则定向测试可能通过，整库恢复测试仍会失败。
 4. 质量门禁中的文件路径必须统一为 POSIX 形式后再和排除清单比较；Windows 的反斜杠会让冻结发布脚本意外进入平台门禁。
@@ -35,7 +35,7 @@
 - `RELEASE_MANIFEST.json` 中的 `version`、`source_revision`、日期和真实验证记录
 - `CHANGELOG.md` 中完全匹配的 `## [版本]` 条目
 
-随后运行 `python scripts/check_version_consistency.py`。标签必须严格为 `v<APP_VERSION>`；`main` push 不会向普通用户发布更新。
+随后运行 `python scripts/check_version_consistency.py`。不要人工创建标签；完整 CI 成功后，发布工作流只会为尚未发布的新 `APP_VERSION` 自动创建 `v<APP_VERSION>`。版本号未变化的普通 `main` push 不会向用户重复发布。
 
 ## 5. 本地源码包与反向验证
 
@@ -45,15 +45,16 @@
 4. 从 ZIP 解压到临时目录，使用独立 `ANSWER_BOOK_DATA_DIR` 启动，确认 `/api/version` 返回新版本且首页可访问。
 5. 本地包只是发布候选证据，不等于 GitHub 正式版本。
 
-## 6. GitHub 发布顺序
+## 6. GitHub 自动发布顺序
 
-1. 提交全部源码、测试、文档和版本元数据。
-2. 推送当前分支到源码仓库，确认远程提交一致。
-3. 创建并推送完全匹配的版本标签。
-4. 观察 `.github/workflows/source-release.yml`：完整门禁、源码 ZIP 启动冒烟、公开 Release 和 `update-stable-v2.json` 必须全部成功。
-5. 到公开更新仓库核对 Release 资产、SHA256/更新清单和版本说明；再从本地旧版执行一次“检查更新”，确认客户端能看到新版本。
+1. 提交全部源码、测试、文档和版本元数据，只推送 `main`，禁止人工创建或推送正式标签。
+2. `.github/workflows/quality.yml` 自动运行 Python 3.9、Python 3.11 完整门禁和 Chromium 冒烟；任一失败都只算预检失败，不创建标签、不上传附件。
+3. 质量工作流全部成功后，`.github/workflows/source-release.yml` 比较 `APP_VERSION` 与公开 Release：已发布版本安全跳过，新版本才继续。
+4. 发布工作流先打包、反向验证并实际启动源码 ZIP，全部成功后才自动创建标签、上传 Release 和更新 `update-stable-v2.json`。
+5. 工作流重新下载公开 ZIP 和清单，核对大小、SHA256 及稳定源；网络步骤有限重试。若 Release 已建立但稳定源更新中断，下次运行从已发布清单自动恢复，不重建版本。
+6. 到公开更新仓库核对结果，再从本地旧版执行一次“检查更新”，确认客户端能看到新版本。
 
-如果标签确认已在远端但 Actions 在合理等待后仍没有运行记录，可对同一标签使用 `workflow_dispatch` 手动触发现有工作流；不得通过移动标签、空提交或修改发布脚本来伪造一次新触发。若发布工作流已失败，该标签永久保留为失败记录，修复后递增补丁版本并创建新标签，禁止删除、移动或复用失败标签。
+不得删除、移动或复用任何历史标签。自动流程之外出现的同名标签冲突必须先查明来源，不能用强制推送掩盖。
 
 桌面安装包属于手动兼容渠道，不得把桌面打包结果混同为源码更新版，也不得让它阻塞主源码发布。
 

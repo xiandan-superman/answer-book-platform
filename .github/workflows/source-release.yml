@@ -1,49 +1,119 @@
 name: Publish source runtime release
 
 on:
-  workflow_dispatch:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_run:
+    workflows: ["Platform quality gates"]
+    types: [completed]
+    branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: source-release-${{ github.ref }}
+  group: source-release
   cancel-in-progress: false
 
 jobs:
   publish-source:
-    if: github.ref_type == 'tag'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
       RELEASE_REPOSITORY: xiandan-superman/answer-book-platform-releases
-      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install locked release validation runtime
+      - name: Plan an unpublished, current release only
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          version="$(tr -d '\r\n ' < APP_VERSION)"
+          test -n "$version"
+          release_tag="v${version}"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+
+          current_main="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$current_main" != "$SOURCE_SHA" ]]; then
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "A newer main commit exists; this successful run is intentionally skipped."
+            exit 0
+          fi
+
+          python scripts/check_version_consistency.py
+          python scripts/extract_release_notes.py --version "$version" --output "$RUNNER_TEMP/release-notes-preflight.md"
+
+          if gh release view "$release_tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p dist/release-state
+            stable_state="missing"
+            if gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" --jq .content \
+              | base64 --decode > dist/release-state/update-stable-v2.json 2>/dev/null; then
+              stable_state="$(python - "$version" "$release_tag" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path("dist/release-state/update-stable-v2.json").read_text(encoding="utf-8"))
+          current_version, current_tag = sys.argv[1:3]
+          stable_version = str(manifest.get("version") or "")
+
+          def version_key(value: str) -> tuple[tuple[int, ...], int, str]:
+              core, separator, suffix = value.partition("-")
+              return tuple(int(part) for part in core.split(".")), 0 if separator else 1, suffix
+
+          if stable_version == current_version and manifest.get("release_tag") == current_tag:
+              print("current")
+          elif stable_version and version_key(stable_version) > version_key(current_version):
+              print("newer")
+          else:
+              print("recover")
+          PY
+          )"
+            fi
+            if [[ "$stable_state" == "current" ]]; then
+              echo "mode=skip" >> "$GITHUB_OUTPUT"
+              echo "Release and stable feed already exist; no files are rebuilt or re-uploaded."
+            elif [[ "$stable_state" == "newer" ]]; then
+              echo "mode=skip" >> "$GITHUB_OUTPUT"
+              echo "The stable feed is newer than this source version; refusing to downgrade it."
+            else
+              echo "mode=recover-feed" >> "$GITHUB_OUTPUT"
+              echo "The public release exists but the stable feed is incomplete; recover it from the published manifest."
+            fi
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+            tagged_sha="$(git rev-list -n 1 "$release_tag")"
+            if [[ "$tagged_sha" != "$SOURCE_SHA" ]]; then
+              echo "Existing tag $release_tag points to $tagged_sha, not $SOURCE_SHA." >&2
+              exit 1
+            fi
+          fi
+
+          echo "mode=publish" >> "$GITHUB_OUTPUT"
+
+      - name: Install locked release packaging runtime
+        if: steps.plan.outputs.mode == 'publish'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt
-      - name: Require complete platform quality gate
-        run: python scripts/run_quality_gates.py --full
-      - name: Validate tagged version
-        shell: bash
-        run: |
-          version="$(tr -d '\r\n ' < APP_VERSION)"
-          test -n "$version"
-          test "$RELEASE_TAG" = "v${version}"
-          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
       - name: Build reproducible source archive and update feed
+        if: steps.plan.outputs.mode == 'publish'
         shell: bash
         run: |
           mkdir -p dist/release-assets
@@ -62,6 +132,7 @@ jobs:
             --asset "source=$asset" \
             --output dist/release-assets/update-manifest.json
       - name: Verify packaged source starts with isolated data
+        if: steps.plan.outputs.mode == 'publish'
         shell: bash
         run: |
           smoke_root="$RUNNER_TEMP/source-release-smoke"
@@ -80,23 +151,118 @@ jobs:
           kill "$smoke_pid"
           wait "$smoke_pid" 2>/dev/null || true
           trap - EXIT
-      - name: Publish source release
+      - name: Create the source tag only after every pre-release check passes
+        if: steps.plan.outputs.mode == 'publish'
         shell: bash
+        run: |
+          if git rev-parse --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$SOURCE_SHA"
+          else
+            git tag "$RELEASE_TAG" "$SOURCE_SHA"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
+      - name: Publish source release with bounded retries
+        if: steps.plan.outputs.mode == 'publish'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
         run: |
           test -n "$GH_TOKEN"
-          if gh release view "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/release-assets/* --repo "$RELEASE_REPOSITORY" --clobber
-          else
-            gh release create "$RELEASE_TAG" dist/release-assets/* \
-              --repo "$RELEASE_REPOSITORY" \
-              --title "真题解析与生题平台 ${RELEASE_VERSION}" \
-              --notes-file dist/github-release-notes.md
-          fi
-      - name: Update safe stable source feed
+          published=false
+          for attempt in $(seq 1 4); do
+            if gh release view "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$RELEASE_TAG" dist/release-assets/* --repo "$RELEASE_REPOSITORY" --clobber && published=true && break
+            else
+              gh release create "$RELEASE_TAG" dist/release-assets/* \
+                --repo "$RELEASE_REPOSITORY" \
+                --title "真题解析与生题平台 ${RELEASE_VERSION}" \
+                --notes-file dist/github-release-notes.md && published=true && break
+            fi
+            sleep $((attempt * 5))
+          done
+          test "$published" = true
+      - name: Recover published manifest for an interrupted stable-feed update
+        if: steps.plan.outputs.mode == 'recover-feed'
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          mkdir -p dist/release-assets
+          recovered=false
+          for attempt in $(seq 1 4); do
+            rm -f dist/release-assets/update-manifest.json
+            if gh release download "$RELEASE_TAG" \
+              --repo "$RELEASE_REPOSITORY" \
+              --pattern update-manifest.json \
+              --dir dist/release-assets; then recovered=true; break; fi
+            sleep $((attempt * 5))
+          done
+          test "$recovered" = true
+          python - "$RELEASE_VERSION" "$RELEASE_TAG" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path("dist/release-assets/update-manifest.json").read_text(encoding="utf-8"))
+          if manifest.get("version") != sys.argv[1] or manifest.get("release_tag") != sys.argv[2]:
+              raise SystemExit("published manifest cannot recover the requested stable release")
+          PY
+      - name: Update safe stable source feed with bounded retries
+        if: steps.plan.outputs.mode == 'publish' || steps.plan.outputs.mode == 'recover-feed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
         run: |
           content="$(base64 -w 0 dist/release-assets/update-manifest.json)"
-          sha="$(gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" -f message="release: update safe stable source feed to ${RELEASE_VERSION}" -f content="$content")
-          if [[ -n "$sha" ]]; then args+=(-f sha="$sha"); fi
-          gh api "${args[@]}"
+          updated=false
+          for attempt in $(seq 1 4); do
+            sha="$(gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" -f message="release: update safe stable source feed to ${RELEASE_VERSION}" -f content="$content")
+            if [[ -n "$sha" ]]; then args+=(-f sha="$sha"); fi
+            if gh api "${args[@]}" >/dev/null; then updated=true; break; fi
+            sleep $((attempt * 5))
+          done
+          test "$updated" = true
+      - name: Download and verify the public release and stable feed
+        if: steps.plan.outputs.mode == 'publish' || steps.plan.outputs.mode == 'recover-feed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          verify_root="$RUNNER_TEMP/published-source-release"
+          mkdir -p "$verify_root"
+          downloaded=false
+          for attempt in $(seq 1 4); do
+            rm -f "$verify_root"/*
+            if gh release download "$RELEASE_TAG" \
+              --repo "$RELEASE_REPOSITORY" \
+              --pattern "answer-book-platform-${RELEASE_VERSION}-source.zip" \
+              --pattern update-manifest.json \
+              --dir "$verify_root"; then downloaded=true; break; fi
+            sleep $((attempt * 5))
+          done
+          test "$downloaded" = true
+          gh api "repos/${RELEASE_REPOSITORY}/contents/update-stable-v2.json" --jq .content \
+            | base64 --decode > "$verify_root/update-stable-v2.json"
+          python - "$verify_root" "$RELEASE_VERSION" "$RELEASE_TAG" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          version, release_tag = sys.argv[2:4]
+          published = json.loads((root / "update-manifest.json").read_text(encoding="utf-8"))
+          stable = json.loads((root / "update-stable-v2.json").read_text(encoding="utf-8"))
+          if published != stable:
+              raise SystemExit("stable feed does not exactly match the published manifest")
+          if published.get("version") != version or published.get("release_tag") != release_tag:
+              raise SystemExit("published version metadata does not match the requested release")
+          source = published.get("platforms", {}).get("source", {})
+          asset = root / source.get("asset_name", "")
+          if not asset.is_file() or asset.stat().st_size != source.get("size_bytes"):
+              raise SystemExit("published source asset size does not match its manifest")
+          digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+          if digest != source.get("sha256"):
+              raise SystemExit("published source asset checksum does not match its manifest")
+          PY

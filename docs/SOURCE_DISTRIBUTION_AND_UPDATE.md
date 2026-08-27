@@ -11,7 +11,7 @@
 ## 固定决策
 
 - 普通用户主渠道是 GitHub 源码 ZIP，不要求安装 Git，也不要求安装 DMG/EXE。
-- 正式更新由版本标签触发，不由 `main` 的普通 push 触发。
+- 正式更新由 `main` 完整门禁成功后自动生成的版本标签触发；版本号未增加的普通 push 只检查、不重复发布，禁止人工提前创建正式标签。
 - 用户电脑缺少 Python 时只提示安装 Python 3.9+；程序不下载或捆绑 Python。
 - 首次启动自动创建用户级虚拟环境并安装依赖。后续静默核对依赖指纹和关键模块；发生变化或缺失时提示，用户确认更新后再安装。
 - 用户数据永远位于系统用户数据目录，源码目录视为可以整体替换的只读程序材料。
@@ -69,18 +69,18 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 
 1. 完成源码修改和独立数据目录的本地预览。
 2. 用户确认后提交并推送 Git。
-3. 累积到正式版本时同步 `APP_VERSION`、`VERSION`、`RELEASE_MANIFEST.json`。
-4. 创建完全匹配的 `v<APP_VERSION>` 标签。
-5. `.github/workflows/source-release.yml` 使用 `scripts/package_release.py` 从 Git 索引白名单生成源码 ZIP，再由 `scripts/verify_release_package.py` 反向检查启动文件、Logo、版本清单和运行数据排除规则；禁止直接用未筛选的 `git archive` 作为普通用户附件。
+3. 累积到正式版本时同步 `APP_VERSION`、`VERSION`、`RELEASE_MANIFEST.json` 和对应的 `CHANGELOG.md` 条目，只推送 `main`，不人工创建标签。
+4. `.github/workflows/quality.yml` 完成 Python 3.9、Python 3.11 和 Chromium 门禁；失败只停留在预检阶段，不产生正式版本标签。
+5. 门禁全部成功后，`.github/workflows/source-release.yml` 仅为尚未公开的新版本运行。它使用 `scripts/package_release.py` 从 Git 索引白名单生成源码 ZIP，再由 `scripts/verify_release_package.py` 反向检查启动文件、Logo、版本清单和运行数据排除规则；禁止直接用未筛选的 `git archive` 作为普通用户附件。打包反向验证和启动冒烟全部通过后，工作流才自动创建完全匹配的 `v<APP_VERSION>` 标签。
 6. 生成包含版本、附件名、大小、SHA256 和依赖指纹的 `update-manifest.json`。
-7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新仅供 0.9.19+ 安全替换器使用的 `update-stable-v2.json`。旧版固定读取的 `update-stable.json` 保持禁用，防止旧替换逻辑再次触发。
+7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新仅供 0.9.19+ 安全替换器使用的 `update-stable-v2.json`。上传和稳定源更新使用有限重试；结束时重新下载公开附件，核对大小、SHA256 和稳定源。若稳定源更新中断，后续运行从已发布清单幂等恢复。旧版固定读取的 `update-stable.json` 保持禁用，防止旧替换逻辑再次触发。
    GitHub Release 说明顶部必须自动生成带版本的正式附件直链，并明确警告不要下载 GitHub 自动生成的 `Source code (zip)`；发布仓库的自动源码包不含平台启动器。
 8. 客户端启动后自动静默检查清单。发现旧版本时显示非阻塞提醒；用户查看说明并确认后才更新。
 9. 更新前读取统一运行监控；存在运行中或排队任务时拒绝重启更新，并提示用户在任务完成后重试。
 10. 更新请求进入独立后台线程，网页通过本机进度接口显示检查、下载、SHA256 校验和准备替换状态；服务退出后由监督器的独立更新窗口继续展示真实安装进度，页面自动等待并重新连接。
 11. 覆盖或依赖准备失败时，监督器原位恢复备份、隔离失败计划并重新启动旧版本；页面恢复后明确显示更新失败、回滚成功和可继续使用，不在后续每次启动时自动重复同一失败计划。
 
-发布标签的工作流在生成稳定更新前必须安装锁定依赖并通过完整质量门禁；生成源码 ZIP 后还会用独立数据目录实际启动压缩包并检查 `/api/version`。普通 `main` push 和拉取请求由 Python 3.9、3.11 门禁以及 Chromium 关键流程保护，但不会调用真实付费模型。
+自动发布只接收 `main` 的完整质量工作流成功事件，并确认该提交仍是最新 `main`；旧成功运行会安全跳过。生成源码 ZIP 后还会用独立数据目录实际启动压缩包并检查 `/api/version`，之后才创建标签。质量门禁不会调用真实付费模型。
 
 桌面安装包工作流只保留为手动兼容渠道。不得让桌面打包成功与否阻塞源码更新发布。
 
