@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -22,6 +23,8 @@ _NON_REUSABLE_REVIEW_FLAGS = {
     "answer_generation_review_candidate",
     "unresolved_formula_reference_removed",
 }
+
+UPSTREAM_CHECKPOINT_CONTRACT_VERSION = "answer_book.upstream_checkpoint_contract.v1"
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -151,15 +154,107 @@ def restore_failed_content_repair_checkpoint(
     return ""
 
 
-def upstream_checkpoint_reusable(stage_dir: Path, *, requested: bool) -> bool:
-    """Accept an upstream checkpoint only under current structural policies."""
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def upstream_checkpoint_contract(
+    exam_path: Path,
+    *,
+    textbook_cache_key: str,
+    textbook_manifest: list[dict[str, Any]],
+    strategy: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind reusable pre-retrieval work to its exact source and run strategy.
+
+    Textbooks use the platform's existing index-cache identity (selected source
+    set, name, size, mtime, and citation binding), rather than a content hash.
+    The exam additionally uses a content digest because it is extracted
+    directly by this pipeline rather than through that cache.
+    """
+
+    return {
+        "version": UPSTREAM_CHECKPOINT_CONTRACT_VERSION,
+        "exam": {
+            "sha256": _sha256_file(exam_path),
+        },
+        "textbooks": {
+            "cache_key": str(textbook_cache_key or ""),
+            "manifest": copy.deepcopy(textbook_manifest),
+        },
+        "strategy": copy.deepcopy(strategy),
+    }
+
+
+def upstream_checkpoint_contract_fingerprint(contract: dict[str, Any]) -> str:
+    """Return the stable identity embedded in dependent stage checkpoints."""
+
+    payload = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def write_upstream_checkpoint_contract(stage_dir: Path, contract: dict[str, Any]) -> None:
+    """Persist a contract only after structure, understanding, and plans pass."""
+
+    _write_json(stage_dir / "upstream_checkpoint_contract.json", contract)
+
+
+def early_upstream_checkpoint_reusable(
+    stage_dir: Path,
+    *,
+    requested: bool,
+    contract: dict[str, Any],
+) -> bool:
+    """Allow reuse only through knowledge planning; retrieval is deliberately excluded."""
+
+    required = (
+        "upstream_checkpoint_contract.json",
+        "structured_exam.json",
+        "question_understanding.json",
+        "knowledge_plans.json",
+    )
+    if not requested or not all((stage_dir / filename).is_file() for filename in required):
+        return False
+    try:
+        stored_contract = json.loads((stage_dir / "upstream_checkpoint_contract.json").read_text(encoding="utf-8"))
+        structured_exam = json.loads((stage_dir / "structured_exam.json").read_text(encoding="utf-8"))
+        understanding = json.loads((stage_dir / "question_understanding.json").read_text(encoding="utf-8"))
+        plans = json.loads((stage_dir / "knowledge_plans.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not all(isinstance(payload, dict) for payload in (stored_contract, structured_exam, understanding, plans)):
+        return False
+    if stored_contract != contract:
+        return False
+    return (
+        stored_contract.get("version") == UPSTREAM_CHECKPOINT_CONTRACT_VERSION
+        and structured_exam.get("grouping_policy_version") == EXAM_GROUPING_POLICY_VERSION
+        and isinstance(structured_exam.get("items"), list)
+        and understanding.get("policy_version") == str(contract.get("strategy", {}).get("question_understanding_policy_version") or "")
+        and isinstance(plans.get("plans"), list)
+    )
+
+
+def upstream_checkpoint_reusable(
+    stage_dir: Path,
+    *,
+    requested: bool,
+    contract: dict[str, Any],
+) -> bool:
+    """Accept a full checkpoint only when its early contract and evidence are current."""
 
     required = (
         "structured_exam.json",
         "knowledge_plans.json",
         "evidence_selection.json",
     )
-    if not requested or not all((stage_dir / filename).exists() for filename in required):
+    if not early_upstream_checkpoint_reusable(stage_dir, requested=requested, contract=contract):
+        return False
+    if not all((stage_dir / filename).exists() for filename in required):
         return False
     try:
         structured_exam = json.loads((stage_dir / "structured_exam.json").read_text(encoding="utf-8"))
@@ -652,5 +747,14 @@ def normalize_answer_checkpoint(
     return migrated
 
 
-def figure_schema_checkpoint_reusable(report: dict[str, Any], *, policy_version: str) -> bool:
-    return isinstance(report, dict) and str(report.get("routing_policy_version") or "") == policy_version
+def figure_schema_checkpoint_reusable(
+    report: dict[str, Any],
+    *,
+    policy_version: str,
+    upstream_contract_fingerprint: str = "",
+) -> bool:
+    if not isinstance(report, dict) or str(report.get("routing_policy_version") or "") != policy_version:
+        return False
+    if upstream_contract_fingerprint:
+        return str(report.get("upstream_checkpoint_contract_fingerprint") or "") == upstream_contract_fingerprint
+    return True

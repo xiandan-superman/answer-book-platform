@@ -585,6 +585,22 @@ function validPracticeWorkspaceDraft(record) {
   return Boolean(record && record.schema === "practice_workspace_draft.v1");
 }
 
+function restorablePracticeWorkspaceDraft(record) {
+  if (!validPracticeWorkspaceDraft(record)) return false;
+  if (record.stage === "scope") return Boolean(record.request || record.source_scope);
+  if (record.stage === "plan") return Boolean(record.plan);
+  const input = record.input || {};
+  const textFields = [input.question_text, input.title, input.text, input.focus];
+  if (textFields.some((value) => String(value || "").trim())) return true;
+  if (Array.isArray(input.source_files) && input.source_files.length) return true;
+  if (Array.isArray(input.question_types) && input.question_types.length) return true;
+  if (String(input.count || "5") !== "5") return true;
+  if (String(input.difficulty || "基础到进阶") !== "基础到进阶") return true;
+  return input.semantic_review_enabled === true
+    || input.include_source_content_in_generation === false
+    || input.blueprint_review_enabled === false;
+}
+
 function practiceWorkspaceCandidateId(record = {}, source = "active") {
   return [source, record.mode, record.practice_batch_id, record.archived_at || record.updated_at].map((value) => String(value || "")).join(":");
 }
@@ -646,7 +662,7 @@ async function discoverPracticeWorkspaceRestoreCandidate(mode, sessionVersion) {
   const candidateKey = practiceWorkspaceRestoreCandidateKey(normalizedMode);
   const pinned = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get", null, candidateKey).catch(() => null);
   if (sessionVersion !== practiceSessionVersion) return null;
-  if (pinned?.schema === PRACTICE_WORKSPACE_RESTORE_CANDIDATE_SCHEMA && validPracticeWorkspaceDraft(pinned.record)) {
+  if (pinned?.schema === PRACTICE_WORKSPACE_RESTORE_CANDIDATE_SCHEMA && restorablePracticeWorkspaceDraft(pinned.record)) {
     return storePracticeWorkspaceRestoreCandidate(normalizedMode, {
       source: pinned.source === "archive" ? "archive" : "active",
       candidate_id: String(pinned.candidate_id || practiceWorkspaceCandidateId(pinned.record, pinned.source)),
@@ -656,12 +672,12 @@ async function discoverPracticeWorkspaceRestoreCandidate(mode, sessionVersion) {
   }
   const active = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "get").catch(() => null);
   let source = "active";
-  let record = validPracticeWorkspaceDraft(active) ? active : null;
+  let record = restorablePracticeWorkspaceDraft(active) ? active : null;
   if (!record) {
     const records = await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "getAll").catch(() => []);
     source = "archive";
     record = (records || [])
-      .filter((item) => item?.workspace_mode === normalizedMode && validPracticeWorkspaceDraft(item))
+      .filter((item) => item?.workspace_mode === normalizedMode && restorablePracticeWorkspaceDraft(item))
       .sort((left, right) => Number(right.archived_at || 0) - Number(left.archived_at || 0))[0] || null;
   }
   if (!record || sessionVersion !== practiceSessionVersion) return null;
@@ -907,7 +923,7 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
   const currentRecord = capturePersistentPracticeWorkspace(normalizedMode);
   const archivedAt = Date.now();
   const candidate = practiceWorkspaceRestoreCandidates[normalizedMode];
-  if (candidate?.source === "active" && validPracticeWorkspaceDraft(candidate.record)) {
+  if (candidate?.source === "active" && restorablePracticeWorkspaceDraft(candidate.record)) {
     await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
       ...copyPracticeWorkspaceValue(candidate.record),
       mode: `${normalizedMode}:archive:${archivedAt}`,
@@ -915,7 +931,7 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
       archived_at: archivedAt,
     }).catch(() => {});
   }
-  if (!candidate || practiceWorkspaceHasNewInput(normalizedMode)) {
+  if (restorablePracticeWorkspaceDraft(currentRecord) && (!candidate || practiceWorkspaceHasNewInput(normalizedMode))) {
     const currentArchivedAt = candidate ? archivedAt + 1 : archivedAt;
     await queuePracticeWorkspaceDatabaseOperation(normalizedMode, "put", {
       ...currentRecord,
@@ -925,8 +941,9 @@ async function clearAndStartFreshPracticeWorkspace(mode, knowledgeInputPage = fa
     }).catch(() => {});
   }
   await clearPersistentPracticeWorkspace(mode);
-  if (mode === "knowledge" && knowledgeInputPage) openKnowledgeEntry();
-  else openPracticeEntry(mode);
+  if (mode === "knowledge" && knowledgeInputPage) openKnowledgeEntry(false);
+  else openPracticeEntry(mode, false, false);
+  if (currentPage === "practice") setPracticeStatusBanner("已保留历史草稿 · 当前为新任务");
 }
 
 async function restorePreviousPracticeWorkspace(mode, knowledgeInputPage = false) {
@@ -935,7 +952,7 @@ async function restorePreviousPracticeWorkspace(mode, knowledgeInputPage = false
   if (!candidate || candidate.session_version !== practiceSessionVersion) {
     candidate = await discoverPracticeWorkspaceRestoreCandidate(normalizedMode, practiceSessionVersion);
   }
-  if (!candidate || !validPracticeWorkspaceDraft(candidate.record)) {
+  if (!candidate || !restorablePracticeWorkspaceDraft(candidate.record)) {
     await platformAlert("还没有可恢复的历史草稿。", { title: "恢复草稿" });
     return;
   }
@@ -1002,6 +1019,7 @@ function syncKnowledgeRequestToPracticeWorkspace(request = {}) {
 }
 
 function openPracticeEntry(mode = "exam", openModelSettings = false) {
+  const announceWorkspaceDraft = arguments.length < 3 || arguments[2] !== false;
   if (openModelSettings) {
     goToPage(mode === "knowledge" ? "knowledge-models" : "practice-models");
     return;
@@ -1035,10 +1053,13 @@ function openPracticeEntry(mode = "exam", openModelSettings = false) {
   const sessionVersion = practiceSessionVersion;
   practiceWorkspaceRestoreCandidates[mode] = null;
   rememberPracticeWorkspaceEntryBaseline(mode, sessionVersion);
-  practiceWorkspaceRestorePromises[mode] = announceAvailablePracticeWorkspaceDraft(mode, sessionVersion).catch(() => false);
+  practiceWorkspaceRestorePromises[mode] = announceWorkspaceDraft
+    ? announceAvailablePracticeWorkspaceDraft(mode, sessionVersion).catch(() => false)
+    : Promise.resolve(false);
 }
 
 function openKnowledgeEntry() {
+  const announceWorkspaceDraft = arguments.length < 1 || arguments[0] !== false;
   if (currentPage === "knowledge") flushScheduledPracticeWorkspaceDraft("knowledge");
   if (currentPage === "practice") flushScheduledPracticeWorkspaceDraft(currentPracticeSourceMode);
   beginNewPracticeSession();
@@ -1054,7 +1075,9 @@ function openKnowledgeEntry() {
   const sessionVersion = practiceSessionVersion;
   practiceWorkspaceRestoreCandidates.knowledge = null;
   rememberPracticeWorkspaceEntryBaseline("knowledge", sessionVersion);
-  practiceWorkspaceRestorePromises.knowledge = announceAvailablePracticeWorkspaceDraft("knowledge", sessionVersion).catch(() => false);
+  practiceWorkspaceRestorePromises.knowledge = announceWorkspaceDraft
+    ? announceAvailablePracticeWorkspaceDraft("knowledge", sessionVersion).catch(() => false)
+    : Promise.resolve(false);
 }
 
 function newPracticeBatchId() {
@@ -1334,19 +1357,16 @@ function latestPipelineStage(stages = []) {
 }
 
 function effectiveCurrentStage(task = {}, stages = []) {
-  const authoritativeTerminalStages = {
-    completed: "completed",
-    completed_with_issues: "completed",
-    failed: "failed",
-    cancelled: "cancelled",
-    paused: "paused"
-  };
-  if (authoritativeTerminalStages[task.status]) return authoritativeTerminalStages[task.status];
+  if (["completed", "completed_with_issues"].includes(task.status)) return "completed";
+  const examWorkflow = !task.is_generation_task
+    && !task.is_format_task
+    && (!task.task_kind || task.task_kind === "exam");
+  if (!examWorkflow && ["failed", "cancelled", "paused"].includes(task.status)) return task.status;
   if (task.current_stage === "completed") return "completed";
   let current = task.effective_current_stage || task.current_stage || "";
   const last = latestPipelineStage(stages);
   if (last && stageOrderIndex(last.stage) >= stageOrderIndex(current)) current = last.stage;
-  return current;
+  return current || (["failed", "cancelled", "paused"].includes(task.status) ? task.status : "");
 }
 
 function taskStatusMeta(status, currentStage = "") {
@@ -1502,7 +1522,7 @@ function setEnvNextEnabled(enabled, hint = "") {
 function taskStageGroupIndex(stage = "") {
   const normalized = String(stage || "");
   const index = taskStageGroups.findIndex((group) => group.stages.includes(normalized));
-  return index >= 0 ? index : 0;
+  return index;
 }
 
 function renderTaskStepList(currentStage = "", status = "") {
@@ -1510,7 +1530,15 @@ function renderTaskStepList(currentStage = "", status = "") {
   if (!list) return;
   const currentIndex = taskStageGroupIndex(currentStage);
   const caption = $("taskStepCaption");
-  if (caption) caption.textContent = status === "completed" ? "所有核心阶段均已完成。" : `当前正在：${stageLabel(currentStage)}`;
+  if (caption) {
+    caption.textContent = status === "completed"
+      ? "所有核心阶段均已完成。"
+      : status === "failed"
+        ? `停止于：${stageLabel(currentStage)}`
+        : status === "cancelled"
+          ? `已取消于：${stageLabel(currentStage)}`
+          : `当前正在：${stageLabel(currentStage)}`;
+  }
   list.innerHTML = "";
   for (const [index, group] of taskStageGroups.entries()) {
     const item = document.createElement("div");
@@ -9625,7 +9653,7 @@ function taskProgressSummary(task) {
     completed: { label: "已完成", meta: "任务已完成" },
     completed_with_issues: { label: "完成待复核", meta: "结果已保存，请按提示复核" }
   }[task?.status];
-  if (terminal) return { percent, stage: task.status, ...terminal };
+  if (terminal) return { percent, stage: current || task.status, ...terminal };
 
   if (current === "question_understanding" && progress && Number(progress.total || 0) > 0) {
     const total = Number(progress.total || 0);
@@ -9710,6 +9738,9 @@ function taskProgressPresentation(task, normalized, progress) {
   }
   if (normalized === "cancelled") {
     return { label: "任务状态", value: "已取消", showBar: false };
+  }
+  if (normalized === "failed" && !task?.is_generation_task && !task?.is_format_task && (!task?.task_kind || task.task_kind === "exam")) {
+    return { label: "流程停止位置", value: `${progress.percent}%`, showBar: true };
   }
   return {
     label: ["completed", "completed_with_issues"].includes(normalized) ? "完成进度" : normalized === "queued" ? "等待执行" : "当前进度",
@@ -10023,9 +10054,11 @@ function renderTaskManager(tasks = latestTasks) {
       : `${["running", "queued"].includes(normalized) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage}${networkSummary ? ` · ${networkSummary}` : ""}`;
     const currentStageText = reviewPending
       ? "等待确认"
-      : (["failed", "cancelled", "paused", "completed", "completed_with_issues"].includes(normalized)
-        ? progress.label
-        : (generationTask ? (task.is_generation_job ? stageLabel(task.current_stage) : phaseText) : (progress.meta || stageText)));
+      : (normalized === "failed" && !generationTask && !formatTask
+        ? `停止于 ${stageLabel(progress.stage)}`
+        : (["failed", "cancelled", "paused", "completed", "completed_with_issues"].includes(normalized)
+          ? progress.label
+          : (generationTask ? (task.is_generation_job ? stageLabel(task.current_stage) : phaseText) : (progress.meta || stageText))));
     const displayCurrentStageText = formatTask
       ? (reviewPending ? "等待确认修改" : "格式处理完成")
       : currentStageText;
@@ -11281,7 +11314,7 @@ function renderTaskDiagnostics(data) {
     data.question_summary || [],
     (item) => {
       const count = Number(item.issue_count || 0) + Number(item.warning_count || 0);
-      const messages = (item.messages || []).slice(0, 2).join("；");
+      const messages = (item.messages || []).slice(0, 2).map(publicDiagnosticMessage).join("；");
       return `<strong>${escapeHtml(item.question_id)}</strong><span>${count} 项：${escapeHtml(messages)}</span>`;
     },
     "未定位到具体题号"
@@ -11291,8 +11324,7 @@ function renderTaskDiagnostics(data) {
     data.issues || [],
     (item) => {
       const qid = item.question_id ? `${item.question_id} · ` : "";
-      const code = item.code ? `（${item.code}）` : "";
-      return `<strong>${escapeHtml(item.stage_label || item.stage)}</strong><span>${escapeHtml(qid + item.message + code)}</span>`;
+      return `<strong>${escapeHtml(item.stage_label || item.stage)}</strong><span>${escapeHtml(qid + publicDiagnosticMessage(item.message, item.question_id))}</span>`;
     },
     "当前没有明确问题项"
   );
@@ -11308,6 +11340,18 @@ function renderTaskDiagnostics(data) {
     (item) => `<strong>${escapeHtml(item.time || "")}</strong><span>${escapeHtml(item.event || "")}</span>`,
     "暂无日志事件"
   );
+}
+
+function publicDiagnosticMessage(message = "", questionId = "") {
+  let text = String(message || "").trim();
+  if (questionId) {
+    const normalizedQuestionId = String(questionId).trim();
+    const prefix = [`${normalizedQuestionId}:`, `${normalizedQuestionId}：`].find((candidate) => text.startsWith(candidate));
+    if (prefix) text = text.slice(prefix.length).trim();
+  }
+  return text
+    .replace(/no retrieval candidates/gi, "未找到可用的教材候选依据")
+    .replace(/retrieval audit failed/gi, "教材候选依据检索审查未通过");
 }
 
 async function loadTaskDiagnostics(taskId = activeTaskId) {
@@ -12050,7 +12094,7 @@ async function loadTasks(options = {}) {
   const requestVersion = ++taskLoadVersion;
   taskManagerLoading = true;
   if (currentPage === "tasks") renderTaskManager(latestTasks);
-  if (!silent) $("runResult").textContent = "读取任务列表中...";
+  if (!silent && currentPage !== "task") $("runResult").textContent = "读取任务列表中...";
   try {
     const data = await api("/api/tasks");
     const loadedTasks = data.tasks || [];
@@ -12068,13 +12112,13 @@ async function loadTasks(options = {}) {
       updateTaskSummary(latestTasks[0]);
       renderTasks(latestTasks);
     }
-    if (!silent) {
+    if (!silent && currentPage !== "task") {
       $("runResult").textContent = pretty({ task_count: latestTasks.length });
       setVisual("runVisualResult", "任务列表已刷新", `当前共有 ${latestTasks.length} 个任务。请选择一个任务查看进度或文件。`, "info");
     }
   } catch (err) {
     if (requestVersion !== taskLoadVersion) return;
-    if (!silent) {
+    if (!silent && currentPage !== "task") {
       $("runResult").textContent = String(err);
       setVisual("runVisualResult", "任务列表读取失败", String(err).replace(/^Error:\s*/, ""), "error");
     } else {
@@ -12164,7 +12208,9 @@ function executionStageProgress(task, current, progress, stages) {
   }
   const total = Number(progress?.total || 0);
   const completed = Number(progress?.completed || 0);
-  if (total > 0) {
+  const progressStage = String(progress?.stage || "");
+  const progressMatchesCurrentStage = !progressStage || progressStage === current || visibleStepStage(progressStage) === current;
+  if (total > 0 && progressMatchesCurrentStage) {
     if (current === "evidence_selection" && progress?.mode === "expansion" && Number(progress?.expansion_total || 0) > 0) {
       const expansionTotal = Number(progress.expansion_total || 0);
       const expansionCompleted = Number(progress.expansion_completed || 0);
@@ -12182,7 +12228,7 @@ function executionStageProgress(task, current, progress, stages) {
   const stageRows = (stages || []).filter((row) => row?.stage === current);
   const latest = stageRows[stageRows.length - 1];
   if (latest?.status === "passed") return { percent: 100, label: "本阶段已完成", measurable: true };
-  if (task.status === "failed") return { percent: 100, label: "本阶段已停止", measurable: true };
+  if (task.status === "failed") return { percent: 0, label: "本阶段未完成", measurable: true };
   if (task.status === "paused") return { percent: 0, label: "等待人工确认", measurable: false };
   return { percent: 0, label: "正在执行", measurable: false };
 }
@@ -12203,6 +12249,17 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
   };
   const total = Number(progress?.total || 0);
   const completed = Number(progress?.completed || 0);
+
+  if (task.status === "failed") {
+    const completedStages = new Set((stages || []).filter((row) => row?.status === "passed" && row.stage !== "pipeline").map((row) => row.stage));
+    detail.title = `${stageLabel(current)}未完成`;
+    detail.text = task.error_presentation?.message || task.error || "请查看问题排查区域中的失败原因。";
+    addMetric(`整体流程未完成 · 已完成 ${completedStages.size} 个子阶段`);
+    if (total > 0 && progress?.stage && progress.stage !== current) {
+      addMetric(`${stageLabel(progress.stage)}已处理 ${completed}/${total} 题`);
+    }
+    return detail;
+  }
 
   if (current === "question_understanding" && total) {
     const active = progress.active || {};
@@ -12240,9 +12297,6 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     addMetric(progress.figure_id ? `图件 ${progress.figure_id}` : "");
     addMetric(progress.model ? `模型 ${progress.model}` : "");
     addMetric(progress.elapsed_seconds != null ? `已耗时 ${progress.elapsed_seconds} 秒` : "");
-  } else if (task.status === "failed") {
-    detail.title = "任务在该阶段停止";
-    detail.text = task.error || "请查看问题排查区域中的失败原因。";
   } else if (current === "hybrid_preprocess") {
     detail.title = "正在本机读取题面";
     detail.text = "先在本机完成公式、图片和题目结构提取，再把不依赖 Microsoft Word 的计算交给云端。";
@@ -13331,8 +13385,20 @@ $("practiceScopeDrawer")?.addEventListener("input", () => schedulePracticeWorksp
 $("practiceScopeDrawer")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practicePlanReview")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practicePlanReview")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
-$("practiceWorkspaceDraftClear")?.addEventListener("click", () => {
-  clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode).catch(() => {});
+async function runPracticeWorkspaceDraftAction(button, action, errorTitle) {
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    await action();
+  } catch (error) {
+    await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: errorTitle, tone: "danger" });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("practiceWorkspaceDraftClear")?.addEventListener("click", (event) => {
+  runPracticeWorkspaceDraftAction(event.currentTarget, () => clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode), "无法新建任务");
 });
 $("practiceLoadingCopyTaskId")?.addEventListener("click", async (event) => {
   const value = String($("practiceLoadingTaskId")?.textContent || "").trim();
@@ -13343,17 +13409,17 @@ $("practiceLoadingCopyTaskId")?.addEventListener("click", async (event) => {
   button.textContent = "已复制";
   setTimeout(() => { button.textContent = original; }, 1200);
 });
-$("practiceWorkspaceDraftClearActive")?.addEventListener("click", () => {
-  clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode).catch(() => {});
+$("practiceWorkspaceDraftClearActive")?.addEventListener("click", (event) => {
+  runPracticeWorkspaceDraftAction(event.currentTarget, () => clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode), "无法新建任务");
 });
-$("knowledgeWorkspaceDraftClear")?.addEventListener("click", () => {
-  clearAndStartFreshPracticeWorkspace("knowledge", true).catch(() => {});
+$("knowledgeWorkspaceDraftClear")?.addEventListener("click", (event) => {
+  runPracticeWorkspaceDraftAction(event.currentTarget, () => clearAndStartFreshPracticeWorkspace("knowledge", true), "无法新建任务");
 });
-$("practiceWorkspaceDraftRestorePrevious")?.addEventListener("click", () => {
-  restorePreviousPracticeWorkspace(currentPracticeSourceMode).catch(() => {});
+$("practiceWorkspaceDraftRestorePrevious")?.addEventListener("click", (event) => {
+  runPracticeWorkspaceDraftAction(event.currentTarget, () => restorePreviousPracticeWorkspace(currentPracticeSourceMode), "无法恢复草稿");
 });
-$("knowledgeWorkspaceDraftRestorePrevious")?.addEventListener("click", () => {
-  restorePreviousPracticeWorkspace("knowledge", true).catch(() => {});
+$("knowledgeWorkspaceDraftRestorePrevious")?.addEventListener("click", (event) => {
+  runPracticeWorkspaceDraftAction(event.currentTarget, () => restorePreviousPracticeWorkspace("knowledge", true), "无法恢复草稿");
 });
 $("practicePlanBackBtn")?.addEventListener("click", () => {
   $("practicePlanReview")?.classList.add("hidden");

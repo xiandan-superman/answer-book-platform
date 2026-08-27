@@ -149,6 +149,8 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 
 B.AI 使用 `https://api.b.ai/v1` 的 OpenAI 兼容 Chat Completions 接口。仅内置已完成真实请求和 JSON 结构化输出验证的 `deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`hy3` 与 `mimo-v2.5`；其中只有 `deepseek-v4-flash-vision-exp` 启用图片输入。需要充值解锁的 `gpt-5.6-luna` 不在可选模型中。B.AI 开启 Cloudflare 客户端特征检查后，程序会仅对该服务商附加浏览器兼容 `User-Agent`，避免正常 API 请求被误拦截为 `403 / 1010`。
 
+灵算 Google Gemini 使用独立的 `LINGSUAN_GOOGLE_API_KEY`。灵算网关把 Gemini 3.7 Flash 暴露为 `gemini-3.7-flash-low`、`gemini-3.7-flash-medium` 和 `gemini-3.7-flash-high` 三个实际模型 ID，平台分别显示为低、中、高推理档；其中 low 已完成真实 JSON 连通验证。旧版保存的本地供应商配置也会自动补入这三个选项，但不会强制改变用户原来的默认模型。
+
 OpenRouter 使用 `https://openrouter.ai/api/v1` 的 Responses API。内置 `stealth/ox-alpha`、`z-ai/glm-5.2:free` 和 `minimax/minimax-m3:free`；其中 Ox Alpha 与 MiniMax M3 Free 启用图片输入，GLM 5.2 Free 仅启用文本输入。MiniMax M3 Free 已完成文本、JSON 结构化输出和图片理解的真实请求验证；GLM 5.2 Free 在测试时持续受 OpenRouter 上游免费共享池 429 限流，使用时可能需稍后重试。API Key 通过独立的 `OPENROUTER_API_KEY` 配置项保存。
 
 Google AI Studio 使用官方 `https://generativelanguage.googleapis.com/v1beta/openai` OpenAI 兼容接口。内置稳定版 `gemini-3.7-flash`、`gemini-3.6-flash`、`gemini-3.5-flash` 和 `gemini-3.5-flash-lite`，四个模型均支持文本、图片和 JSON 结构化输出。Gemini 3 系列不能关闭推理；平台会把关闭请求降级为 `low`，并把超高强度限制为官方支持的 `high`。API Key 通过独立的 `GEMINI_API_KEY` 配置项保存，不与灵算 Gemini 共用。

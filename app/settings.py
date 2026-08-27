@@ -17,6 +17,11 @@ STRUCTURED_ANSWER_MAX_TOKENS = 24576
 DRAWING_CODE_MAX_TOKENS = 32768
 FIGURE_AUXILIARY_MAX_TOKENS = 16384
 BAILIAN_QWEN37_MAX = "qwen3.7-max"
+LINGSUAN_GEMINI37_FLASH_MODELS = (
+    "gemini-3.7-flash-low",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-high",
+)
 BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
     BAILIAN_QWEN37_MAX,
     "qwen3.7-max-2026-05-20",
@@ -212,6 +217,17 @@ def list_providers() -> dict[str, ProviderConfig]:
         json_mode_unsupported_models = [
             str(x) for x in item.get("json_mode_unsupported_models", []) if str(x).strip()
         ]
+        vision_model_options = [str(x) for x in item.get("vision_model_options", []) if str(x).strip()]
+        model_capabilities = {
+            str(model): tuple(str(capability).strip().lower() for capability in capabilities if str(capability).strip())
+            for model, capabilities in dict(item.get("model_capabilities", {})).items()
+            if str(model).strip() and isinstance(capabilities, (list, tuple))
+        }
+        model_profiles = {
+            str(model): dict(profile)
+            for model, profile in dict(item.get("model_profiles", {})).items()
+            if str(model).strip() and isinstance(profile, dict)
+        }
         # Existing installations commonly keep a copied providers.local.json.
         # Keep the current Bailian flagship selectable even before that local
         # file is manually updated.
@@ -221,6 +237,27 @@ def list_providers() -> dict[str, ProviderConfig]:
             json_mode_unsupported_models = list(
                 dict.fromkeys([*json_mode_unsupported_models, *BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED])
             )
+        # Older installations may have copied the previous model arrays into
+        # providers.local.json. Keep newly supported vendor models selectable
+        # without overwriting the user's saved key or explicit default.
+        if name == "lingsuan_google":
+            model_options = list(dict.fromkeys([*LINGSUAN_GEMINI37_FLASH_MODELS, *model_options]))
+            vision_model_options = list(dict.fromkeys([*LINGSUAN_GEMINI37_FLASH_MODELS, *vision_model_options]))
+            for model, level, label in zip(
+                LINGSUAN_GEMINI37_FLASH_MODELS,
+                ("low", "medium", "high"),
+                ("低推理", "中推理", "高推理"),
+            ):
+                model_option_labels.setdefault(model, f"Gemini 3.7 Flash（{label}）")
+                model_capabilities.setdefault(model, ("text", "vision"))
+                model_profiles.setdefault(
+                    model,
+                    {
+                        "api_protocol": "chat_completions",
+                        "thinking_minimum": level,
+                        "omit_parameters": ["temperature", "top_p", "top_k"],
+                    },
+                )
         providers[name] = ProviderConfig(
             name=name,
             type=str(item.get("type", "openai_compatible")),
@@ -249,18 +286,10 @@ def list_providers() -> dict[str, ProviderConfig]:
             supports_text_generation=bool(item.get("supports_text_generation", True)),
             supports_image_generation=supports_image_generation,
             vision_model=vision_model,
-            vision_model_options=tuple(str(x) for x in item.get("vision_model_options", []) if str(x).strip()),
+            vision_model_options=tuple(vision_model_options),
             supports_vision=supports_vision,
-            model_capabilities={
-                str(model): tuple(str(capability).strip().lower() for capability in capabilities if str(capability).strip())
-                for model, capabilities in dict(item.get("model_capabilities", {})).items()
-                if str(model).strip() and isinstance(capabilities, (list, tuple))
-            },
-            model_profiles={
-                str(model): dict(profile)
-                for model, profile in dict(item.get("model_profiles", {})).items()
-                if str(model).strip() and isinstance(profile, dict)
-            },
+            model_capabilities=model_capabilities,
+            model_profiles=model_profiles,
             thinking_mode=LINGSUAN_OFFICIAL_THINKING_DEFAULTS.get(
                 name,
                 str(item.get("thinking_mode", "") or os.environ.get("ANSWER_BOOK_THINKING_MODE", "") or "auto"),

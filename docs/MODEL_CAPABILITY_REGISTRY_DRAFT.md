@@ -104,7 +104,7 @@
 | OpenRouter | `z-ai/glm-5.2:free` | 文本；免费池可能限流 | 非关键文本任务 | C：无 | 可用性、JSON、任务质量；不得作为唯一复核模型 |
 | 元衡 | `gpt-5.6-luna`、`gpt-5.6-terra` | 文本 + 图片；配置说明曾实测 | 显式选择下的通用任务 | C：无 | 代理侧模型身份、上下文、图片、JSON、任务样本、错误行为 |
 | 灵算 OpenAI | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5` | 文本 + 图片 | 显式选择下的通用任务 | C：无 | 分模型全量能力、Responses 行为、任务质量 |
-| 灵算 Google | `gemini-3.6-flash`、`gemini-3.5-flash` | 文本 + 图片 | 显式选择下的通用任务 | C：无；不能继承 Google 官方直连的 A 级结论 | 代理协议、参数、图片、JSON、任务样本 |
+| 灵算 Google | `gemini-3.7-flash-low/medium/high`、`gemini-3.6-flash`、`gemini-3.5-flash` | 文本 + 图片 | 显式选择下的通用任务 | C：3.7 low 已通过 JSON 连通验证，仍不能继承 Google 官方直连结论 | 3.7 medium/high 的调用与任务质量、图片输入、复杂 JSON |
 | 灵算 xAI | `grok-4.5` | 文本 + 图片 | 显式选择下的通用任务 | C：无 | 官方/代理能力、图片、JSON、任务样本 |
 | 灵算 Anthropic | `claude-opus-5` | 文本 + 图片 | 显式选择下的复杂文本/视觉任务 | C：无 | Anthropic 协议与回退、JSON、图片、任务样本 |
 

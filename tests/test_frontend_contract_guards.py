@@ -361,6 +361,8 @@ def test_task_manager_terminal_copy_and_unknown_network_statistics_are_truthful(
     assert "function taskProgressPresentation(task, normalized, progress)" in APP_JS
     assert 'return { label: "调用状态", value: "未发起调用", showBar: false };' in APP_JS
     assert 'return { label: "任务状态", value: "已取消", showBar: false };' in APP_JS
+    assert 'normalized === "failed" && !task?.is_generation_task && !task?.is_format_task' in APP_JS
+    assert 'return { label: "流程停止位置", value: `${progress.percent}%`, showBar: true };' in APP_JS
     assert 'progressPresentation.showBar ? `<div class="manager-progress-track">' in APP_JS
     paused_start = APP_JS.index('if (job.status === "paused")')
     paused_end = APP_JS.index("latestPracticeRequest = job.payload", paused_start)
@@ -368,6 +370,20 @@ def test_task_manager_terminal_copy_and_unknown_network_statistics_are_truthful(
     assert "Number(job.network_attempted_count || 0)" not in paused_copy
     assert 'job.network_call_budget !== null' in paused_copy
     assert '"暂无数据"' in paused_copy
+
+
+def test_failed_exam_uses_real_stage_and_hides_internal_diagnostics_by_default() -> None:
+    current_stage = APP_JS[APP_JS.index("function effectiveCurrentStage"):APP_JS.index("function taskStatusMeta")]
+    assert 'failed: "failed"' not in current_stage
+    assert 'if (!examWorkflow && ["failed", "cancelled", "paused"].includes(task.status)) return task.status;' in current_stage
+    assert 'current || (["failed", "cancelled", "paused"].includes(task.status)' in current_stage
+    stage_progress = APP_JS[APP_JS.index("function executionStageProgress"):APP_JS.index("function buildTaskExecutionDetail")]
+    assert 'visibleStepStage(progressStage) === current' in stage_progress
+    assert 'return { percent: 0, label: "本阶段未完成", measurable: true };' in stage_progress
+    assert '整体流程未完成 · 已完成 ${completedStages.size} 个子阶段' in APP_JS
+    assert 'id="diagnosticsTechnicalDetails"' in INDEX_HTML
+    assert '查看技术详情（文件路径与日志事件）' in INDEX_HTML
+    assert '未找到可用的教材候选依据' in APP_JS
 
 
 def test_mobile_navigation_keeps_all_critical_actions_visible_and_targetable() -> None:
@@ -404,6 +420,7 @@ def test_task_manager_ignores_stale_list_responses_and_has_loading_copy() -> Non
     flow = APP_JS[start:end]
     assert "const requestVersion = ++taskLoadVersion;" in flow
     assert "if (requestVersion !== taskLoadVersion) return;" in flow
+    assert flow.count('!silent && currentPage !== "task"') == 3
     assert "正在读取任务" in APP_JS
 
 
@@ -562,6 +579,17 @@ def test_pre_generation_workspace_is_persisted_by_mode_and_stage() -> None:
     assert "function announceAvailablePracticeWorkspaceDraft(" in APP_JS
     assert "当前已保持新任务空白" in APP_JS
     assert "practiceWorkspaceDraftEpochs[normalizedMode] += 1" in APP_JS
+
+
+def test_practice_workspace_draft_actions_ignore_empty_history_and_report_failures() -> None:
+    assert "function restorablePracticeWorkspaceDraft(record)" in APP_JS
+    assert "restorablePracticeWorkspaceDraft(pinned.record)" in APP_JS
+    assert "restorablePracticeWorkspaceDraft(active)" in APP_JS
+    assert "restorablePracticeWorkspaceDraft(item)" in APP_JS
+    assert "openPracticeEntry(mode, false, false)" in APP_JS
+    assert "openKnowledgeEntry(false)" in APP_JS
+    assert "function runPracticeWorkspaceDraftAction(button, action, errorTitle)" in APP_JS
+    assert 'title: errorTitle, tone: "danger"' in APP_JS
 
 
 def test_workspace_restore_uses_a_stable_candidate_and_confirms_before_overwrite() -> None:

@@ -52,6 +52,9 @@
 | 灵算 OpenAI | `gpt-5.6-luna` | text_generation | text、image → text | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 灵算 OpenAI | `gpt-5.5` | text_generation | text、image → text | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 灵算图片 | `gpt-image-2` | image_generation | text → image | not_applicable | not_applicable | 待验证 | 图片生成:limited | C | unknown |
+| 灵算 Google | `gemini-3.7-flash-low` | text_generation | text、image → text | native_json | minimum_low | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | 2026-08-27 |
+| 灵算 Google | `gemini-3.7-flash-medium` | text_generation | text、image → text | unknown | minimum_medium | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| 灵算 Google | `gemini-3.7-flash-high` | text_generation | text、image → text | unknown | minimum_high | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 灵算 Google | `gemini-3.6-flash` | text_generation | text、image → text | unknown | minimum_minimal | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 灵算 Google | `gemini-3.5-flash` | text_generation | text、image → text | unknown | minimum_minimal | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 灵算 xAI | `grok-4.5` | text_generation | text、image → text | unknown | minimum_low | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |

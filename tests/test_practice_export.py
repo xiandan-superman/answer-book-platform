@@ -347,7 +347,11 @@ def test_practice_export_repairs_single_escaped_latex_theta():
 
 def test_practice_export_preserves_formula_and_table_specific_layouts():
     data = _practice()
-    data["exercises"][0]["formulas"] = [{"location": "stem", "latex": r"E = E^\theta - \frac{RT}{nF}\ln Q"}]
+    data["exercises"][0]["formulas"] = [{
+        "location": "stem",
+        "latex": r"E = E^\theta - \frac{RT}{nF}\ln Q",
+        "role": "given",
+    }]
     data["exercises"][0]["tables"] = [{"location": "stem", "headers": ["物理量", "数值"], "rows": [["温度", "298.15 K"]]}]
     document = Document(BytesIO(build_practice_question_docx(data)))
 
@@ -368,6 +372,7 @@ def test_practice_export_strips_delimiters_from_structured_formula_fields():
         {
             "location": "stem",
             "latex": r"$(\frac{\partial U}{\partial V})_T = 0 \quad (\text{Ideal Gas})$",
+            "role": "given",
         }
     ]
 
@@ -482,6 +487,7 @@ def test_practice_formula_caption_stays_with_formula():
         "latex": "x=1",
         "caption": "已知关系",
         "display": True,
+        "role": "given",
     }]
 
     document = Document(BytesIO(build_practice_question_docx(data)))

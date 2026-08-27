@@ -866,6 +866,47 @@ def test_practice_job_refresh_recovery_never_steals_navigation() -> None:
         browser.close()
 
 
+def test_task_list_refresh_does_not_overwrite_open_exam_detail_status() -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    with playwright.sync_playwright() as runtime:
+        launch_options = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch_options)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+        context.route(
+            "**/api/tasks",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"tasks": [], "schema_version": 1}, ensure_ascii=False),
+            ),
+        )
+
+        page.goto(base_url, wait_until="networkidle")
+        page.evaluate(
+            """() => {
+              activeTaskId = 'failed-exam-detail';
+              goToPage('task');
+              setVisual(
+                'runVisualResult',
+                '任务需要处理',
+                '匹配教材内容阶段失败：已保留此前完成的数据。',
+                'error'
+              );
+            }"""
+        )
+        page.wait_for_timeout(500)
+        assert page.locator("#page-task.active").is_visible()
+        assert "任务需要处理" in page.locator("#runVisualResult").inner_text()
+        assert "匹配教材内容阶段失败" in page.locator("#runVisualResult").inner_text()
+        assert "任务列表已刷新" not in page.locator("#runVisualResult").inner_text()
+        browser.close()
+
+
 def test_terminal_recovery_and_stale_callbacks_preserve_the_current_page() -> None:
     base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
     if not base_url:

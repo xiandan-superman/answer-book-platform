@@ -15,7 +15,7 @@ from .practice_document_contracts import PRACTICE_DOCUMENT_CONTRACT_VERSION
 from .practice_export import build_practice_question_docx, validate_docx_output, validate_practice_export
 from .runtime_monitor import append_runtime_log
 
-EXPORT_CACHE_VERSION = "practice-word-v7"
+EXPORT_CACHE_VERSION = "practice-word-v8"
 EXPORT_CACHE_DIR = CACHE_DIR / "practice_exports"
 _LOCK = threading.RLock()
 _JOBS: dict[str, dict[str, Any]] = {}

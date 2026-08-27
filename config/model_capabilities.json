@@ -122,6 +122,9 @@
     "lingsuan_google": {
       "display_name": "灵算 Google",
       "models": {
+        "gemini-3.7-flash-low": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"native_json","thinking":"minimum_low","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"2026-08-27"},
+        "gemini-3.7-flash-medium": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_medium","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gemini-3.7-flash-high": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_high","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "gemini-3.6-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "gemini-3.5-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
       }

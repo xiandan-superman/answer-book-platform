@@ -103,6 +103,58 @@ class PracticeExportGateTests(unittest.TestCase):
 
         self.assertTrue(validate_practice_export(data)["ok"])
 
+    def test_question_word_keeps_an_explicit_given_formula(self):
+        data = {"exercises": [{
+            "question_type": "计算题",
+            "stem": "已知理想气体状态方程，求气体体积。",
+            "formulas": [{
+                "latex": r"PV=nRT",
+                "location": "stem",
+                "role": "given",
+            }],
+        }]}
+
+        content = build_practice_question_docx(data)
+        with __import__("zipfile").ZipFile(__import__("io").BytesIO(content)) as archive:
+            root = __import__("lxml.etree", fromlist=["etree"]).fromstring(archive.read("word/document.xml"))
+        formulas = [
+            "".join(node.itertext()).replace(" ", "")
+            for node in root.xpath(
+                "//m:oMath",
+                namespaces={"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"},
+            )
+        ]
+
+        self.assertTrue(any("PV=nRT" in formula for formula in formulas))
+
+    def test_question_word_hides_a_relation_the_student_is_asked_to_derive(self):
+        data = {"exercises": [{
+            "question_type": "计算题",
+            "stem": "已知 1 mi = 5280 ft，写出以英里为自变量、英尺为因变量的线性代数替换方程。",
+            "formulas": [{
+                "latex": r"h_{ft}=5280\cdot h_{mi}",
+                "location": "stem",
+                "role": "relation",
+                "caption": "英里到英尺的线性代数替换关系",
+            }],
+        }]}
+
+        content = build_practice_question_docx(data)
+        with __import__("zipfile").ZipFile(__import__("io").BytesIO(content)) as archive:
+            xml_bytes = archive.read("word/document.xml")
+        xml = xml_bytes.decode("utf-8")
+        root = __import__("lxml.etree", fromlist=["etree"]).fromstring(xml_bytes)
+        formulas = [
+            "".join(node.itertext()).replace(" ", "")
+            for node in root.xpath(
+                "//m:oMath",
+                namespaces={"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"},
+            )
+        ]
+
+        self.assertNotIn("英里到英尺的线性代数替换关系", xml)
+        self.assertFalse(any("hft=5280" in formula and "hmi" in formula for formula in formulas))
+
     def test_structured_formula_preflight_failure_blocks_formal_export(self):
         from unittest.mock import patch
 
@@ -113,7 +165,12 @@ class PracticeExportGateTests(unittest.TestCase):
                 {
                     "number": 1,
                     "stem": "计算题。",
-                    "formulas": [{"latex": r"E=mc^2", "location": "stem", "display": True}],
+                    "formulas": [{
+                        "latex": r"E=mc^2",
+                        "location": "stem",
+                        "display": True,
+                        "role": "given",
+                    }],
                 }
             ]
         }

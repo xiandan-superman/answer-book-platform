@@ -98,6 +98,12 @@ def practice_export_exercise_id(item: dict[str, Any], index: int = 0) -> str:
     return str(index + 1)
 
 
+def _question_formula_visible(formula: Any) -> bool:
+    if not isinstance(formula, dict) or not _matches_location(formula.get("location"), "stem"):
+        return False
+    return str(formula.get("role") or "relation").strip().lower() == "given"
+
+
 def practice_stem_answer_leak_reasons(item: dict[str, Any]) -> list[str]:
     """Detect structured stem assets that expose what the student must supply."""
     question_type = str(item.get("question_type") or "").strip()
@@ -210,6 +216,8 @@ def validate_practice_export(data: dict[str, Any]) -> dict[str, Any]:
         for formula_index, formula in enumerate(item.get("formulas") or [], start=1):
             if not isinstance(formula, dict):
                 blocking_issues.append(f"第 {question_number} 题第 {formula_index} 个公式不是有效对象。")
+                continue
+            if not _question_formula_visible(formula):
                 continue
             latex = _normalize_standard_state_latex(_text(formula.get("latex"), 3000))
             plan = build_expression_render_plan(
@@ -409,7 +417,12 @@ def validate_docx_output(content: bytes, data: dict[str, Any]) -> dict[str, Any]
     expected_questions = len(exercises)
     expected_figures = sum(len(item.get("figures") or []) for item in exercises)
     expected_tables = sum(len(item.get("tables") or []) for item in exercises)
-    expected_formulas = sum(len(item.get("formulas") or []) for item in exercises)
+    expected_formulas = sum(
+        1
+        for item in exercises
+        for formula in item.get("formulas") or []
+        if _question_formula_visible(formula)
+    )
     issues: list[str] = []
     metrics = {
         "document_contract_version": PRACTICE_DOCUMENT_CONTRACT_VERSION,
@@ -1124,7 +1137,7 @@ def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
         continuation = doc.add_paragraph()
         _set_body_paragraph(continuation)
         _add_rich_text(continuation, part)
-    _add_structured_assets(doc, item, "stem")
+    _add_question_structured_assets(doc, item)
     for option_index, option in enumerate(item.get("options") or []):
         if not isinstance(option, dict):
             continue
@@ -1414,6 +1427,27 @@ def _add_structured_assets(doc: Document, item: dict[str, Any], location: str) -
             _add_data_table(doc, table)
     for figure in item.get("figures") or []:
         if isinstance(figure, dict) and _matches_location(figure.get("location"), location):
+            _add_figure(doc, figure)
+
+
+def _add_question_structured_assets(doc: Document, item: dict[str, Any]) -> None:
+    """Render only assets that are safe to expose on the student question sheet.
+
+    The generation contract reserves ``role=given`` for formulas explicitly
+    supplied by the stem and not requested as a conclusion.  Other formula
+    roles can describe the relation or method that the student must derive, so
+    treating every ``location=stem`` formula as visible leaks answers.  Tables
+    and figures keep their existing location contract.
+    """
+
+    for formula in item.get("formulas") or []:
+        if _question_formula_visible(formula):
+            _add_formula(doc, formula)
+    for table in item.get("tables") or []:
+        if isinstance(table, dict) and _matches_location(table.get("location"), "stem"):
+            _add_data_table(doc, table)
+    for figure in item.get("figures") or []:
+        if isinstance(figure, dict) and _matches_location(figure.get("location"), "stem"):
             _add_figure(doc, figure)
 
 

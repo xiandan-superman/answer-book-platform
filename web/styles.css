@@ -4368,6 +4368,15 @@ button:not(.ghost-button):not(.text-button):not(.secondary-button):not(.outline-
   font-size: 13px;
 }
 
+.diagnostics-technical-details {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 14px;
+}
+
+.diagnostics-technical-details summary {
+  cursor: pointer;
+}
+
 .task-row {
   border-radius: 12px;
   border-color: #e5e7eb;

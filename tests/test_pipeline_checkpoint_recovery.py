@@ -354,10 +354,21 @@ class PipelineCheckpointRecoveryTests(unittest.TestCase):
         from app.evidence_selection import SCHEMA_VERSION as EVIDENCE_SELECTION_SCHEMA_VERSION
         from app.exam_extract import EXAM_GROUPING_POLICY_VERSION
         from app.pipeline import _answer_checkpoint_reusable, _upstream_checkpoint_reusable
+        from app.pipeline_checkpoints import (
+            UPSTREAM_CHECKPOINT_CONTRACT_VERSION,
+            write_upstream_checkpoint_contract,
+        )
         from app.retrieval import RETRIEVAL_CONTEXT_POLICY_VERSION
 
         with tempfile.TemporaryDirectory() as raw_tmp:
             stage = Path(raw_tmp)
+            contract = {
+                "version": UPSTREAM_CHECKPOINT_CONTRACT_VERSION,
+                "exam": {"sha256": "test"},
+                "textbooks": {"cache_key": "test", "manifest": []},
+                "strategy": {"question_understanding_policy_version": "test"},
+            }
+            write_upstream_checkpoint_contract(stage, contract)
             for name in ("knowledge_plans.json", "evidence_selection.json", "answer_fragments.json"):
                 (stage / name).write_text("{}", encoding="utf-8")
             (stage / "retrieval_candidates.summary.json").write_text(
@@ -365,12 +376,16 @@ class PipelineCheckpointRecoveryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (stage / "structured_exam.json").write_text("{}", encoding="utf-8")
-            self.assertFalse(_upstream_checkpoint_reusable(stage, requested=True))
+            self.assertFalse(_upstream_checkpoint_reusable(stage, requested=True, contract=contract))
 
             (stage / "structured_exam.json").write_text(
                 json.dumps({"grouping_policy_version": EXAM_GROUPING_POLICY_VERSION, "items": [{"question_id": "q1"}]}),
                 encoding="utf-8",
             )
+            (stage / "question_understanding.json").write_text(
+                json.dumps({"policy_version": "test"}), encoding="utf-8"
+            )
+            (stage / "knowledge_plans.json").write_text(json.dumps({"plans": []}), encoding="utf-8")
             (stage / "evidence_selection.json").write_text(
                 json.dumps({"schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION}), encoding="utf-8"
             )
@@ -396,15 +411,127 @@ class PipelineCheckpointRecoveryTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertTrue(_upstream_checkpoint_reusable(stage, requested=True))
+            self.assertTrue(_upstream_checkpoint_reusable(stage, requested=True, contract=contract))
             exam = {"items": [{"question_id": "q1"}]}
             self.assertTrue(_answer_checkpoint_reusable(stage, exam, requested=True))
 
             (stage / "answer_fragments.json").write_text(
                 json.dumps({"fragments": [{"question_id": "legacy_q"}]}), encoding="utf-8"
             )
-            self.assertTrue(_upstream_checkpoint_reusable(stage, requested=True))
+            self.assertTrue(_upstream_checkpoint_reusable(stage, requested=True, contract=contract))
             self.assertFalse(_answer_checkpoint_reusable(stage, exam, requested=True))
+
+    def test_early_upstream_contract_rejects_changed_exam_textbook_or_strategy(self) -> None:
+        from app.exam_extract import EXAM_GROUPING_POLICY_VERSION
+        from app.pipeline_checkpoints import (
+            early_upstream_checkpoint_reusable,
+            upstream_checkpoint_contract,
+            write_upstream_checkpoint_contract,
+        )
+        from app.textbook_index_cache import textbook_index_key
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            stage = root / "stage"
+            stage.mkdir()
+            exam = root / "exam.txt"
+            textbook = root / "textbook.txt"
+            exam.write_text("原始试题", encoding="utf-8")
+            textbook.write_text("原始教材", encoding="utf-8")
+            key, manifest = textbook_index_key([textbook])
+            strategy = {
+                "question_understanding_policy_version": "policy-v1",
+                "figure_schema_routing_policy_version": "figure-policy-v1",
+                "primary": {"provider": "provider-a", "model": "primary-a"},
+                "answer": {"provider": "provider-a", "model": "answer-a"},
+                "reasoning": {"provider": "provider-a", "model": "reasoning-a"},
+            }
+            contract = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=key,
+                textbook_manifest=manifest,
+                strategy=strategy,
+            )
+            write_upstream_checkpoint_contract(stage, contract)
+            (stage / "structured_exam.json").write_text(
+                json.dumps({"grouping_policy_version": EXAM_GROUPING_POLICY_VERSION, "items": [{"question_id": "q1"}]}),
+                encoding="utf-8",
+            )
+            (stage / "question_understanding.json").write_text(
+                json.dumps({"policy_version": "policy-v1"}), encoding="utf-8"
+            )
+            (stage / "knowledge_plans.json").write_text(json.dumps({"plans": []}), encoding="utf-8")
+
+            self.assertTrue(early_upstream_checkpoint_reusable(stage, requested=True, contract=contract))
+
+            exam.write_text("已修改试题", encoding="utf-8")
+            changed_exam = upstream_checkpoint_contract(
+                exam, textbook_cache_key=key, textbook_manifest=manifest, strategy=strategy
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_exam))
+
+            exam.write_text("原始试题", encoding="utf-8")
+            textbook.write_text("更新教材", encoding="utf-8")
+            changed_key, changed_manifest = textbook_index_key([textbook])
+            self.assertNotEqual((key, manifest), (changed_key, changed_manifest))
+            changed_textbook = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=changed_key,
+                textbook_manifest=changed_manifest,
+                strategy=strategy,
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_textbook))
+
+            changed_model = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=key,
+                textbook_manifest=manifest,
+                strategy={**strategy, "answer": {"provider": "provider-a", "model": "answer-b"}},
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_model))
+
+            changed_reasoning = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=key,
+                textbook_manifest=manifest,
+                strategy={**strategy, "reasoning": {"provider": "provider-a", "model": "reasoning-b"}},
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_reasoning))
+
+            changed_primary = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=key,
+                textbook_manifest=manifest,
+                strategy={**strategy, "primary": {"provider": "provider-a", "model": "primary-b"}},
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_primary))
+
+            changed_figure_policy = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=key,
+                textbook_manifest=manifest,
+                strategy={**strategy, "figure_schema_routing_policy_version": "figure-policy-v2"},
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_figure_policy))
+
+            changed_policy = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key=key,
+                textbook_manifest=manifest,
+                strategy={**strategy, "question_understanding_policy_version": "policy-v2"},
+            )
+            self.assertFalse(early_upstream_checkpoint_reusable(stage, requested=True, contract=changed_policy))
+
+            empty_textbook_contract = upstream_checkpoint_contract(
+                exam,
+                textbook_cache_key="",
+                textbook_manifest=[],
+                strategy=strategy,
+            )
+            write_upstream_checkpoint_contract(stage, empty_textbook_contract)
+            self.assertTrue(
+                early_upstream_checkpoint_reusable(stage, requested=True, contract=empty_textbook_contract)
+            )
 
     def test_nullable_checkpoint_collections_are_rejected_without_crashing(self) -> None:
         from app.pipeline import _answer_checkpoint_reusable
@@ -573,6 +700,21 @@ class PipelineCheckpointRecoveryTests(unittest.TestCase):
         self.assertTrue(
             _figure_schema_checkpoint_reusable(
                 {"routing_policy_version": "answer_book.figure_routing.v6"}
+            )
+        )
+        self.assertFalse(
+            _figure_schema_checkpoint_reusable(
+                {"routing_policy_version": "answer_book.figure_routing.v6"},
+                upstream_contract_fingerprint="current-contract",
+            )
+        )
+        self.assertTrue(
+            _figure_schema_checkpoint_reusable(
+                {
+                    "routing_policy_version": "answer_book.figure_routing.v6",
+                    "upstream_checkpoint_contract_fingerprint": "current-contract",
+                },
+                upstream_contract_fingerprint="current-contract",
             )
         )
 

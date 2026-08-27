@@ -49,11 +49,14 @@ from .figure_schema_planning import attach_figure_schema_plans, plan_figure_sche
 from .figures import audit_figures_with_vision, prepare_figures_for_fragments, repair_figures_with_model_for_visual_qa
 from .fragment_repair import repair_answer_fragments_for_docx
 from .knowledge_planning import generate_knowledge_plans, load_knowledge_plans
-from .model_usage_report import build_model_usage_report
 from .model_diagnostics import pin_model_diagnostics_for_failure
+from .model_usage_report import build_model_usage_report
 from .paths import OUTPUTS_DIR, ensure_project_dirs
 from .pipeline_checkpoints import (
     answer_checkpoint_reusable as _answer_checkpoint_reusable,
+)
+from .pipeline_checkpoints import (
+    early_upstream_checkpoint_reusable as _early_upstream_checkpoint_reusable,
 )
 from .pipeline_checkpoints import (
     figure_schema_checkpoint_reusable,
@@ -77,7 +80,16 @@ from .pipeline_checkpoints import (
     rollback_repaired_questions as _rollback_repaired_questions,
 )
 from .pipeline_checkpoints import (
+    upstream_checkpoint_contract as _upstream_checkpoint_contract,
+)
+from .pipeline_checkpoints import (
+    upstream_checkpoint_contract_fingerprint as _upstream_checkpoint_contract_fingerprint,
+)
+from .pipeline_checkpoints import (
     upstream_checkpoint_reusable as _upstream_checkpoint_reusable,
+)
+from .pipeline_checkpoints import (
+    write_upstream_checkpoint_contract as _write_upstream_checkpoint_contract,
 )
 from .pipeline_delivery import complete_pipeline_delivery
 from .pipeline_telemetry import PipelineRunTelemetry
@@ -90,7 +102,7 @@ from .runtime_monitor import model_call_context
 from .settings import get_provider, provider_model_supports_vision, provider_supports_image_generation
 from .task_control import TaskCancelled, checkpoint
 from .task_store import load_task, task_dir, update_task
-from .textbook_index_cache import install_textbook_index_cache
+from .textbook_index_cache import install_textbook_index_cache, textbook_index_key
 from .v4_schema import validate_v4_answer_fragment
 
 CONTENT_QUALITY_MODEL_REPAIR_CODES = {
@@ -338,11 +350,29 @@ def attach_source_images_to_fragments(structured_exam: dict, fragments_json: Pat
     return data.get("source_image_delivery") or delivery
 
 
-def _figure_schema_checkpoint_reusable(report: dict) -> bool:
+def _figure_schema_checkpoint_reusable(report: dict, *, upstream_contract_fingerprint: str = "") -> bool:
     return figure_schema_checkpoint_reusable(
         report,
         policy_version=FIGURE_SCHEMA_POLICY_VERSION,
+        upstream_contract_fingerprint=upstream_contract_fingerprint,
     )
+
+
+def _plan_figure_schemas_with_checkpoint(
+    structured_exam: dict,
+    output_json: Path,
+    *,
+    provider,
+    model: str,
+    upstream_contract_fingerprint: str,
+) -> dict:
+    """Write a route-bound schema report before it becomes reusable on retry."""
+
+    report = plan_figure_schemas(structured_exam, output_json, provider=provider, model=model)
+    if upstream_contract_fingerprint:
+        report = {**report, "upstream_checkpoint_contract_fingerprint": upstream_contract_fingerprint}
+        write_json(output_json, report)
+    return report
 
 
 def _provider_key_issue(label: str, provider) -> str:
@@ -979,7 +1009,47 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         # failure above; keeping it after a successful rerun misleads task
         # diagnostics and the UI.
         (sdir / "pipeline_error.json").unlink(missing_ok=True)
-        reusable_upstream = _upstream_checkpoint_reusable(sdir, requested=options.reuse_fragments)
+        checkpoint_contract: dict = {}
+        if not options.preprocessed_input:
+            # An empty textbook selection is still a concrete input state.  It
+            # cannot reach retrieval, but writing it explicitly keeps the
+            # checkpoint contract total and avoids a special "never reuse"
+            # case if admission rules change.
+            textbook_cache_key = ""
+            textbook_manifest: list[dict] = []
+            if record.selected_textbooks:
+                textbook_cache_key, textbook_manifest = textbook_index_key(
+                    [Path(path).expanduser().resolve() for path in record.selected_textbooks],
+                    record.textbook_display_names or {},
+                )
+            checkpoint_contract = _upstream_checkpoint_contract(
+                exam_path,
+                textbook_cache_key=textbook_cache_key,
+                textbook_manifest=textbook_manifest,
+                strategy={
+                    "question_understanding_policy_version": QUESTION_UNDERSTANDING_POLICY_VERSION,
+                    "use_model": bool(options.use_model),
+                    "allow_demo_without_key": bool(options.allow_demo_without_key),
+                    "thinking_mode": thinking_mode,
+                    "primary": {"provider": provider.name, "model": record.model},
+                    "reasoning": {"provider": reasoning_provider.name, "model": reasoning_model},
+                    "answer": {"provider": answer_provider.name, "model": answer_model},
+                    "vision": {"provider": vision_provider.name, "model": vision_model},
+                    "direct_answer_multimodal": bool(direct_answer_multimodal),
+                    "figure_schema_routing_policy_version": FIGURE_SCHEMA_POLICY_VERSION,
+                },
+            )
+        reusable_early_upstream = _early_upstream_checkpoint_reusable(
+            sdir,
+            requested=options.reuse_fragments,
+            contract=checkpoint_contract,
+        )
+        reusable_upstream = _upstream_checkpoint_reusable(
+            sdir,
+            requested=options.reuse_fragments,
+            contract=checkpoint_contract,
+        )
+        checkpoint_contract_fingerprint = _upstream_checkpoint_contract_fingerprint(checkpoint_contract)
         checkpoint(task_id)
         update_task(task_id, current_stage="extract_exam")
         if options.preprocessed_input:
@@ -999,7 +1069,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     "preprocessed_input": True,
                 },
             )
-        elif reusable_upstream:
+        elif reusable_early_upstream:
             structured_exam = json.loads((sdir / "structured_exam.json").read_text(encoding="utf-8"))
             # Reuse the expensive extraction result, but always rerun the
             # deterministic audit so policy fixes do not leave stale warnings
@@ -1027,7 +1097,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         checkpoint(task_id)
         update_task(task_id, current_stage="exam_structure_review")
-        structure_review_reused = reusable_upstream or options.preprocessed_input
+        structure_review_reused = reusable_early_upstream or options.preprocessed_input
         mark("exam_structure_review", "reused" if structure_review_reused else "started", {"question_count": len(structured_exam.get("items", []))})
         if not structure_review_reused:
             structured_exam = auto_confirm_exam_structure(task_id, structured_exam, sdir / "structured_exam.json")
@@ -1044,7 +1114,35 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             },
         )
 
-        if not reusable_upstream:
+        # A schema plan depends only on the confirmed structured question and
+        # the model route used for planning. Both are part of the early
+        # contract. Reuse a policy-current report before scheduling background
+        # work so a retrieval retry cannot spend a second visual/model call.
+        existing_early_schema_plan = None
+        if reusable_early_upstream and (sdir / "figure_schema_plan.json").is_file():
+            try:
+                existing_early_schema_plan = json.loads((sdir / "figure_schema_plan.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                existing_early_schema_plan = None
+        schema_checkpoint_reused = bool(
+            isinstance(existing_early_schema_plan, dict)
+            and _figure_schema_checkpoint_reusable(
+                existing_early_schema_plan,
+                upstream_contract_fingerprint=checkpoint_contract_fingerprint,
+            )
+        )
+        if schema_checkpoint_reused:
+            figure_schema_plan = existing_early_schema_plan
+            mark(
+                "figure_schema_planning",
+                "reused",
+                {
+                    "checkpoint_reused": True,
+                    "background": False,
+                    "dependency": "复用与当前题面、路由和政策一致的图件结构计划。",
+                },
+            )
+        elif not reusable_upstream:
             schema_has_images = any(
                 isinstance(question, dict) and question.get("image_refs")
                 for question in structured_exam.get("items", []) or []
@@ -1065,11 +1163,12 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             schema_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="figure-schema-background")
             schema_future = schema_executor.submit(
                 copy_context().run,
-                plan_figure_schemas,
+                _plan_figure_schemas_with_checkpoint,
                 copy.deepcopy(structured_exam),
                 sdir / "figure_schema_plan.json",
                 provider=schema_provider if options.use_model and schema_provider.api_key else None,
                 model=schema_model,
+                upstream_contract_fingerprint=checkpoint_contract_fingerprint,
             )
             mark(
                 "figure_schema_planning",
@@ -1082,9 +1181,9 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         checkpoint(task_id)
         update_task(task_id, current_stage="question_understanding")
-        mark("question_understanding", "reused" if reusable_upstream else "started", {"question_count": len(structured_exam.get("items", []))})
+        mark("question_understanding", "reused" if reusable_early_upstream else "started", {"question_count": len(structured_exam.get("items", []))})
         understanding_checkpoint_current = False
-        if reusable_upstream:
+        if reusable_early_upstream:
             try:
                 understanding_report = json.loads((sdir / "question_understanding.json").read_text(encoding="utf-8"))
                 understanding_checkpoint_current = (
@@ -1092,7 +1191,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 )
             except Exception:
                 understanding_report = {"question_count": len(structured_exam.get("items", [])), "vision_required_count": 0, "vision_used_count": 0}
-        if not reusable_upstream or not understanding_checkpoint_current:
+        if not reusable_early_upstream or not understanding_checkpoint_current:
             understanding_report = build_question_understandings(
                 structured_exam,
                 sdir / "question_understanding.json",
@@ -1120,7 +1219,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 "vision_used_count": understanding_report.get("vision_used_count", 0),
                 "direct_multimodal_count": understanding_report.get("direct_multimodal_count", 0),
                 "attached_understanding_count": attached_understanding_count,
-                "checkpoint_reused": reusable_upstream and understanding_checkpoint_current,
+                "checkpoint_reused": reusable_early_upstream and understanding_checkpoint_current,
                 "downstream_reuse": [
                     "knowledge_planning",
                     "evidence_selection",
@@ -1174,7 +1273,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         checkpoint(task_id)
         update_task(task_id, current_stage="knowledge_planning")
         plans_json = sdir / "knowledge_plans.json"
-        if reusable_upstream:
+        if reusable_early_upstream:
             knowledge_plans = load_knowledge_plans(plans_json)
             plan_detail = {
                 "ok": True,
@@ -1205,12 +1304,13 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             )
         else:
             raise RuntimeError(f"API key not configured for reasoning provider: {reasoning_provider.name}")
-        if not reusable_upstream:
+        if not reusable_early_upstream:
             plan_detail = asdict(plan_result)
             mark("knowledge_planning", "passed" if plan_result.ok else "failed", plan_detail)
             if not plan_result.ok:
                 raise RuntimeError("Knowledge planning failed")
             knowledge_plans = load_knowledge_plans(plans_json)
+            _write_upstream_checkpoint_contract(sdir, checkpoint_contract)
 
         checkpoint(task_id)
         update_task(task_id, current_stage="retrieval")
@@ -1286,15 +1386,18 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         # indexing and retrieval, but it becomes a dependency here rather than
         # being attached only after the answer model has already chosen a figure
         # representation.
-        existing_schema_plan = None
-        if reusable_upstream and (sdir / "figure_schema_plan.json").exists():
+        existing_schema_plan = figure_schema_plan
+        if existing_schema_plan is None and reusable_early_upstream and (sdir / "figure_schema_plan.json").exists():
             try:
                 existing_schema_plan = json.loads((sdir / "figure_schema_plan.json").read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError):
                 existing_schema_plan = None
         schema_checkpoint_reused = bool(
             isinstance(existing_schema_plan, dict)
-            and _figure_schema_checkpoint_reusable(existing_schema_plan)
+            and _figure_schema_checkpoint_reusable(
+                existing_schema_plan,
+                upstream_contract_fingerprint=checkpoint_contract_fingerprint,
+            )
         )
         if schema_checkpoint_reused:
             figure_schema_plan = existing_schema_plan
@@ -1314,11 +1417,12 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 elif vision_provider.api_key and provider_model_supports_vision(vision_provider, vision_model):
                     schema_provider = vision_provider
                     schema_model = vision_model
-            figure_schema_plan = plan_figure_schemas(
+            figure_schema_plan = _plan_figure_schemas_with_checkpoint(
                 structured_exam,
                 sdir / "figure_schema_plan.json",
                 provider=schema_provider if options.use_model and schema_provider.api_key else None,
                 model=schema_model,
+                upstream_contract_fingerprint=checkpoint_contract_fingerprint,
             )
         if schema_executor is not None:
             schema_executor.shutdown(wait=True)

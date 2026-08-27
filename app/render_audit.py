@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -191,6 +192,95 @@ def _normalized_delivery_text(value: str) -> str:
     return "".join(char.lower() for char in str(value or "") if char.isalnum() or "\u4e00" <= char <= "\u9fff")
 
 
+_W_TEXT = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+_W_DRAWING = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"
+_M_TEXT = "{http://schemas.openxmlformats.org/officeDocument/2006/math}t"
+_M_MATH = "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"
+_M_MATH_PARAGRAPH = "{http://schemas.openxmlformats.org/officeDocument/2006/math}oMathPara"
+_FORMULA_COMPARISON_SYMBOLS = frozenset("=+-−×÷*/^_()[]{}<>≤≥≈≠∂√∞±·")
+
+
+def _normalized_formula_text(value: str) -> str:
+    return "".join(
+        char.lower()
+        for char in unicodedata.normalize("NFKC", str(value or ""))
+        if char.isalnum() or "\u4e00" <= char <= "\u9fff" or char in _FORMULA_COMPARISON_SYMBOLS
+    )
+
+
+def _paragraph_comparison_spans(paragraph: Any) -> tuple[list[str], list[str]]:
+    """Return prose spans split at formulas/drawings plus standalone formulas.
+
+    A Word paragraph can interleave ordinary runs and OMML.  Treating the
+    presence of any formula as a reason to discard the whole paragraph makes a
+    long explanation untestable.  Splitting at non-prose objects keeps stable
+    prose anchors without inventing adjacency across an equation or figure.
+    """
+
+    prose_spans: list[str] = []
+    formulas: list[str] = []
+    prose_parts: list[str] = []
+
+    def flush_prose() -> None:
+        value = "".join(prose_parts)
+        if value.strip():
+            prose_spans.append(value)
+        prose_parts.clear()
+
+    def visit(node: Any) -> None:
+        if node.tag in {_M_MATH, _M_MATH_PARAGRAPH}:
+            flush_prose()
+            formula = "".join(str(item.text or "") for item in node.iter() if item.tag == _M_TEXT)
+            if formula.strip():
+                formulas.append(formula)
+            return
+        if node.tag == _W_DRAWING:
+            flush_prose()
+            return
+        if node.tag == _W_TEXT:
+            prose_parts.append(str(node.text or ""))
+            return
+        for child in node:
+            visit(child)
+
+    visit(paragraph)
+    flush_prose()
+    return prose_spans, formulas
+
+
+def _comparison_anchors(document: Document) -> list[tuple[str, str]]:
+    """Build conservative text/formula anchors from body and table paragraphs."""
+
+    anchors: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(value: str, kind: str) -> None:
+        normalized = _normalized_formula_text(value) if kind == "formula" else _normalized_delivery_text(value)
+        minimum_length = 3 if kind == "formula" else 6
+        if len(normalized) < minimum_length:
+            return
+        if len(normalized) >= 28:
+            positions = (0, max(0, len(normalized) // 2 - 12), max(0, len(normalized) - 24))
+            candidates = [normalized[position : position + 24] for position in positions]
+        else:
+            candidates = [normalized]
+        for candidate in candidates:
+            key = (kind, candidate)
+            if candidate and key not in seen:
+                seen.add(key)
+                anchors.append(key)
+
+    # document.paragraphs excludes paragraphs inside tables.  Walking body XML
+    # keeps ordinary prose and table-cell content under the same rules.
+    for paragraph in document.element.body.xpath(".//w:p"):
+        prose_spans, formulas = _paragraph_comparison_spans(paragraph)
+        for span in prose_spans:
+            add(span, "text")
+        for formula in formulas:
+            add(formula, "formula")
+    return anchors
+
+
 def _pdf_text_and_image_count(pdf_path: Path) -> tuple[str, int]:
     import pypdfium2 as pdfium
     from pypdfium2.raw import FPDF_PAGEOBJ_IMAGE
@@ -217,22 +307,28 @@ def audit_docx_pdf_consistency(docx_path: Path, pdf_path: Path) -> dict:
             "issues": ["DOCX or rendered PDF is missing for delivery consistency audit"],
             "anchor_count": 0,
             "matched_anchor_count": 0,
+            "anchor_match_ratio": 0.0,
+            "text_anchor_count": 0,
+            "formula_anchor_count": 0,
             "docx_drawing_count": 0,
             "pdf_image_count": 0,
+            "compared": False,
+            "comparison_status": "not_comparable",
+            "text_comparison_status": "not_comparable",
+            "formula_comparison_status": "not_comparable",
+            "image_comparison_status": "not_comparable",
+            "not_comparable_reasons": ["DOCX or rendered PDF is missing"],
         }
     document = Document(docx_path)
-    anchors: list[str] = []
-    for paragraph in document.paragraphs:
-        if paragraph._p.xpath(".//m:oMath") or paragraph._p.xpath(".//w:drawing"):
-            continue
-        normalized = _normalized_delivery_text(paragraph.text)
-        if len(normalized) < 28:
-            continue
-        positions = (0, max(0, len(normalized) // 2 - 12), max(0, len(normalized) - 24))
-        anchors.extend(normalized[position : position + 24] for position in positions)
+    anchors = _comparison_anchors(document)
     pdf_text, pdf_image_count = _pdf_text_and_image_count(pdf_path)
     normalized_pdf = _normalized_delivery_text(pdf_text)
-    matched = sum(1 for anchor in anchors if anchor and anchor in normalized_pdf)
+    normalized_formula_pdf = _normalized_formula_text(pdf_text)
+    matched = sum(
+        1
+        for kind, anchor in anchors
+        if anchor and anchor in (normalized_formula_pdf if kind == "formula" else normalized_pdf)
+    )
     match_ratio = matched / max(len(anchors), 1)
     if anchors and match_ratio < 0.6:
         issues.append(
@@ -246,12 +342,26 @@ def audit_docx_pdf_consistency(docx_path: Path, pdf_path: Path) -> dict:
         issues.append(
             f"rendered PDF image count {pdf_image_count} below DOCX drawing count {docx_drawing_count}"
         )
+    text_anchor_count = sum(1 for kind, _ in anchors if kind == "text")
+    formula_anchor_count = sum(1 for kind, _ in anchors if kind == "formula")
+    text_compared = text_anchor_count > 0
+    formula_compared = formula_anchor_count > 0
+    image_compared = docx_drawing_count > 0
+    compared = text_compared or formula_compared or image_compared
     return {
         "ok": not issues,
         "issues": issues,
         "anchor_count": len(anchors),
         "matched_anchor_count": matched,
         "anchor_match_ratio": round(match_ratio, 4),
+        "text_anchor_count": text_anchor_count,
+        "formula_anchor_count": formula_anchor_count,
         "docx_drawing_count": docx_drawing_count,
         "pdf_image_count": pdf_image_count,
+        "compared": compared,
+        "comparison_status": "compared" if compared else "not_comparable",
+        "text_comparison_status": "compared" if text_compared else "not_comparable",
+        "formula_comparison_status": "compared" if formula_compared else "not_comparable",
+        "image_comparison_status": "compared" if image_compared else "not_comparable",
+        "not_comparable_reasons": [] if compared else ["no comparable DOCX text, formula, or drawing anchors"],
     }
