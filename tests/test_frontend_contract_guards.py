@@ -127,15 +127,36 @@ def test_multimodal_answer_model_hides_redundant_vision_stage() -> None:
 
 def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -> None:
     assert 'id="examModelPresetSelect"' in INDEX_HTML
-    assert 'value="balanced"' in INDEX_HTML
+    assert 'value="balanced"' not in INDEX_HTML
+    assert "稳定推荐" not in INDEX_HTML
     assert 'value="quality"' in INDEX_HTML
     assert 'value="economy"' in INDEX_HTML
     assert 'id="examModelRoleDetails"' in INDEX_HTML
     assert 'EXAM_MODEL_PRESET_STORAGE_KEY = "answerBook.examModelPreset.v1"' in APP_JS
-    assert 'reasoning: ["deepseek", "deepseek-v4-flash"]' in APP_JS
+    assert 'label: "质量优先（推荐）"' in APP_JS
+    assert 'reasoning: ["lingsuan_openai", "gpt-5.6-terra"]' in APP_JS
     assert 'answer: ["lingsuan_openai", "gpt-5.6-terra"]' in APP_JS
     assert 'correctness: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
     assert 'answer: ["lingsuan_google", "gemini-3.6-flash"]' in APP_JS
+    assert 'if (saved === "balanced") return "quality";' in APP_JS
+    assert 'return "quality";' in APP_JS
+
+
+def test_hidden_providers_are_omitted_from_every_user_facing_model_entry() -> None:
+    for provider in ("ark", "bailian", "sensenova", "openrouter", "lingsuan_xai", "lingsuan_anthropic"):
+        assert f'  "{provider}",' in APP_JS
+    assert "function userVisibleProviderEntries" in APP_JS
+    assert "const entries = userVisibleProviderEntries();" in APP_JS
+    assert "const entries = userVisibleProviderEntries().sort" in APP_JS
+
+
+def test_practice_generation_defaults_to_lingsuan_gemini_and_image_two() -> None:
+    assert 'const preferredProvider = kind === "image" ? "lingsuan_image" : "lingsuan_google";' in APP_JS
+    assert 'populateProviderSelect("imageProviderSelect", "image", "lingsuan_image");' in APP_JS
+    assert 'populateImageModelControls("gpt-image-2");' in APP_JS
+    assert 'id="practiceImageProviderSelect"' in INDEX_HTML
+    assert 'id="knowledgeImageProviderSelect"' in INDEX_HTML
+    assert 'for (const kind of ["text", "vision", "image"])' in APP_JS
 
 
 def test_practice_and_knowledge_expose_one_primary_model_by_default() -> None:
@@ -599,8 +620,8 @@ def test_practice_requests_include_the_configured_image_route() -> None:
     practice_flow = APP_JS[practice_start:knowledge_start]
     knowledge_flow = APP_JS[knowledge_start:APP_JS.index("function updateKnowledgeModelSummary", knowledge_start)]
     for flow in (practice_flow, knowledge_flow):
-        assert 'image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : ""' in flow
-        assert "image_model: imageConfigured ? selectedImageModel()" in flow
+        assert 'image_provider: imageConfigured ? imageProvider : ""' in flow
+        assert 'image_model: imageConfigured ? imageModel : ""' in flow
 
 
 def test_practice_and_knowledge_preflight_missing_model_configuration_before_job_submission() -> None:

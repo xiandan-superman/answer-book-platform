@@ -88,7 +88,8 @@ def test_failed_batch_becomes_position_preserving_placeholders(monkeypatch) -> N
     assert [item["number"] for item in result["exercises"]] == [1, 2, 3, 4]
     assert [item["generation_status"] for item in result["exercises"]] == ["completed", "completed", "failed", "failed"]
     assert result["exercises"][2]["generation_error"]["code"] == "provider_http_524"
-    assert "HTTP 524" in result["exercises"][2]["stem"]
+    assert "模型服务在规定时间内没有返回完整结果" in result["exercises"][2]["stem"]
+    assert "HTTP 524" not in result["exercises"][2]["stem"]
     assert result["quality"]["generated_count"] == 2
     assert result["quality"]["failed_count"] == 2
     assert result["quality"]["total_count"] == 4

@@ -791,6 +791,9 @@ def _select_one(
             compact_messages=_compact_selection_prompt_messages,
             thinking="disabled",
             timeout=EVIDENCE_SELECTION_TIMEOUT_SECONDS,
+            task_stage="evidence_selection",
+            item_ids=[str(question.get("question_id") or question.get("number") or "")],
+            enforce_context_budget=True,
         )
         selection = _normalize_selection(question, plan, data, candidates)
         selection["_meta"] = {

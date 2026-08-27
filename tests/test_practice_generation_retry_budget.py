@@ -323,6 +323,29 @@ def test_transport_retry_forwards_stage_output_budget(monkeypatch) -> None:
     assert captured["max_tokens"] == 12000
 
 
+def test_transport_retry_forwards_dynamic_context_contract(monkeypatch) -> None:
+    captured = {}
+
+    def fake_call(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        object(), [], model="fake", temperature=0, thinking="low", timeout_seconds=30,
+        attempts=1, task_stage="generation",
+        required_evidence_refs=["C01P0001", "image:2"],
+        delivered_evidence_refs=["C01P0001", "image:2"],
+        item_ids=["plan_item_01"],
+    )
+
+    assert result == {"ok": True}
+    assert captured["task_stage"] == "generation"
+    assert captured["required_evidence_refs"] == ["C01P0001", "image:2"]
+    assert captured["delivered_evidence_refs"] == ["C01P0001", "image:2"]
+    assert captured["item_ids"] == ["plan_item_01"]
+
+
 def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monkeypatch) -> None:
     primary = object()
     fallback = object()

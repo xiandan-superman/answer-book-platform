@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .concurrency import ModelRequestAborted, ensure_model_request_active, model_request_slot
+from .model_context_planner import build_model_context_plan, context_plan_block_reason
 from .model_diagnostics import model_diagnostic_hint, record_model_diagnostic
 from .redaction import redact_credentials
 from .runtime_monitor import (
@@ -399,8 +400,39 @@ def _is_gemini_model(config: ProviderConfig, model: str) -> bool:
     return str(model or "").lower().startswith("gemini-") or str(config.name).lower() == "lingsuan_google"
 
 
+def _is_official_google_ai(config: ProviderConfig) -> bool:
+    return str(config.name or "").lower() == "google_ai"
+
+
+def _official_gemini_reasoning_effort(thinking_mode: str) -> str:
+    normalized = _normalize_thinking_mode(thinking_mode)
+    if normalized in {"minimal", "low"}:
+        return "low"
+    if normalized in {"medium", "enabled"}:
+        return "medium"
+    if normalized in {"high", "xhigh"}:
+        return "high"
+    return ""
+
+
 def _is_grok_model(config: ProviderConfig, model: str) -> bool:
     return str(model or "").lower().startswith("grok-") or str(config.name).lower() == "lingsuan_xai"
+
+
+def _is_bigmodel_glm53_flash(config: ProviderConfig, model: str) -> bool:
+    return (
+        str(config.name or "").lower() == "bigmodel"
+        and str(model or "").strip().lower() == "glm-5.3-flash"
+    )
+
+
+def _bigmodel_reasoning_effort(thinking_mode: str) -> str:
+    normalized = _normalize_thinking_mode(thinking_mode)
+    if normalized in {"minimal", "low"}:
+        return "low"
+    if normalized in {"medium", "high"}:
+        return "high"
+    return "max"
 
 
 def _chat_reasoning_effort(thinking_mode: str) -> str:
@@ -538,22 +570,40 @@ class OpenAICompatibleClient:
 
     def chat_json(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
         thinking: str | None = None,
         timeout: int = 120,
+        task_stage: str = "general",
+        required_evidence_refs: Any = (),
+        delivered_evidence_refs: Any = (),
+        item_ids: Any = (),
+        enforce_context_budget: bool = False,
     ) -> LLMResult:
         if not self.config.api_key:
             raise LLMError(f"API key is not configured for provider: {self.config.name}")
         last_error: LLMError | None = None
         target_model = str(model or self.config.default_model).strip()
+        context_plan = build_model_context_plan(
+            stage=str(task_stage or "general"),
+            provider_name=self.config.name,
+            model_name=target_model,
+            messages=messages,
+            required_evidence_refs=required_evidence_refs or (),
+            delivered_evidence_refs=delivered_evidence_refs or (),
+            item_ids=item_ids or (),
+        )
+        self.last_context_plan = context_plan
+        block_reason = context_plan_block_reason(context_plan, enforce_budget=enforce_context_budget)
+        if block_reason:
+            raise LLMError(block_reason)
         json_mode_unsupported = target_model in set(getattr(self.config, "json_mode_unsupported_models", ()) or ())
         use_response_format_options = [False] if json_mode_unsupported or self._json_response_format_supported is False else [True, False]
         for use_response_format in use_response_format_options:
             try:
-                return self._chat_json_once(
+                result = self._chat_json_once(
                     messages,
                     model=model,
                     temperature=temperature,
@@ -562,6 +612,9 @@ class OpenAICompatibleClient:
                     timeout=timeout,
                     use_response_format=use_response_format,
                 )
+                if isinstance(result.raw, dict):
+                    result.raw.setdefault("_request", {})["context_plan"] = context_plan
+                return result
             except LLMError as exc:
                 last_error = exc
                 if use_response_format and _is_unsupported_response_format_error(str(exc)):
@@ -572,14 +625,33 @@ class OpenAICompatibleClient:
 
     def chat_text(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
         thinking: str | None = None,
         timeout: int = 120,
+        task_stage: str = "general",
+        required_evidence_refs: Any = (),
+        delivered_evidence_refs: Any = (),
+        item_ids: Any = (),
+        enforce_context_budget: bool = False,
     ) -> LLMResult:
-        return self._chat_json_once(
+        target_model = str(model or self.config.default_model).strip()
+        context_plan = build_model_context_plan(
+            stage=str(task_stage or "general"),
+            provider_name=self.config.name,
+            model_name=target_model,
+            messages=messages,
+            required_evidence_refs=required_evidence_refs or (),
+            delivered_evidence_refs=delivered_evidence_refs or (),
+            item_ids=item_ids or (),
+        )
+        self.last_context_plan = context_plan
+        block_reason = context_plan_block_reason(context_plan, enforce_budget=enforce_context_budget)
+        if block_reason:
+            raise LLMError(block_reason)
+        result = self._chat_json_once(
             messages,
             model=model,
             temperature=temperature,
@@ -588,6 +660,9 @@ class OpenAICompatibleClient:
             timeout=timeout,
             use_response_format=False,
         )
+        if isinstance(result.raw, dict):
+            result.raw.setdefault("_request", {})["context_plan"] = context_plan
+        return result
 
     def _chat_json_once(
         self,
@@ -635,7 +710,11 @@ class OpenAICompatibleClient:
             # "minimal"/"low" effort values follow the lingsuan.top gateway's
             # OpenAI-compatible extension; the official Gemini compatibility
             # layer only documents low/medium/high and may reject "minimal".
-            gemini_effort = _chat_reasoning_effort(thinking_mode)
+            gemini_effort = (
+                _official_gemini_reasoning_effort(thinking_mode)
+                if _is_official_google_ai(self.config)
+                else _chat_reasoning_effort(thinking_mode)
+            )
             if gemini_effort:
                 payload["reasoning_effort"] = gemini_effort
                 reasoning_effort = gemini_effort
@@ -645,6 +724,15 @@ class OpenAICompatibleClient:
             if grok_effort:
                 payload["reasoning_effort"] = grok_effort
                 reasoning_effort = grok_effort
+        if _is_bigmodel_glm53_flash(self.config, target_model):
+            # GLM-5.3-Flash rejects disabled thinking.  Keep its required
+            # thinking envelope even when a shared retry strategy asks to
+            # reduce reasoning, and translate the UI levels to the provider's
+            # documented low/high/max values.
+            reasoning_effort = _bigmodel_reasoning_effort(thinking_mode)
+            payload["thinking"] = {"type": "enabled", "clear_thinking": False}
+            payload["reasoning_effort"] = reasoning_effort
+            payload["top_p"] = 0.95
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"{self.config.base_url}/chat/completions",
@@ -742,7 +830,7 @@ class OpenAICompatibleClient:
 
     def chat_json_object(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -752,6 +840,11 @@ class OpenAICompatibleClient:
         compact_messages: Any | None = None,
         attempt_callback: Any | None = None,
         thinking: str | None = None,
+        task_stage: str = "general",
+        required_evidence_refs: Any = (),
+        delivered_evidence_refs: Any = (),
+        item_ids: Any = (),
+        enforce_context_budget: bool = False,
     ) -> dict[str, Any]:
         last_error: LLMError | None = None
         self.last_json_retry_report = {
@@ -774,6 +867,11 @@ class OpenAICompatibleClient:
                         max_tokens=plan["max_tokens"],
                         thinking=plan.get("thinking"),
                         timeout=timeout,
+                        task_stage=task_stage,
+                        required_evidence_refs=required_evidence_refs,
+                        delivered_evidence_refs=delivered_evidence_refs,
+                        item_ids=item_ids,
+                        enforce_context_budget=enforce_context_budget,
                     )
                 if _finish_reason(result) == "length":
                     detail = _provider_response_detail(result)
@@ -811,8 +909,20 @@ class OpenAICompatibleClient:
         image_model = str(model or self.config.image_model or "").strip()
         if not image_model:
             raise LLMError(f"Image model is not configured for provider: {self.config.name}")
+        context_plan = build_model_context_plan(
+            stage="image_generation",
+            provider_name=self.config.name,
+            model_name=image_model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self.last_context_plan = context_plan
+        block_reason = context_plan_block_reason(context_plan, enforce_budget=True)
+        if block_reason:
+            raise LLMError(block_reason)
         if _is_dashscope_image_model(self.config, image_model):
-            return self._generate_dashscope_image(prompt, output, model=image_model, size=size, timeout=timeout)
+            result = self._generate_dashscope_image(prompt, output, model=image_model, size=size, timeout=timeout)
+            result.raw.setdefault("_request", {})["context_plan"] = context_plan
+            return result
         image_size = _effective_image_size(image_model, str(size or self.config.image_size or "1024x1024"))
         last_error: LLMError | None = None
         for use_response_format in (True, False):
@@ -839,6 +949,7 @@ class OpenAICompatibleClient:
                         "endpoint": "/images/generations",
                         "response_format": "b64_json" if use_response_format else "provider_default",
                         "size": payload["size"],
+                        "context_plan": context_plan,
                     }
                 return ImageGenerationResult(self.config.name, image_model, output, raw)
             except LLMError as exc:
@@ -1099,6 +1210,8 @@ class OpenAICompatibleClient:
             for key in ("protocol_requested", "protocol_used", "protocol_fallback_reason"):
                 if request_meta.get(key):
                     report[key] = request_meta[key]
+            if isinstance(request_meta.get("context_plan"), dict):
+                report["context_plan"] = request_meta["context_plan"]
         return report
 
 

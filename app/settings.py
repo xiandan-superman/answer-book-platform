@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .api_key_config import load_api_keys
+from .model_capability_registry import ensure_provider_registry_sync, model_accepts_input
 from .paths import CONFIG_DIR, DATA_ROOT, LOCAL_CONFIG_DIR
 
 DEFAULT_MODEL_MAX_TOKENS = 24576
@@ -43,6 +44,8 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
 BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
     "sensenova",
     "bai",
+    "bigmodel",
+    "google_ai",
     "lingsuan_google",
 }
 BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES = {"lingsuan_anthropic"}
@@ -136,6 +139,7 @@ def load_provider_config_file() -> dict[str, Any]:
     local = LOCAL_CONFIG_DIR / "providers.local.json"
     example = CONFIG_DIR / "providers.example.json"
     base = _read_json(example)
+    ensure_provider_registry_sync(base)
     return _merge_config(base, _read_json(local)) if local.exists() else base
 
 
@@ -297,6 +301,15 @@ def provider_model_supports_vision(provider: ProviderConfig, model: str) -> bool
             if str(capability).strip()
         )
     )
+    registered_image_input = model_accepts_input(
+        str(getattr(provider, "name", "") or ""),
+        selected,
+        "image",
+    )
+    if registered_image_input is not None:
+        # Keep the existing cached resolver in the hot path while making the
+        # registry authoritative for every built-in provider/model pair.
+        explicit = ("vision",) if registered_image_input else ("text",)
     if not explicit:
         label = str((getattr(provider, "model_option_labels", {}) or {}).get(selected, "") or "")
         identity = f"{selected} {label}".lower()

@@ -423,6 +423,11 @@ def build_question_understanding(
                     model=candidate_model,
                     max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
                     attempts=1,
+                    task_stage="source_analysis",
+                    required_evidence_refs=["question_visual"] if needs_vision_model(question) else [],
+                    delivered_evidence_refs=["question_visual"],
+                    item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                    enforce_context_budget=True,
                 )
         except Exception as exc:
             failures.append(f"{candidate_model}: {str(exc)[:240]}")

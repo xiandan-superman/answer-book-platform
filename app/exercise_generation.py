@@ -26,6 +26,13 @@ from .practice_export import (
     practice_stem_answer_leak_reasons,
 )
 from .practice_inputs import parse_practice_sources
+from .practice_context_planner import (
+    aggregate_source_evidence,
+    apply_source_evidence_contract,
+    build_context_plan,
+    image_evidence_refs,
+    image_numbers_from_evidence_refs,
+)
 from .paths import OUTPUTS_DIR
 from .practice_result_assembly import (
     PracticeGenerationMetadataContext,
@@ -40,6 +47,7 @@ from .practice_runtime import (
     partition_compatible_batches,
 )
 from .redaction import redact_credentials
+from .provider_errors import classify_provider_error
 from .runtime_capacity import practice_inner_concurrency
 from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, provider_model_supports_vision, resolve_provider_model
 
@@ -1766,6 +1774,10 @@ def ensure_practice_blueprint_defaults(plan: dict[str, Any]) -> dict[str, Any]:
             source_catalog,
             strategy,
         )
+        evidence_contract = aggregate_source_evidence(refs, source_catalog)
+        item["required_evidence_refs"] = evidence_contract["required_evidence_refs"]
+        item["visual_evidence_refs"] = evidence_contract["visual_evidence_refs"]
+        item["requires_source_visuals"] = bool(evidence_contract["visual_evidence_refs"])
         stem_figure_required = item.get("stem_figure_required") is True or item.get("requires_figure") is True
         item["stem_figure_required"] = stem_figure_required
         item["figure_design"] = _figure_design(item.get("figure_design"), required=stem_figure_required)
@@ -3522,45 +3534,37 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     if not isinstance(status_code, int):
         status_match = re.search(r"(?:provider\s+)?http\s+(\d{3})", raw, flags=re.IGNORECASE)
         status_code = int(status_match.group(1)) if status_match else None
-    requires_configuration = status_code in {401, 403, 404}
     transport_phase = str(getattr(exc, "transport_phase", "") or "")
     partial_output_received = bool(getattr(exc, "partial_output_received", False))
-    if status_code == 401:
-        code = "provider_http_401"
-        message = "模型服务认证失败，API Key 可能无效或已过期。"
-    elif status_code == 403:
-        code = "provider_http_403"
-        message = "当前账号或 API Key 缺少该模型的访问权限。"
-    elif status_code == 404:
-        code = "provider_http_404"
-        message = "模型名称、Endpoint 或可用区域不匹配。"
-    elif status_code == 524:
-        code = "provider_http_524"
-        message = "上游模型响应超时（HTTP 524）。"
-    elif status_code == 429:
-        code = "provider_http_429"
-        message = "模型服务请求过于频繁，请稍后继续。"
-    elif status_code is not None:
-        code = f"provider_http_{status_code}"
-        message = f"上游模型请求失败（HTTP {status_code}）。"
-    elif transport_phase == "connect":
+    retry_after = getattr(exc, "retry_after_seconds", None)
+    provider_info = classify_provider_error(
+        raw,
+        status_code=status_code,
+        transport_phase=transport_phase,
+        retry_after_seconds=retry_after if isinstance(retry_after, (int, float)) else None,
+    )
+    requires_configuration = provider_info.requires_configuration
+    if transport_phase == "connect":
         code = "provider_connect_timeout"
-        message = "无法在限定时间内连接模型服务。"
+        message = provider_info.message
     elif transport_phase == "first_byte":
         code = "provider_first_byte_timeout"
-        message = "已连接模型服务，但未在限定时间内收到首个响应。"
+        message = provider_info.message
     elif transport_phase == "read_idle":
         code = "provider_read_idle_timeout"
-        message = "模型连接已建立，但长时间未读取到新数据。"
+        message = provider_info.message
     elif transport_phase == "hard_timeout":
         code = "provider_call_deadline_exceeded"
-        message = "单次模型请求已达硬截止时间。"
+        message = provider_info.message
+    elif status_code is not None:
+        code = f"provider_http_{status_code}"
+        message = provider_info.message
     elif "timeout" in lowered or "timed out" in lowered or "超时" in raw:
         code = "provider_connect_or_first_byte_timeout"
-        message = "无法在限定时间内连接模型服务或收到首个响应。"
+        message = provider_info.message
     elif any(token in lowered for token in ("ssl", "tls", "eof occurred", "connection", "remote end closed", "empty reply", "network")):
         code = "provider_tls_connection_failed" if any(token in lowered for token in ("ssl", "tls", "eof occurred")) else "provider_network_connection_failed"
-        message = "与模型服务的网络连接中断。"
+        message = provider_info.message
     elif (
         "专项练习 json 解析失败" in lowered
         or "chat 修复后仍失败" in lowered
@@ -3575,7 +3579,7 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         code = "provider_generation_failed"
         message = "上游模型生成失败。"
     transient = (
-        status_code in {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+        provider_info.retryable
         or transport_phase in {"read_idle", "connect", "first_byte"}
         or (transport_phase == "hard_timeout" and not partial_output_received)
         or code == "generation_response_invalid"
@@ -3587,16 +3591,17 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     if transport_phase == "hard_timeout" and partial_output_received:
         transient = False
     signature = code
-    retry_after = getattr(exc, "retry_after_seconds", None)
     return {
         "code": code,
+        "title": provider_info.title if code.startswith("provider_") else "模型返回内容不可用",
         "message": message,
+        "suggested_action": provider_info.suggested_action if code.startswith("provider_") else "请重新生成本题；其他已完成题目不会受到影响。",
         "retryable": bool(transient or isinstance(exc, ValueError)) and not requires_configuration,
         "requires_configuration": requires_configuration,
         "signature": signature,
         "retry_after_seconds": retry_after if isinstance(retry_after, (int, float)) else None,
         "partial_output_received": partial_output_received,
-        "detail": raw,
+        "detail": "",
     }
 
 
@@ -4578,6 +4583,8 @@ def _semantic_batch_context(
                 "knowledge_points": _string_list(source.get("knowledge_points"), limit=20),
                 "source_type": _clean(source.get("question_type"), 100),
                 "source_difficulty": _clean(source.get("source_difficulty"), 30),
+                "required_evidence_refs": _unique_strings(source.get("evidence_refs"), limit=160, item_limit=80),
+                "visual_evidence_refs": _unique_strings(source.get("visual_evidence_refs"), limit=64, item_limit=40),
             }
             if include_source_content:
                 item_source.update({
@@ -4625,7 +4632,14 @@ def _batch_reference_images(
 ) -> tuple[list[str], list[int]]:
     """Select only images explicitly referenced by this batch's source text."""
     serialized = json.dumps(semantic_sources, ensure_ascii=False)
-    reference_numbers: list[int] = []
+    explicit_refs = re.findall(r'"image:(\d+)"', serialized)
+    reference_numbers = image_numbers_from_evidence_refs(
+        (f"image:{number}" for number in explicit_refs),
+        maximum=len(reference_images),
+    )
+    # Legacy plans created before evidence contracts still carry IMAGE_REF
+    # anchors in source_content. Keep them compatible without returning to
+    # keyword-based visual routing.
     for raw_number in re.findall(r"⟦IMAGE_REF:(\d+);", serialized):
         number = int(raw_number)
         if 1 <= number <= len(reference_images) and number not in reference_numbers:
@@ -4690,6 +4704,9 @@ def _semantic_batch_plan(
             "required_knowledge_points": _string_list(item.get("required_knowledge_points"), limit=60),
             "type_rule": (_question_type_generation_requirements(item) or [""])[0],
             "stem_figure_required": _plan_requires_stem_figure(item),
+            "required_evidence_refs": _unique_strings(item.get("required_evidence_refs"), limit=320, item_limit=80),
+            "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
+            "requires_source_visuals": item.get("requires_source_visuals") is True,
         }
         constraints = _compact_required_constraints(item.get("required_constraints"))
         if constraints:
@@ -4760,8 +4777,16 @@ def _batch_figure_issues(
 
 
 def _batch_needs_visual_reference(semantic_sources: dict[str, Any], batch_plan: list[dict[str, Any]]) -> bool:
-    """Only attach original images to batches whose semantics indicate a visual dependency."""
+    """Prefer explicit evidence contracts; retain keywords only for legacy plans."""
+    if any(
+        item.get("requires_source_visuals") is True or bool(item.get("visual_evidence_refs"))
+        for item in batch_plan
+        if isinstance(item, dict)
+    ):
+        return True
     text = json.dumps({"sources": semantic_sources, "plan": batch_plan}, ensure_ascii=False)
+    if re.search(r'"visual_evidence_refs"\s*:\s*\[\s*"image:', text):
+        return True
     return bool(re.search(r"图|曲线|坐标|示意|figure|diagram|scatter|line|bar", text, flags=re.IGNORECASE))
 
 
@@ -4863,6 +4888,11 @@ def _call_practice_json(
     timeout_seconds: int | None = None,
     ensure_active: Callable[[], None] | None = None,
     repair_invalid_json: bool = True,
+    task_stage: str = "general",
+    required_evidence_refs: Iterable[Any] = (),
+    delivered_evidence_refs: Iterable[Any] = (),
+    item_ids: Iterable[Any] = (),
+    enforce_context_budget: bool = False,
 ) -> dict[str, Any]:
     if timeout_seconds is None:
         timeout_seconds = _practice_stage_timeout("general", 300)
@@ -4877,6 +4907,11 @@ def _call_practice_json(
             max_tokens=output_token_budget,
             thinking=thinking,
             timeout=timeout_seconds,
+            task_stage=task_stage,
+            required_evidence_refs=required_evidence_refs,
+            delivered_evidence_refs=delivered_evidence_refs,
+            item_ids=item_ids,
+            enforce_context_budget=enforce_context_budget,
         )
     if ensure_active is not None:
         ensure_active()
@@ -4911,6 +4946,11 @@ def _call_practice_json(
                 max_tokens=output_token_budget,
                 thinking=_practice_retry_thinking(repair_client, model),
                 timeout=timeout_seconds,
+                task_stage=task_stage,
+                required_evidence_refs=required_evidence_refs,
+                delivered_evidence_refs=delivered_evidence_refs,
+                item_ids=item_ids,
+                enforce_context_budget=enforce_context_budget,
             )
         if ensure_active is not None:
             ensure_active()
@@ -5199,6 +5239,8 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
                         6000,
                     ),
                     "required_constraints": source_by_id[source_ref].get("required_constraints") or {},
+                    "required_evidence_refs": source_by_id[source_ref].get("evidence_refs") or [],
+                    "visual_evidence_refs": source_by_id[source_ref].get("visual_evidence_refs") or [],
                 }
                 for source_ref in source_refs
                 if source_ref in source_by_id
@@ -5233,18 +5275,81 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
 {{"items":[{{"number":1,"status":"passed|risk","risks":[{{"severity":"high|medium|low","code":"...","message":"简明问题","evidence":"题干中的直接证据","suggested_action":"最小修复方向"}}]}}],"set_summary":"..."}}
 每题必须返回一项；无风险时 risks=[]。
 """
-    provider, model = _primary_model_runtime(payload)
+    review_visual_refs = _unique_strings(
+        [
+            evidence_ref
+            for row in review_rows
+            for source in (row.get("bound_source_evidence") or [])
+            if isinstance(source, dict)
+            for evidence_ref in (source.get("visual_evidence_refs") or [])
+        ],
+        limit=64,
+        item_limit=40,
+    )
+    review_images: list[str] = []
+    if review_visual_refs:
+        parsed_sources = parse_practice_sources(payload)
+        available_images = parsed_sources.get("reference_images") or parsed_sources.get("images") or []
+        review_image_numbers = image_numbers_from_evidence_refs(
+            review_visual_refs,
+            maximum=len(available_images),
+        )
+        review_images = [available_images[number - 1] for number in review_image_numbers]
+    provider, model = _model_runtime(payload, bool(review_images)) if review_images else _primary_model_runtime(payload)
+    review_required_refs = _unique_strings(
+        [
+            evidence_ref
+            for row in review_rows
+            for source in (row.get("bound_source_evidence") or [])
+            if isinstance(source, dict)
+            for evidence_ref in (source.get("required_evidence_refs") or [])
+        ],
+        limit=320,
+        item_limit=80,
+    )
+    review_messages = [
+        {"role": "system", "content": "你只做题目语义质量审查，只输出合法 JSON。"},
+        {"role": "user", "content": _user_content(task, review_images)},
+    ]
+    review_context_plan = build_context_plan(
+        stage="semantic_review",
+        provider_name=provider.name,
+        model_name=model,
+        text=task,
+        image_evidence_refs=review_visual_refs if review_images else [],
+        required_evidence_refs=review_required_refs,
+        delivered_evidence_refs=[
+            evidence_ref
+            for evidence_ref in review_required_refs
+            if not evidence_ref.startswith("image:")
+        ],
+        item_ids=[row.get("number") for row in review_rows],
+        messages=review_messages,
+    )
+    if not review_context_plan["evidence_complete"]:
+        raise ValueError(
+            "质量审查所需的来源图片没有完整进入模型上下文，不能把本次审查标记为已完成。缺少证据："
+            + "、".join(review_context_plan["omitted_required_evidence_refs"])
+        )
     raw = _call_practice_json(
         _practice_generation_client(provider, model),
-        [
-            {"role": "system", "content": "你只做题目语义质量审查，只输出合法 JSON。"},
-            {"role": "user", "content": task},
-        ],
+        review_messages,
         model=model,
         temperature=0,
         thinking="disabled",
         timeout_seconds=_practice_stage_timeout("semantic_review", 180),
         ensure_active=lambda: ensure_practice_generation_active(payload),
+        task_stage="semantic_review",
+        required_evidence_refs=review_required_refs,
+        delivered_evidence_refs=[
+            *[
+                evidence_ref
+                for evidence_ref in review_required_refs
+                if not evidence_ref.startswith("image:")
+            ],
+            *(review_visual_refs if review_images else []),
+        ],
+        item_ids=[row.get("number") for row in review_rows],
     )
     raw_by_number = {
         str(item.get("number") or "").strip(): item
@@ -5297,7 +5402,9 @@ def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any])
         "review_scope": "complete_set",
         "provider": provider.name,
         "model": model,
-        "thinking": "disabled",
+        "thinking_requested": "disabled",
+        "thinking_effective": "max" if provider.name == "bigmodel" and model == "glm-5.3-flash" else "disabled",
+        "context_plan": review_context_plan,
         "items": items,
         "risk_count": sum(len(item.get("risks") or []) for item in items),
         "actionable_risk_count": len(actionable),
@@ -5424,6 +5531,11 @@ def _call_practice_json_with_transport_retry(
     retry_invalid_json: bool = True,
     initial_json_error: bool = False,
     attempt_offset: int = 0,
+    task_stage: str = "general",
+    required_evidence_refs: Iterable[Any] = (),
+    delivered_evidence_refs: Iterable[Any] = (),
+    item_ids: Iterable[Any] = (),
+    enforce_context_budget: bool = False,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     retrying_invalid_json = initial_json_error
@@ -5460,6 +5572,11 @@ def _call_practice_json_with_transport_retry(
                 timeout_seconds=timeout_seconds,
                 ensure_active=ensure_active,
                 repair_invalid_json=False,
+                task_stage=task_stage,
+                required_evidence_refs=required_evidence_refs,
+                delivered_evidence_refs=delivered_evidence_refs,
+                item_ids=item_ids,
+                enforce_context_budget=enforce_context_budget,
             )
             if attempt_log is not None:
                 attempt_log.append({
@@ -5929,6 +6046,7 @@ def _normalize_plan(
             source if len(source_catalog) <= 1 else None,
             allow_partition=allow_partition,
         )
+        evidence_contract = aggregate_source_evidence(source_refs, source_catalog)
         stem_figure_required = row.get("stem_figure_required") is True or row.get("requires_figure") is True
         exercise_plan.append(
             {
@@ -5948,6 +6066,9 @@ def _normalize_plan(
                 "coverage_role": coverage_role,
                 "required_knowledge_points": required_knowledge_points,
                 "required_constraints": required_constraints,
+                "required_evidence_refs": evidence_contract["required_evidence_refs"],
+                "visual_evidence_refs": evidence_contract["visual_evidence_refs"],
+                "requires_source_visuals": bool(evidence_contract["visual_evidence_refs"]),
                 "stem_figure_required": stem_figure_required,
                 "figure_design": _figure_design(row.get("figure_design"), required=stem_figure_required),
             }
@@ -6609,8 +6730,7 @@ def _normalize_source_scope(raw: Any) -> dict[str, Any]:
         if not title and not excerpt:
             continue
         parent_id = _clean(item.get("parent_id"), 80)
-        questions.append(
-            {
+        normalized_item = {
                 "source_question_id": _clean(item.get("source_question_id"), 80) or f"source_{index:02d}",
                 "number": _clean(item.get("number"), 50) or str(index),
                 "title": title or excerpt[:80],
@@ -6618,6 +6738,9 @@ def _normalize_source_scope(raw: Any) -> dict[str, Any]:
                 "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
                 "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
                 "content_ref_status": _clean(item.get("content_ref_status"), 30),
+                "evidence_refs": _unique_strings(item.get("evidence_refs"), limit=160, item_limit=80),
+                "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
+                "visual_dependency": dict(item.get("visual_dependency")) if isinstance(item.get("visual_dependency"), dict) else {},
                 "question_type": _clean(item.get("question_type"), 100),
                 "source_difficulty": _clean(item.get("source_difficulty") or item.get("difficulty"), 20),
                 "knowledge_points": _string_list(item.get("knowledge_points"), limit=60),
@@ -6629,7 +6752,8 @@ def _normalize_source_scope(raw: Any) -> dict[str, Any]:
                     "fragment": _clean(item.get("source_ref", {}).get("fragment") if isinstance(item.get("source_ref"), dict) else item.get("stem_excerpt"), 1200),
                 },
             }
-        )
+        apply_source_evidence_contract(normalized_item)
+        questions.append(normalized_item)
     mode = _clean(value.get("mode"), 30)
     if mode not in {"single", "question_set"}:
         mode = "question_set" if len(questions) > 1 else "single"
@@ -7039,13 +7163,40 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 }}
 """
     raw_responses: list[dict[str, Any]] = []
+    analysis_context_plans: list[dict[str, Any]] = []
     for chunk_index, (chunk_text, chunk_images) in enumerate(chunks, start=1):
+        chunk_visual_refs = [
+            f"image:{image_index}"
+            for image_index, image in enumerate(analysis_images, start=1)
+            if image in chunk_images
+        ]
+        chunk_required_visual_refs = image_evidence_refs(chunk_text)
+        chunk_required_refs = [*(chunk_ref_ids.get(chunk_index) or []), *chunk_required_visual_refs]
+        analysis_messages = [
+            {"role": "system", "content": "你是研究生教育内容分析专家。只做材料结构与范围识别，只输出合法 JSON 对象。"},
+            {"role": "user", "content": _user_content(build_task(chunk_text, chunk_index), chunk_images)},
+        ]
+        analysis_context_plan = build_context_plan(
+            stage="source_analysis",
+            provider_name=provider.name,
+            model_name=model,
+            text=chunk_text,
+            image_evidence_refs=chunk_visual_refs,
+            required_evidence_refs=chunk_required_refs,
+            delivered_evidence_refs=chunk_ref_ids.get(chunk_index) or [],
+            item_ids=[f"chunk_{chunk_index:02d}"],
+            fixed_overhead_tokens=1800,
+            messages=analysis_messages,
+        )
+        analysis_context_plans.append(analysis_context_plan)
+        if not analysis_context_plan["evidence_complete"]:
+            raise ValueError(
+                "材料中的必要图片超过当前单次分析容量，已停止分析以避免遗漏。缺少证据："
+                + "、".join(analysis_context_plan["omitted_required_evidence_refs"])
+            )
         response = _call_practice_json_with_transport_retry(
             _practice_generation_client(provider, model),
-            [
-                {"role": "system", "content": "你是研究生教育内容分析专家。只做材料结构与范围识别，只输出合法 JSON 对象。"},
-                {"role": "user", "content": _user_content(build_task(chunk_text, chunk_index), chunk_images)},
-            ],
+            analysis_messages,
             model=model,
             temperature=0.1,
             thinking=_practice_stage_thinking(payload, "analyze"),
@@ -7061,6 +7212,10 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
             # proxies sit silent until their 524 ceiling and adds no quality.
             allow_chat_fallback=not bool(chunk_images),
             ensure_active=lambda: ensure_practice_generation_active(payload),
+            task_stage="source_analysis",
+            required_evidence_refs=chunk_required_refs,
+            delivered_evidence_refs=[*(chunk_ref_ids.get(chunk_index) or []), *chunk_visual_refs],
+            item_ids=[f"chunk_{chunk_index:02d}"],
         )
         response_scope = response.get("source_scope") if isinstance(response.get("source_scope"), dict) else {}
         response_questions = [item for item in (response_scope.get("questions") or []) if isinstance(item, dict)]
@@ -7155,6 +7310,9 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
                 "required_constraints": _required_constraints_for_refs([], [], source_analysis),
             }],
         }
+    for item in source_scope["questions"]:
+        if isinstance(item, dict):
+            apply_source_evidence_contract(item)
     constraint_repair_attempted = False
     constraint_repair_error = ""
     missing_constraint_ids = [
@@ -7272,6 +7430,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
             "analysis_chunk_count": len(chunks),
             "chunked_analysis": len(chunks) > 1,
             "model_route": _model_route(payload, bool(analysis_images), provider, model),
+            "context_plans": analysis_context_plans,
         },
     }
 
@@ -7302,6 +7461,10 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "title": _clean(item.get("title"), 300),
             "stem_excerpt": _clean(item.get("stem_excerpt"), 1200),
             "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
+            "content_refs": _unique_strings(item.get("content_refs"), limit=120, item_limit=40),
+            "evidence_refs": _unique_strings(item.get("evidence_refs"), limit=160, item_limit=80),
+            "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
+            "visual_dependency": dict(item.get("visual_dependency")) if isinstance(item.get("visual_dependency"), dict) else {},
             "question_type": _clean(item.get("question_type"), 100),
             "source_difficulty": _clean(item.get("source_difficulty") or item.get("difficulty"), 20),
             "knowledge_points": _string_list(item.get("knowledge_points"), limit=60),
@@ -7371,6 +7534,9 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "title": _clean(item.get("title"), 300),
             "source_excerpt": _clean(item.get("stem_excerpt") or item.get("excerpt"), 1200),
             "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
+            "required_evidence_refs": _unique_strings(item.get("evidence_refs"), limit=160, item_limit=80),
+            "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
+            "visual_dependency": dict(item.get("visual_dependency")) if isinstance(item.get("visual_dependency"), dict) else {},
             "question_type": _clean(item.get("question_type"), 100),
             "source_difficulty": _clean(item.get("source_difficulty") or item.get("difficulty"), 20),
             "knowledge_points": _string_list(item.get("knowledge_points"), limit=20),
@@ -7426,11 +7592,32 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
     has_confirmed_source_snapshot = bool(
         confirmed_analysis or prior_source_scope.get("questions") or selected_source_questions
     )
-    planning_images = [] if has_confirmed_source_snapshot else (sources.get("reference_images") or sources["images"])
-    provider, model = (
-        _primary_model_runtime(payload)
+    available_planning_images = sources.get("reference_images") or sources["images"]
+    confirmed_planning_visual_refs = _unique_strings(
+        [
+            evidence_ref
+            for source in planning_units
+            if isinstance(source, dict)
+            for evidence_ref in (source.get("visual_evidence_refs") or [])
+        ],
+        limit=64,
+        item_limit=40,
+    )
+    confirmed_planning_image_numbers = image_numbers_from_evidence_refs(
+        confirmed_planning_visual_refs,
+        maximum=len(available_planning_images),
+    )
+    planning_images = (
+        [available_planning_images[number - 1] for number in confirmed_planning_image_numbers]
+        if has_confirmed_source_snapshot and confirmed_planning_visual_refs
+        else []
         if has_confirmed_source_snapshot
-        else _model_runtime(payload, bool(planning_images))
+        else available_planning_images
+    )
+    provider, model = (
+        _model_runtime(payload, bool(planning_images))
+        if planning_images
+        else _primary_model_runtime(payload)
     )
     blueprint_item_contract = {
         "number": 1,
@@ -7615,6 +7802,47 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         },
         {"role": "user", "content": _user_content(task, planning_images)},
     ]
+    planning_required_refs = _unique_strings(
+        [
+            evidence_ref
+            for source in planning_units
+            if isinstance(source, dict)
+            for evidence_ref in (source.get("evidence_refs") or source.get("content_refs") or [])
+        ],
+        limit=320,
+        item_limit=80,
+    )
+    planning_visual_refs = _unique_strings(
+        [
+            evidence_ref
+            for source in planning_units
+            if isinstance(source, dict)
+            for evidence_ref in (source.get("visual_evidence_refs") or [])
+        ],
+        limit=64,
+        item_limit=40,
+    )
+    planning_delivered_refs = [
+        evidence_ref
+        for evidence_ref in planning_required_refs
+        if include_source_content and not evidence_ref.startswith("image:")
+    ]
+    planning_context_plan = build_context_plan(
+        stage="planning",
+        provider_name=provider.name,
+        model_name=model,
+        text=task,
+        image_evidence_refs=planning_visual_refs if planning_images else [],
+        required_evidence_refs=planning_required_refs,
+        delivered_evidence_refs=planning_delivered_refs,
+        item_ids=[item.get("source_question_id") for item in planning_units if isinstance(item, dict)],
+        messages=messages,
+    )
+    if include_source_content and not planning_context_plan["evidence_complete"]:
+        raise ValueError(
+            "蓝图设计所需的来源图片没有完整进入模型上下文，已停止规划以避免误解。缺少证据："
+            + "、".join(planning_context_plan["omitted_required_evidence_refs"])
+        )
     raw = _call_practice_json_with_transport_retry(
         _practice_generation_client(provider, model),
         messages,
@@ -7625,6 +7853,10 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds=_practice_stage_timeout("plan", 600),
         attempts=2,
         ensure_active=lambda: ensure_practice_generation_active(payload),
+        task_stage="planning",
+        required_evidence_refs=planning_required_refs,
+        delivered_evidence_refs=[*planning_delivered_refs, *(planning_visual_refs if planning_images else [])],
+        item_ids=[item.get("source_question_id") for item in planning_units if isinstance(item, dict)],
     )
     ensure_practice_generation_active(payload)
     if confirmed_analysis:
@@ -7739,6 +7971,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         "source_catalog_count": len(prompt_source_catalog),
         "uses_compact_catalog": bool(confirmed_analysis and prompt_source_catalog),
         "generation_batches_use_referenced_sources_only": True,
+        "context_plan": planning_context_plan,
     }
     plan["source_mode"] = "knowledge" if is_knowledge_mode else "exam"
     plan["difficulty_counts"] = {
@@ -8189,6 +8422,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
 {json.dumps(_batch_prompt_contract(batch_plan), ensure_ascii=False, indent=2)}
 """
+        attach_batch_visuals = include_source_content and _batch_needs_visual_reference(
+            semantic_sources,
+            batch_plan,
+        )
         messages = [
             {
                 "role": "system",
@@ -8197,8 +8434,41 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "不得改变题型方案，不得降低到中学或普通本科入门层级。只输出合法 JSON。"
                 ),
             },
-            {"role": "user", "content": _user_content(task, batch_reference_images if include_source_content and _batch_needs_visual_reference(semantic_sources, batch_plan) else [])},
+            {"role": "user", "content": _user_content(task, batch_reference_images if attach_batch_visuals else [])},
         ]
+        delivered_visual_refs = [f"image:{number}" for number in batch_reference_numbers]
+        batch_required_evidence_refs = _unique_strings(
+            [
+                evidence_ref
+                for item in semantic_plan
+                for evidence_ref in (item.get("required_evidence_refs") or [])
+            ],
+            limit=320,
+            item_limit=80,
+        )
+        batch_delivered_evidence_refs = _unique_strings(
+            [
+                *[
+                    evidence_ref
+                    for evidence_ref in batch_required_evidence_refs
+                    if include_source_content and not evidence_ref.startswith("image:")
+                ],
+                *(delivered_visual_refs if attach_batch_visuals else []),
+            ],
+            limit=320,
+            item_limit=80,
+        )
+        generation_context_plan = build_context_plan(
+            stage="generation",
+            provider_name=provider.name,
+            model_name=model,
+            text=task,
+            image_evidence_refs=delivered_visual_refs if attach_batch_visuals else [],
+            required_evidence_refs=batch_required_evidence_refs,
+            delivered_evidence_refs=batch_delivered_evidence_refs,
+            item_ids=[item.get("plan_item_id") for item in batch_plan],
+            messages=messages,
+        )
 
         batch_diagnostic: dict[str, Any] = {
             "batch_start": batch_start + 1,
@@ -8209,6 +8479,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "source_signature": list(_generation_source_signature(batch_plan[0])) if batch_plan else [],
             "reference_image_numbers": batch_reference_numbers,
             "reference_image_count": len(batch_reference_images),
+            "context_plan": generation_context_plan,
             "control_contract_char_count": sum(len(json.dumps(value, ensure_ascii=False)) for value in (
                 semantic_plan,
                 diversity_context,
@@ -8218,6 +8489,25 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "recovery_attempt_count": 0,
             "transport_attempts": [],
         }
+        if include_source_content and not generation_context_plan["evidence_complete"]:
+            missing_evidence = generation_context_plan["omitted_required_evidence_refs"]
+            failures = {
+                _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}": {
+                    "code": "generation_evidence_incomplete",
+                    "message": "本题需要的来源图片没有完整进入模型上下文，已停止生成以避免模型猜测。",
+                    "retryable": False,
+                    "requires_configuration": False,
+                    "detail": "缺少证据：" + "、".join(missing_evidence),
+                }
+                for index, item in enumerate(batch_plan)
+            }
+            batch_diagnostic.update({
+                "status": "evidence_blocked",
+                "error_code": "generation_evidence_incomplete",
+                "model_call_count": 0,
+                "failed_plan_item_ids": sorted(failures),
+            })
+            return batch_start, [], failures, batch_diagnostic
 
         def _partition_batch_rows(raw: dict[str, Any]) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
             return partition_practice_batch_rows(
@@ -8284,6 +8574,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         ),
                         initial_json_error=True,
                         attempt_offset=retry_limit - remaining_attempts,
+                        task_stage="generation",
+                        required_evidence_refs=batch_required_evidence_refs,
+                        delivered_evidence_refs=batch_delivered_evidence_refs,
+                        item_ids=[target_item_id],
                     )
                     recovered_rows, recovered_shape = _partition_batch_rows(recovered_raw)
                     attempt_report["attempts"].append({
@@ -8387,6 +8681,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 retry_invalid_json=batch_count == 1,
                 initial_json_error=invalid_response_retry,
                 attempt_offset=retry_limit - retry_coordinator.remaining(root_key, limit=retry_limit),
+                task_stage="generation",
+                required_evidence_refs=batch_required_evidence_refs,
+                delivered_evidence_refs=batch_delivered_evidence_refs,
+                item_ids=[item.get("plan_item_id") for item in batch_plan],
             )
         except Exception as exc:
             error_detail = _generation_error_detail(exc)
@@ -8596,6 +8894,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                             max_retry_after_seconds=float(payload.get("generation_retry_after_cap_seconds") or 30),
                             initial_json_error=True,
                             attempt_offset=retry_limit - remaining_attempts,
+                            task_stage="generation",
+                            required_evidence_refs=batch_required_evidence_refs,
+                            delivered_evidence_refs=batch_delivered_evidence_refs,
+                            item_ids=[target_item_id],
                         )
                         repaired_rows, repaired_shape = _partition_batch_rows(repaired_raw)
                         repaired_item = repaired_rows.get(target_index)
@@ -8839,11 +9141,66 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         if plan_item_id in audit_failed_plan_ids or plan_item_id in completed_ids:
             continue
         pending_items.append((plan_index, item))
-    pending_batches.extend(partition_compatible_batches(
+    candidate_batches = partition_compatible_batches(
         pending_items,
         compatibility_key=_generation_source_signature,
         max_batch_size=batch_size,
-    ))
+    )
+
+    def split_batch_to_quality_budget(
+        start: int,
+        rows: list[dict[str, Any]],
+    ) -> list[tuple[int, list[dict[str, Any]]]]:
+        if len(rows) <= 1:
+            return [(start, rows)]
+        estimated_context = {
+            "sources": _semantic_batch_context(
+                plan,
+                rows,
+                knowledge_mode=is_knowledge_mode,
+                include_source_content=include_source_content,
+            ),
+            "blueprint": _semantic_batch_plan(rows, exercise_plan),
+        }
+        estimated_required_refs = _unique_strings(
+            [
+                evidence_ref
+                for row in rows
+                for evidence_ref in (row.get("required_evidence_refs") or [])
+            ],
+            limit=320,
+            item_limit=80,
+        )
+        estimated_visual_refs = [
+            evidence_ref
+            for evidence_ref in estimated_required_refs
+            if evidence_ref.startswith("image:")
+        ]
+        context_plan = build_context_plan(
+            stage="generation",
+            provider_name=provider.name,
+            model_name=model,
+            text=json.dumps(estimated_context, ensure_ascii=False),
+            image_evidence_refs=estimated_visual_refs if include_source_content else [],
+            required_evidence_refs=estimated_required_refs,
+            delivered_evidence_refs=[
+                evidence_ref
+                for evidence_ref in estimated_required_refs
+                if include_source_content and not evidence_ref.startswith("image:")
+            ],
+            item_ids=[row.get("plan_item_id") for row in rows],
+            fixed_overhead_tokens=5000,
+        )
+        if not context_plan["over_quality_budget"]:
+            return [(start, rows)]
+        midpoint = max(1, len(rows) // 2)
+        return [
+            *split_batch_to_quality_budget(start, rows[:midpoint]),
+            *split_batch_to_quality_budget(start + midpoint, rows[midpoint:]),
+        ]
+
+    for candidate_start, candidate_rows in candidate_batches:
+        pending_batches.extend(split_batch_to_quality_budget(candidate_start, candidate_rows))
 
     def run_pending_batch(
         pending: tuple[int, list[dict[str, Any]]],
@@ -9648,6 +10005,9 @@ def regenerate_plan_item(payload: dict[str, Any]) -> dict[str, Any]:
         max_tokens=max(DEFAULT_MODEL_MAX_TOKENS, 10000),
         thinking=_clean(payload.get("thinking"), 20) or None,
         timeout=_practice_stage_timeout("blueprint_revision", 300),
+        task_stage="planning",
+        item_ids=[_clean(original.get("plan_item_id"), 80)],
+        enforce_context_budget=True,
     )
     raw = _parse_safe_practice_json(result.content)
     redesigned = raw.get("plan_item") if isinstance(raw.get("plan_item"), dict) else {}

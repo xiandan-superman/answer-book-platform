@@ -249,6 +249,9 @@ def _resolve_with_model(question: dict[str, Any], provider: Any, model: str) -> 
                 _model_plan_prompt(question, include_images=bool(getattr(provider, "supports_vision", False))),
                 model=model or getattr(provider, "default_model", ""),
                 max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+                task_stage="figure_schema",
+                item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                enforce_context_budget=True,
             )
     except (LLMError, Exception):
         return None

@@ -72,10 +72,14 @@
     const data = await parseResponse(response);
     if (!response.ok) {
       const error = new Error(data.error || response.statusText);
+      error.publicMessage = data.error || response.statusText;
       error.code = data.error_code || "request_failed";
+      error.title = data.error_title || "";
       error.suggestedAction = data.suggested_action || "";
       error.supportId = data.support_id || "";
       error.recoveryAction = data.recovery_action || "";
+      error.retryable = data.retryable === true;
+      error.requiresConfiguration = data.requires_configuration === true;
       error.status = response.status;
       error.issues = Array.isArray(data.issues) ? data.issues.map((item) => String(item)).filter(Boolean) : [];
       const issueDetail = error.issues.length ? `：${error.issues.slice(0, 3).join("；")}` : "";

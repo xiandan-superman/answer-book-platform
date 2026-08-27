@@ -36,6 +36,8 @@ class LocalConfigTests(unittest.TestCase):
         self.assertIn("SENSENOVA_API_KEY", ALLOWED_API_KEY_NAMES)
         self.assertIn("BAI_API_KEY", ALLOWED_API_KEY_NAMES)
         self.assertIn("OPENROUTER_API_KEY", ALLOWED_API_KEY_NAMES)
+        self.assertIn("GEMINI_API_KEY", ALLOWED_API_KEY_NAMES)
+        self.assertIn("ZAI_API_KEY", ALLOWED_API_KEY_NAMES)
         self.assertIn("YUANHENG_API_KEY", ALLOWED_API_KEY_NAMES)
         with tempfile.TemporaryDirectory() as raw_tmp:
             project_root = Path(raw_tmp)

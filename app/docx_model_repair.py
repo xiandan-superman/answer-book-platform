@@ -207,6 +207,9 @@ def repair_fragments_with_model_for_docx(
                     model=model,
                     max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
                     fallback_model=fallback_model,
+                    task_stage="format_repair",
+                    item_ids=[qid],
+                    enforce_context_budget=True,
                 )
             repaired = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
             attach_program_evidence_block(repaired, evidence, evidence_selection)

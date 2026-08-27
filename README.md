@@ -63,7 +63,7 @@
 - v4 公式链路强制要求：公式不得混入普通正文，必须进入公式对象字段。
 - 生成、审计、渲染由平台程序控制，执行任务时不得临时修改工具链。
 - 当前本地平台采用单服务进程、多线程工作器架构。正式启动入口和命令行解析入口共享进程锁；重复启动会在恢复队列或调用模型前停止，避免重复任务和额外费用。异常退出后操作系统会自动释放锁，可直接重新启动。
-- 多模态模型直接接收原题图片；文本模型才使用单独的视觉备用模型。模型能力来自本地配置并按“服务商 + 模型 + 能力声明”缓存，不会为了识别能力重复调用或试探模型。
+- 多模态模型直接接收原题图片；文本模型才使用单独的视觉备用模型。内置模型的输入能力来自 `config/model_capabilities.json`，并按“服务商 + 模型 + 能力声明”缓存，不会根据名称猜测，也不会为了识别能力重复调用模型。
 - 推荐使用 GitHub 源码启动版。首次启动自动创建独立 Python 环境并安装依赖；顶部“检查更新”只接受版本标签发布且通过 SHA256 校验的源码更新。用户数据和 API Key 位于程序目录之外，不会被源码替换覆盖。
 
 ## 开发者启动
@@ -91,6 +91,8 @@ python3 scripts/start_platform.py
 开发与发布细节见 [源码分发与更新架构](docs/SOURCE_DISTRIBUTION_AND_UPDATE.md)。
 
 ## 配置模型
+
+内置服务商和模型以 `config/model_capabilities.json` 作为能力登记的单一数据源。新增、删除或更换 `config/providers.example.json` 中的服务商/模型时，必须同步更新能力登记并运行 `python3 scripts/sync_model_capability_docs.py`；`--check` 可用于 CI 或本地只读检查。遗漏新增模型、残留已删除模型或缺少强制能力字段时，配置加载和自动测试会直接失败。自动生成的审阅表见 `docs/MODEL_CAPABILITY_REGISTRY.md`，接入要求见 `docs/MODEL_PROVIDER_INTEGRATION_STANDARD_DRAFT.md`。
 
 首次启动会自动创建内部配置文件 `config/api_keys.json`。普通用户不需要打开文件：
 在首页或顶部导航进入“API 配置”，选择已接入的平台，填写 Key，测试成功后保存。
@@ -141,6 +143,12 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 B.AI 使用 `https://api.b.ai/v1` 的 OpenAI 兼容 Chat Completions 接口。仅内置已完成真实请求和 JSON 结构化输出验证的 `deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`hy3` 与 `mimo-v2.5`；其中只有 `deepseek-v4-flash-vision-exp` 启用图片输入。需要充值解锁的 `gpt-5.6-luna` 不在可选模型中。B.AI 开启 Cloudflare 客户端特征检查后，程序会仅对该服务商附加浏览器兼容 `User-Agent`，避免正常 API 请求被误拦截为 `403 / 1010`。
 
 OpenRouter 使用 `https://openrouter.ai/api/v1` 的 Responses API。内置 `stealth/ox-alpha`、`z-ai/glm-5.2:free` 和 `minimax/minimax-m3:free`；其中 Ox Alpha 与 MiniMax M3 Free 启用图片输入，GLM 5.2 Free 仅启用文本输入。MiniMax M3 Free 已完成文本、JSON 结构化输出和图片理解的真实请求验证；GLM 5.2 Free 在测试时持续受 OpenRouter 上游免费共享池 429 限流，使用时可能需稍后重试。API Key 通过独立的 `OPENROUTER_API_KEY` 配置项保存。
+
+Google AI Studio 使用官方 `https://generativelanguage.googleapis.com/v1beta/openai` OpenAI 兼容接口。内置稳定版 `gemini-3.7-flash`、`gemini-3.6-flash`、`gemini-3.5-flash` 和 `gemini-3.5-flash-lite`，四个模型均支持文本、图片和 JSON 结构化输出。Gemini 3 系列不能关闭推理；平台会把关闭请求降级为 `low`，并把超高强度限制为官方支持的 `high`。API Key 通过独立的 `GEMINI_API_KEY` 配置项保存，不与灵算 Gemini 共用。
+
+所有模型调用统一读取 `config/model_capabilities.json`。题面理解、教材证据确认、答案生成、生题、复核、格式修复和插图相关任务都会记录阶段上下文计划，并在请求前检查输入模态、图片数量、必要证据与阶段质量预算；官方最大上下文只作为硬上限，不作为平台默认组装目标。
+
+智谱 BigModel 使用官方 `https://open.bigmodel.cn/api/paas/v4` Chat Completions 接口，仅内置 `glm-5.3-flash`。该模型支持文本、图片和 JSON 结构化输出；平台会按官方要求始终开启思考模式，并将推理强度映射为接口支持的 `low`、`high` 或 `max`。API Key 通过独立的 `ZAI_API_KEY` 配置项保存。
 
 元衡 API 使用 `https://cn.meta-api.vip/v1` 的流式 Responses API。程序仅内置已完成真实文本、严格 JSON Schema、图片理解与 SSE 流式输出验证的 `gpt-5.6-luna` 和 `gpt-5.6-terra`，两者均可作为文本或读图模型。API Key 通过独立的 `YUANHENG_API_KEY` 配置项保存。
 

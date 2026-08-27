@@ -266,6 +266,9 @@ def generate_knowledge_plans(
                 max_tokens=DEFAULT_MODEL_MAX_TOKENS,
                 timeout=timeout,
                 attempts=1,
+                task_stage="knowledge_planning",
+                item_ids=[qid],
+                enforce_context_budget=True,
             )
             report = getattr(client, "last_json_retry_report", {})
             feedback = []

@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-27",
+  "task_labels": {
+    "source_analysis": "材料理解",
+    "knowledge_planning": "考查内容规划",
+    "evidence_selection": "教材证据确认",
+    "planning": "蓝图规划",
+    "blueprint": "蓝图规划",
+    "generation": "正式生题",
+    "answer": "答案生成",
+    "answer_generation": "答案生成",
+    "review": "正确性复核",
+    "semantic_review": "语义审查",
+    "format_repair": "格式修复",
+    "figure_schema": "插图结构规划",
+    "drawing_code": "作图代码生成",
+    "image_generation": "图片生成"
+  },
+  "providers": {
+    "deepseek": {
+      "display_name": "DeepSeek 官方",
+      "models": {
+        "deepseek-v4-flash": {"kind":"text_generation","evidence_grade":"B","native_inputs":["text"],"native_outputs":["text"],"structured_output":"native_json","thinking":"supported","task_support":{"source_analysis":"forbidden","blueprint":"allowed","generation":"allowed","answer":"allowed","review":"limited","format_repair":"allowed"},"last_verified_at":"2026-08-27","limits":{"input_tokens":1000000,"output_tokens":384000}},
+        "deepseek-v4-flash-vision-exp": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"unknown","generation":"limited","answer":"unknown","review":"unknown"},"last_verified_at":"unknown","limits":{}}
+      }
+    },
+    "ark": {
+      "display_name": "火山方舟",
+      "models": {
+        "doubao-seed-2-1-pro-260628": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "doubao-seed-2-1-turbo-260628": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "doubao-seed-2-0-pro-260215": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "deepseek-v4-flash-260425": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "deepseek-v4-pro-260425": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "glm-5-2-260617": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "kimi-k2": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "doubao-seedream-5-0-260128": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}
+      }
+    },
+    "bailian": {
+      "display_name": "阿里百炼",
+      "models": {
+        "qwen3.7-max": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"prompt_and_repair","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown","format_repair":"limited"},"last_verified_at":"unknown"},
+        "qwen3.7-plus": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen3.7-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen3.6-plus": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen3.6-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen3-vl-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen-vl-max": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen-vl-plus": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "qwen-vl-ocr": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"forbidden","generation":"forbidden","answer":"forbidden","review":"forbidden","format_repair":"limited"},"last_verified_at":"unknown"},
+        "qwen-image-2.0-pro": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"},
+        "qwen-image-2.0": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"},
+        "qwen-image-max": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"},
+        "qwen-image-plus": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}
+      }
+    },
+    "sensenova": {
+      "display_name": "商汤日日新",
+      "models": {
+        "sensenova-6.8-flash-lite": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "deepseek-v4-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "glm-5.2": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "sensenova-u1.5-lite": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}
+      }
+    },
+    "bai": {
+      "display_name": "B.AI",
+      "models": {
+        "deepseek-v4-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "deepseek-v4-flash-vision-exp": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "hy3": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "mimo-v2.5": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "openrouter": {
+      "display_name": "OpenRouter",
+      "models": {
+        "stealth/ox-alpha": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"forbidden"},"last_verified_at":"unknown"},
+        "z-ai/glm-5.2:free": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"forbidden"},"last_verified_at":"unknown"},
+        "minimax/minimax-m3:free": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"forbidden"},"last_verified_at":"unknown"}
+      }
+    },
+    "google_ai": {
+      "display_name": "Google AI 官方",
+      "models": {
+        "gemini-3.7-flash": {"kind":"text_generation","evidence_grade":"B","native_inputs":["text","image","audio","video","pdf"],"native_outputs":["text"],"structured_output":"native_json","thinking":"minimum_low","task_support":{"source_analysis":"allowed","blueprint":"allowed","generation":"allowed","answer":"allowed","review":"limited","format_repair":"allowed"},"last_verified_at":"2026-08-27","limits":{"input_tokens":1048576,"output_tokens":65536}},
+        "gemini-3.6-flash": {"kind":"text_generation","evidence_grade":"B","native_inputs":["text","image","audio","video","pdf"],"native_outputs":["text"],"structured_output":"native_json","thinking":"minimum_low","task_support":{"source_analysis":"allowed","blueprint":"allowed","generation":"allowed","answer":"allowed","review":"limited","format_repair":"allowed"},"last_verified_at":"2026-08-27","limits":{"input_tokens":1048576,"output_tokens":65536}},
+        "gemini-3.5-flash": {"kind":"text_generation","evidence_grade":"B","native_inputs":["text","image","audio","video","pdf"],"native_outputs":["text"],"structured_output":"native_json","thinking":"minimum_low","task_support":{"source_analysis":"allowed","blueprint":"allowed","generation":"allowed","answer":"allowed","review":"limited","format_repair":"allowed"},"last_verified_at":"2026-08-27","limits":{"input_tokens":1048576,"output_tokens":65536}},
+        "gemini-3.5-flash-lite": {"kind":"text_generation","evidence_grade":"B","native_inputs":["text","image","audio","video","pdf"],"native_outputs":["text"],"structured_output":"native_json","thinking":"minimum_low","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"forbidden","format_repair":"allowed"},"last_verified_at":"2026-08-27","limits":{"input_tokens":1048576,"output_tokens":65536}}
+      }
+    },
+    "bigmodel": {
+      "display_name": "智谱 BigModel 官方",
+      "models": {
+        "glm-5.3-flash": {"kind":"text_generation","evidence_grade":"B","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"platform_verified_json","thinking":"required","task_support":{"source_analysis":"allowed","knowledge_planning":"allowed","evidence_selection":"allowed","blueprint":"allowed","planning":"allowed","generation":"allowed","answer":"allowed","answer_generation":"allowed","review":"limited","semantic_review":"limited","format_repair":"allowed","figure_schema":"allowed","drawing_code":"allowed"},"last_verified_at":"2026-08-27","limits":{},"quality_limits":{"source_analysis":{"recommended_input_tokens":18000,"max_images":8},"knowledge_planning":{"recommended_input_tokens":14000,"max_images":6},"evidence_selection":{"recommended_input_tokens":18000,"max_images":8},"planning":{"recommended_input_tokens":16000,"max_images":8},"generation":{"recommended_input_tokens":20000,"max_images":8},"answer_generation":{"recommended_input_tokens":22000,"max_images":8},"review":{"recommended_input_tokens":18000,"max_images":8},"semantic_review":{"recommended_input_tokens":20000,"max_images":8},"format_repair":{"recommended_input_tokens":12000,"max_images":4},"figure_schema":{"recommended_input_tokens":14000,"max_images":6},"drawing_code":{"recommended_input_tokens":14000,"max_images":6}}}
+      }
+    },
+    "yuanheng": {
+      "display_name": "元衡 API",
+      "models": {
+        "gpt-5.6-luna": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gpt-5.6-terra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "lingsuan_openai": {
+      "display_name": "灵算 OpenAI",
+      "models": {
+        "gpt-5.6-sol": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gpt-5.6-terra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gpt-5.6-luna": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gpt-5.5": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "lingsuan_image": {
+      "display_name": "灵算图片",
+      "models": {
+        "gpt-image-2": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}
+      }
+    },
+    "lingsuan_google": {
+      "display_name": "灵算 Google",
+      "models": {
+        "gemini-3.6-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gemini-3.5-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "lingsuan_xai": {
+      "display_name": "灵算 xAI",
+      "models": {
+        "grok-4.5": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_low","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "lingsuan_anthropic": {
+      "display_name": "灵算 Anthropic",
+      "models": {
+        "claude-opus-5": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    }
+  }
+}

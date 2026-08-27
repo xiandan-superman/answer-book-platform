@@ -686,6 +686,9 @@ def repair_fragments_with_model_for_audit(
                         fallback_model=fallback_model,
                         thinking="disabled",
                         timeout=audit_model_repair_timeout_seconds(question),
+                        task_stage="review",
+                        item_ids=[qid],
+                        enforce_context_budget=True,
                     )
                 candidate = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
                 candidate = promote_inline_reactions(candidate)

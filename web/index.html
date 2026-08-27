@@ -1171,6 +1171,14 @@
               <p id="practiceVisionModelSummary">正在读取模型...</p>
             </article>
           </details>
+          <article class="practice-model-setting">
+            <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
+            <div><h3>作图生图模型</h3><p>作图题优先使用规则绘图；规则绘图无法完成时，使用此模型生成兜底图片。</p></div>
+            <label>服务商<select id="practiceImageProviderSelect"></select></label>
+            <label>具体模型<select id="practiceImageModelSelect"></select></label>
+            <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
+            <p id="practiceImageModelSummary">正在读取模型...</p>
+          </article>
         </div>
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
@@ -1209,6 +1217,14 @@
               <p id="knowledgeVisionModelDetail">正在读取模型...</p>
             </article>
           </details>
+          <article class="practice-model-setting">
+            <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
+            <div><h3>作图生图模型</h3><p>作图题优先使用规则绘图；规则绘图无法完成时，使用此模型生成兜底图片。</p></div>
+            <label>服务商<select id="knowledgeImageProviderSelect"></select></label>
+            <label>具体模型<select id="knowledgeImageModelSelect"></select></label>
+            <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
+            <p id="knowledgeImageModelDetail">正在读取模型...</p>
+          </article>
         </div>
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
@@ -1258,8 +1274,7 @@
               </div>
               <label>使用方案
                 <select id="examModelPresetSelect">
-                  <option value="balanced">稳定推荐：DeepSeek + GPT-5.6 Terra/Sol</option>
-                  <option value="quality">质量优先：GPT-5.6 Sol</option>
+                  <option value="quality">质量优先（推荐）：GPT-5.6 Terra + Sol 高风险复核</option>
                   <option value="economy">性价比：Gemini 3.6 Flash</option>
                   <option value="custom">自定义详细分工</option>
                 </select>

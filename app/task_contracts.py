@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
 
+from .provider_errors import classify_provider_error
+
 
 class WorkflowType(str, Enum):
     EXAM_ANALYSIS = "exam_analysis"
@@ -401,6 +403,8 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
             "sensenova": "商汤日日新 · SenseNova",
             "bai": "B.AI",
             "openrouter": "OpenRouter",
+            "bigmodel": "智谱 BigModel",
+            "google_ai": "Google AI Studio",
             "yuanheng": "元衡 API",
             "lingsuan_openai": "灵算 · OpenAI",
             "lingsuan_image": "灵算 · OpenAI 图片",
@@ -414,6 +418,16 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
             f"尚未配置{provider_label} API Key，本次任务没有发出模型请求。",
             f"请前往 API 配置填写并验证{provider_label} Key，验证成功后再重试。",
         )
+    provider_error_markers = (
+        "provider", "api key", "apikey", "endpoint", "model service", "llmerror",
+        "model returned", "model content", "image response", "streaming response", "dashscope",
+        "rate limit", "resource_exhausted", "invalid_argument", "modelnotopen",
+        "invalidendpointormodel", "context_length", "content_filter", "service unavailable",
+        "模型服务", "模型连接", "模型调用", "供应商", "并发限制", "频率限制",
+    )
+    if any(marker in lowered for marker in provider_error_markers) or re.search(r"(?:provider\s+)?http\s+[45]\d{2}", lowered):
+        info = classify_provider_error(text)
+        return public(info.kind, info.title, info.message, info.suggested_action)
     if re.search(r"\b401\b", lowered) or any(marker in lowered for marker in ("unauthorized", "authentication failed", "invalid api key", "invalid_api_key")):
         return public(
             "provider_authentication",

@@ -92,6 +92,8 @@ from .practice_store import (
     undo_last_practice_revision,
     update_practice_exercise,
 )
+from .provider_errors import classify_provider_error
+from .redaction import redact_credentials
 from .process_lock import platform_process_lock
 from .prompts import build_answer_fragment_prompt
 from .read_snapshot import READ_SNAPSHOTS
@@ -395,6 +397,26 @@ def _provider_test_protocol_summary(retry_report: object, requested_protocol: st
             summary["protocol_fallback_reason"] = reason
         break
     return summary
+
+
+def _provider_test_error_payload(provider_name: str, model: str, exc: Exception) -> dict[str, object]:
+    info = classify_provider_error(
+        redact_credentials(str(exc)),
+        status_code=getattr(exc, "status_code", None),
+        transport_phase=str(getattr(exc, "transport_phase", "") or ""),
+        retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+    )
+    return {
+        "ok": False,
+        "provider": provider_name,
+        "model": model,
+        "error": info.message,
+        "error_title": info.title,
+        "error_code": info.kind,
+        "suggested_action": info.suggested_action,
+        "retryable": info.retryable,
+        "requires_configuration": info.requires_configuration,
+    }
 
 
 def _task_duration_summary(task_row: dict) -> dict:
@@ -2089,10 +2111,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                                 size=provider.image_size,
                             )
                     except LLMError as exc:
-                        self.send_json(
-                            {"ok": False, "provider": provider.name, "model": image_model, "error": str(exc)},
-                            status=400,
-                        )
+                        self.send_json(_provider_test_error_payload(provider.name, image_model, exc), status=400)
                         return
                     self.send_json(
                         {
@@ -2109,9 +2128,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     {"role": "user", "content": "Return the JSON object now."},
                 ]
                 try:
-                    parsed_content = client.chat_json_object(messages, model=model, max_tokens=DEFAULT_MODEL_MAX_TOKENS, attempts=1)
+                    parsed_content = client.chat_json_object(
+                        messages,
+                        model=model,
+                        max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+                        attempts=1,
+                        task_stage="general",
+                    )
                 except LLMError as exc:
-                    error_payload = {"ok": False, "provider": provider.name, "model": model, "error": str(exc)}
+                    error_payload = _provider_test_error_payload(provider.name, model, exc)
                     if protocol_overridden:
                         error_payload["api_protocol_requested"] = provider.api_protocol
                     self.send_json(error_payload, status=400)
@@ -2133,7 +2158,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 client = OpenAICompatibleClient(provider)
                 messages = build_answer_fragment_prompt(body.get("question") or {}, body.get("evidence") or [])
                 model = resolve_provider_model(provider, body.get("model"))
-                result = client.chat_json(messages, model=model)
+                result = client.chat_json(messages, model=model, task_stage="answer_generation", enforce_context_budget=True)
                 parsed_content = parse_json_content(result.content)
                 issues = validate_v4_answer_fragment(parsed_content)
                 self.send_json({

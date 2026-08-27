@@ -1204,6 +1204,9 @@ def generate_drawing_code_spec(client: OpenAICompatibleClient, question: dict[st
             max_tokens=DRAWING_CODE_MAX_TOKENS,
             timeout=90,
             thinking="disabled",
+            task_stage="drawing_code",
+            item_ids=[str(question.get("question_id") or fragment.get("question_id") or "")],
+            enforce_context_budget=True,
         )
         data, _notes = parse_drawing_code_model_response(result.content)
     else:
@@ -1214,6 +1217,9 @@ def generate_drawing_code_spec(client: OpenAICompatibleClient, question: dict[st
             timeout=90,
             attempts=1,
             thinking="disabled",
+            task_stage="drawing_code",
+            item_ids=[str(question.get("question_id") or fragment.get("question_id") or "")],
+            enforce_context_budget=True,
         )
     code = str(data.get("code") or "").strip()
     if not code:

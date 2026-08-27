@@ -4676,6 +4676,9 @@ def repair_figures_with_model_for_visual_qa(
                 max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
                 timeout=90,
                 thinking="disabled",
+                task_stage="drawing_code",
+                item_ids=[str(current_spec.get("question_id") or "")],
+                enforce_context_budget=True,
             )
             repaired, repair_notes = parse_drawing_code_model_response(result.content)
             response: dict[str, Any] = {"drawing_code_spec": repaired, "repair_notes": repair_notes}
@@ -4687,6 +4690,9 @@ def repair_figures_with_model_for_visual_qa(
                 timeout=90,
                 attempts=1,
                 thinking="disabled" if kind == "model_drawing_code" else None,
+                task_stage="drawing_code" if kind == "model_drawing_code" else "review",
+                item_ids=[str(current_spec.get("question_id") or "")],
+                enforce_context_budget=True,
             )
             repaired = response.get(output_key) if isinstance(response, dict) else None
         if kind == "model_drawing_code" and not isinstance(repaired, dict) and isinstance(response, dict) and response.get("code"):
@@ -5098,6 +5104,11 @@ def _audit_figures_with_vision_serial(
                     max_tokens=min(FIGURE_AUXILIARY_MAX_TOKENS, 2048),
                     timeout=120,
                     attempts=1,
+                    task_stage="review",
+                    required_evidence_refs=[f"figure:{figure_id}"],
+                    delivered_evidence_refs=[f"figure:{figure_id}"],
+                    item_ids=[qid],
+                    enforce_context_budget=True,
                 )
         except Exception as exc:
             qa = {"ok": False, "error": str(exc)[:500]}

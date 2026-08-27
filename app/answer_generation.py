@@ -2621,6 +2621,9 @@ def explain_missing_evidence_binding(
             model=model,
             max_tokens=DEFAULT_MODEL_MAX_TOKENS,
             fallback_model=next((item for item in getattr(client.config, "model_options", ()) if item != model), None),
+            task_stage="review",
+            item_ids=[str(question.get("question_id") or question.get("number") or "")],
+            enforce_context_budget=True,
         )
         reason = str(data.get("reason") or "").strip()
         closest = str(data.get("closest_evidence_id") or "").strip()
@@ -2704,6 +2707,11 @@ def generate_one_fragment(
                 attempts=1,
                 thinking=thinking_mode,
                 timeout=timeout_seconds,
+                task_stage="answer_generation",
+                required_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
+                delivered_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
+                item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                enforce_context_budget=True,
             )
             assistant_content = json.dumps(data, ensure_ascii=False)
         except LLMError as exc:
@@ -2962,6 +2970,9 @@ def generate_batch_fragments(
         attempts=1,
         timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
         thinking=thinking_mode,
+        task_stage="answer_generation",
+        item_ids=[str(item["question"].get("question_id") or "") for item in batch_items],
+        enforce_context_budget=True,
     )
     drafts = _extract_batch_drafts(raw)
     drafts_by_qid = {str(item.get("question_id") or "").strip(): item for item in drafts if str(item.get("question_id") or "").strip()}

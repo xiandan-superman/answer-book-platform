@@ -1107,6 +1107,9 @@ def review_selective_quality(
                         attempts=1,
                         thinking="disabled",
                         timeout=90,
+                        task_stage="review",
+                        item_ids=sorted(batch_qids),
+                        enforce_context_budget=True,
                     )
                 return {
                     "decisions": _normalized_decisions(
@@ -1172,6 +1175,9 @@ def review_selective_quality(
                             attempts=1,
                             thinking="disabled",
                             timeout=90,
+                            task_stage="review",
+                            item_ids=sorted(batch_qids),
+                            enforce_context_budget=True,
                         )
                     return {
                         "decisions": _normalized_decisions(

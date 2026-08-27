@@ -99,6 +99,25 @@ const pendingReviewTaskIds = new Set();
 const handledReviewDecisionRequests = new Set();
 let examStructureReviewModalOpen = false;
 
+// These integrations remain available to existing tasks and backend callers, but
+// are intentionally omitted from every user-facing provider/model entry point.
+const HIDDEN_USER_PROVIDER_NAMES = new Set([
+  "ark",
+  "bailian",
+  "sensenova",
+  "openrouter",
+  "lingsuan_xai",
+  "lingsuan_anthropic",
+]);
+
+function isUserVisibleProviderName(name) {
+  return Boolean(name) && !HIDDEN_USER_PROVIDER_NAMES.has(name);
+}
+
+function userVisibleProviderEntries(providers = providerConfigs) {
+  return Object.entries(providers || {}).filter(([name]) => isUserVisibleProviderName(name));
+}
+
 const textModelRoles = {
   reasoning: {
     providerId: "reasoningProviderSelect",
@@ -128,24 +147,14 @@ const textModelRoles = {
 
 const EXAM_MODEL_PRESET_STORAGE_KEY = "answerBook.examModelPreset.v1";
 const examModelPresets = {
-  balanced: {
-    label: "稳定推荐",
-    description: "DeepSeek 负责考点与证据，GPT-5.6 Terra 生成解析，GPT-5.6 Sol 只复核高风险题。",
+  quality: {
+    label: "质量优先（推荐）",
+    description: "GPT-5.6 Terra 负责主要解析和读图，GPT-5.6 Sol 只复核高风险题，兼顾质量与调用成本。",
     base: ["lingsuan_openai", "gpt-5.6-terra"],
-    reasoning: ["deepseek", "deepseek-v4-flash"],
+    reasoning: ["lingsuan_openai", "gpt-5.6-terra"],
     answer: ["lingsuan_openai", "gpt-5.6-terra"],
     correctness: ["lingsuan_openai", "gpt-5.6-sol"],
     vision: ["lingsuan_openai", "gpt-5.6-terra"],
-    image: ["lingsuan_image", "gpt-image-2"],
-  },
-  quality: {
-    label: "质量优先",
-    description: "GPT-5.6 Sol 统一完成考点、解析、复核和直接读图，减少跨模型信息损失。",
-    base: ["lingsuan_openai", "gpt-5.6-sol"],
-    reasoning: ["lingsuan_openai", "gpt-5.6-sol"],
-    answer: ["lingsuan_openai", "gpt-5.6-sol"],
-    correctness: ["lingsuan_openai", "gpt-5.6-sol"],
-    vision: ["lingsuan_openai", "gpt-5.6-sol"],
     image: ["lingsuan_image", "gpt-image-2"],
   },
   economy: {
@@ -1393,6 +1402,8 @@ function providerEnvKey(providerName) {
     sensenova: "SENSENOVA_API_KEY",
     bai: "BAI_API_KEY",
     openrouter: "OPENROUTER_API_KEY",
+    google_ai: "GEMINI_API_KEY",
+    bigmodel: "ZAI_API_KEY",
     yuanheng: "YUANHENG_API_KEY",
     lingsuan_openai: "LINGSUAN_OPENAI_API_KEY",
     lingsuan_image: "LINGSUAN_IMAGE_API_KEY",
@@ -1411,6 +1422,8 @@ function displayProviderName(name) {
     sensenova: "商汤日日新 · SenseNova",
     bai: "B.AI",
     openrouter: "OpenRouter",
+    google_ai: "Google AI Studio · Gemini",
+    bigmodel: "智谱 BigModel",
     yuanheng: "元衡 API",
     lingsuan_openai: "灵算 · OpenAI",
     lingsuan_image: "灵算 · OpenAI 图片",
@@ -1642,7 +1655,9 @@ async function runEnvironmentRepair(action) {
 }
 
 function updateProviderSummary(providers) {
-  const provider = providers?.[$("providerSelect")?.value] || Object.values(providers || {}).find((cfg) => cfg.api_key_set);
+  const selectedName = $("providerSelect")?.value || "";
+  const provider = (isUserVisibleProviderName(selectedName) ? providers?.[selectedName] : null)
+    || userVisibleProviderEntries(providers).find(([, cfg]) => cfg.api_key_set)?.[1];
   if (!provider) {
     setText("providerSummary", "待配置");
     return;
@@ -2328,16 +2343,17 @@ async function refresh() {
 function syncProviderControls(providers) {
   const select = $("providerSelect");
   const previousProvider = select.value;
+  const visibleEntries = userVisibleProviderEntries(providers);
   select.innerHTML = "";
-  for (const [name, cfg] of Object.entries(providers).filter(([, cfg]) => cfg.supports_text_generation !== false)) {
+  for (const [name, cfg] of visibleEntries.filter(([, cfg]) => cfg.supports_text_generation !== false)) {
     const option = document.createElement("option");
     option.value = name;
     option.textContent = displayProviderName(name);
     option.dataset.model = cfg.default_model || "";
     select.appendChild(option);
   }
-  const configuredProvider = Object.entries(providers).find(([, cfg]) => cfg.api_key_set)?.[0];
-  if (previousProvider && providers[previousProvider]) select.value = previousProvider;
+  const configuredProvider = visibleEntries.find(([, cfg]) => cfg.supports_text_generation !== false && cfg.api_key_set)?.[0];
+  if (previousProvider && isUserVisibleProviderName(previousProvider) && providers[previousProvider]) select.value = previousProvider;
   else if (configuredProvider) select.value = configuredProvider;
   updateModelControls();
   initializeExamModelPreset();
@@ -4278,6 +4294,10 @@ function renderPracticeResults(data) {
     const auditNeedsReview = item.audit_status === "audit_failed" || item.generation_error?.code === "blueprint_audit_failed";
     const configurationNeedsReview = item.generation_error?.requires_configuration === true;
     const generationError = item.generation_error?.message || "上游模型未返回本题。";
+    const generationErrorTitle = item.generation_error?.title || (configurationNeedsReview ? "模型配置不可用" : "本题生成失败");
+    const generationErrorAction = item.generation_error?.suggested_action || (configurationNeedsReview
+      ? "请先检查 API 配置，再继续未完成项。"
+      : "已保留蓝图位置；可重新生成本题，其他已完成题目不会受到影响。");
     const generationErrorDetail = generationErrorDetailCodes.has(String(item.generation_error?.code || ""))
       ? (item.generation_error?.detail || "")
       : "";
@@ -4334,7 +4354,7 @@ function renderPracticeResults(data) {
       ${generationFailed ? `
         <div class="practice-generation-error" role="alert">
           <i class="fas fa-triangle-exclamation"></i>
-          <div><strong>第 ${escapeHtml(item.number || String(idx + 1))} 题${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : "生成失败"}</strong><p>${escapeHtml(generationErrorSummary)}</p><small>${auditNeedsReview ? "本题尚未调用生成模型；点击右上角“复审并生成本题”只处理这一项，其他题目不受影响。" : configurationNeedsReview ? "本题尚未完成；请先检查 API 配置，再使用“继续未完成项”，已生成题目不会重复调用或被覆盖。" : "已保留蓝图位置；可点击右上角“重新生成本题”补齐，其他题目不受影响。"}</small>${generationTechnicalDetail ? `<details class="practice-generation-error__details"><summary>查看技术详情</summary><small class="practice-generation-error__detail">${escapeHtml(generationTechnicalDetail)}</small></details>` : ""}</div>
+          <div><strong>第 ${escapeHtml(item.number || String(idx + 1))} 题 · ${escapeHtml(auditNeedsReview ? "蓝图待复核" : generationErrorTitle)}</strong><p>${escapeHtml(generationErrorSummary)}</p><small>${escapeHtml(auditNeedsReview ? "本题尚未调用生成模型；点击右上角“复审并生成本题”只处理这一项，其他题目不受影响。" : generationErrorAction)}</small>${generationTechnicalDetail ? `<details class="practice-generation-error__details"><summary>查看补充说明</summary><small class="practice-generation-error__detail">${escapeHtml(generationTechnicalDetail)}</small></details>` : ""}</div>
         </div>
       ` : `
         <div class="practice-stem">${practiceMarkdown(item.stem)}</div>
@@ -4454,8 +4474,9 @@ function initPracticeActionMenus() {
 
 function practiceRequestPayload() {
   const knowledgeMode = currentPracticeSourceMode === "knowledge";
-  const imageConfig = selectedImageProviderConfig();
-  const imageConfigured = Boolean(imageConfig?.api_key_set && selectedImageModel());
+  const imageProvider = knowledgeMode ? knowledgeProviderName("image") : practiceProviderName("image");
+  const imageModel = knowledgeMode ? selectedKnowledgeModel("image") : selectedPracticeModel("image");
+  const imageConfigured = Boolean(providerConfigs[imageProvider]?.api_key_set && imageModel);
   return {
     source_mode: knowledgeMode ? "knowledge" : "exam",
     knowledge_title: knowledgeMode ? (latestPracticeRequest?.knowledge_title || "") : undefined,
@@ -4472,8 +4493,8 @@ function practiceRequestPayload() {
     model: knowledgeMode ? selectedKnowledgeModel("text") : selectedPracticeModel("text"),
     vision_provider: knowledgeMode ? knowledgeProviderName("vision") : practiceProviderName("vision"),
     vision_model: knowledgeMode ? selectedKnowledgeModel("vision") : selectedPracticeModel("vision"),
-    image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : "",
-    image_model: imageConfigured ? selectedImageModel() : "",
+    image_provider: imageConfigured ? imageProvider : "",
+    image_model: imageConfigured ? imageModel : "",
     thinking: selectedThinkingMode()
   };
 }
@@ -4486,8 +4507,9 @@ function knowledgeRequestPayload() {
     material ? `# 知识材料\n\n${material}` : ""
   ].filter(Boolean).join("\n\n");
   const count = Number($("knowledgeCount")?.value || 5);
-  const imageConfig = selectedImageProviderConfig();
-  const imageConfigured = Boolean(imageConfig?.api_key_set && selectedImageModel());
+  const imageProvider = knowledgeProviderName("image");
+  const imageModel = selectedKnowledgeModel("image");
+  const imageConfigured = Boolean(providerConfigs[imageProvider]?.api_key_set && imageModel);
   return {
     source_mode: "knowledge",
     knowledge_title: title,
@@ -4505,8 +4527,8 @@ function knowledgeRequestPayload() {
     model: selectedKnowledgeModel("text"),
     vision_provider: knowledgeProviderName("vision"),
     vision_model: selectedKnowledgeModel("vision"),
-    image_provider: imageConfigured ? ($("imageProviderSelect")?.value || "") : "",
-    image_model: imageConfigured ? selectedImageModel() : "",
+    image_provider: imageConfigured ? imageProvider : "",
+    image_model: imageConfigured ? imageModel : "",
     thinking: selectedThinkingMode()
   };
 }
@@ -8119,7 +8141,7 @@ function updateModelCapabilityRisk() {
 }
 
 function providerEntriesByCapability(kind) {
-  const entries = Object.entries(providerConfigs || {});
+  const entries = userVisibleProviderEntries();
   if (kind === "vision") return entries.filter(([, cfg]) => providerHasVision(cfg));
   if (kind === "image") return entries.filter(([, cfg]) => providerHasImageModel(cfg));
   return entries.filter(([, cfg]) => cfg.supports_text_generation !== false);
@@ -8493,12 +8515,13 @@ function examPresetRequiredProviders(preset) {
 
 function recommendedExamModelPreset() {
   const saved = localStorage.getItem(EXAM_MODEL_PRESET_STORAGE_KEY) || "";
+  if (saved === "balanced") return "quality";
   if (saved === "custom" || examModelPresets[saved]) return saved;
-  for (const key of ["balanced", "quality", "economy"]) {
+  for (const key of ["quality", "economy"]) {
     const preset = examModelPresets[key];
     if (examPresetRequiredProviders(preset).every((name) => providerConfigs[name]?.api_key_set)) return key;
   }
-  return "custom";
+  return "quality";
 }
 
 function selectHasValue(select, value) {
@@ -8718,9 +8741,9 @@ function updateCapabilityModelHints() {
 function updateCapabilityModelControls() {
   const currentName = $("providerSelect")?.value || "";
   populateProviderSelect("visionProviderSelect", "vision", currentName);
-  populateProviderSelect("imageProviderSelect", "image", currentName);
+  populateProviderSelect("imageProviderSelect", "image", "lingsuan_image");
   syncVisionModelFromAnswerModel();
-  populateImageModelControls();
+  populateImageModelControls("gpt-image-2");
 }
 
 function syncVisionModelFromAnswerModel() {
@@ -8801,8 +8824,9 @@ function renderApiKeyFileInfo() {
     setText("homeApiKeyFileStatus", "API 配置保存状态暂时无法读取，可进入配置中心重试");
     return;
   }
-  const count = Number(apiKeyFileInfo?.configured_count || 0);
-  const total = Object.keys(providerConfigs || {}).length;
+  const visibleEntries = userVisibleProviderEntries();
+  const count = visibleEntries.filter(([, cfg]) => cfg.api_key_set).length;
+  const total = visibleEntries.length;
   setText(
     "homeApiKeyFileStatus",
     count ? `已配置 ${count} 个平台，可在配置中心测试、替换或删除` : `已接入 ${total} 个平台，请先配置需要使用的平台`
@@ -8880,7 +8904,7 @@ function renderKeyProviderCards() {
     grid.querySelector("[data-key-config-recover]")?.addEventListener("click", recoverDamagedApiConfiguration);
     return;
   }
-  const entries = Object.entries(providerConfigs || {}).sort((left, right) => {
+  const entries = userVisibleProviderEntries().sort((left, right) => {
     const savedDifference = Number(Boolean(right[1]?.api_key_set)) - Number(Boolean(left[1]?.api_key_set));
     return savedDifference;
   });
@@ -9024,9 +9048,9 @@ async function testKeyProvider(providerName) {
     setVisual("keyConfigNotice", "连接测试通过", key ? "现在可以保存这个 Key。" : "已保存的 Key 仍可正常使用。", "ok");
   } catch (err) {
     delete keyConfigTests[providerName];
-    const message = String(err).replace(/^Error:\s*/, "");
+    const message = err?.userMessage || String(err).replace(/^Error:\s*/, "");
     rememberModelConnectionTest(providerName, connectionModel || "", false, message);
-    const advice = providerErrorAdvice(message);
+    const advice = providerErrorAdvice(err);
     keyProviderStatus(card, "error", advice.title, advice.body);
     setVisual("keyConfigNotice", advice.title, advice.body, "error");
   } finally {
@@ -9088,7 +9112,7 @@ const TASK_MODEL_STORAGE_KEY = "answerBook.taskModels.v1";
 
 function taskModelControlIds(profile, kind) {
   const prefix = profile === "knowledge" ? "knowledge" : "practice";
-  const type = kind === "vision" ? "Vision" : "Text";
+  const type = kind === "vision" ? "Vision" : kind === "image" ? "Image" : "Text";
   return {
     provider: `${prefix}${type}ProviderSelect`,
     model: `${prefix}${type}ModelSelect`,
@@ -9112,9 +9136,13 @@ function readTaskModelSettings() {
 }
 
 function defaultTaskProvider(kind) {
+  const preferredProvider = kind === "image" ? "lingsuan_image" : "lingsuan_google";
   const entries = kind === "vision"
-    ? Object.entries(providerConfigs || {}).filter(([, cfg]) => providerHasVision(cfg))
-    : Object.entries(providerConfigs || {});
+    ? userVisibleProviderEntries().filter(([, cfg]) => providerHasVision(cfg))
+    : kind === "image"
+      ? userVisibleProviderEntries().filter(([, cfg]) => providerHasImageModel(cfg))
+      : userVisibleProviderEntries().filter(([, cfg]) => cfg.supports_text_generation !== false);
+  if (entries.some(([name]) => name === preferredProvider)) return preferredProvider;
   return entries.find(([, cfg]) => cfg.api_key_set)?.[0] || entries[0]?.[0] || "";
 }
 
@@ -9136,7 +9164,10 @@ function saveTaskModelSetting(profile, kind) {
 
 function taskProviderName(profile, kind) {
   const ids = taskModelControlIds(profile, kind);
-  return $(ids.provider)?.value || savedTaskModelSetting(profile, kind).provider || defaultTaskProvider(kind);
+  const selected = $(ids.provider)?.value || "";
+  if (isUserVisibleProviderName(selected)) return selected;
+  const saved = savedTaskModelSetting(profile, kind).provider || "";
+  return isUserVisibleProviderName(saved) ? saved : defaultTaskProvider(kind);
 }
 
 function practiceProviderName(kind) {
@@ -9152,6 +9183,12 @@ function practiceProviderConfig(kind) {
 }
 
 function practiceModelOptions(kind, cfg) {
+  if (kind === "image") {
+    return Array.from(new Set([
+      cfg.image_model,
+      ...(Array.isArray(cfg.image_model_options) ? cfg.image_model_options : []),
+    ].filter(Boolean)));
+  }
   if (kind !== "vision") return Array.isArray(cfg.model_options) ? cfg.model_options.filter(Boolean) : [];
   const configured = Array.isArray(cfg.vision_model_options) ? cfg.vision_model_options.filter(Boolean) : [];
   if (configured.length) return Array.from(new Set([cfg.vision_model, ...configured].filter(Boolean)));
@@ -9178,27 +9215,29 @@ function populateTaskModelControl(profile, kind, preferredModel = "") {
     for (const model of options) {
       const option = document.createElement("option");
       option.value = model;
-      const isDefault = model === (kind === "vision" ? cfg.vision_model : cfg.default_model);
+      const defaultModel = kind === "vision" ? cfg.vision_model : kind === "image" ? cfg.image_model : cfg.default_model;
+      const isDefault = model === defaultModel;
       option.textContent = `${labels[model] || model}${isDefault ? "（默认）" : ""}`;
       modelSelect.appendChild(option);
     }
     const preferred = String(preferredModel || "").trim();
-    const fallback = kind === "vision" ? (cfg.vision_model || cfg.default_model) : cfg.default_model;
+    const fallback = kind === "vision" ? (cfg.vision_model || cfg.default_model) : kind === "image" ? cfg.image_model : cfg.default_model;
     modelSelect.value = options.includes(preferred) ? preferred : (fallback || options[0]);
   } else {
     const option = document.createElement("option");
-    const fallback = kind === "vision" ? (cfg.vision_model || cfg.default_model || "") : (cfg.default_model || "");
+    const fallback = kind === "vision" ? (cfg.vision_model || cfg.default_model || "") : kind === "image" ? (cfg.image_model || "") : (cfg.default_model || "");
     option.value = fallback;
     option.textContent = fallback || "未配置默认模型";
     modelSelect.appendChild(option);
   }
   input.hidden = !cfg.allow_custom_model;
-  input.value = cfg.allow_custom_model ? (savedTaskModelSetting(profile, kind).custom || "") : "";
+  const saved = savedTaskModelSetting(profile, kind);
+  input.value = cfg.allow_custom_model && saved.provider === providerName ? (saved.custom || "") : "";
   input.placeholder = cfg.model_hint || "填写模型 ID";
 }
 
 function populateTaskModelSettings(profile) {
-  for (const kind of ["text", "vision"]) {
+  for (const kind of ["text", "vision", "image"]) {
     const ids = taskModelControlIds(profile, kind);
     const select = $(ids.provider);
     if (!select) continue;
@@ -9206,8 +9245,10 @@ function populateTaskModelSettings(profile) {
     const previousProvider = select.value || saved.provider || defaultTaskProvider(kind);
     const previousModel = $(ids.model)?.value || saved.model || "";
     const entries = kind === "vision"
-      ? Object.entries(providerConfigs || {}).filter(([, cfg]) => providerHasVision(cfg))
-      : Object.entries(providerConfigs || {});
+      ? userVisibleProviderEntries().filter(([, cfg]) => providerHasVision(cfg))
+      : kind === "image"
+        ? userVisibleProviderEntries().filter(([, cfg]) => providerHasImageModel(cfg))
+        : userVisibleProviderEntries().filter(([, cfg]) => cfg.supports_text_generation !== false);
     select.innerHTML = "";
     for (const [name, cfg] of entries) {
       const option = document.createElement("option");
@@ -9237,7 +9278,8 @@ function selectedTaskModel(profile, kind) {
   const cfg = providerConfigs[providerName] || {};
   const custom = Boolean(cfg.allow_custom_model) ? $(ids.input)?.value.trim() : "";
   const saved = savedTaskModelSetting(profile, kind);
-  return custom || $(ids.model)?.value || saved.custom || saved.model || (kind === "vision" ? cfg.vision_model : cfg.default_model) || cfg.default_model || "";
+  const configuredDefault = kind === "vision" ? cfg.vision_model : kind === "image" ? cfg.image_model : cfg.default_model;
+  return custom || $(ids.model)?.value || saved.custom || saved.model || configuredDefault || cfg.default_model || "";
 }
 
 function selectedPracticeModel(kind) {
@@ -9262,8 +9304,12 @@ function updateTaskModelSummary(profile) {
   const visionProviderName = taskProviderName(profile, "vision");
   const visionProvider = providerConfigs[visionProviderName] || {};
   const visionModel = selectedTaskModel(profile, "vision");
+  const imageProviderName = taskProviderName(profile, "image");
+  const imageProvider = providerConfigs[imageProviderName] || {};
+  const imageModel = selectedTaskModel(profile, "image");
   const textKeyState = textProvider.api_key_set ? "" : " · 缺少 Key";
   const visionKeyState = visionProvider.api_key_set ? "" : " · 缺少 Key";
+  const imageKeyState = imageProvider.api_key_set ? "" : " · 缺少 Key";
   const primaryHandlesImages = modelLooksVisionCapable(textModel, textProvider);
   setText(taskModelControlIds(profile, "text").summary, `${displayProviderName(textProviderName || "未选择")} / ${textModel || "未选择模型"}${textKeyState}`);
   setText(
@@ -9272,6 +9318,7 @@ function updateTaskModelSummary(profile) {
       ? `备用：${displayProviderName(visionProviderName || "未选择")} / ${visionModel || "未选择模型"}（主模型已支持图文，默认不启用）`
       : `${displayProviderName(visionProviderName || "未选择")} / ${visionModel || "未选择模型"}${visionKeyState}（主模型遇图时启用）`
   );
+  setText(taskModelControlIds(profile, "image").summary, `${displayProviderName(imageProviderName || "未选择")} / ${imageModel || "未选择模型"}${imageKeyState}`);
   if (profile === "practice" || (profile === "knowledge" && currentPracticeSourceMode === "knowledge")) {
     setText("practiceCurrentModelBadge", `${displayProviderName(textProviderName || "未选择")} / ${textModel || "未选择模型"}${textKeyState}`);
   }
@@ -9353,29 +9400,11 @@ function requireSelectedModel() {
   return model;
 }
 
-function providerErrorAdvice(message) {
-  const text = String(message || "");
-  if (text.includes("ModelNotOpen")) {
-    const modelMatch = text.match(/model\s+([A-Za-z0-9_.:-]+)/);
-    const model = modelMatch?.[1] || selectedModel() || "当前模型";
-    return {
-      title: "模型未开通",
-      body: `${model} 尚未在当前火山方舟账号中开通。请在火山方舟控制台开通该模型，或填写一个已经开通的推理接入点 ID（通常以 ep- 开头）后再测试。`
-    };
-  }
-  if (text.includes("InvalidEndpointOrModel.NotFound")) {
-    return {
-      title: "模型或接入点不存在",
-      body: "方舟没有识别当前填写的模型名。请到火山方舟控制台进入该模型的 API 调用页，复制推理接入点 ID（通常以 ep- 开头），填到模型输入框后再测试。"
-    };
-  }
-  if (text.includes("Invalid API key") || text.includes("Authentication") || text.includes("401")) {
-    return {
-      title: "API Key 无效",
-      body: "请确认复制的是火山方舟 API Key，且 Key 未删除、未过期。"
-    };
-  }
-  return { title: "模型测试失败", body: text };
+function providerErrorAdvice(error) {
+  const title = String(error?.title || "模型连接测试失败").trim();
+  const message = String(error?.publicMessage || error?.message || "模型服务未能完成连接测试。").trim();
+  const action = String(error?.suggestedAction || "请检查网络和 API 配置后重试。").trim();
+  return { title, body: uniquePracticeLabels([message, action]).join(" ") };
 }
 
 async function createTask() {
@@ -9810,6 +9839,7 @@ function shortTaskModelName(value, provider = "") {
     [/^deepseek[-_]?(.+)?/i, (_all, version) => `DeepSeek${version ? ` ${readableSuffix(version)}` : ""}`],
     [/^gemini[-_]?(.+)?/i, (_all, version) => `Gemini${version ? ` ${readableSuffix(version)}` : ""}`],
     [/^claude[-_]?(.+)?/i, (_all, version) => `Claude${version ? ` ${readableSuffix(version)}` : ""}`],
+    [/^glm[-_]?(.+)?/i, (_all, version) => `GLM${version ? ` ${readableSuffix(version)}` : ""}`],
   ];
   for (const [pattern, format] of known) {
     const match = model.match(pattern);
@@ -13210,7 +13240,7 @@ $("visionModelInput").addEventListener("input", () => {
   markExamModelPresetCustom();
 });
 for (const profile of ["practice", "knowledge"]) {
-  for (const kind of ["text", "vision"]) {
+  for (const kind of ["text", "vision", "image"]) {
     const ids = taskModelControlIds(profile, kind);
     $(ids.provider)?.addEventListener("change", () => {
       populateTaskModelControl(profile, kind);
