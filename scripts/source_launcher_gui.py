@@ -10,17 +10,59 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.source_launcher import ensure_dependencies, local_service_url, runtime_python, user_data_root  # noqa: E402
+APP_ICON = ROOT / "assets" / "app-icon" / "app-icon-transparent.png"
+APP_WINDOW_ICON = (
+    ROOT / "assets" / "app-icon" / "app-icon.ico"
+    if sys.platform.startswith("win")
+    else ROOT / "assets" / "app-icon" / "app-icon.icns"
+    if sys.platform == "darwin"
+    else APP_ICON
+)
+
+
+def record_launcher_failure(stage: str) -> None:
+    configured = os.environ.get("ANSWER_BOOK_LAUNCHER_BOOTSTRAP_LOG", "").strip()
+    if configured:
+        path = Path(configured)
+    else:
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        path = base / "Answer Book Platform" / "runtime" / "launcher-bootstrap.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", errors="replace") as log:
+            log.write(f"launcher_failure_stage={stage}\n")
+            log.write(traceback.format_exc())
+            log.write("\n")
+    except OSError:
+        pass
+
+
+def run_with_shell_runtime(executable: Path) -> NoReturn:
+    """Run the GUI with its managed runtime without Windows execv quoting loss."""
+    command = [str(executable), str(Path(__file__).resolve()), *sys.argv[1:]]
+    kwargs: dict[str, Any] = {"cwd": ROOT}
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    result = subprocess.run(command, **kwargs)
+    raise SystemExit(result.returncode)
+
+
+try:
+    from scripts.source_launcher import ensure_dependencies, local_service_url, runtime_python, user_data_root  # noqa: E402
+except Exception:
+    record_launcher_failure("import")
+    raise
 
 PORT = 8766
 LAUNCHER_PORT = 18876
@@ -226,6 +268,18 @@ class LauncherHandler(BaseHTTPRequestHandler):
             self.server.controller.show_shell()
             self._json({"ok": True})
             return
+        if self.path == "/app-icon.png":
+            if not APP_ICON.is_file():
+                self.send_error(404)
+                return
+            body = APP_ICON.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path not in {"/", "/index.html"}:
             self.send_error(404)
             return
@@ -288,6 +342,9 @@ class PreparationWindow:
             window.geometry("440x190")
             window.resizable(False, False)
             window.protocol("WM_DELETE_WINDOW", lambda: None)
+            if APP_ICON.is_file():
+                self.icon = tk.PhotoImage(file=str(APP_ICON))
+                window.iconphoto(True, self.icon)
             frame = tk.Frame(window, bg="#F6F8FC", padx=30, pady=27)
             frame.pack(fill="both", expand=True)
             tk.Label(frame, text="正在准备启动环境", bg="#F6F8FC", fg="#15213B",
@@ -353,7 +410,7 @@ def ensure_shell_runtime() -> None:
     if target.is_file():
         probe = subprocess.run([str(target), "-c", "import webview,pystray"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if probe.returncode == 0:
-            os.execv(str(shell_target), [str(shell_target), str(Path(__file__).resolve()), *sys.argv[1:]])
+            run_with_shell_runtime(shell_target)
     os.environ["ANSWER_BOOK_GUI_LAUNCHER"] = "1"
     progress = PreparationWindow()
     try:
@@ -377,7 +434,7 @@ def ensure_shell_runtime() -> None:
     shell_python = python.with_name("pythonw.exe") if sys.platform.startswith("win") else python
     if not shell_python.is_file():
         shell_python = python
-    os.execv(str(shell_python), [str(shell_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+    run_with_shell_runtime(shell_python)
 
 
 def run_desktop_shell(server: LauncherServer, controller: LauncherController, launcher_url: str) -> bool:
@@ -401,13 +458,9 @@ def run_desktop_shell(server: LauncherServer, controller: LauncherController, la
     window.events.closing += controller.request_window_close
     try:
         import pystray
-        from PIL import Image, ImageDraw
+        from PIL import Image
 
-        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        drawing = ImageDraw.Draw(image)
-        drawing.rounded_rectangle((4, 4, 60, 60), radius=17, fill="#246BFD")
-        drawing.line((19, 20, 19, 45, 31, 41, 31, 18, 19, 20), fill="white", width=4, joint="curve")
-        drawing.line((45, 20, 45, 45, 33, 41, 33, 18, 45, 20), fill="white", width=4, joint="curve")
+        image = Image.open(APP_ICON).convert("RGBA").resize((64, 64), Image.Resampling.LANCZOS)
         tray = pystray.Icon(
             "answer_book_platform",
             image,
@@ -429,7 +482,7 @@ def run_desktop_shell(server: LauncherServer, controller: LauncherController, la
     except Exception:
         controller.tray = None
     try:
-        webview.start(private_mode=True)
+        webview.start(private_mode=True, icon=str(APP_WINDOW_ICON))
     finally:
         if not controller.exit_requested:
             controller.stop()
@@ -469,4 +522,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception:
+        record_launcher_failure("main")
+        raise

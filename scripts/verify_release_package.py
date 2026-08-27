@@ -10,7 +10,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ZIP = ROOT.parent / "answer_book_platform_v1_release.zip"
 FORBIDDEN_MARKERS = [
@@ -69,10 +68,16 @@ def verify(zip_path: Path) -> dict:
             "VERSION",
             "SOFTWARE_LICENSE.md",
             "RELEASE_MANIFEST.json",
+            "assets/app-icon/app-icon.ico",
+            "assets/app-icon/app-icon-transparent.png",
             "requirements.txt",
+            "start_platform_windows.bat",
+            "启动平台.bat",
             "app/server.py",
             "standalone_word_format_reviewer/format_engine.py",
             "scripts/run_platform.py",
+            "scripts/source_launcher_gui.py",
+            "scripts/windows_launcher_bootstrap.py",
             "web/index.html",
         ]
         missing = [name for name in required if name not in names]

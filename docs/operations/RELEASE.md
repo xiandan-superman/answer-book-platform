@@ -41,7 +41,7 @@
 
 1. 先把本版本新增源码和文档明确加入 Git 暂存区；本地打包器只读取 Git 索引中的文件，拒绝把任意未跟踪运行目录打进包。
 2. 使用 `python scripts/package_release.py --output <明确路径>` 生成本地源码包。
-3. 使用 `python scripts/verify_release_package.py <同一 ZIP>` 反向检查包内版本、清单、禁止文件和运行数据泄漏。
+3. 使用 `python scripts/verify_release_package.py --zip <同一 ZIP>` 反向检查包内版本、清单、禁止文件和运行数据泄漏。
 4. 从 ZIP 解压到临时目录，使用独立 `ANSWER_BOOK_DATA_DIR` 启动，确认 `/api/version` 返回新版本且首页可访问。
 5. 本地包只是发布候选证据，不等于 GitHub 正式版本。
 
@@ -85,3 +85,5 @@
 - `v0.9.26` 的完整门禁随后被 Ruff import 区块格式检查阻断。该标签保持不动，修复进入 `v0.9.27`；这证明功能回归、`py_compile` 与 `git diff --check` 都不能替代实际 Ruff 门禁。
 - `v0.9.27` 通过 Ruff 后又在下一层 Mypy 发现可空赋值类型不一致，修复进入 `v0.9.28`。完整门禁是串行且逐层失败的；修复一个阻断项后必须重新执行至全部步骤结束，不得把“已越过上次失败点”表述为发布通过。
 - 本轮耗时的直接原因是第一次打标签前只完成了定向回归和普通门禁，没有在锁定 Python 3.11 环境把 `--full` 一次跑到底，因而 Ruff、Mypy 被远端串行发现并消耗两个版本号。以后必须先本地完整通过再创建首个标签；CI 用于独立复核，不承担首轮缺陷发现。
+- `v0.9.29` 源码包的 Windows BAT 能找到 Python，但图形启动器用 `os.execv` 交接到 `%LOCALAPPDATA%\Answer Book Platform` 下的专用运行时时，含空格路径被拆成 `...\Answer` 和 `Book`；BAT 优先使用 `pyw/pythonw` 又隐藏了标准错误，用户只看到“双击没反应”。此类修复必须从真实 BAT 开始，在真实含空格用户目录上验证启动器健康端口与持续进程；直接 import 或运行 `--skip-runtime-check` 不能代替。
+- `v0.9.29` 的公开附件曾由 `git archive` 直接生成，导致用户包携带不需要的开发/数据目录，且没有执行已有的发布包反向验证。正式工作流必须调用 `package_release.py` 后立即调用 `verify_release_package.py`；工作流自己能解压并启动，不等于附件内容已符合用户分发边界。

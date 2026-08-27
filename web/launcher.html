@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>启动真题解析平台</title>
+  <link rel="icon" type="image/png" href="/app-icon.png">
   <style>
     :root{color-scheme:light;--ink:#15213b;--muted:#6f7b91;--line:#e5eaf2;--blue:#246bfd;--blue2:#1557d8}
     *{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;color:var(--ink);background:radial-gradient(circle at 50% -10%,#e7efff 0,transparent 38%),#f6f8fc;display:grid;place-items:center;padding:28px}
-    .shell{width:min(720px,100%)}.brand{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:22px}.logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,#357cff,#1557d8);display:grid;place-items:center;color:white;font-weight:800;font-size:20px;box-shadow:0 10px 24px #246bfd35}.brand-name{font-size:16px;font-weight:700;letter-spacing:.02em}
+    .shell{width:min(720px,100%)}.brand{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:22px}.logo{width:48px;height:48px;border-radius:14px;display:block;box-shadow:0 10px 24px #246bfd35}.brand-name{font-size:16px;font-weight:700;letter-spacing:.02em}
     .panel{background:#fff;border:1px solid #e8edf5;border-radius:24px;padding:42px 48px 38px;box-shadow:0 22px 65px rgba(31,48,84,.10)}h1{font-size:28px;line-height:1.35;text-align:center;margin:0;font-weight:750}.lead{text-align:center;color:var(--muted);font-size:14px;margin:9px 0 30px}
     .label{font-size:13px;font-weight:700;margin:0 0 9px}.switch{display:grid;grid-template-columns:1fr 1fr;padding:5px;border-radius:13px;background:#f0f3f8;gap:4px}.switch button{border:0;border-radius:9px;padding:12px 16px;background:transparent;color:#6a768a;font:600 14px inherit;cursor:pointer;transition:.18s}.switch button.active{background:#fff;color:#1f5fd1;box-shadow:0 2px 9px rgba(31,48,84,.11)}
     .mode-detail{min-height:66px;margin:14px 2px 22px;padding-left:18px;position:relative}.mode-detail:before{content:"";position:absolute;left:2px;top:7px;width:7px;height:7px;border-radius:50%;background:#34a853;box-shadow:0 0 0 5px #e9f7ee}.mode-title{font-size:14px;font-weight:700}.mode-copy{color:var(--muted);font-size:13px;line-height:1.7;margin-top:4px}
@@ -17,7 +18,7 @@
   </style>
 </head>
 <body>
-  <main class="shell"><div class="brand"><div class="logo">真</div><div class="brand-name">真题解析与生题平台</div></div>
+  <main class="shell"><div class="brand"><img class="logo" src="/app-icon.png" alt=""><div class="brand-name">真题解析与生题平台</div></div>
     <section class="panel"><h1>准备开始</h1><p class="lead">启动器会自动检查运行环境，无需手动安装项目依赖</p>
       <p class="label">访问方式</p><div class="switch" role="tablist" aria-label="访问方式"><button id="localMode" class="active" type="button">仅本机使用</button><button id="lanMode" type="button">局域网监控</button></div>
       <div class="mode-detail"><div id="modeTitle" class="mode-title">安全的本机模式</div><div id="modeCopy" class="mode-copy">只有当前电脑可以访问，适合日常出题、管理和下载文件。</div></div>

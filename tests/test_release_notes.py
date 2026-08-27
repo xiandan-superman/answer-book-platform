@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.extract_release_notes import extract_version_section
+from scripts.extract_release_notes import extract_version_section, source_download_notice
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,3 +48,12 @@ def test_release_note_script_writes_only_requested_section(tmp_path: Path) -> No
     notes = output.read_text(encoding="utf-8")
     assert notes.startswith(f"## [{version}]")
     assert "## [0.9.20]" not in notes
+
+
+def test_source_download_notice_points_to_the_real_release_asset() -> None:
+    notice = source_download_notice("0.9.30", "example/answer-book-platform-releases")
+
+    assert "answer-book-platform-0.9.30-source.zip" in notice
+    assert "/releases/download/v0.9.30/" in notice
+    assert "不要下载" in notice
+    assert "Source code (zip)" in notice

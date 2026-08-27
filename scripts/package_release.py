@@ -9,7 +9,6 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT.parent / "answer_book_platform_v1_release.zip"
 

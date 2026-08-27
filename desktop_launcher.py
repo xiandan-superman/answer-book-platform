@@ -16,6 +16,14 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+APP_ICON = ROOT / "assets" / "app-icon" / "app-icon-transparent.png"
+APP_WINDOW_ICON = (
+    ROOT / "assets" / "app-icon" / "app-icon.ico"
+    if sys.platform == "win32"
+    else ROOT / "assets" / "app-icon" / "app-icon.icns"
+    if sys.platform == "darwin"
+    else APP_ICON
+)
 
 # The legacy standalone source project has always used 8766.  The installed
 # desktop application owns a separate range so both products can run at once
@@ -170,7 +178,7 @@ def main() -> int:
             server_process.wait()
             return 0
         _create_desktop_window(webview, local_url)
-        webview.start(private_mode=False)
+        webview.start(private_mode=False, icon=str(APP_WINDOW_ICON))
         return 0
     finally:
         if server_process.poll() is None:

@@ -78,6 +78,7 @@ def main() -> int:
             "app/lan_access.py", "scripts/check_version_consistency.py",
             "scripts/data_inventory.py", "scripts/run_quality_gates.py",
             "scripts/extract_release_notes.py",
+            "scripts/windows_launcher_bootstrap.py",
         ]
         lint_scope.extend(str(path.relative_to(ROOT)) for path in sorted((ROOT / "app" / "capabilities").rglob("*.py")))
         lint_scope.extend(

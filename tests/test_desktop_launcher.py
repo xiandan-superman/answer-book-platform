@@ -93,3 +93,13 @@ def test_desktop_window_enables_downloads_and_exposes_controlled_word_bridge() -
     assert captured["url"] == "http://127.0.0.1:18766/?desktop_app=1"
     assert captured["js_api"].__class__.__name__ == "DesktopWordSaveBridge"
     assert captured["js_api"]._window is fake_window
+
+
+def test_desktop_shell_starts_with_the_bundled_product_icon() -> None:
+    source = (desktop_launcher.ROOT / "desktop_launcher.py").read_text(encoding="utf-8")
+    spec = (desktop_launcher.ROOT / "build" / "answer_book_platform.spec").read_text(encoding="utf-8")
+
+    assert desktop_launcher.APP_ICON.is_file()
+    assert 'webview.start(private_mode=False, icon=str(APP_WINDOW_ICON))' in source
+    assert '"app-icon.ico"' in spec
+    assert '"app-icon-transparent.png"' in spec

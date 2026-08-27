@@ -10,12 +10,14 @@ QUALITY = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="u
 
 def test_source_release_requires_full_quality_gate_before_packaging() -> None:
     assert "python scripts/run_quality_gates.py --full" in SOURCE_RELEASE
-    assert SOURCE_RELEASE.index("run_quality_gates.py --full") < SOURCE_RELEASE.index("git archive")
+    assert SOURCE_RELEASE.index("run_quality_gates.py --full") < SOURCE_RELEASE.index("scripts/package_release.py")
+    assert "scripts/verify_release_package.py" in SOURCE_RELEASE
 
 
 def test_source_release_smoke_starts_the_packaged_zip_with_isolated_data() -> None:
     assert "unzip -q" in SOURCE_RELEASE
     assert "ANSWER_BOOK_DATA_DIR" in SOURCE_RELEASE
+    assert '$smoke_root/scripts/start_platform.py' in SOURCE_RELEASE
     assert "/api/version" in SOURCE_RELEASE
 
 
@@ -28,7 +30,8 @@ def test_release_workflows_require_version_specific_changelog_notes() -> None:
     command = 'python scripts/extract_release_notes.py --version "$RELEASE_VERSION"'
     assert command in SOURCE_RELEASE
     assert command in DESKTOP_RELEASE
-    assert "--notes-file dist/release-notes.md" in SOURCE_RELEASE
+    assert "--source-download-repository \"$RELEASE_REPOSITORY\"" in SOURCE_RELEASE
+    assert "--notes-file dist/github-release-notes.md" in SOURCE_RELEASE
     assert "--notes-file dist/release-notes.md" in DESKTOP_RELEASE
 
 

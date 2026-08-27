@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github" / "workflows" / "desktop-release.yml").read_text(encoding="utf-8")
 
@@ -25,6 +24,8 @@ def test_desktop_release_publishes_checksum_manifest_to_public_repo() -> None:
     assert "update-manifest.json" in WORKFLOW
     assert "update-stable.json" in WORKFLOW
     assert '--asset "source=$source_asset"' in WORKFLOW
+    assert "scripts/package_release.py" in WORKFLOW
+    assert "scripts/verify_release_package.py" in WORKFLOW
 
 
 def test_desktop_release_requires_and_embeds_support_receiver_secrets() -> None:
@@ -55,3 +56,11 @@ def test_desktop_bundle_collects_and_verifies_latex2mathml_runtime_data() -> Non
 
     assert 'collect_data_files("latex2mathml")' in spec
     assert '"latex2mathml" / "unimathsymbols.txt"' in windows_builder
+
+
+def test_windows_desktop_bundle_uses_the_product_icon() -> None:
+    spec = (ROOT / "build" / "answer_book_platform.spec").read_text(encoding="utf-8")
+
+    assert '"app-icon.ico"' in spec
+    assert '"app-icon-transparent.png"' in spec
+    assert 'if sys.platform == "win32"' in spec

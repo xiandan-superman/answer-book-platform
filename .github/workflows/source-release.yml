@@ -48,8 +48,13 @@ jobs:
         run: |
           mkdir -p dist/release-assets
           asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-source.zip"
-          git archive --format=zip --prefix=answer-book-platform/ --output="$asset" "$RELEASE_TAG"
+          python scripts/package_release.py --output "$asset"
+          python scripts/verify_release_package.py --zip "$asset"
           python scripts/extract_release_notes.py --version "$RELEASE_VERSION" --output dist/release-notes.md
+          python scripts/extract_release_notes.py \
+            --version "$RELEASE_VERSION" \
+            --source-download-repository "$RELEASE_REPOSITORY" \
+            --output dist/github-release-notes.md
           python scripts/build_update_manifest.py \
             --version "$RELEASE_VERSION" \
             --release-tag "$RELEASE_TAG" \
@@ -63,7 +68,7 @@ jobs:
           mkdir -p "$smoke_root"
           unzip -q "dist/release-assets/answer-book-platform-${RELEASE_VERSION}-source.zip" -d "$smoke_root"
           ANSWER_BOOK_DATA_DIR="$RUNNER_TEMP/source-release-data" \
-            python "$smoke_root/answer-book-platform/scripts/start_platform.py" --host 127.0.0.1 --port 18766 \
+            python "$smoke_root/scripts/start_platform.py" --host 127.0.0.1 --port 18766 \
             >"$RUNNER_TEMP/source-release-smoke.log" 2>&1 &
           smoke_pid=$!
           trap 'kill "$smoke_pid" 2>/dev/null || true' EXIT
@@ -85,7 +90,7 @@ jobs:
             gh release create "$RELEASE_TAG" dist/release-assets/* \
               --repo "$RELEASE_REPOSITORY" \
               --title "真题解析与生题平台 ${RELEASE_VERSION}" \
-              --notes-file dist/release-notes.md
+              --notes-file dist/github-release-notes.md
           fi
       - name: Update safe stable source feed
         shell: bash

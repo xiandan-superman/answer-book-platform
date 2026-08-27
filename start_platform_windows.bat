@@ -1,24 +1,35 @@
 @echo off
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+if not exist "scripts\windows_launcher_bootstrap.py" (
+  echo The program package is incomplete: scripts\windows_launcher_bootstrap.py is missing.
+  echo Please extract the complete official source ZIP and try again.
+  pause
+  exit /b 3
+)
 where pyw >nul 2>nul
 if %errorlevel%==0 (
-  start "" pyw -3 scripts\source_launcher_gui.py
+  start "" pyw -3 scripts\windows_launcher_bootstrap.py %*
   exit /b 0
 )
 where pythonw >nul 2>nul
 if %errorlevel%==0 (
-  start "" pythonw scripts\source_launcher_gui.py
+  start "" pythonw scripts\windows_launcher_bootstrap.py %*
   exit /b 0
 )
 where py >nul 2>nul
 if %errorlevel%==0 (
-  py -3 scripts\source_launcher_gui.py
-  exit /b %errorlevel%
+  py -3 scripts\windows_launcher_bootstrap.py %*
+  set "launcher_rc=!errorlevel!"
+  if not "!launcher_rc!"=="0" pause
+  exit /b !launcher_rc!
 )
 where python >nul 2>nul
 if %errorlevel%==0 (
-  python scripts\source_launcher_gui.py
-  exit /b %errorlevel%
+  python scripts\windows_launcher_bootstrap.py %*
+  set "launcher_rc=!errorlevel!"
+  if not "!launcher_rc!"=="0" pause
+  exit /b !launcher_rc!
 )
 echo Python 3.9 or newer is required.
 start "" "https://www.python.org/downloads/windows/"

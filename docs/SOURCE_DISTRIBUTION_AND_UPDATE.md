@@ -4,7 +4,7 @@
 
 普通用户应从 [最新正式版本发布页](https://github.com/xiandan-superman/answer-book-platform-releases/releases/latest) 的 **Assets** 下载 `answer-book-platform-<版本号>-source.zip`。不要下载 `update-manifest.json`，也不要把 GitHub 自动附加的 `Source code (zip)` 当作程序包。
 
-下载后解压整个目录：macOS 双击 `start_platform.command`，Windows 双击 `start_platform_windows.bat`。两个系统都进入同一个轻量桌面壳，由用户选择“仅本机使用”或“开启局域网监控”。启动器检查 Python 3.9+，首次运行创建专用虚拟环境、安装依赖、启动本地服务并打开 `http://127.0.0.1:8766`。API 配置、日常启动、停止服务和旧 ZIP 版迁移的完整用户步骤以仓库根目录 `README.md` 为准。
+下载后解压整个目录：macOS 双击 `start_platform.command`，Windows 双击 `启动平台.bat`（英文兼容名为 `start_platform_windows.bat`）。两个系统都进入同一个轻量桌面壳，由用户选择“仅本机使用”或“开启局域网监控”。启动器检查 Python 3.9+，首次运行创建专用虚拟环境、安装依赖、启动本地服务并打开 `http://127.0.0.1:8766`。API 配置、日常启动、停止服务和旧 ZIP 版迁移的完整用户步骤以仓库根目录 `README.md` 为准。Windows 入口先由纯标准库 bootstrap 启动图形壳；显示窗口前如发生异常，必须写入用户数据目录下的 `runtime/launcher-bootstrap.log` 并弹出错误，不得因 `pythonw` 无控制台而静默失败。
 
 0.9.18 及更早的无 Git ZIP 版必须手动安装 0.9.19 一次。旧替换器会先把程序目录移动到用户数据备份区；程序目录与用户数据目录跨磁盘时，这个移动实际是慢速复制，用户在空目录窗口期间关闭启动器会中断替换。旧版固定读取的 `update-stable.json` 保持暂停状态。0.9.19 起改读 `update-stable-v2.json`，进入不会先移走可见程序目录的安全替换链路。
 
@@ -18,7 +18,7 @@
 
 ## 用户启动链路
 
-macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 只负责发现系统 Python 并打开 `scripts/source_launcher_gui.py`。该入口使用仅监听 `127.0.0.1` 的标准库临时服务承载启动页面，再通过 Windows WebView2 或 macOS WKWebView 的轻量桌面壳显示，负责模式选择、启动状态、打开平台和停止操作。首次运行会先在用户级运行环境中准备壳依赖。旧的 LAN 脚本只作为兼容入口，预选局域网模式后仍走同一链路，禁止直接使用系统 Python 调用 `scripts/start_platform.py`。启动监督器负责：
+macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_platform_windows.bat` 只负责发现系统 Python 并打开启动链路。Windows 先进入 `scripts/windows_launcher_bootstrap.py`，再启动 `scripts/source_launcher_gui.py`；macOS 直接进入图形启动器。该入口使用仅监听 `127.0.0.1` 的标准库临时服务承载启动页面，再通过 Windows WebView2 或 macOS WKWebView 的轻量桌面壳显示，负责模式选择、启动状态、打开平台和停止操作。首次运行会先在用户级运行环境中准备壳依赖。旧的 LAN 脚本只作为兼容入口，预选局域网模式后仍走同一链路，禁止直接使用系统 Python 调用 `scripts/start_platform.py`。启动监督器负责：
 
 1. 应用待处理的已校验源码更新。
 2. 在用户数据目录创建 `runtime/python-env`。
@@ -29,7 +29,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 7. 服务以退出码 75 请求更新重启时，监督器应用更新、复核依赖并重新启动。
 8. 服务退出后，监督器通过独立原生窗口和 `runtime/update-progress.json` 同步展示解压、备份、覆盖、依赖检查及启动进度；新版健康检查通过后才标记完成。更新触发前已有浏览器页面时不会重复打开新标签页。
 
-启动入口的跨平台差异保持在最外层：Windows 优先使用 `pyw/pythonw`、隐藏命令行窗口并使用系统 WebView2；macOS 的 `.command` 负责通过系统允许的方式启动独立后台进程，并使用系统 WKWebView，首次打开仍可能需要右键确认。桌面壳使用同一份 HTML/CSS，因此两端视觉和交互一致；`pywebview` 只提供轻量桥接，不捆绑浏览器内核。两端都不捆绑 Python。局域网模式统一传递 `--host 0.0.0.0`，但健康检查和本机浏览器始终使用 `127.0.0.1`，避免打开不可用的 `0.0.0.0` 地址。首次允许外部连接时，Windows 防火墙或 macOS 防火墙可能请求用户确认。
+启动入口的跨平台差异保持在最外层：Windows 优先使用 `pyw/pythonw`、隐藏命令行窗口并使用系统 WebView2；macOS 的 `.command` 负责通过系统允许的方式启动独立后台进程，并使用系统 WKWebView，首次打开仍可能需要右键确认。Windows 不得用 `os.execv` 转交到用户级虚拟环境：默认目录 `Answer Book Platform` 含空格，已在 0.9.29 实际触发参数拆分和无控制台静默退出。必须使用参数列表的 `subprocess` 调用、传播子进程退出码，并以真实含空格路径执行 BAT 健康检查。桌面壳使用同一份 HTML/CSS，因此两端视觉和交互一致；`pywebview` 只提供轻量桥接，不捆绑浏览器内核。两端都不捆绑 Python。局域网模式统一传递 `--host 0.0.0.0`，但健康检查和本机浏览器始终使用 `127.0.0.1`，避免打开不可用的 `0.0.0.0` 地址。首次允许外部连接时，Windows 防火墙或 macOS 防火墙可能请求用户确认。
 
 平台健康检查通过后，桌面壳自动隐藏到 Windows 系统托盘或 macOS 菜单栏。窗口关闭事件只隐藏窗口，不停止监督器或服务；再次双击启动文件会唤醒已有桌面壳。托盘/菜单栏必须提供打开平台、显示启动器、停止并退出三个操作。无法创建托盘图标时退化为最小化到任务栏，禁止因用户关闭启动界面而直接终止正在运行或排队的任务。
 
@@ -71,9 +71,10 @@ macOS 的 `start_platform.command` 和 Windows 的 `start_platform_windows.bat` 
 2. 用户确认后提交并推送 Git。
 3. 累积到正式版本时同步 `APP_VERSION`、`VERSION`、`RELEASE_MANIFEST.json`。
 4. 创建完全匹配的 `v<APP_VERSION>` 标签。
-5. `.github/workflows/source-release.yml` 使用 `git archive` 生成固定顶层目录的源码 ZIP。
+5. `.github/workflows/source-release.yml` 使用 `scripts/package_release.py` 从 Git 索引白名单生成源码 ZIP，再由 `scripts/verify_release_package.py` 反向检查启动文件、Logo、版本清单和运行数据排除规则；禁止直接用未筛选的 `git archive` 作为普通用户附件。
 6. 生成包含版本、附件名、大小、SHA256 和依赖指纹的 `update-manifest.json`。
 7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新仅供 0.9.19+ 安全替换器使用的 `update-stable-v2.json`。旧版固定读取的 `update-stable.json` 保持禁用，防止旧替换逻辑再次触发。
+   GitHub Release 说明顶部必须自动生成带版本的正式附件直链，并明确警告不要下载 GitHub 自动生成的 `Source code (zip)`；发布仓库的自动源码包不含平台启动器。
 8. 客户端启动后自动静默检查清单。发现旧版本时显示非阻塞提醒；用户查看说明并确认后才更新。
 9. 更新前读取统一运行监控；存在运行中或排队任务时拒绝重启更新，并提示用户在任务完成后重试。
 10. 更新请求进入独立后台线程，网页通过本机进度接口显示检查、下载、SHA256 校验和准备替换状态；服务退出后由监督器的独立更新窗口继续展示真实安装进度，页面自动等待并重新连接。

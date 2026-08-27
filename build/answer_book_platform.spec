@@ -75,6 +75,8 @@ hybrid_config_build.write_text(json.dumps(hybrid_config, ensure_ascii=False, ind
 
 datas = [
     (str(ROOT / "web"), "web"),
+    (str(ROOT / "assets" / "app-icon" / "app-icon-transparent.png"), "assets/app-icon"),
+    (str(ROOT / "assets" / "app-icon" / "app-icon.ico"), "assets/app-icon"),
     (str(ROOT / "config" / "providers.example.json"), "config"),
     (str(ROOT / "config" / "model_pricing.example.json"), "config"),
     (str(ROOT / "config" / "task_defaults.json"), "config"),
@@ -139,7 +141,13 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / "assets" / "app-icon" / "app-icon.icns") if sys.platform == "darwin" else None,
+    icon=(
+        str(ROOT / "assets" / "app-icon" / "app-icon.icns")
+        if sys.platform == "darwin"
+        else str(ROOT / "assets" / "app-icon" / "app-icon.ico")
+        if sys.platform == "win32"
+        else None
+    ),
 )
 
 coll = COLLECT(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import source_launcher, source_launcher_gui
 
@@ -46,10 +48,22 @@ def test_legacy_lan_entries_use_gui_supervisor() -> None:
     windows = (source_launcher_gui.ROOT / "start_platform_lan_windows.bat").read_text(encoding="utf-8")
     macos = (source_launcher_gui.ROOT / "start_platform_lan.command").read_text(encoding="utf-8")
 
-    assert "source_launcher_gui.py --mode lan --autostart" in windows
+    assert "windows_launcher_bootstrap.py --mode lan --autostart" in windows
     assert "source_launcher_gui.py --mode lan --autostart" in macos
     assert "scripts\\start_platform.py" not in windows
     assert "scripts/start_platform.py" not in macos
+
+
+def test_windows_entries_use_diagnostic_bootstrap_and_visible_alias() -> None:
+    root = source_launcher_gui.ROOT
+    standard = (root / "start_platform_windows.bat").read_text(encoding="utf-8")
+    visible = (root / "启动平台.bat").read_text(encoding="utf-8")
+
+    assert "windows_launcher_bootstrap.py" in standard
+    assert "source_launcher_gui.py" not in standard
+    assert "start_platform_windows.bat" in visible
+    assert "%*" in standard
+    assert "%*" in visible
 
 
 def test_launcher_page_keeps_mode_choice_simple_and_user_facing() -> None:
@@ -61,6 +75,17 @@ def test_launcher_page_keeps_mode_choice_simple_and_user_facing() -> None:
     assert "自动检查依赖" in page
     assert "pip install" not in page
     assert "source_launcher.py" not in page
+    assert '<img class="logo" src="/app-icon.png"' in page
+    assert '<div class="logo">真</div>' not in page
+
+
+def test_launcher_uses_the_product_icon_in_every_visible_shell() -> None:
+    source = (source_launcher_gui.ROOT / "scripts" / "source_launcher_gui.py").read_text(encoding="utf-8")
+
+    assert source_launcher_gui.APP_ICON.is_file()
+    assert 'Image.open(APP_ICON)' in source
+    assert 'icon=str(APP_WINDOW_ICON)' in source
+    assert 'window.iconphoto(True, self.icon)' in source
 
 
 def test_runtime_declares_native_webview_shell() -> None:
@@ -104,3 +129,41 @@ def test_shell_without_tray_minimizes_instead_of_exiting() -> None:
 
     assert controller.request_window_close() is False
     assert controller.window.minimized == 1
+
+
+def test_launcher_failure_is_written_to_bootstrap_log(monkeypatch, tmp_path: Path) -> None:
+    log_path = tmp_path / "launcher-bootstrap.log"
+    monkeypatch.setenv("ANSWER_BOOK_LAUNCHER_BOOTSTRAP_LOG", str(log_path))
+
+    try:
+        raise RuntimeError("simulated early launcher failure")
+    except RuntimeError:
+        source_launcher_gui.record_launcher_failure("test")
+
+    content = log_path.read_text(encoding="utf-8")
+    assert "launcher_failure_stage=test" in content
+    assert "simulated early launcher failure" in content
+
+
+def test_runtime_handoff_preserves_windows_paths_with_spaces(monkeypatch, tmp_path: Path) -> None:
+    runtime = tmp_path / "Answer Book Platform" / "python-env" / "Scripts" / "pythonw.exe"
+    calls = []
+    monkeypatch.setattr(source_launcher_gui.sys, "platform", "win32")
+    monkeypatch.setattr(source_launcher_gui.sys, "argv", ["source_launcher_gui.py", "--mode", "local"])
+    monkeypatch.setattr(
+        source_launcher_gui.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(returncode=0),
+    )
+
+    try:
+        source_launcher_gui.run_with_shell_runtime(runtime)
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("runtime handoff must exit the bootstrap interpreter")
+
+    assert calls[0][0][0] == str(runtime)
+    assert calls[0][0][1].endswith("source_launcher_gui.py")
+    assert calls[0][0][-2:] == ["--mode", "local"]
+    assert calls[0][1]["creationflags"] == source_launcher_gui.subprocess.CREATE_NO_WINDOW

@@ -147,7 +147,8 @@ jobs:
           mac_asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-macos-arm64.dmg"
           windows_asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-windows-x86_64.zip"
           source_asset="dist/release-assets/answer-book-platform-${RELEASE_VERSION}-source.zip"
-          git archive --format=zip --prefix=answer-book-platform/ --output="$source_asset" HEAD
+          python scripts/package_release.py --output "$source_asset"
+          python scripts/verify_release_package.py --zip "$source_asset"
           python scripts/extract_release_notes.py --version "$RELEASE_VERSION" --output dist/release-notes.md
           python scripts/build_update_manifest.py \
             --version "$RELEASE_VERSION" \
