@@ -236,7 +236,12 @@
         <div id="keyConfigNotice" class="result-card muted-card">请选择平台并填写 API Key。</div>
         <div class="page-actions reference-actions">
           <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
-          <button class="secondary-button" type="button" onclick="goToPage('home')"><i class="fas fa-grid-2"></i>选择业务与模型</button>
+          <div class="key-model-destinations" aria-label="前往业务模型设置">
+            <span>继续配置模型：</span>
+            <button class="secondary-button" type="button" onclick="startWizard()"><i class="fas fa-file-circle-check"></i>真题解析</button>
+            <button class="secondary-button" type="button" onclick="goToPage('practice-models')"><i class="fas fa-wand-magic-sparkles"></i>按题出题</button>
+            <button class="secondary-button" type="button" onclick="goToPage('knowledge-models')"><i class="fas fa-lightbulb"></i>知识点出题</button>
+          </div>
         </div>
       </div>
     </section>
@@ -248,7 +253,7 @@
           <div>
             <p class="model-page-eyebrow">模拟出题 · 5 步流程</p>
             <h2>知识点出题</h2>
-            <p>输入一个知识点，或上传教材原文与资料，生成有梯度、可复核的针对性模拟题。</p>
+            <p>提供知识点、教材原文或资料，平台会先确认知识范围，再生成有梯度的练习。</p>
           </div>
         </div>
 
@@ -261,7 +266,7 @@
             <li><b>4</b><span>审查蓝图</span></li>
             <li><b>5</b><span>生成练习</span></li>
           </ol>
-          <p>这一页只需提供知识点名称、原文或文件；题量、题型和难度在解析后统一确认。</p>
+          <p>本页只准备材料；题量、题型和难度将在范围确认时统一设置。</p>
         </section>
 
         <details class="knowledge-mode-guide-details">
@@ -283,7 +288,7 @@
               <input id="knowledgeTitleInput" type="text" maxlength="300" placeholder="例如：晶胞 / 点阵参数">
             </label>
             <label>知识点简介或教材原文
-              <textarea id="knowledgeTextInput" rows="10" placeholder="可粘贴知识点简介、教材原文、公式说明；也可按 Command/Ctrl + V 直接粘贴图片。"></textarea>
+              <textarea id="knowledgeTextInput" rows="7" placeholder="可粘贴知识点简介、教材原文、公式说明；也可按 Command/Ctrl + V 直接粘贴图片。"></textarea>
             </label>
             <div id="knowledgeWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的知识点出题工作区。</span><button id="knowledgeWorkspaceDraftClear" type="button" class="text-button">保留并新建</button><button id="knowledgeWorkspaceDraftRestorePrevious" type="button" class="text-button">恢复上一份</button></div>
             <div class="knowledge-paste-hint"><i class="fas fa-paste"></i><span><strong>支持直接粘贴图片</strong>先点击上方输入框，再按 Command/Ctrl + V；可连续粘贴多张。</span></div>
@@ -884,6 +889,7 @@
                     <h3 id="practiceTrainingGoal" class="mt-1 text-lg font-bold leading-snug text-[var(--brand-foreground)]">训练目标</h3>
                   </div>
                   <div id="practicePrimaryActions" class="flex flex-shrink-0 flex-wrap items-center gap-2">
+                    <button id="practiceDownloadAllBtn" type="button" class="primary-button" disabled><i class="fas fa-file-word"></i><span>下载全部 Word</span></button>
                     <button id="practiceUndoBtn" type="button" class="secondary-button" disabled title="撤销上次已保存的题目修改"><i class="fas fa-rotate-left"></i><span>撤销上次修改</span></button>
                     <section id="practiceSelectionActions" class="hidden flex flex-wrap items-center gap-1.5 rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-muted)] p-1.5" aria-label="已选题目操作">
                       <span id="practiceSelectionCount" class="practice-selection-count" aria-live="polite">已选 0 题</span>
@@ -899,6 +905,12 @@
 
               <div id="practiceQuality" class="rounded-xl p-4"></div>
 
+              <details id="practiceResultTools" class="practice-result-tools">
+                <summary>
+                  <span><i class="fas fa-sliders"></i><strong>任务概况与筛选</strong><small>原题诊断、训练蓝图和题目筛选</small></span>
+                  <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                </summary>
+                <div class="practice-result-tools__body">
               <div id="practiceResultContext" class="practice-result-context">
               <details id="practiceAnalysisSummary" class="rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] shadow-[var(--shadow-card)]">
                 <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4">
@@ -958,6 +970,8 @@
                   </div>
                 </div>
               </div>
+                </div>
+              </details>
 
               <div id="practiceExerciseList" class="space-y-4"></div>
             </div>
@@ -1039,8 +1053,9 @@
             <p id="practiceStrategyHint"></p>
             <p id="practiceTargetedCountRisk" class="practice-strategy-risk hidden" role="status"></p>
           </div>
-          <section class="practice-scope-config" aria-labelledby="practiceScopeConfigTitle">
-            <header><strong id="practiceScopeConfigTitle">出题配置</strong><small id="practiceScopeConfigHint">这些设置用于设计蓝图，后续仍可逐题修改</small></header>
+          <details class="practice-scope-config practice-scope-config-disclosure">
+            <summary><span><strong id="practiceScopeConfigTitle">题量、难度与题型</strong><small id="practiceScopeConfigHint">已使用推荐配置；展开可调整</small></span><i class="fas fa-chevron-down" aria-hidden="true"></i></summary>
+            <div class="practice-scope-config__body">
             <label class="practice-blueprint-toggle practice-source-content-toggle">
               <span><strong>正式生题时参考来源材料</strong><small>仅影响后续正式生题；材料分析与蓝图设计始终使用已确认的分析结果。</small></span>
               <input id="practiceScopeIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
@@ -1071,7 +1086,8 @@
                 <label><input type="checkbox" name="practiceScopeQuestionType" value="综合题"><span>综合题</span></label>
               </div>
             </fieldset>
-          </section>
+            </div>
+          </details>
           <div class="practice-scope-drawer__section">
             <header>
               <strong id="practiceScopeItemsLabel">参与生成的内容</strong>
@@ -1248,6 +1264,8 @@
             <div class="check-row"><span><i id="runtimeCheckIcon" class="fas fa-circle-notch fa-spin"></i>运行环境检测</span><strong id="environmentSummary">检测中...</strong></div>
             <div class="check-row"><span><i id="toolsCheckIcon" class="fas fa-circle-notch fa-spin"></i>依赖工具完整性</span><strong id="environmentHint">检测中...</strong></div>
             <div class="check-row"><span><i id="networkCheckIcon" class="fas fa-circle-notch fa-spin"></i>网络连通性</span><strong id="networkSummary">检测中...</strong></div>
+            <div class="check-row"><span><i id="modelConfigCheckIcon" class="fas fa-circle-question"></i>API Key 与模型配置</span><strong id="modelConfigSummary">检测中...</strong></div>
+            <div class="check-row"><span><i id="modelCallCheckIcon" class="fas fa-circle-question"></i>当前模型实际调用</span><strong id="modelCallSummary">尚未测试</strong></div>
           </div>
           <div id="environmentVisualResult" class="status-result result-info"><i class="fas fa-circle-notch fa-spin"></i><strong>正在检查运行环境...</strong></div>
           <div id="environmentRepairBox" class="env-repair-box hidden"></div>
@@ -1280,6 +1298,10 @@
                 </select>
               </label>
               <p id="examModelPresetSummary" class="exam-model-preset-summary">正在读取模型配置...</p>
+              <div class="exam-model-test-row">
+                <span id="examModelTestHint">连接测试会实际调用当前知识识别和结构化解析模型。</span>
+                <button id="testExamModelRoutesBtn" class="outline-button" type="button"><i class="fas fa-plug"></i>测试当前模型组合</button>
+              </div>
             </section>
             <details id="examModelRoleDetails" class="exam-model-role-details">
               <summary><i class="fas fa-sliders"></i>高级：查看或自定义各环节模型</summary>
@@ -1495,64 +1517,83 @@
     </section>
 
     <section id="page-exam" class="page">
-      <div class="page-title">
-        <h2>选择真题</h2>
-        <p>选择已有真题或上传新的真题 DOCX。教材只允许使用已在教材管理中建立索引的内容。</p>
+      <div class="page-title task-page-title">
+        <p class="task-page-eyebrow">真题解析 · 准备材料</p>
+        <h2>确认本次解析材料</h2>
+        <p>选好一份真题和对应教材即可开始。模型与运行环境沿用已保存的配置，无需在这里重复设置。</p>
       </div>
-      <div id="currentTextbookDisplay" class="selection-bar">当前教材：正在读取选择结果。</div>
-      <article class="panel-card">
+      <div class="material-readiness" role="status" aria-live="polite">
+        <span class="material-readiness-icon"><i class="fas fa-list-check"></i></span>
+        <div><strong>材料准备情况</strong><p id="examReadinessHint">请选择真题和至少一本教材。</p></div>
+      </div>
+      <div id="currentTextbookDisplay" class="selection-bar material-selection-summary">正在读取教材选择结果。</div>
+      <article class="panel-card material-step-card">
         <div class="task-textbook-head">
           <div>
-            <h3><i class="fas fa-book-open"></i> 本次解析教材</h3>
-            <p>这里只选择已有教材；上传教材和建立索引请到独立的教材管理页完成。</p>
+            <span class="material-step-number">1</span>
+            <h3><i class="fas fa-book-open"></i>选择对应教材</h3>
+            <p>教材只允许使用已在教材管理中建立索引的内容；如需新增教材，可前往教材管理。</p>
           </div>
           <button class="secondary-button" type="button" onclick="goToPage('textbook')"><i class="fas fa-database"></i>打开教材管理</button>
         </div>
         <div id="taskTextbookChecklist" class="file-card-grid"></div>
       </article>
-      <div class="tab-row">
-        <button id="tab-exam-existing" class="tab-button active" type="button" onclick="switchExamTab('existing')"><i class="fas fa-folder-open"></i>选择已有真题</button>
-        <button id="tab-exam-upload" class="tab-button" type="button" onclick="switchExamTab('upload')"><i class="fas fa-cloud-upload-alt"></i>上传新真题</button>
-      </div>
-      <article id="exam-existing" class="panel-card">
-        <select id="examSelect" class="visually-hidden"></select>
-        <input id="examPath" type="hidden">
-        <div id="examCardList" class="file-card-grid two"></div>
-      </article>
-      <article id="exam-upload" class="panel-card hidden">
-        <label class="upload-zone purple-zone" for="examUploadInput">
-          <input id="examUploadInput" type="file" accept=".docx">
-          <span><i class="fas fa-cloud-upload-alt"></i></span>
-          <strong>拖拽真题到此处，或点击上传</strong>
-          <small>当前生产流程支持 DOCX 真题。</small>
-        </label>
-        <div id="examUploadList" class="upload-file-list hidden"></div>
-        <button id="uploadExamBtn" class="secondary-button" type="button">上传真题并刷新列表</button>
+      <article class="panel-card material-step-card exam-source-card">
+        <div class="material-step-heading">
+          <span class="material-step-number">2</span>
+          <div><h3><i class="fas fa-file-lines"></i>选择真题</h3><p>从已有真题中选择，或上传一份新的 DOCX。</p></div>
+        </div>
+        <div class="tab-row material-source-tabs">
+          <button id="tab-exam-existing" class="tab-button active" type="button" onclick="switchExamTab('existing')"><i class="fas fa-folder-open"></i>已有真题</button>
+          <button id="tab-exam-upload" class="tab-button" type="button" onclick="switchExamTab('upload')"><i class="fas fa-cloud-upload-alt"></i>上传新真题</button>
+        </div>
+        <div id="exam-existing" class="material-source-panel">
+          <select id="examSelect" class="visually-hidden" aria-hidden="true" tabindex="-1"></select>
+          <input id="examPath" type="hidden">
+          <div class="exam-library-tools">
+            <label><i class="fas fa-magnifying-glass"></i><input id="examLibrarySearch" type="search" placeholder="搜索真题文件" aria-label="搜索真题文件"></label>
+            <span id="examLibrarySummary" aria-live="polite"></span>
+          </div>
+          <div id="examCardList" class="file-card-grid two"></div>
+          <div id="examLibraryEmpty" class="empty-hint hidden">没有找到匹配的真题文件。</div>
+          <button id="examLibraryToggle" class="outline-button exam-library-toggle hidden" type="button"></button>
+        </div>
+        <div id="exam-upload" class="material-source-panel hidden">
+          <label class="upload-zone purple-zone" for="examUploadInput">
+            <input id="examUploadInput" type="file" accept=".docx">
+            <span><i class="fas fa-cloud-upload-alt"></i></span>
+            <strong>拖拽真题到此处，或点击上传</strong>
+            <small>当前生产流程支持 DOCX 真题。</small>
+          </label>
+          <div id="examUploadList" class="upload-file-list hidden"></div>
+          <button id="uploadExamBtn" class="secondary-button" type="button">上传并选中这份真题</button>
+        </div>
       </article>
       <div id="taskVisualResult" class="result-card muted-card reference-extra">创建结果会显示在这里。</div>
       <details class="technical-details reference-extra"><summary>查看技术详情</summary><pre id="taskResult"></pre></details>
-      <div class="page-actions">
+      <div class="page-actions sticky-page-actions task-primary-actions">
         <button class="text-button" type="button" onclick="goToPage('env')"><i class="fas fa-arrow-left"></i>上一步</button>
-        <button id="createTaskBtn" class="primary-button" type="button">开始解析<i class="fas fa-play"></i></button>
+        <button id="createTaskBtn" class="primary-button" type="button">确认材料并开始解析<i class="fas fa-arrow-right"></i></button>
       </div>
     </section>
 
     <section id="page-task" class="page">
-      <div class="page-title inline-title">
+      <div class="page-title inline-title task-page-title">
         <button class="icon-button" type="button" onclick="goToPage('exam')" title="返回选择真题"><i class="fas fa-arrow-left"></i></button>
         <div>
-          <h2>执行解析</h2>
-          <p>平台会依次完成抽题、教材索引、考点判断、证据确认、解析生成、审计与文档生成。</p>
+          <p class="task-page-eyebrow">真题解析 · 解析进行中</p>
+          <h2>解析进度</h2>
+          <p>任务会在后台持续执行，可以离开本页；需要确认或出现问题时，平台会明确提示。</p>
         </div>
       </div>
 
       <article class="progress-card">
         <div class="progress-heading">
           <span>任务总体进度</span>
-          <strong id="totalProgressText">0%</strong>
+          <strong id="totalProgressText">--</strong>
         </div>
         <div class="total-progress"><span id="totalProgressBar"></span></div>
-        <p id="currentStepText"><i class="fas fa-circle-notch fa-spin"></i>创建任务并开始生成后，这里会显示当前步骤。</p>
+        <p id="currentStepText">正在读取任务状态…</p>
       </article>
 
       <article id="diagnosticsPanel" class="panel-card diagnostics-panel hidden">
@@ -1570,12 +1611,12 @@
 
       <div class="task-grid">
         <article class="panel-card">
-          <h3><i class="fas fa-tasks text-blue"></i>执行步骤</h3>
-          <p id="taskStepCaption" class="task-step-caption">按核心阶段展示任务进展。</p>
+          <h3><i class="fas fa-route text-blue"></i>流程进度</h3>
+          <p id="taskStepCaption" class="task-step-caption">正在读取当前阶段。</p>
           <div id="taskStepList" class="task-step-list"></div>
         </article>
         <article class="panel-card">
-          <h3><i class="fas fa-wave-square text-green"></i>当前执行详情</h3>
+          <h3><i class="fas fa-wave-square text-green"></i>正在做什么</h3>
           <label class="reference-extra">当前任务 ID</label>
           <input id="taskIdInput" class="reference-extra" placeholder="创建任务后自动填入，也可以从任务列表选择">
           <label class="inline-check reference-extra"><input id="renderCheck" type="checkbox" checked>生成 PDF/PNG 渲染复核</label>
@@ -1603,7 +1644,7 @@
             <div id="executionEvents" class="execution-events"></div>
             <div id="answerProgressDetails" class="answer-progress-details hidden"></div>
           </div>
-          <div id="runVisualResult" class="result-card muted-card">任务进度和质量结果会显示在这里。</div>
+          <div id="runVisualResult" class="result-card muted-card">正在读取任务状态，请稍候。</div>
         </article>
       </div>
 
@@ -1629,27 +1670,35 @@
         <details class="technical-details"><summary>查看技术详情</summary><pre id="pageMapResult"></pre></details>
       </article>
       <details class="technical-details reference-extra"><summary>查看任务技术详情</summary><pre id="runResult"></pre></details>
-      <div class="page-actions">
-        <button class="text-button" type="button" onclick="goToPage('exam')"><i class="fas fa-arrow-left"></i>上一步</button>
+      <div class="page-actions task-execution-actions">
+        <button class="text-button" type="button" onclick="goToPage('tasks')"><i class="fas fa-list-check"></i>返回任务列表</button>
         <button id="taskResultPageBtn" class="primary-button" type="button" onclick="goToPage('result'); taskFiles(); loadReview();">查看结果<i class="fas fa-arrow-right"></i></button>
       </div>
     </section>
 
     <section id="page-result" class="page">
-      <div class="page-title">
-        <div class="result-icon"><i class="fas fa-check"></i></div>
-        <h2>查看结果与交付</h2>
-        <p>最终验收后导出交付包；有存疑题目时在审查文档中统一查看。</p>
+      <div class="page-title result-page-title">
+        <div id="resultStateIcon" class="result-icon result-icon-neutral"><i class="fas fa-file-circle-question"></i></div>
+        <p class="task-page-eyebrow">真题解析 · 审阅与下载</p>
+        <h2 id="resultPageTitle">解析结果</h2>
+        <p id="resultPageSubtitle">选择一个已完成的任务后查看解析内容和交付文件。</p>
       </div>
-      <div class="metric-grid">
+      <section id="resultEmptyState" class="result-empty-state">
+        <span><i class="fas fa-inbox"></i></span>
+        <h3>还没有可查看的解析结果</h3>
+        <p>任务完成后，这里会直接展示题目解析、需要复核的内容和下载文件。</p>
+        <div class="action-row"><button class="primary-button" type="button" onclick="goToPage('tasks')">选择任务<i class="fas fa-arrow-right"></i></button></div>
+      </section>
+      <div id="resultContent" class="result-content hidden">
+      <div class="metric-grid result-summary-grid">
         <article><strong id="metricQuestionCount">--</strong><span>题目总数</span></article>
-        <article><strong id="metricCoveredCount">--</strong><span>成功覆盖</span></article>
-        <article><strong id="metricReviewCount">--</strong><span>存疑提示</span></article>
-        <article><strong id="metricFileCount">--</strong><span>生成文件</span></article>
+        <article><strong id="metricCoveredCount">--</strong><span>已完成题目</span></article>
+        <article><strong id="metricReviewCount">--</strong><span>需要复核</span></article>
+        <article><strong id="metricFileCount">--</strong><span>可用文件</span></article>
       </div>
-      <div class="tab-row result-tabs">
-        <button id="tab-result-analysis" class="tab-button active" type="button" onclick="switchResultTab('analysis')"><i class="fas fa-file-alt"></i>解析内容</button>
-        <button id="tab-result-review" class="tab-button" type="button" onclick="switchResultTab('review')"><i class="fas fa-clipboard-check"></i>质量审查报告</button>
+      <div class="tab-row result-tabs" role="tablist" aria-label="解析结果内容">
+        <button id="tab-result-analysis" class="tab-button active" role="tab" aria-selected="true" type="button" onclick="switchResultTab('analysis')"><i class="fas fa-file-alt"></i>解析内容</button>
+        <button id="tab-result-review" class="tab-button" role="tab" aria-selected="false" type="button" onclick="switchResultTab('review')"><i class="fas fa-clipboard-check"></i>需要复核</button>
       </div>
       <section id="result-analysis" class="result-panel">
         <aside class="question-nav-pane">
@@ -1660,8 +1709,8 @@
           <div id="resultQuestionDetail" class="question-detail-empty">任务完成后，这里会显示原题和解析内容。</div>
           <div class="result-download-strip">
             <div class="action-row primary-actions">
-              <button id="finalAcceptanceBtn" type="button">最终验收</button>
-              <button id="deliveryPackageBtn" type="button">导出交付包</button>
+              <button id="finalAcceptanceBtn" type="button">检查下载条件</button>
+              <button id="deliveryPackageBtn" type="button">下载解析结果</button>
             </div>
             <div id="finalAcceptanceSummary" class="result-card muted-card">最终验收状态会显示在这里。</div>
             <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查和审查报告。</div>
@@ -1704,8 +1753,9 @@
         </div>
       </details>
       <details class="technical-details reference-extra"><summary>查看复核技术详情</summary><pre id="reviewResult"></pre></details>
+      </div>
       <div class="page-actions">
-        <button class="text-button" type="button" onclick="goToPage('task')"><i class="fas fa-arrow-left"></i>返回执行页</button>
+        <button class="text-button" type="button" onclick="goToPage('tasks')"><i class="fas fa-arrow-left"></i>返回任务列表</button>
       </div>
     </section>
 
@@ -1717,6 +1767,7 @@
             <p>统一查看真题解析、模拟出题和格式审查任务</p>
           </div>
           <div class="task-create-actions">
+            <span>新建任务</span>
             <button class="outline-button" type="button" onclick="startWizard()"><i class="fas fa-book-open"></i>真题解析</button>
             <button class="outline-button" type="button" onclick="openPracticeEntry('exam')"><i class="fas fa-layer-group"></i>按题出题</button>
             <button class="outline-button" type="button" onclick="openWordFormatReviewer()"><i class="fas fa-file-alt"></i>格式审查</button>
@@ -1725,38 +1776,38 @@
         </div>
 
         <div class="task-stat-grid">
-          <article>
+          <button type="button" class="task-stat-card active" data-filter="all" onclick="filterTasks('all')">
             <div><strong id="taskStatTotal">0</strong><span>全部任务</span></div>
             <i class="fas fa-list"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="running" onclick="filterTasks('running')">
             <div><strong id="taskStatRunning">0</strong><span>进行中</span></div>
             <i class="fas fa-spinner"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="queued" onclick="filterTasks('queued')">
             <div><strong id="taskStatQueued">0</strong><span>排队中</span></div>
             <i class="fas fa-clock"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="needs_input" onclick="filterTasks('needs_input')">
             <div><strong id="taskStatNeedsInput">0</strong><span>待人工处理</span></div>
             <i class="fas fa-user-check"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="completed_with_issues" onclick="filterTasks('completed_with_issues')">
             <div><strong id="taskStatIssues">0</strong><span>完成有待处理项</span></div>
             <i class="fas fa-triangle-exclamation"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="failed" onclick="filterTasks('failed')">
             <div><strong id="taskStatFailed">0</strong><span>执行失败</span></div>
             <i class="fas fa-circle-exclamation"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="completed" onclick="filterTasks('completed')">
             <div><strong id="taskStatCompleted">0</strong><span>已完成</span></div>
             <i class="fas fa-check"></i>
-          </article>
-          <article>
+          </button>
+          <button type="button" class="task-stat-card" data-filter="cancelled" onclick="filterTasks('cancelled')">
             <div><strong id="taskStatCancelled">0</strong><span>已取消</span></div>
             <i class="fas fa-ban"></i>
-          </article>
+          </button>
         </div>
 
         <div id="taskFailedFeedbackBar" class="task-failed-feedback hidden" role="status">
@@ -1778,16 +1829,7 @@
         </div>
 
         <div class="task-filter-row">
-          <div class="task-filter-tabs">
-            <button class="task-filter-btn active" type="button" data-filter="all" onclick="filterTasks('all')">全部</button>
-            <button class="task-filter-btn" type="button" data-filter="running" onclick="filterTasks('running')">进行中</button>
-            <button class="task-filter-btn" type="button" data-filter="queued" onclick="filterTasks('queued')">排队中</button>
-            <button class="task-filter-btn" type="button" data-filter="needs_input" onclick="filterTasks('needs_input')">待人工处理</button>
-            <button class="task-filter-btn" type="button" data-filter="completed_with_issues" onclick="filterTasks('completed_with_issues')">有待处理项</button>
-            <button class="task-filter-btn" type="button" data-filter="completed" onclick="filterTasks('completed')">已完成</button>
-            <button class="task-filter-btn" type="button" data-filter="failed" onclick="filterTasks('failed')">失败</button>
-            <button class="task-filter-btn" type="button" data-filter="cancelled" onclick="filterTasks('cancelled')">已取消</button>
-          </div>
+          <span id="taskActiveFilterSummary" class="task-active-filter-summary">当前显示：全部任务</span>
           <label class="task-sort-control" title="切换任务列表排序方式">
             <i class="fas fa-sort-amount-down"></i>
             <span>排序</span>
@@ -1827,47 +1869,7 @@
           <h2><i class="fas fa-server"></i>运行监控</h2>
           <p>查看当前打开服务所在电脑的运行状态、最近服务日志和任务事件。</p>
         </div>
-        <article id="lanAccessPanel" class="lan-access-panel">
-          <div>
-            <span class="lan-access-icon"><i class="fas fa-network-wired"></i></span>
-            <div>
-              <h3>局域网监控入口</h3>
-              <p id="lanAccessHint">正在读取本机局域网访问地址……</p>
-            </div>
-          </div>
-          <div class="lan-access-values">
-            <label>
-              <span>访问地址</span>
-              <code id="lanAccessUrl">读取中</code>
-            </label>
-            <label>
-              <span>监控账号</span>
-              <code id="lanAccessUsername">monitor</code>
-            </label>
-            <label id="lanAccessPasswordRow">
-              <span>监控密码</span>
-              <code id="lanAccessPassword">仅本机显示</code>
-            </label>
-            <button id="copyLanAccessBtn" class="task-card-button blue-action" type="button">
-              <i class="far fa-copy"></i>复制访问信息
-            </button>
-          </div>
-        </article>
-        <article id="hybridExecutionPanel" class="execution-mode-panel local-mode">
-          <div class="execution-mode-copy">
-            <span class="execution-mode-icon"><i class="fas fa-laptop"></i></span>
-            <div>
-              <h3>真题解析执行位置</h3>
-              <p id="hybridExecutionHint">默认在当前电脑执行，任务材料不上传到混合云服务器。</p>
-            </div>
-          </div>
-          <label class="execution-mode-switch" for="hybridExecutionEnabled">
-            <span id="hybridExecutionLabel">本机执行（默认）</span>
-            <input id="hybridExecutionEnabled" type="checkbox" role="switch" aria-label="启用混合云服务器执行">
-            <i aria-hidden="true"></i>
-          </label>
-        </article>
-        <article class="system-monitor-panel">
+        <article class="system-monitor-panel" id="systemMonitorPanel">
           <div class="system-monitor-header">
             <div>
               <h3><i class="fas fa-server"></i>运行监控</h3>
@@ -1959,6 +1961,58 @@
             <p class="text-[13px] text-[var(--brand-muted-foreground)]">读取中……</p>
           </div>
         </article>
+        <details class="monitor-advanced-settings">
+          <summary>
+            <span class="monitor-advanced-settings__icon"><i class="fas fa-sliders"></i></span>
+            <span class="monitor-advanced-settings__copy">
+              <strong>高级运行设置</strong>
+              <small id="monitorAdvancedSummary">本机执行 · 正在读取局域网状态</small>
+            </span>
+            <i class="fas fa-chevron-down monitor-advanced-settings__chevron" aria-hidden="true"></i>
+          </summary>
+          <div class="monitor-advanced-settings__body">
+            <article id="lanAccessPanel" class="lan-access-panel">
+              <div>
+                <span class="lan-access-icon"><i class="fas fa-network-wired"></i></span>
+                <div>
+                  <h3>局域网监控入口</h3>
+                  <p id="lanAccessHint">正在读取本机局域网访问地址……</p>
+                </div>
+              </div>
+              <div class="lan-access-values">
+                <label>
+                  <span>访问地址</span>
+                  <code id="lanAccessUrl">读取中</code>
+                </label>
+                <label>
+                  <span>监控账号</span>
+                  <code id="lanAccessUsername">monitor</code>
+                </label>
+                <label id="lanAccessPasswordRow">
+                  <span>监控密码</span>
+                  <code id="lanAccessPassword">仅本机显示</code>
+                </label>
+                <button id="copyLanAccessBtn" class="task-card-button blue-action" type="button">
+                  <i class="far fa-copy"></i>复制访问信息
+                </button>
+              </div>
+            </article>
+            <article id="hybridExecutionPanel" class="execution-mode-panel local-mode">
+              <div class="execution-mode-copy">
+                <span class="execution-mode-icon"><i class="fas fa-laptop"></i></span>
+                <div>
+                  <h3>真题解析执行位置</h3>
+                  <p id="hybridExecutionHint">默认在当前电脑执行，任务材料不上传到混合云服务器。</p>
+                </div>
+              </div>
+              <label class="execution-mode-switch" for="hybridExecutionEnabled">
+                <span id="hybridExecutionLabel">本机执行（默认）</span>
+                <input id="hybridExecutionEnabled" type="checkbox" role="switch" aria-label="启用混合云服务器执行">
+                <i aria-hidden="true"></i>
+              </label>
+            </article>
+          </div>
+        </details>
       </div>
     </section>
   </main>
@@ -2075,7 +2129,7 @@
       </footer>
     </section>
   </div>
-  <link rel="stylesheet" href="/platform-theme.css?v=20260826-flow-ui-4">
+    <link rel="stylesheet" href="/platform-theme.css?v=20260828-design-flow-4">
   <script src="/vendor/gsap.min.js"></script>
   <script src="/motion.js?v=20260823-motion-pilot-1"></script>
   <script src="/support-telemetry.js"></script>
@@ -2083,6 +2137,6 @@
   <script src="/task-contract-ui.js"></script>
   <script src="/upload-file-selection.js"></script>
   <script src="/update-notes.js?v=20260826-update-dialog-1"></script>
-  <script src="/app.js?v=20260826-flow-ui-4"></script>
+    <script src="/app.js?v=20260828-design-flow-4"></script>
 </body>
 </html>

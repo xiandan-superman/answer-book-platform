@@ -13,6 +13,34 @@ def test_practice_formula_renderer_strips_provider_delimiters_before_wrapping() 
     assert "escapeHtml(formula.latex)}\\\\]" not in APP_JS
 
 
+def test_practice_result_renderer_recovers_bare_boldsymbol_commands() -> None:
+    assert "function normalizeBarePracticeLatexCommands" in APP_JS
+    assert "normalizeStandaloneMathLines(normalizeBarePracticeLatexCommands(value))" in APP_JS
+    assert 'load: ["[tex]/boldsymbol"]' in APP_JS
+    assert 'packages: { "[+]": ["boldsymbol"] }' in APP_JS
+
+
+def test_practice_results_offer_direct_full_export_and_selected_export() -> None:
+    assert 'id="practiceDownloadAllBtn"' in INDEX_HTML
+    assert 'id="practiceDownloadSelectedBtn"' in INDEX_HTML
+    assert "function exportablePracticeSet()" in APP_JS
+    assert '$("practiceDownloadAllBtn")?.addEventListener("click"' in APP_JS
+
+
+def test_storage_preview_is_compact_without_narrowing_full_cleanup_scope() -> None:
+    assert "const STORAGE_ENTRY_PREVIEW_LIMIT = 8;" in APP_JS
+    assert "const storageExpandedKinds = new Set();" in APP_JS
+    assert 'data.storageExpandKind = area.kind' not in APP_JS
+    assert "toggle.dataset.storageExpandKind = area.kind;" in APP_JS
+    assert "for (const area of storageOverviewData?.areas || [])" in APP_JS
+
+
+def test_api_configuration_links_directly_to_each_model_context() -> None:
+    assert 'onclick="startWizard()"' in INDEX_HTML
+    assert 'onclick="goToPage(\'practice-models\')"' in INDEX_HTML
+    assert 'onclick="goToPage(\'knowledge-models\')"' in INDEX_HTML
+
+
 def test_font_icon_compatibility_has_supported_fallbacks() -> None:
     icon_compat = (ROOT / "web" / "icon-compat.js").read_text(encoding="utf-8")
 
@@ -172,7 +200,7 @@ def test_unconfigured_optional_image_fallback_does_not_block_exam_creation() -> 
 
 
 def test_api_key_password_fields_belong_to_non_submitting_forms() -> None:
-    assert '<form class="key-provider-card" data-key-provider=' in APP_JS
+    assert '<form class="key-provider-card${expanded ? " expanded" : ""}" data-key-provider=' in APP_JS
     assert 'grid.querySelectorAll("form[data-key-provider]")' in APP_JS
     assert 'event.preventDefault()' in APP_JS
 
@@ -640,6 +668,86 @@ def test_saved_api_key_cards_render_as_configured_instead_of_waiting_for_test() 
     assert '${cfg.api_key_set ? "已配置" : "等待测试"}' in key_cards
     assert "已保存，可直接使用；如需替换，请输入新 Key 并重新测试。" in key_cards
     assert '<div class="key-provider-status idle" data-key-status><strong>等待测试</strong>' not in key_cards
+
+
+def test_api_key_platforms_use_single_card_progressive_disclosure() -> None:
+    key_cards_start = APP_JS.index("function renderKeyProviderCards()")
+    key_cards_end = APP_JS.index("async function recoverDamagedApiConfiguration", key_cards_start)
+    key_cards = APP_JS[key_cards_start:key_cards_end]
+
+    assert 'data-key-card-toggle="${escapeHtml(name)}"' in key_cards
+    assert 'class="key-provider-details${expanded ? "" : " hidden"}"' in key_cards
+    assert 'expandedKeyProviderName = shouldExpand ? selectedName : "";' in key_cards
+    assert 'aria-expanded="${expanded ? "true" : "false"}"' in key_cards
+
+
+def test_monitor_prioritizes_health_and_collapses_infrequent_settings() -> None:
+    monitor_start = INDEX_HTML.index('<section id="page-monitor"')
+    monitor_end = INDEX_HTML.index('</main>', monitor_start)
+    monitor = INDEX_HTML[monitor_start:monitor_end]
+
+    assert 'id="systemMonitorPanel"' in monitor
+    assert '<details class="monitor-advanced-settings">' in monitor
+    assert 'id="monitorAdvancedSummary"' in monitor
+    assert monitor.index('id="systemMonitorPanel"') < monitor.index('id="storagePanel"')
+    assert monitor.index('id="storagePanel"') < monitor.index('<details class="monitor-advanced-settings">')
+    assert "function syncMonitorAdvancedSummary()" in APP_JS
+    assert "#page-monitor #systemMonitorPanel { order: 1; }" in PLATFORM_THEME_CSS
+    assert "#page-monitor .monitor-advanced-settings { order: 3; }" in PLATFORM_THEME_CSS
+
+
+def test_practice_question_actions_have_visible_labels() -> None:
+    assert '<span>反馈</span>' in APP_JS
+    assert '<span>编辑</span>' in APP_JS
+    assert '"重新生成"}</span>' in APP_JS
+    assert "practice-question-action--primary" in APP_JS
+
+
+def test_exam_material_selection_uses_one_flow_and_searchable_bounded_library() -> None:
+    exam_start = INDEX_HTML.index('<section id="page-exam"')
+    exam_end = INDEX_HTML.index('<section id="page-task"', exam_start)
+    exam = INDEX_HTML[exam_start:exam_end]
+
+    assert 'class="task-flow-strip"' not in exam
+    assert 'id="examLibrarySearch"' in exam
+    assert 'id="examLibraryToggle"' in exam
+    assert "const EXAM_LIBRARY_PREVIEW_LIMIT = 8;" in APP_JS
+    assert "function applyExamLibraryFilters()" in APP_JS
+    assert 'class="exam-card-select"' in APP_JS
+    assert '#page-exam .task-primary-actions,' in PLATFORM_THEME_CSS
+
+
+def test_task_statistics_are_the_only_status_filter_and_secondary_actions_collapse() -> None:
+    tasks_start = INDEX_HTML.index('<section id="page-tasks"')
+    tasks_end = INDEX_HTML.index('<section id="page-monitor"', tasks_start)
+    tasks = INDEX_HTML[tasks_start:tasks_end]
+
+    assert 'class="task-stat-card active" data-filter="all"' in tasks
+    assert 'class="task-filter-tabs"' not in tasks
+    assert 'id="taskActiveFilterSummary"' in tasks
+    assert 'class="task-card-more"' in APP_JS
+    assert 'bounded.slice(0, 1)' in APP_JS
+
+
+def test_practice_secondary_result_context_is_collapsed_behind_one_summary() -> None:
+    assert 'id="practiceResultTools" class="practice-result-tools"' in INDEX_HTML
+    assert "任务概况与筛选" in INDEX_HTML
+    assert '$("practiceResultTools").open = false' in APP_JS
+
+
+def test_environment_distinguishes_network_configuration_and_actual_model_call() -> None:
+    assert 'id="modelConfigCheckIcon"' in INDEX_HTML
+    assert 'id="modelCallCheckIcon"' in INDEX_HTML
+    assert 'id="testExamModelRoutesBtn"' in INDEX_HTML
+    assert "async function testExamModelRoutes()" in APP_JS
+    assert 'api("/api/provider-test"' in APP_JS
+    assert 'rememberModelConnectionTest(route.provider' in APP_JS
+
+
+def test_desktop_focus_and_secondary_text_contrast_have_shared_guards() -> None:
+    assert ':where(button, input, select, summary, [tabindex]):focus-visible' in PLATFORM_THEME_CSS
+    assert "outline: 3px solid rgba(37, 99, 235, .42) !important;" in PLATFORM_THEME_CSS
+    assert "color: #52617a;" in PLATFORM_THEME_CSS
 
 
 def test_practice_requests_include_the_configured_image_route() -> None:

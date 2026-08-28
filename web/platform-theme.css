@@ -3448,6 +3448,133 @@ input[type="number"]::-webkit-outer-spin-button {
   }
 }
 
+/* 2026-08 desktop task-flow follow-up: keep decisions visible without
+   allowing a global floating bar to cover the review content. */
+#page-practice:has(#practiceScopeDrawer:not(.hidden)),
+#page-practice:has(#practicePlanReview:not(.hidden)) {
+  padding-bottom: 0;
+}
+
+#page-practice:has(#practiceScopeDrawer:not(.hidden)) .practice-workflow-actions,
+#page-practice:has(#practicePlanReview:not(.hidden)) .practice-workflow-actions {
+  position: static;
+  margin: 14px auto 0;
+  padding: 0 24px 20px;
+}
+
+#page-practice:has(#practiceScopeDrawer:not(.hidden)) .practice-workflow-actions__inner,
+#page-practice:has(#practicePlanReview:not(.hidden)) .practice-workflow-actions__inner {
+  margin-inline: auto;
+}
+
+#page-practice .practice-scope-config-disclosure {
+  padding: 0;
+  overflow: hidden;
+}
+
+#page-practice .practice-scope-config-disclosure > summary {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+#page-practice .practice-scope-config-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+#page-practice .practice-scope-config-disclosure > summary > span {
+  display: grid;
+  gap: 3px;
+}
+
+#page-practice .practice-scope-config-disclosure > summary strong {
+  color: #334155;
+  font-size: 14px;
+}
+
+#page-practice .practice-scope-config-disclosure > summary small {
+  color: #718096;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#page-practice .practice-scope-config-disclosure > summary > i {
+  color: #64748b;
+  transition: transform .18s ease;
+}
+
+#page-practice .practice-scope-config-disclosure[open] > summary > i {
+  transform: rotate(180deg);
+}
+
+#page-practice .practice-scope-config__body {
+  border-top: 1px solid var(--brand-border);
+  padding: 12px 14px 14px;
+}
+
+#page-practice #practiceTrainingGoal {
+  max-width: 720px;
+  color: #26364f;
+  font-size: 17px !important;
+  line-height: 1.5 !important;
+}
+
+#page-practice #practiceDownloadAllBtn {
+  min-width: 154px;
+  border: 1px solid #274da9;
+  background: linear-gradient(135deg, #1e3a8a, #2d4ba8);
+  color: #fff;
+}
+
+#page-practice #practiceDownloadAllBtn:disabled {
+  border-color: #cbd7ec;
+  background: #e8eef8;
+  color: #71809a;
+  box-shadow: none;
+}
+
+.key-model-destinations {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.key-model-destinations > span {
+  margin-right: 2px;
+  color: var(--brand-muted-foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.storage-area-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 7px;
+  border: 1px dashed rgba(102, 128, 168, .38);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .72);
+  color: #4b6387;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.storage-area-toggle:hover {
+  border-color: rgba(49, 88, 153, .55);
+  background: #edf4ff;
+  color: #2457a7;
+}
+
 @media (max-width: 720px) {
   #page-practice > main {
     width: min(calc(100% - 20px), 680px);
@@ -4275,6 +4402,190 @@ body[data-active-page="practice"] .app-shell {
   padding: 12px 14px;
   position: relative;
 }
+
+/* ===== Task flow clarity refresh ===== */
+.reference-extra { display: none !important; }
+
+.task-page-title { text-align: center; }
+.task-page-title.inline-title { text-align: left; }
+.task-page-eyebrow {
+  margin: 0 0 7px;
+  color: #315fbd !important;
+  font-size: 12px !important;
+  font-weight: 800;
+  letter-spacing: .06em;
+  line-height: 1.3 !important;
+  text-transform: uppercase;
+}
+
+.task-flow-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: -8px 0 20px;
+  padding: 0;
+  list-style: none;
+}
+.task-flow-strip li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #eef2f7;
+  color: #6a778c;
+  font-size: 12px;
+  font-weight: 750;
+}
+.task-flow-strip li b {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: #fff;
+  color: #68778e;
+}
+.task-flow-strip li.is-active { background: #eaf2ff; color: #2454aa; }
+.task-flow-strip li.is-active b { background: #315fbd; color: #fff; }
+
+.material-readiness {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  border: 1px solid #dce4f0;
+  border-radius: 14px;
+  padding: 13px 15px;
+  background: #f8fafc;
+}
+.material-readiness-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: #e7edf6;
+  color: #60718a;
+}
+.material-readiness strong { color: #26364f; font-size: 14px; }
+.material-readiness p { margin-top: 2px; color: #637189; font-size: 13px; line-height: 1.45; }
+.material-readiness.is-ready { border-color: #b7e4cf; background: #f0fbf6; }
+.material-readiness.is-ready .material-readiness-icon { background: #d9f4e7; color: #16805a; }
+.material-readiness.is-ready strong,
+.material-readiness.is-ready p { color: #226e55; }
+
+#page-exam .material-selection-summary {
+  margin-bottom: 14px;
+  border: 0;
+  border-radius: 12px;
+  background: #edf3ff;
+  color: #385888;
+  font-size: 13px;
+}
+#page-exam .material-step-card { margin-bottom: 14px; border-color: #e1e7f0; box-shadow: 0 8px 24px rgba(38, 62, 103, .055); }
+#page-exam .material-step-number {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border-radius: 9px;
+  background: #315fbd;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+#page-exam .task-textbook-head > div:first-child { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; }
+#page-exam .task-textbook-head h3 { grid-column: 2; align-self: center; margin: 0; }
+#page-exam .task-textbook-head p { grid-column: 2; margin-top: 4px; }
+.material-step-heading { display: flex; align-items: flex-start; gap: 10px; }
+.material-step-heading h3 { margin: 2px 0 3px; }
+.material-step-heading p { font-size: 13px; }
+.material-source-tabs { margin: 16px 0 12px; border-bottom: 1px solid #e8edf4; }
+.material-source-panel { min-height: 112px; }
+.task-primary-actions { justify-content: space-between; }
+
+#page-task .task-grid { grid-template-columns: minmax(280px, .82fr) minmax(0, 1.18fr); align-items: start; }
+#page-task .progress-card { border: 1px solid #dce6f4; background: linear-gradient(135deg, #f7faff, #fff); box-shadow: 0 10px 28px rgba(50, 75, 116, .07); }
+#page-task .task-step-item.idle { color: #8995a7; background: #f7f8fa; }
+#page-task .task-step-item.idle .task-step-index { background: #edf0f4; color: #7b8798; }
+#page-task .task-execution-actions { justify-content: space-between; }
+
+.result-page-title { text-align: center; }
+.result-icon-neutral { background: #edf1f6; color: #718097; }
+.result-icon-loading { background: #eaf2ff; color: #315fbd; }
+.result-icon-complete { background: #dcfce7; color: #22a45a; }
+.result-icon-warning { background: #fff2d9; color: #c87811; }
+.result-empty-state {
+  display: grid;
+  min-height: 360px;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  border: 1px solid #e1e7ef;
+  border-radius: 18px;
+  background: #fff;
+  padding: 40px 24px;
+  text-align: center;
+  box-shadow: 0 8px 26px rgba(38, 62, 103, .055);
+}
+.result-empty-state > span { display: grid; width: 54px; height: 54px; place-items: center; border-radius: 16px; background: #edf2f8; color: #708099; font-size: 21px; }
+.result-empty-state h3 { margin: 5px 0 0; color: #26364f; font-size: 18px; }
+.result-empty-state p { max-width: 520px; color: #65738a; font-size: 14px; }
+.result-empty-state .action-row { margin-top: 9px; }
+.result-content { display: grid; gap: 0; }
+.result-summary-grid article { border: 1px solid #e8edf4; box-shadow: none; }
+
+@media (max-width: 820px) {
+  .task-flow-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #page-task .task-grid { grid-template-columns: 1fr; }
+  #page-knowledge .knowledge-workflow-overview ol {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    overflow: visible;
+  }
+  #page-knowledge .knowledge-workflow-overview li {
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+  #page-knowledge .knowledge-workflow-overview li:not(:last-child)::after { display: none; }
+  #page-practice .stage-bar {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+  #page-practice .stage-arrow { display: none; }
+  #page-practice .stage-step {
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 2px;
+    white-space: normal;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.2;
+  }
+}
+
+@media (max-width: 640px) {
+  .task-page-title.inline-title { align-items: flex-start; justify-content: flex-start; }
+  .task-flow-strip li { padding: 8px; font-size: 11px; }
+  #page-exam .task-textbook-head { flex-direction: column; }
+  #page-exam .task-textbook-head > button { width: 100%; }
+  .task-primary-actions,
+  #page-task .task-execution-actions { align-items: stretch; flex-direction: column-reverse; }
+  .task-primary-actions button,
+  #page-task .task-execution-actions button { width: 100%; }
+  .result-empty-state { min-height: 300px; }
+}
 .practice-blueprint-toggle > span { display: grid; gap: 3px; }
 .practice-blueprint-toggle strong { color: var(--brand-foreground); font-size: 14px; }
 .practice-blueprint-toggle small { color: var(--brand-muted-foreground); font-size: 12px; line-height: 1.5; }
@@ -5078,4 +5389,668 @@ body[data-active-page="practice"] .app-shell {
     grid-column: 1 / -1;
     grid-row: 2;
   }
+}
+
+/* Keep the five-stage workflow readable as one complete sequence on narrow screens. */
+@media (max-width: 820px) {
+  #page-practice .practice-inline-flow .stage-bar {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  #page-practice .practice-inline-flow .stage-step,
+  #page-practice .practice-inline-flow .stage-step:last-of-type {
+    grid-column: auto;
+    padding: 6px 2px;
+    white-space: normal;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.2;
+  }
+}
+
+/* ===== Focused entry and task-history density ===== */
+#page-knowledge .knowledge-generation-page {
+  max-width: 1560px;
+}
+
+#page-knowledge .knowledge-title {
+  min-height: 0;
+  padding: 22px 28px;
+}
+
+#page-knowledge .knowledge-title-icon {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+  border-radius: 12px;
+  font-size: 18px;
+}
+
+#page-knowledge .knowledge-title h2 {
+  font-size: clamp(28px, 2.2vw, 36px);
+}
+
+#page-knowledge .knowledge-workflow-overview {
+  grid-template-columns: minmax(180px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 9px 24px;
+  margin: 12px 0;
+  padding: 13px 17px;
+}
+
+#page-knowledge .knowledge-workflow-overview > div {
+  grid-column: 1;
+  white-space: nowrap;
+}
+
+#page-knowledge .knowledge-workflow-overview > div span {
+  display: none;
+}
+
+#page-knowledge .knowledge-workflow-overview ol {
+  grid-column: 2;
+}
+
+#page-knowledge .knowledge-workflow-overview p {
+  grid-column: 1 / -1;
+  font-size: 13px;
+}
+
+#page-knowledge .knowledge-mode-guide-details {
+  margin-bottom: 12px;
+}
+
+#page-knowledge .knowledge-input-card,
+#page-knowledge .knowledge-config-card {
+  padding: 18px;
+}
+
+#page-knowledge #knowledgeTextInput {
+  min-height: 190px;
+}
+
+#page-knowledge .knowledge-file-drop {
+  padding: 14px;
+}
+
+#page-knowledge .knowledge-workflow-actions {
+  position: static;
+  margin-top: 2px;
+  padding: 11px 13px;
+  box-shadow: 0 10px 28px rgba(38, 61, 100, .1);
+}
+
+#page-knowledge .knowledge-form {
+  padding-bottom: 0;
+}
+
+#page-tasks .task-manager-terminal {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, auto);
+  gap: 7px 16px;
+  padding-top: 14px;
+  padding-bottom: 13px;
+}
+
+#page-tasks .task-manager-terminal .task-manager-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  font-size: 16px;
+}
+
+#page-tasks .task-manager-terminal .task-manager-main {
+  gap: 12px;
+}
+
+#page-tasks .task-manager-terminal .task-manager-copy h3 {
+  font-size: 15px;
+  -webkit-line-clamp: 1;
+}
+
+#page-tasks .task-manager-terminal .task-manager-copy p {
+  margin-top: 2px;
+  -webkit-line-clamp: 1;
+}
+
+#page-tasks .task-manager-terminal .task-manager-meta {
+  gap: 8px;
+  margin-top: 5px;
+}
+
+#page-tasks .task-manager-terminal .task-manager-progress {
+  display: block;
+  margin-top: 0;
+}
+
+#page-tasks .task-manager-terminal .task-manager-progress > div:first-child,
+#page-tasks .task-manager-terminal .manager-progress-track {
+  display: none;
+}
+
+#page-tasks .task-manager-terminal .task-manager-progress > p {
+  margin: 0 0 0 50px;
+  color: #7a8799;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  -webkit-line-clamp: 1;
+}
+
+@media (max-width: 1180px) {
+  #page-knowledge .knowledge-workflow-overview {
+    grid-template-columns: 1fr;
+  }
+
+  #page-knowledge .knowledge-workflow-overview > div,
+  #page-knowledge .knowledge-workflow-overview ol,
+  #page-knowledge .knowledge-workflow-overview p {
+    grid-column: 1;
+  }
+}
+
+/* Final desktop overrides. These must remain after the base floating-task-bar
+   rules above so review actions participate in document flow. */
+#page-practice:has(#practiceScopeDrawer:not(.hidden)),
+#page-practice:has(#practicePlanReview:not(.hidden)) {
+  padding-bottom: 0;
+}
+
+#page-practice:has(#practiceScopeDrawer:not(.hidden)) .practice-workflow-actions,
+#page-practice:has(#practicePlanReview:not(.hidden)) .practice-workflow-actions {
+  position: static;
+  inset: auto;
+  margin: 14px auto 0;
+  padding: 0 24px 20px;
+  pointer-events: auto;
+}
+
+#page-practice:has(#practiceScopeDrawer:not(.hidden)) .practice-workflow-actions__inner,
+#page-practice:has(#practicePlanReview:not(.hidden)) .practice-workflow-actions__inner {
+  margin-inline: auto;
+}
+
+#page-monitor .storage-area-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 7px;
+  border: 1px dashed rgba(102, 128, 168, .38);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, .72);
+  box-shadow: none;
+  color: #4b6387;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+#page-monitor .storage-area-toggle:hover {
+  border-color: rgba(49, 88, 153, .55);
+  background: #edf4ff;
+  color: #2457a7;
+}
+
+/* Desktop information hierarchy: primary health first, infrequent controls last. */
+#page-monitor .monitor-page-title { order: 0; }
+#page-monitor #systemMonitorPanel { order: 1; }
+#page-monitor #storagePanel { order: 2; }
+#page-monitor .monitor-advanced-settings { order: 3; }
+
+#page-monitor .monitor-advanced-settings {
+  overflow: hidden;
+  border: 1px solid rgba(133, 157, 194, .3);
+  border-radius: 16px;
+  background: rgba(249, 251, 255, .84);
+  box-shadow: 0 10px 28px rgba(38, 61, 100, .06);
+}
+
+#page-monitor .monitor-advanced-settings > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 70px;
+  padding: 12px 18px;
+  color: #253b5c;
+  cursor: pointer;
+  list-style: none;
+}
+
+#page-monitor .monitor-advanced-settings > summary::-webkit-details-marker { display: none; }
+
+#page-monitor .monitor-advanced-settings > summary:hover {
+  background: rgba(237, 244, 255, .72);
+}
+
+#page-monitor .monitor-advanced-settings__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 10px;
+  background: #eaf1ff;
+  color: #2457a7;
+}
+
+#page-monitor .monitor-advanced-settings__copy {
+  display: grid;
+  gap: 3px;
+}
+
+#page-monitor .monitor-advanced-settings__copy strong { font-size: 14px; }
+#page-monitor .monitor-advanced-settings__copy small { color: #70819a; font-size: 12px; }
+
+#page-monitor .monitor-advanced-settings__chevron {
+  color: #7b8ca6;
+  transition: transform .2s ease;
+}
+
+#page-monitor .monitor-advanced-settings[open] .monitor-advanced-settings__chevron { transform: rotate(180deg); }
+
+#page-monitor .monitor-advanced-settings__body {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid rgba(133, 157, 194, .22);
+  padding: 14px;
+}
+
+#page-monitor .monitor-advanced-settings__body > article { margin: 0; }
+
+/* API platforms are summaries first; only the platform being edited expands. */
+#page-keys .key-provider-grid {
+  align-items: start;
+  gap: 12px;
+}
+
+#page-keys .key-provider-card {
+  overflow: hidden;
+  padding: 0;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+#page-keys .key-provider-card:hover {
+  border-color: rgba(70, 105, 163, .38);
+  box-shadow: 0 12px 30px rgba(38, 61, 100, .09);
+  transform: none;
+}
+
+#page-keys .key-provider-card.expanded {
+  border-color: rgba(56, 99, 171, .45);
+  box-shadow: 0 16px 36px rgba(38, 61, 100, .11);
+}
+
+#page-keys .key-provider-card > header {
+  display: block;
+  margin: 0;
+}
+
+#page-keys .key-provider-summary {
+  display: grid;
+  width: 100%;
+  min-height: 76px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  padding: 12px 16px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#page-keys .key-provider-summary:hover { background: rgba(239, 245, 255, .72); }
+
+#page-keys .key-provider-summary__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+#page-keys .key-provider-summary__copy strong {
+  overflow: hidden;
+  color: #223957;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#page-keys .key-provider-summary__copy small {
+  overflow: hidden;
+  color: #718096;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#page-keys .key-provider-summary__chevron {
+  color: #7b8ca6;
+  transition: transform .2s ease;
+}
+
+#page-keys .key-provider-card.expanded .key-provider-summary__chevron { transform: rotate(180deg); }
+
+#page-keys .key-provider-details {
+  border-top: 1px solid rgba(133, 157, 194, .2);
+  padding: 16px;
+}
+
+#page-keys .key-provider-details > label {
+  display: block;
+  margin-bottom: 7px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Question-level actions stay recognizable without relying on icon memory. */
+#page-practice .practice-exercise__actions > .practice-question-action {
+  display: inline-flex !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  gap: 6px !important;
+  border-radius: 9px !important;
+  padding: 0 10px !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+}
+
+#page-practice .practice-exercise__actions > .practice-question-action--primary {
+  border-color: rgba(49, 101, 184, .28) !important;
+  background: #edf4ff !important;
+  color: #2457a7 !important;
+}
+
+#page-practice .practice-exercise__select {
+  flex-basis: 36px;
+  width: 36px;
+  height: 36px;
+}
+
+/* Material selection: one workflow, searchable recent files, no covered content. */
+#page-exam .task-primary-actions,
+#page-env .sticky-page-actions {
+  position: static;
+  inset: auto;
+  width: auto;
+  margin-top: 18px;
+  transform: none;
+}
+
+#page-env > .reference-narrow { padding-bottom: 0; }
+
+#page-exam .exam-library-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 12px 0;
+}
+
+#page-exam .exam-library-tools label {
+  display: flex;
+  min-width: min(420px, 60%);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgba(130, 153, 189, .34);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: #fff;
+  color: #61718a;
+}
+
+#page-exam .exam-library-tools input {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#page-exam #examLibrarySummary {
+  color: #52617a;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+#page-exam .exam-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  overflow: hidden;
+  padding: 0;
+}
+
+#page-exam .exam-card-select {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  padding: 13px 14px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#page-exam .exam-card > .library-delete-icon {
+  position: static;
+  display: grid;
+  width: 42px;
+  height: auto;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid rgba(139, 159, 190, .2);
+  border-radius: 0;
+  background: rgba(248, 250, 253, .72);
+  color: #7b879b;
+}
+
+#page-exam .exam-card > .library-delete-icon:hover {
+  background: #fff1f2;
+  color: #b42335;
+}
+
+#page-exam .exam-library-toggle {
+  width: 100%;
+  min-height: 40px;
+  justify-content: center;
+  margin-top: 10px;
+  border-style: dashed;
+}
+
+/* Task manager: statistics are the single status filter. */
+#page-tasks .task-create-actions > span {
+  align-self: center;
+  margin-right: 2px;
+  color: #61718a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#page-tasks .task-stat-grid > .task-stat-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  border-right: 1px solid rgba(128, 151, 188, .22);
+  border-radius: 0;
+  padding: 16px 20px;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transform: none;
+}
+
+#page-tasks .task-stat-grid > .task-stat-card:last-child { border-right: 0; }
+
+#page-tasks .task-stat-grid > .task-stat-card:hover,
+#page-tasks .task-stat-grid > .task-stat-card.active {
+  background: #edf4ff;
+  box-shadow: inset 0 -3px 0 #315fbd;
+  transform: none;
+}
+
+#page-tasks .task-stat-card strong {
+  display: block;
+  color: #223957;
+  font-size: 25px;
+  line-height: 1;
+}
+
+#page-tasks .task-stat-card span {
+  display: block;
+  margin-top: 7px;
+  color: #5d6d84;
+  font-size: 12px;
+}
+
+#page-tasks .task-stat-card > i { color: #6b7c96; }
+
+#page-tasks .task-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+}
+
+#page-tasks .task-active-filter-summary {
+  padding-left: 8px;
+  color: #354863;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#page-tasks .task-card-more {
+  position: relative;
+}
+
+#page-tasks .task-card-more > summary {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(126, 151, 191, .34);
+  border-radius: 9px;
+  padding: 0 10px;
+  background: #fff;
+  color: #526783;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+#page-tasks .task-card-more > summary::-webkit-details-marker { display: none; }
+
+#page-tasks .task-card-more > div {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 180px;
+  gap: 5px;
+  border: 1px solid rgba(126, 151, 191, .3);
+  border-radius: 11px;
+  padding: 7px;
+  background: #fff;
+  box-shadow: 0 16px 38px rgba(31, 50, 82, .18);
+}
+
+#page-tasks .task-card-more > div .task-card-button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+/* Results: keep quality warnings visible and collapse secondary context. */
+#page-practice .practice-result-tools {
+  overflow: hidden;
+  border: 1px solid rgba(133, 157, 194, .3);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .74);
+}
+
+#page-practice .practice-result-tools > summary {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  color: #304765;
+  cursor: pointer;
+  list-style: none;
+}
+
+#page-practice .practice-result-tools > summary::-webkit-details-marker { display: none; }
+
+#page-practice .practice-result-tools > summary > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+#page-practice .practice-result-tools > summary small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#page-practice .practice-result-tools > summary > i { transition: transform .2s ease; }
+#page-practice .practice-result-tools[open] > summary > i { transform: rotate(180deg); }
+
+#page-practice .practice-result-tools__body {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid rgba(133, 157, 194, .22);
+  padding: 12px;
+}
+
+#page-practice .practice-result-tools__body .practice-result-context { margin: 0; }
+
+/* Environment status and model-call evidence. */
+#page-env .exam-model-test-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(134, 156, 192, .22);
+  padding-top: 12px;
+}
+
+#page-env .exam-model-test-row > span {
+  color: #52617a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#page-env .exam-model-test-row button { flex: 0 0 auto; }
+
+/* Shared desktop accessibility polish. */
+:where(button, input, select, summary, [tabindex]):focus-visible {
+  outline: 3px solid rgba(37, 99, 235, .42) !important;
+  outline-offset: 2px !important;
+}
+
+:where(.text-\[11px\], .text-\[12px\], small, .safe-note, .task-manager-meta, .key-test-model) {
+  color: #52617a;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  opacity: .58;
 }

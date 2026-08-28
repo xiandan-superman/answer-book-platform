@@ -29,7 +29,7 @@ def _wait_for_draft(page, mode: str) -> None:
     )
 
 
-def test_legacy_draft_restore_finishes_before_new_selection_and_keeps_identity() -> None:
+def test_legacy_draft_explicit_restore_finishes_before_new_selection_and_keeps_identity() -> None:
     base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
     if not base_url:
         pytest.skip("set ANSWER_BOOK_E2E_URL to an already running local platform")
@@ -55,9 +55,12 @@ def test_legacy_draft_restore_finishes_before_new_selection_and_keeps_identity()
             })"""
         )
 
+        page.evaluate("openPracticeEntry('exam')")
+        page.locator("#practiceWorkspaceDraftNotice:not(.hidden)").wait_for()
+        page.locator("#practiceWorkspaceDraftRestorePrevious").click()
+        _wait_for_count(page, "practiceSourceFiles", 1)
         result = page.evaluate(
             """async () => {
-              openPracticeEntry('exam');
               return readPracticeFiles([new File(['legacy'], '重新选择.txt', {type: 'text/plain'})]);
             }"""
         )
@@ -72,6 +75,8 @@ def test_legacy_draft_restore_finishes_before_new_selection_and_keeps_identity()
         page.reload(wait_until="networkidle")
         page.evaluate("openPracticeEntry('exam')")
         page.locator("#practiceWorkspaceDraftNotice:not(.hidden)").wait_for()
+        page.locator("#practiceWorkspaceDraftRestorePrevious").click()
+        _wait_for_count(page, "practiceSourceFiles", 1)
         assert page.evaluate("practiceSourceFiles[0].upload_item_id") == restored["upload_item_id"]
         browser.close()
 
@@ -217,6 +222,9 @@ def test_atomic_selection_deduplication_restore_and_final_request_body() -> None
         page.reload(wait_until="networkidle")
         page.evaluate("openPracticeEntry('exam')")
         page.locator("#practiceWorkspaceDraftNotice:not(.hidden)").wait_for()
+        assert page.evaluate("practiceSourceFiles.length") == 0
+        page.locator("#practiceWorkspaceDraftRestorePrevious").click()
+        _wait_for_count(page, "practiceSourceFiles", len(before_reload))
         assert page.evaluate("structuredClone(practiceSourceFiles)") == before_reload
         page.locator("#practiceFile").set_input_files(_file("刷新后重复.txt", b"first"))
         page.locator("#practiceError").wait_for(state="visible")
@@ -290,6 +298,9 @@ def test_atomic_selection_deduplication_restore_and_final_request_body() -> None
         page.reload(wait_until="networkidle")
         page.evaluate("openKnowledgeEntry()")
         page.locator("#knowledgeWorkspaceDraftNotice:not(.hidden)").wait_for()
+        assert page.evaluate("knowledgeSourceFiles.length") == 0
+        page.locator("#knowledgeWorkspaceDraftRestorePrevious").click()
+        _wait_for_count(page, "knowledgeSourceFiles", len(knowledge_before_reload))
         assert page.evaluate("structuredClone(knowledgeSourceFiles)") == knowledge_before_reload
 
         page.evaluate(
