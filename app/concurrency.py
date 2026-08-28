@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import random
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
-from typing import Callable, Iterable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar
 
-from .runtime_capacity import model_request_max_concurrency
+from .provider_errors import classify_provider_error
+from .runtime_capacity import (
+    bigmodel_rate_limit_backoff,
+    model_request_max_concurrency,
+    provider_request_max_concurrency,
+)
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -35,6 +42,9 @@ class _FairProviderGate:
         self._active = 0
         self._queues: dict[str, deque[object]] = {}
         self._owners: deque[str] = deque()
+        self._cooldown_until = 0.0
+        self._rate_limit_streak = 0
+        self._rate_limited_count = 0
 
     def set_limit(self, limit: int) -> None:
         with self._condition:
@@ -50,14 +60,19 @@ class _FairProviderGate:
                 self._queues[owner] = queue
                 self._owners.append(owner)
             queue.append(token)
-            while not (
-                self._active < self._limit
-                and self._owners
-                and self._owners[0] == owner
-                and self._queues.get(owner)
-                and self._queues[owner][0] is token
-            ):
-                self._condition.wait()
+            while True:
+                cooldown_remaining = max(0.0, self._cooldown_until - time.monotonic())
+                can_enter = (
+                    cooldown_remaining <= 0
+                    and self._active < self._limit
+                    and self._owners
+                    and self._owners[0] == owner
+                    and self._queues.get(owner)
+                    and self._queues[owner][0] is token
+                )
+                if can_enter:
+                    break
+                self._condition.wait(timeout=cooldown_remaining or None)
             queue.popleft()
             self._owners.popleft()
             if queue:
@@ -74,6 +89,27 @@ class _FairProviderGate:
             self._active -= 1
             self._condition.notify_all()
 
+    def record_rate_limit(self, retry_after_seconds: float | None = None) -> None:
+        with self._condition:
+            self._rate_limit_streak = min(8, self._rate_limit_streak + 1)
+            self._rate_limited_count += 1
+            base, cap = bigmodel_rate_limit_backoff()
+            exponential = min(cap, base * (2 ** (self._rate_limit_streak - 1)))
+            retry_after = (
+                max(0.0, min(cap, float(retry_after_seconds)))
+                if isinstance(retry_after_seconds, (int, float))
+                else 0.0
+            )
+            delay = max(exponential, retry_after)
+            jitter = random.uniform(0.0, min(1.0, delay * 0.25))
+            self._cooldown_until = max(self._cooldown_until, time.monotonic() + delay + jitter)
+            self._condition.notify_all()
+
+    def record_success(self) -> None:
+        with self._condition:
+            if time.monotonic() >= self._cooldown_until:
+                self._rate_limit_streak = 0
+
     def snapshot(self) -> dict[str, object]:
         with self._condition:
             return {
@@ -82,6 +118,9 @@ class _FairProviderGate:
                 "waiting_tasks": len(self._queues),
                 "waiting_owners": list(self._owners),
                 "limit": self._limit,
+                "cooldown_remaining_seconds": round(max(0.0, self._cooldown_until - time.monotonic()), 3),
+                "rate_limit_streak": self._rate_limit_streak,
+                "rate_limited_count": self._rate_limited_count,
             }
 
 
@@ -98,6 +137,23 @@ def ensure_model_request_active() -> None:
 
 def _model_request_limit() -> int:
     return model_request_max_concurrency()
+
+
+def _provider_request_limit(provider: object | None) -> int:
+    return provider_request_max_concurrency(provider)
+
+
+def _is_bigmodel_provider(provider: object | None) -> bool:
+    return str(getattr(provider, "name", "") or "").strip().lower() == "bigmodel"
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    info = classify_provider_error(
+        exc,
+        status_code=getattr(exc, "status_code", None),
+        retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+    )
+    return info.kind in {"provider_concurrency_limit", "provider_rate_limit"}
 
 
 @contextmanager
@@ -131,13 +187,12 @@ def _provider_key(provider: object | None) -> tuple[str, str]:
 
 @contextmanager
 def model_request_slot(provider: object | None):
-    """Apply an optional emergency provider ceiling across tasks.
+    """Apply the provider ceiling and shared cooldown across tasks.
 
     The context is re-entrant for a provider so legacy business-layer guards
     can coexist with the authoritative guard at the network client boundary.
-    Normal operation intentionally has no global ceiling: individual workflows
-    own their concurrency and stagger admission instead of blocking unrelated
-    work behind one provider-wide fixed number.
+    BigModel has a conservative default ceiling; other providers remain
+    uncapped unless the global emergency ceiling is configured.
     """
     key = _provider_key(provider)
     held_keys = _MODEL_REQUEST_HELD_KEYS.get()
@@ -148,7 +203,7 @@ def model_request_slot(provider: object | None):
         yield
         return
 
-    limit = _model_request_limit()
+    limit = _provider_request_limit(provider)
     if limit <= 0:
         admission_check = _MODEL_REQUEST_ADMISSION_CHECK.get()
         if admission_check:
@@ -172,7 +227,16 @@ def model_request_slot(provider: object | None):
             raise
     token = _MODEL_REQUEST_HELD_KEYS.set(held_keys | {key})
     try:
-        yield
+        try:
+            yield
+        except BaseException as exc:
+            if _is_bigmodel_provider(provider) and _is_rate_limit_error(exc):
+                retry_after = getattr(exc, "retry_after_seconds", None)
+                gate.record_rate_limit(retry_after if isinstance(retry_after, (int, float)) else None)
+            raise
+        else:
+            if _is_bigmodel_provider(provider):
+                gate.record_success()
     finally:
         _MODEL_REQUEST_HELD_KEYS.reset(token)
         gate.release()
@@ -181,7 +245,7 @@ def model_request_slot(provider: object | None):
 def model_request_snapshot() -> dict[str, object]:
     with _MODEL_REQUEST_LOCK:
         configured = list(_MODEL_REQUEST_GATES.items())
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"provider": key[0], "base_url": key[1], **gate.snapshot()}
         for key, gate in configured
     ]
@@ -197,6 +261,10 @@ def model_request_snapshot() -> dict[str, object]:
         "waiting_tasks": sum(int(row.get("waiting_tasks") or 0) for row in rows),
         "waiting_task_ids": waiting_task_ids,
         "limit": _model_request_limit(),
+        "provider_specific_limits": {
+            str(row.get("provider") or ""): int(row.get("limit") or 0)
+            for row in rows
+        },
         "providers": rows,
     }
 
@@ -213,15 +281,15 @@ def run_limited_concurrent(
         return []
     workers = max(1, min(int(max_workers or 1), len(values)))
     if workers == 1:
-        results = []
+        sequential_results = []
         for index, item in enumerate(values):
             result = worker(item)
             if on_complete:
                 on_complete(index, item, result)
-            results.append(result)
-        return results
+            sequential_results.append(result)
+        return sequential_results
 
-    results: list[R | None] = [None] * len(values)
+    concurrent_results: list[R | None] = [None] * len(values)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(copy_context().run, worker, item): (index, item)
@@ -230,7 +298,7 @@ def run_limited_concurrent(
         for future in as_completed(futures):
             index, item = futures[future]
             result = future.result()
-            results[index] = result
+            concurrent_results[index] = result
             if on_complete:
                 on_complete(index, item, result)
-    return [result for result in results if result is not None]
+    return [result for result in concurrent_results if result is not None]

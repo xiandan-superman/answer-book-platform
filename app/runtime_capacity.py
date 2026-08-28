@@ -16,6 +16,31 @@ def model_request_max_concurrency() -> int:
     return bounded_env_int("MODEL_REQUEST_MAX_CONCURRENCY", 0, 0, 64)
 
 
+def provider_request_max_concurrency(provider: object | None) -> int:
+    """Return the shared ceiling for one provider across all user tasks."""
+    global_limit = model_request_max_concurrency()
+    provider_name = str(
+        provider if isinstance(provider, str) else getattr(provider, "name", "") or ""
+    ).strip().lower()
+    if provider_name != "bigmodel":
+        return global_limit
+    bigmodel_limit = bounded_env_int("BIGMODEL_REQUEST_MAX_CONCURRENCY", 2, 1, 8)
+    return min(global_limit, bigmodel_limit) if global_limit > 0 else bigmodel_limit
+
+
+def bigmodel_rate_limit_backoff() -> tuple[float, float]:
+    """Base and cap for provider-wide GLM 429 cooldowns."""
+    try:
+        base = max(0.25, min(30.0, float(os.environ.get("BIGMODEL_RATE_LIMIT_BASE_SECONDS", "2"))))
+    except (TypeError, ValueError):
+        base = 2.0
+    try:
+        cap = max(base, min(120.0, float(os.environ.get("BIGMODEL_RATE_LIMIT_CAP_SECONDS", "30"))))
+    except (TypeError, ValueError):
+        cap = 30.0
+    return base, cap
+
+
 def practice_job_max_concurrency() -> int:
     """Number of whole practice workflows allowed to execute concurrently."""
     return bounded_env_int("PRACTICE_JOB_MAX_CONCURRENCY", 2, 1, 8)
@@ -43,4 +68,5 @@ def runtime_capacity_summary() -> dict[str, int]:
         "practice_calls_per_job": inner,
         "theoretical_practice_call_demand": jobs * inner,
         "provider_request_ceiling": provider,
+        "bigmodel_request_ceiling": provider_request_max_concurrency("bigmodel"),
     }

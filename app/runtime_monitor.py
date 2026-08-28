@@ -577,6 +577,8 @@ def model_call_summary() -> dict[str, Any]:
         "waiting_task_count": len(slot_snapshot.get("waiting_task_ids") or []),
         "waiting_task_ids": list(slot_snapshot.get("waiting_task_ids") or []),
         "concurrency_limit": int(slot_snapshot.get("limit") or 0),
+        "provider_concurrency_limits": dict(slot_snapshot.get("provider_specific_limits") or {}),
+        "provider_gates": list(slot_snapshot.get("providers") or []),
         "recent_success_count": counts["succeeded"],
         "recent_failure_count": counts["failed"],
         "recent_timeout_count": counts["timeout"],

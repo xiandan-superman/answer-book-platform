@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from unittest.mock import patch
 
 from app.concurrency import ModelRequestAborted, model_request_context, model_request_slot, model_request_snapshot
-from app.llm_client import OpenAICompatibleClient
+from app.llm_client import LLMError, OpenAICompatibleClient
 from app.runtime_monitor import model_call_context
 from app.settings import ProviderConfig
 
@@ -42,6 +42,89 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
 
 
 class ModelRequestFairnessTests(unittest.TestCase):
+    def test_bigmodel_default_ceiling_is_shared_across_tasks(self) -> None:
+        provider = _ProviderIdentity("bigmodel", "https://bigmodel-concurrency.invalid/v1")
+        active = 0
+        maximum_active = 0
+        lock = threading.Lock()
+
+        def request(index: int) -> None:
+            nonlocal active, maximum_active
+            with model_request_context(f"glm-task-{index}"):
+                with model_request_slot(provider):
+                    with lock:
+                        active += 1
+                        maximum_active = max(maximum_active, active)
+                    time.sleep(0.025)
+                    with lock:
+                        active -= 1
+
+        with patch.dict(os.environ, {}, clear=True):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(request, range(8)))
+
+        self.assertEqual(2, maximum_active)
+
+    def test_bigmodel_429_pauses_other_waiting_requests(self) -> None:
+        provider = _ProviderIdentity("bigmodel", "https://bigmodel-cooldown.invalid/v1")
+        entered = threading.Event()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BIGMODEL_REQUEST_MAX_CONCURRENCY": "1",
+                    "BIGMODEL_RATE_LIMIT_BASE_SECONDS": "0.25",
+                    "BIGMODEL_RATE_LIMIT_CAP_SECONDS": "0.25",
+                },
+                clear=True,
+            ),
+            patch("app.concurrency.random.uniform", return_value=0.0),
+        ):
+            with self.assertRaises(LLMError):
+                with model_request_slot(provider):
+                    raise LLMError("Provider HTTP 429: slow down", status_code=429)
+
+            row = next(
+                item
+                for item in model_request_snapshot()["providers"]
+                if item["base_url"] == provider.base_url
+            )
+            self.assertEqual(1, row["limit"])
+            self.assertEqual(1, row["rate_limited_count"])
+            self.assertGreater(row["cooldown_remaining_seconds"], 0)
+
+            def wait_for_slot() -> None:
+                with model_request_slot(provider):
+                    entered.set()
+
+            started = time.monotonic()
+            waiter = threading.Thread(target=wait_for_slot)
+            waiter.start()
+            time.sleep(0.05)
+            self.assertFalse(entered.is_set())
+            waiter.join(1.0)
+            self.assertTrue(entered.is_set())
+            self.assertGreaterEqual(time.monotonic() - started, 0.22)
+
+    def test_bigmodel_quota_429_does_not_start_rate_limit_cooldown(self) -> None:
+        provider = _ProviderIdentity("bigmodel", "https://bigmodel-quota.invalid/v1")
+        with patch.dict(os.environ, {"BIGMODEL_REQUEST_MAX_CONCURRENCY": "1"}, clear=True):
+            with self.assertRaises(LLMError):
+                with model_request_slot(provider):
+                    raise LLMError(
+                        "Provider HTTP 429: insufficient_quota: credit balance is empty",
+                        status_code=429,
+                    )
+
+        row = next(
+            item
+            for item in model_request_snapshot()["providers"]
+            if item["base_url"] == provider.base_url
+        )
+        self.assertEqual(0, row["rate_limited_count"])
+        self.assertEqual(0, row["cooldown_remaining_seconds"])
+
     def test_waiting_user_tasks_are_admitted_round_robin(self) -> None:
         provider = _ProviderIdentity("fairness-provider", "https://fairness.invalid/v1")
         first_entered = threading.Event()

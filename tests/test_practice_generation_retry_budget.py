@@ -278,6 +278,7 @@ def test_partial_success_survives_configuration_block_and_continuation_only_fill
 def test_retry_after_is_honoured_with_cap_without_real_wait(monkeypatch) -> None:
     calls = 0
     sleeps: list[float] = []
+    attempts: list[dict] = []
 
     def fake_call(*_args, **_kwargs):
         nonlocal calls
@@ -291,12 +292,118 @@ def test_retry_after_is_honoured_with_cap_without_real_wait(monkeypatch) -> None
     result = exercise_generation._call_practice_json_with_transport_retry(
         object(), [], model="fake", temperature=0, thinking=None, timeout_seconds=1,
         attempts=2, backoff_seconds=0, max_retry_after_seconds=5,
+        attempt_log=attempts,
     )
 
     assert result == {"exercises": []}
     assert calls == 2
     assert len(sleeps) == 1
     assert 5 <= sleeps[0] <= 5.25
+    assert attempts[0]["retry_delay_seconds"] == round(sleeps[0], 3)
+    assert attempts[0]["provider_retry_after_seconds"] == 20
+
+
+def test_glm_429_is_recorded_but_does_not_consume_generation_budget(monkeypatch) -> None:
+    calls = 0
+    coordinator = exercise_generation._GenerationRetryCoordinator({})
+    client = SimpleNamespace(config=SimpleNamespace(name="bigmodel"))
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMError("Provider HTTP 429: slow down", status_code=429)
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    attempts = []
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        client,
+        [],
+        model="glm-5.3-flash",
+        temperature=0,
+        thinking="max",
+        timeout_seconds=30,
+        attempts=2,
+        backoff_seconds=0,
+        attempt_log=attempts,
+        before_attempt=lambda _attempt: coordinator.reserve("batch", limit=4, phase="generation"),
+        after_attempt=lambda _attempt, detail: coordinator.record(
+            "batch", phase="generation", detail=detail
+        ),
+    )
+
+    summary = coordinator.summary()
+    assert result == {"ok": True}
+    assert summary["total_model_calls"] == 2
+    assert summary["total_generation_budget_calls"] == 1
+    assert summary["batches"]["batch"]["calls_used"] == 1
+    assert summary["batches"]["batch"]["network_attempts"] == 2
+    assert summary["batches"]["batch"]["attempts"][0]["budget_charged"] is False
+    assert attempts[0]["retry_budget_charged"] is False
+
+
+def test_non_glm_429_still_uses_the_existing_generation_budget(monkeypatch) -> None:
+    coordinator = exercise_generation._GenerationRetryCoordinator({})
+    client = SimpleNamespace(config=SimpleNamespace(name="other-provider"))
+
+    monkeypatch.setattr(
+        exercise_generation,
+        "_call_practice_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            LLMError("Provider HTTP 429: slow down", status_code=429)
+        ),
+    )
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    with pytest.raises(LLMError):
+        exercise_generation._call_practice_json_with_transport_retry(
+            client,
+            [],
+            model="other-model",
+            temperature=0,
+            thinking=None,
+            timeout_seconds=30,
+            attempts=1,
+            backoff_seconds=0,
+            before_attempt=lambda _attempt: coordinator.reserve("batch", limit=4, phase="generation"),
+            after_attempt=lambda _attempt, detail: coordinator.record(
+                "batch", phase="generation", detail=detail
+            ),
+        )
+
+    assert coordinator.summary()["total_generation_budget_calls"] == 1
+
+
+def test_persistent_glm_429_stops_shared_batch_without_pointless_item_splits(monkeypatch) -> None:
+    calls = 0
+
+    def rate_limited(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise LLMError("Provider HTTP 429: too many requests", status_code=429)
+
+    _patch_runtime(monkeypatch, rate_limited)
+    provider = SimpleNamespace(name="bigmodel", supports_vision=False)
+    monkeypatch.setattr(
+        exercise_generation,
+        "_primary_model_runtime",
+        lambda _payload: (provider, "glm-5.3-flash"),
+    )
+    monkeypatch.setattr(
+        exercise_generation,
+        "OpenAICompatibleClient",
+        lambda selected: SimpleNamespace(config=selected),
+    )
+    result = exercise_generation.generate_practice_from_plan(_payload(3))
+
+    assert calls == 2
+    assert result["quality"]["generated_count"] == 0
+    assert result["generation"]["retry_budget"]["total_model_calls"] == 2
+    assert result["generation"]["retry_budget"]["total_generation_budget_calls"] == 0
+    assert result["generation"]["batch_diagnostics"][0]["status"] == "provider_rate_limited"
+    assert all(item["generation_error"]["code"] == "provider_http_429" for item in result["exercises"])
+    assert all(item["generation_error"]["pending"] is True for item in result["exercises"])
 
 
 def test_preparatory_stages_clamp_thinking_and_output_budget(monkeypatch) -> None:

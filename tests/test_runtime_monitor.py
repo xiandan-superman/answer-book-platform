@@ -99,6 +99,35 @@ class RuntimeMonitorTests(unittest.TestCase):
         self.assertNotIn("content", record)
         self.assertNotIn("response", record)
 
+    def test_model_summary_exposes_provider_cooldown_without_request_content(self) -> None:
+        gate = {
+            "provider": "bigmodel",
+            "base_url": "https://example.invalid",
+            "active": 1,
+            "waiting": 2,
+            "waiting_tasks": 1,
+            "waiting_owners": ["practice-job"],
+            "limit": 2,
+            "cooldown_remaining_seconds": 1.75,
+            "rate_limit_streak": 2,
+            "rate_limited_count": 3,
+        }
+        with patch.object(
+            runtime_monitor,
+            "model_request_snapshot",
+            return_value={
+                "active": 1,
+                "waiting": 2,
+                "waiting_task_ids": ["practice-job"],
+                "limit": 0,
+                "provider_specific_limits": {"bigmodel": 2},
+                "providers": [gate],
+            },
+        ):
+            summary = runtime_monitor.model_call_summary()
+        self.assertEqual({"bigmodel": 2}, summary["provider_concurrency_limits"])
+        self.assertEqual([gate], summary["provider_gates"])
+
     def test_completed_count_is_never_greater_than_total(self) -> None:
         health = runtime_monitor.task_health_summary(
             {

@@ -3606,7 +3606,7 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     if transport_phase == "hard_timeout" and partial_output_received:
         transient = False
     signature = code
-    return {
+    detail = {
         "code": code,
         "title": provider_info.title if code.startswith("provider_") else "模型返回内容不可用",
         "message": message,
@@ -3618,6 +3618,11 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         "partial_output_received": partial_output_received,
         "detail": "",
     }
+    if getattr(exc, "retry_budget_charge", None) is False:
+        detail["retry_budget_charge"] = False
+    if getattr(exc, "circuit_breaker_eligible", None) is False:
+        detail["circuit_breaker_eligible"] = False
+    return detail
 
 
 def _generation_gate_error(issues: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4256,6 +4261,7 @@ def build_generation_contract(payload: dict[str, Any]) -> dict[str, Any]:
             "number": _clean(item.get("number"), 50),
             "title": _clean(item.get("title"), 300),
             "stem_excerpt": _clean(item.get("stem_excerpt"), 1200),
+            "recognized_content": _clean(item.get("recognized_content"), 18000),
             "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
             "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
             "content_ref_status": _clean(item.get("content_ref_status"), 30),
@@ -4606,6 +4612,11 @@ def _semantic_batch_context(
                 item_source.update({
                     "title": _clean(source.get("title"), 300),
                     "source_content": _clean(source.get("source_content") or source.get("stem_excerpt") or source.get("excerpt"), 18000),
+                    "recognized_content": (
+                        _recognized_source_content(source)
+                        if source.get("visual_evidence_refs")
+                        else ""
+                    ),
                 })
             item_sources.append(item_source)
         sources.append({
@@ -4623,6 +4634,76 @@ def _semantic_batch_context(
         ),
         "items": sources,
     }
+
+
+def _recognized_source_content(source: dict[str, Any]) -> str:
+    """Return the persisted vision-analysis result suitable for a text model."""
+    explicit = _clean(source.get("recognized_content"), 18000)
+    if explicit:
+        return explicit
+    summary = _clean(source.get("stem_excerpt") or source.get("excerpt"), 1200)
+    knowledge_points = _string_list(source.get("knowledge_points"), limit=60)
+    constraints = _compact_required_constraints(source.get("required_constraints"))
+    if not summary and not knowledge_points and not constraints:
+        return ""
+    return json.dumps(
+        {
+            "recognized_summary": summary,
+            "knowledge_points": knowledge_points,
+            "required_constraints": constraints,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _recognized_evidence_ref(evidence_ref: Any) -> str:
+    cleaned = _clean(evidence_ref, 80)
+    return f"vision_text:{cleaned}" if cleaned.startswith("image:") else cleaned
+
+
+def _apply_text_only_visual_handoff(
+    semantic_sources: dict[str, Any],
+    semantic_plan: list[dict[str, Any]],
+    *,
+    provider: Any,
+    model: str,
+) -> bool:
+    """Replace raw image evidence with completed vision-analysis text.
+
+    The handoff applies only when the selected primary model is text-only and
+    every visual source already has persisted recognition output. Multimodal
+    primary models continue to receive the original image evidence.
+    """
+    if _provider_model_supports_vision(provider, model):
+        return False
+    visual_sources = [
+        source
+        for item in (semantic_sources.get("items") or [])
+        if isinstance(item, dict)
+        for source in (item.get("sources") or [])
+        if isinstance(source, dict) and source.get("visual_evidence_refs")
+    ]
+    if not visual_sources or any(not _clean(source.get("recognized_content"), 18000) for source in visual_sources):
+        return False
+    for source in visual_sources:
+        raw_visual_refs = _unique_strings(source.get("visual_evidence_refs"), limit=64, item_limit=40)
+        source["required_evidence_refs"] = [
+            _recognized_evidence_ref(ref)
+            for ref in _unique_strings(source.get("required_evidence_refs"), limit=160, item_limit=80)
+        ]
+        source["recognized_visual_evidence_refs"] = [_recognized_evidence_ref(ref) for ref in raw_visual_refs]
+        source["visual_evidence_refs"] = []
+        source["visual_evidence_status"] = "recognized_by_source_analysis"
+    for item in semantic_plan:
+        raw_visual_refs = _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40)
+        item["required_evidence_refs"] = [
+            _recognized_evidence_ref(ref)
+            for ref in _unique_strings(item.get("required_evidence_refs"), limit=320, item_limit=80)
+        ]
+        item["recognized_visual_evidence_refs"] = [_recognized_evidence_ref(ref) for ref in raw_visual_refs]
+        item["visual_evidence_refs"] = []
+        item["requires_source_visuals"] = False
+    return True
 
 
 def _generation_source_signature(item: dict[str, Any]) -> tuple[str, ...]:
@@ -5526,6 +5607,16 @@ def _strict_practice_json_messages(messages: list[dict[str, Any]]) -> list[dict[
     ]
 
 
+def _is_bigmodel_glm_rate_limit(client: Any, model: str, detail: dict[str, Any]) -> bool:
+    config = getattr(client, "config", None)
+    return (
+        str(getattr(config, "name", "") or "").strip().lower() == "bigmodel"
+        and str(model or "").strip().lower().startswith("glm-")
+        and detail.get("code") == "provider_http_429"
+        and detail.get("requires_configuration") is not True
+    )
+
+
 def _call_practice_json_with_transport_retry(
     client: OpenAICompatibleClient,
     messages: list[dict[str, Any]],
@@ -5627,6 +5718,11 @@ def _call_practice_json_with_transport_retry(
             last_error = exc
             retryable = _is_transport_generation_error(exc)
             detail = _generation_error_detail(exc)
+            if _is_bigmodel_glm_rate_limit(attempt_client, model, detail):
+                vars(exc)["retry_budget_charge"] = False
+                vars(exc)["circuit_breaker_eligible"] = False
+                detail["retry_budget_charge"] = False
+                detail["circuit_breaker_eligible"] = False
             if attempt_log is not None:
                 attempt_log.append({
                     "attempt": overall_attempt,
@@ -5639,6 +5735,7 @@ def _call_practice_json_with_transport_retry(
                     "same_protocol_retry": attempt > 1 and attempt_client is client,
                     "thinking": attempt_thinking,
                     "strict_json_contract": attempt_messages is not messages,
+                    "retry_budget_charged": detail.get("retry_budget_charge") is not False,
                 })
             if after_attempt is not None:
                 after_attempt(attempt, detail)
@@ -5653,7 +5750,12 @@ def _call_practice_json_with_transport_retry(
             if isinstance(retry_after, (int, float)):
                 delay = max(delay, min(max(0.0, max_retry_after_seconds), max(0.0, float(retry_after))))
             if delay:
-                time.sleep(delay + random.uniform(0, min(0.25, delay / 2)))
+                sleep_seconds = delay + random.uniform(0, min(0.25, delay / 2))
+                if attempt_log is not None and attempt_log:
+                    attempt_log[-1]["retry_delay_seconds"] = round(sleep_seconds, 3)
+                    if isinstance(retry_after, (int, float)):
+                        attempt_log[-1]["provider_retry_after_seconds"] = round(float(retry_after), 3)
+                time.sleep(sleep_seconds)
     raise last_error or LLMError("上游模型生成失败。")
 
 
@@ -5713,7 +5815,15 @@ class _GenerationRetryCoordinator:
         try:
             from .practice_jobs import update_practice_job
             calls = sum(
-                max(0, int(row.get("calls_used") or 0) - int(row.get("inherited_calls") or 0))
+                max(
+                    0,
+                    (
+                        int(row["network_attempts"])
+                        if "network_attempts" in row
+                        else len(row.get("attempts") or [])
+                    )
+                    - int(row.get("inherited_network_attempts") or 0),
+                )
                 for row in (self.state.get("batches") or {}).values()
                 if isinstance(row, dict)
             )
@@ -5779,14 +5889,20 @@ class _GenerationRetryCoordinator:
                 return item_key
             parent = batches.get(parent_key)
             inherited = min(limit, int(parent.get("calls_used") or 0)) if isinstance(parent, dict) else 0
+            charged_parent_attempts = [
+                attempt
+                for attempt in (parent.get("attempts") or [])
+                if isinstance(attempt, dict) and attempt.get("budget_charged") is not False
+            ] if isinstance(parent, dict) else []
             attempts = [
                 {**copy.deepcopy(attempt), "inherited": True}
-                for attempt in (parent.get("attempts") or [])[:inherited]
-                if isinstance(attempt, dict)
-            ] if isinstance(parent, dict) else []
+                for attempt in charged_parent_attempts[:inherited]
+            ]
             batches[item_key] = {
                 "calls_used": inherited,
                 "inherited_calls": inherited,
+                "network_attempts": 0,
+                "inherited_network_attempts": 0,
                 "limit": limit,
                 "attempts": attempts,
                 "circuit": None,
@@ -5817,6 +5933,11 @@ class _GenerationRetryCoordinator:
             if int(row.get("calls_used") or 0) >= int(row["limit"]):
                 raise _GenerationRetryBudgetExceeded("本题已达到四次独立生成上限，不再继续消耗模型调用。")
             row["calls_used"] = int(row.get("calls_used") or 0) + 1
+            row["network_attempts"] = (
+                int(row["network_attempts"])
+                if "network_attempts" in row
+                else len(row.get("attempts") or [])
+            ) + 1
             row["attempts"].append({
                 "call": row["calls_used"],
                 "phase": phase,
@@ -5859,6 +5980,9 @@ class _GenerationRetryCoordinator:
                     if detail:
                         attempt["signature"] = detail.get("signature")
                         attempt["error_code"] = detail.get("code")
+                        if detail.get("retry_budget_charge") is False:
+                            attempt["budget_charged"] = False
+                            row["calls_used"] = max(0, int(row.get("calls_used") or 0) - 1)
                     break
             if detail and detail.get("requires_configuration"):
                 self.state["configuration_block"] = copy.deepcopy(detail)
@@ -5891,6 +6015,19 @@ class _GenerationRetryCoordinator:
             return {
                 "schema_version": 2,
                 "total_model_calls": sum(
+                    max(
+                        0,
+                        (
+                            int(row["network_attempts"])
+                            if "network_attempts" in row
+                            else len(row.get("attempts") or [])
+                        )
+                        - int(row.get("inherited_network_attempts") or 0),
+                    )
+                    for row in batches.values()
+                    if isinstance(row, dict)
+                ),
+                "total_generation_budget_calls": sum(
                     max(0, int(row.get("calls_used") or 0) - int(row.get("inherited_calls") or 0))
                     for row in batches.values()
                     if isinstance(row, dict)
@@ -6752,6 +6889,7 @@ def _normalize_source_scope(raw: Any) -> dict[str, Any]:
                 "number": _clean(item.get("number"), 50) or str(index),
                 "title": title or excerpt[:80],
                 "stem_excerpt": excerpt,
+                "recognized_content": _clean(item.get("recognized_content"), 18000),
                 "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
                 "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
                 "content_ref_status": _clean(item.get("content_ref_status"), 30),
@@ -7153,6 +7291,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 - 将材料拆成可独立选择的{item_label}；即使只有一项，也必须在 questions 中返回一项
 - source_scope.mode：多项返回 question_set，单项返回 single
 - questions 中每项给出稳定 ID、编号、短标题、摘要、类型和实际涉及的全部核心知识点；不得为了简化只保留一个知识点
+- questions 中每项的 recognized_content 必须把图片中可辨认的文字、公式、数值、标签、空间或曲线关系，与相关正文整合成可直接交给纯文本模型使用的完整内容；不得只写一句概述
 - 原文已经由平台按 SOURCE_REF 确定性保存；questions 中每项只返回 content_refs，列出该项对应的全部 SOURCE_REF，不要复述完整原文
 - content_refs 必须覆盖该项正式生题所需的题面、公式、表格和适用条件；stem_excerpt 只用于用户区分条目
 - questions 中每项还要给出与该项知识点对应的 required_constraints，分别列出必要定义、公式/参数关系、适用边界；不得只把这些约束放在全局 source_analysis
@@ -7165,7 +7304,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 {{
   "source_scope": {{"mode": "single/question_set", "title": "材料标题", "questions": [{{
     "source_question_id": "source_01", "number": "1", "title": "短标题",
-    "stem_excerpt": "可辨认的内容摘要", "content_refs": ["C01P0001", "C01P0002"], "question_type": "题型或知识单元类型",
+    "stem_excerpt": "可辨认的内容摘要", "recognized_content": "识图后可供纯文本模型直接使用的完整内容", "content_refs": ["C01P0001", "C01P0002"], "question_type": "题型或知识单元类型",
     "source_difficulty": "基础/进阶/挑战；无法判断时填空字符串",
     "knowledge_points": ["知识点"],
     "required_constraints": {{"essential_definitions": ["必要定义"], "essential_formulas": ["必要公式或参数关系"], "applicable_boundaries": ["适用条件、边界或限制"]}}
@@ -7477,6 +7616,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "number": _clean(item.get("number"), 50),
             "title": _clean(item.get("title"), 300),
             "stem_excerpt": _clean(item.get("stem_excerpt"), 1200),
+            "recognized_content": _clean(item.get("recognized_content"), 18000),
             "source_content": _clean(item.get("source_content") or item.get("source_text"), 18000),
             "content_refs": _unique_strings(item.get("content_refs"), limit=120, item_limit=40),
             "evidence_refs": _unique_strings(item.get("evidence_refs"), limit=160, item_limit=80),
@@ -7550,6 +7690,11 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "number": _clean(item.get("number"), 50),
             "title": _clean(item.get("title"), 300),
             "source_excerpt": _clean(item.get("stem_excerpt") or item.get("excerpt"), 1200),
+            "recognized_content": (
+                _recognized_source_content(item)
+                if item.get("visual_evidence_refs")
+                else ""
+            ),
             "content_refs": _unique_strings(item.get("content_refs"), limit=80, item_limit=40),
             "required_evidence_refs": _unique_strings(item.get("evidence_refs"), limit=160, item_limit=80),
             "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
@@ -7624,7 +7769,21 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         confirmed_planning_visual_refs,
         maximum=len(available_planning_images),
     )
+    primary_provider, primary_model = _primary_model_runtime(payload)
+    text_only_recognition_handoff = bool(
+        has_confirmed_source_snapshot
+        and confirmed_planning_visual_refs
+        and not _provider_model_supports_vision(primary_provider, primary_model)
+        and all(
+            _recognized_source_content(source)
+            for source in planning_units
+            if isinstance(source, dict) and source.get("visual_evidence_refs")
+        )
+    )
     planning_images = (
+        []
+        if text_only_recognition_handoff
+        else
         [available_planning_images[number - 1] for number in confirmed_planning_image_numbers]
         if has_confirmed_source_snapshot and confirmed_planning_visual_refs
         else []
@@ -7632,10 +7791,23 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         else available_planning_images
     )
     provider, model = (
+        (primary_provider, primary_model)
+        if text_only_recognition_handoff
+        else
         _model_runtime(payload, bool(planning_images))
         if planning_images
-        else _primary_model_runtime(payload)
+        else (primary_provider, primary_model)
     )
+    if text_only_recognition_handoff:
+        for source in prompt_source_catalog:
+            raw_visual_refs = _unique_strings(source.get("visual_evidence_refs"), limit=64, item_limit=40)
+            source["required_evidence_refs"] = [
+                _recognized_evidence_ref(ref)
+                for ref in _unique_strings(source.get("required_evidence_refs"), limit=160, item_limit=80)
+            ]
+            source["recognized_visual_evidence_refs"] = [_recognized_evidence_ref(ref) for ref in raw_visual_refs]
+            source["visual_evidence_refs"] = []
+            source["visual_dependency"] = {"status": "recognized_by_source_analysis"}
     blueprint_item_contract = {
         "number": 1,
         "question_type": "题型",
@@ -7839,11 +8011,16 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         limit=64,
         item_limit=40,
     )
+    if text_only_recognition_handoff:
+        planning_required_refs = [_recognized_evidence_ref(ref) for ref in planning_required_refs]
+        planning_visual_refs = []
     planning_delivered_refs = [
         evidence_ref
         for evidence_ref in planning_required_refs
         if include_source_content and not evidence_ref.startswith("image:")
     ]
+    if text_only_recognition_handoff:
+        planning_delivered_refs = list(planning_required_refs)
     planning_context_plan = build_context_plan(
         stage="planning",
         provider_name=provider.name,
@@ -7987,6 +8164,9 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         "material_char_count": len(compact_material),
         "source_catalog_count": len(prompt_source_catalog),
         "uses_compact_catalog": bool(confirmed_analysis and prompt_source_catalog),
+        "visual_evidence_handoff": (
+            "source_analysis_text" if text_only_recognition_handoff else "raw_image_or_not_required"
+        ),
         "generation_batches_use_referenced_sources_only": True,
         "context_plan": planning_context_plan,
     }
@@ -8464,6 +8644,16 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             knowledge_mode=is_knowledge_mode,
             include_source_content=include_source_content,
         )
+        text_only_recognition_handoff = bool(
+            include_source_content
+            and plan.get("source_analysis")
+            and _apply_text_only_visual_handoff(
+                semantic_sources,
+                semantic_plan,
+                provider=provider,
+                model=model,
+            )
+        )
         batch_reference_images, batch_reference_numbers = _batch_reference_images(
             generation_reference_images,
             semantic_sources,
@@ -8548,9 +8738,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
 {json.dumps(_batch_prompt_contract(batch_plan), ensure_ascii=False, indent=2)}
 """
-        attach_batch_visuals = include_source_content and _batch_needs_visual_reference(
-            semantic_sources,
-            batch_plan,
+        attach_batch_visuals = (
+            include_source_content
+            and not text_only_recognition_handoff
+            and _batch_needs_visual_reference(semantic_sources, batch_plan)
         )
         messages = [
             {
@@ -8605,6 +8796,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "source_signature": list(_generation_source_signature(batch_plan[0])) if batch_plan else [],
             "reference_image_numbers": batch_reference_numbers,
             "reference_image_count": len(batch_reference_images),
+            "visual_evidence_handoff": (
+                "source_analysis_text" if text_only_recognition_handoff else "raw_image_or_not_required"
+            ),
             "context_plan": generation_context_plan,
             "control_contract_char_count": sum(len(json.dumps(value, ensure_ascii=False)) for value in (
                 semantic_plan,
@@ -8827,6 +9021,21 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "failed_plan_item_ids": sorted(failures),
                 })
                 return batch_start, [], failures, batch_diagnostic
+            if batch_count > 1 and error_detail.get("circuit_breaker_eligible") is False:
+                failures = {
+                    _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}": {
+                        **copy.deepcopy(error_detail),
+                        "pending": True,
+                    }
+                    for index, item in enumerate(batch_plan)
+                }
+                batch_diagnostic.update({
+                    "status": "provider_rate_limited",
+                    "error_code": error_detail["code"],
+                    "model_call_count": len(batch_diagnostic["transport_attempts"]),
+                    "failed_plan_item_ids": sorted(failures),
+                })
+                return batch_start, [], failures, batch_diagnostic
             if batch_count <= 1 or not _is_transport_generation_error(exc):
                 raise
             # A dead batch stream must not erase every question in that batch.
@@ -8875,6 +9084,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         local_index == 0
                         and split_error.get("signature") == error_detail.get("signature")
                         and split_error.get("code") != "generation_response_invalid"
+                        and split_error.get("circuit_breaker_eligible") is not False
                     ):
                         retry_coordinator.open_circuit(root_key, split_error)
                         for rest_index, rest_item in enumerate(batch_plan[1:], start=1):
@@ -8965,26 +9175,12 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     if has_unscoped_issue or str(issue.get("batch_index")) == str(target_index)
                 ]
                 item_contract = _exercise_output_contract_for_plan_item(batch_plan[target_index - 1])
-                repair_prompt = f"""上一版的 batch_index={target_index} 未通过生成门禁。
-
-只修复这一题，不要返回其它 batch_index，不要修改任何已通过的题目。
-严格保留该题的 required_knowledge_points、题型、难度和既定输出结构；不得输出答案、解析或内部 ID。
-若有结构变化问题，重写题干结构；若题干需要配图，必须返回可渲染的数据点或节点关系，并让题干明确引用该图。
-
-本题问题：
-{json.dumps(target_issues, ensure_ascii=False, indent=2)}
-
-单题蓝图：
-{json.dumps(semantic_plan[target_index - 1], ensure_ascii=False, indent=2)}
-
-输出结构：
-{json.dumps({"exercises": [{"batch_index": target_index, **item_contract}]}, ensure_ascii=False, indent=2)}
-"""
                 transport_attempts: list[dict[str, Any]] = []
                 retry_report: dict[str, Any] = {
                     "batch_index": target_index,
                     "issues": target_issues,
                     "transport_attempts": transport_attempts,
+                    "issue_transitions": [],
                 }
                 try:
                     ensure_practice_generation_active(payload)
@@ -8994,13 +9190,33 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         or f"plan_item_{batch_start + target_index:02d}"
                     )
                     item_retry_key = retry_coordinator.prepare_item_budget(root_key, target_item_id, limit=retry_limit)
+                    current_item = rows_by_index[target_index]
+                    current_issues = target_issues
                     while retry_coordinator.remaining(item_retry_key, limit=retry_limit):
                         remaining_attempts = retry_coordinator.remaining(item_retry_key, limit=retry_limit)
+                        repair_prompt = f"""上一版的 batch_index={target_index} 未通过生成门禁。
+
+只修复这一题，不要返回其它 batch_index，不要修改任何已通过的题目。
+严格保留该题的 required_knowledge_points、题型、难度和既定输出结构；不得输出答案、解析或内部 ID。
+若有结构变化问题，重写题干结构；若题干需要配图，必须返回可渲染的数据点或节点关系，并让题干明确引用该图。
+
+本题当前问题：
+{json.dumps(current_issues, ensure_ascii=False, indent=2)}
+
+单题蓝图：
+{json.dumps(semantic_plan[target_index - 1], ensure_ascii=False, indent=2)}
+
+输出结构：
+{json.dumps({"exercises": [{"batch_index": target_index, **item_contract}]}, ensure_ascii=False, indent=2)}
+"""
                         repaired_raw = _call_practice_json_with_transport_retry(
                             _practice_generation_client(provider, model),
                             [
                                 *messages,
-                                {"role": "assistant", "content": json.dumps(raw_batch, ensure_ascii=False)},
+                                {
+                                    "role": "assistant",
+                                    "content": json.dumps({"exercises": [current_item]}, ensure_ascii=False),
+                                },
                                 {"role": "user", "content": repair_prompt},
                             ],
                             model=model,
@@ -9035,12 +9251,31 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                             issue for issue in batch_content_issues([repaired_item])
                             if str(issue.get("batch_index")) == str(target_index)
                         ]
+                        retry_report["issue_transitions"].append({
+                            "before": _unique_strings(
+                                [issue.get("code") or issue.get("reason") for issue in current_issues],
+                                limit=20,
+                                item_limit=100,
+                            ),
+                            "after": _unique_strings(
+                                [issue.get("code") or issue.get("reason") for issue in remaining_item_issues],
+                                limit=20,
+                                item_limit=100,
+                            ),
+                        })
+                        # A valid repair response becomes the next checkpoint even
+                        # when it exposes a different deterministic issue. Continue
+                        # from that newer candidate instead of reverting to the
+                        # original version and reporting an already-fixed problem.
+                        current_item = repaired_item
+                        rows_by_index[target_index] = repaired_item
                         if remaining_item_issues:
                             retry_report["status"] = "still_invalid"
                             retry_report["remaining_issues"] = remaining_item_issues
+                            current_issues = remaining_item_issues
                             continue
-                        rows_by_index[target_index] = repaired_item
                         retry_report["status"] = "repaired"
+                        retry_report["remaining_issues"] = []
                         break
                 except PracticeGenerationStopped:
                     raise

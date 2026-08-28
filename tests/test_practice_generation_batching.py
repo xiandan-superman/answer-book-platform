@@ -110,6 +110,95 @@ def test_formal_generation_never_batches_different_source_combinations() -> None
     assert [row["plan_item_id"] for row in result["exercises"]] == ["plan_item_01", "plan_item_02"]
 
 
+def test_text_only_primary_uses_completed_vision_analysis_without_raw_image() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call(_client, messages, **kwargs):
+        captured["content"] = messages[-1]["content"]
+        captured["required_evidence_refs"] = list(kwargs.get("required_evidence_refs") or [])
+        captured["delivered_evidence_refs"] = list(kwargs.get("delivered_evidence_refs") or [])
+        return {"exercises": [{
+            "batch_index": 1,
+            "question_type": "简答题",
+            "difficulty": "进阶",
+            "target_skill": "相图关系分析",
+            "variation_type": "改变边界条件",
+            "stem": "给定新的温压条件，说明体系所处区域及判断依据。",
+            "knowledge_points": ["相图关系"],
+            "verification_note": "温度和压力条件完整。",
+            "formulas": [],
+            "tables": [],
+            "figures": [],
+        }]}
+
+    source = {
+        "source_question_id": "source_01",
+        "number": "1",
+        "title": "压强温度相图",
+        "stem_excerpt": "图中三条两相平衡线交于三相点。",
+        "recognized_content": "横轴为温度，纵轴为压强；三条两相平衡线交于三相点。",
+        "source_content": "根据相图判断区域。⟦IMAGE_REF:1;MEMBER:image1.png⟧",
+        "content_refs": ["C01P0001"],
+        "question_type": "简答题",
+        "knowledge_points": ["相图关系"],
+        "required_constraints": {
+            "essential_definitions": ["三相点定义"],
+            "essential_formulas": [],
+            "applicable_boundaries": ["平衡条件"],
+        },
+    }
+    payload = {
+        "source_mode": "knowledge",
+        "generation_strategy": "knowledge_item_wise",
+        "generation_batch_size": 1,
+        "generation_concurrency": 1,
+        "blueprint_review_enabled": False,
+        "plan": {
+            "source_mode": "knowledge",
+            "source_analysis": {"subject": "物理化学", "knowledge_points": ["相图关系"]},
+            "selected_source_questions": [source],
+            "source_scope": {"mode": "single", "questions": [source]},
+            "blueprint": {
+                "generation_strategy": "knowledge_item_wise",
+                "exercise_plan": [{
+                    "plan_item_id": "plan_item_01",
+                    "source_question_id": "source_01",
+                    "source_refs": ["source_01"],
+                    "question_type": "简答题",
+                    "difficulty": "进阶",
+                    "target_skill": "相图关系分析",
+                    "variation_type": "改变边界条件",
+                    "design_intent": "使用识图结果设计新的判断条件。",
+                    "required_knowledge_points": ["相图关系"],
+                }],
+            },
+        },
+    }
+    provider = SimpleNamespace(name="text-primary", supports_vision=False)
+    with (
+        patch("app.exercise_generation._primary_model_runtime", return_value=(provider, "text-model")),
+        patch("app.exercise_generation.OpenAICompatibleClient", return_value=object()),
+        patch("app.exercise_generation._call_practice_json", side_effect=fake_call),
+        patch("app.exercise_generation.parse_practice_sources", return_value={
+            "text": "根据相图判断区域。⟦IMAGE_REF:1;MEMBER:image1.png⟧",
+            "images": [],
+            "reference_images": ["data:image/png;base64,ZmFrZQ=="],
+            "file_names": ["source.docx"],
+        }),
+    ):
+        result = generate_practice_from_plan(payload)
+
+    assert isinstance(captured["content"], str)
+    assert "横轴为温度，纵轴为压强" in str(captured["content"])
+    assert "image:1" not in captured["required_evidence_refs"]
+    assert "vision_text:image:1" in captured["required_evidence_refs"]
+    assert "vision_text:image:1" in captured["delivered_evidence_refs"]
+    assert result["quality"]["generated_count"] == 1
+    assert result["generation"]["reference_images_attached"] is False
+    assert result["generation"]["batch_diagnostics"][0]["context_plan"]["evidence_complete"] is True
+    assert result["generation"]["batch_diagnostics"][0]["visual_evidence_handoff"] == "source_analysis_text"
+
+
 def test_generation_uses_bounded_semantic_batches_and_restores_internal_ids() -> None:
     calls: list[str] = []
 
@@ -827,6 +916,174 @@ def test_content_gate_retries_only_invalid_question_and_preserves_healthy_siblin
     diagnostic = result["generation"]["batch_diagnostics"][0]
     assert diagnostic["content_gate_retry_targets"] == [2]
     assert diagnostic["content_gate_retries"][0]["status"] == "repaired"
+
+
+def test_content_gate_continues_from_latest_repair_for_knowledge_and_per_question() -> None:
+    def choice(*, options: list[str], leaked: bool = False) -> dict:
+        return {
+            "batch_index": 1,
+            "question_type": "单选题",
+            "difficulty": "进阶",
+            "target_skill": "晶体结构判断",
+            "variation_type": "条件变式",
+            "stem": "根据已知条件，选出正确的晶体结构。",
+            "options": options,
+            "knowledge_points": ["晶体结构"],
+            "verification_note": "条件充分",
+            "formulas": ([{
+                "latex": "x=1+1=2",
+                "role": "result",
+                "location": "stem",
+            }] if leaked else []),
+            "tables": [],
+            "figures": [],
+        }
+
+    for source_mode, generation_strategy in (("knowledge", "knowledge_item_wise"), ("exam", "per_question")):
+        repair_calls = 0
+
+        def fake_call(_client, messages, **_kwargs):
+            nonlocal repair_calls
+            prompt = "\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "user")
+            if "只修复这一题" not in prompt:
+                return {"exercises": [choice(options=[])]}
+            repair_calls += 1
+            current_candidate = next(
+                str(message.get("content") or "") for message in reversed(messages)
+                if message.get("role") == "assistant"
+            )
+            if repair_calls == 1:
+                assert "choice_options_missing" in prompt
+                return {"exercises": [choice(
+                    options=["A. 选项一", "B. 选项二", "C. 选项三", "D. 选项四"],
+                    leaked=True,
+                )]}
+            assert "stem_answer_leak" in prompt
+            assert "A. 选项一" in current_candidate
+            assert "x=1+1=2" in current_candidate
+            return {"exercises": [choice(
+                options=["A. 选项一", "B. 选项二", "C. 选项三", "D. 选项四"],
+            )]}
+
+        payload = {
+            "source_mode": source_mode,
+            "generation_strategy": generation_strategy,
+            "question_text": "晶体结构判断材料",
+            "generation_batch_size": 1,
+            "generation_concurrency": 1,
+            "plan": {
+                "source_mode": source_mode,
+                "blueprint": {
+                    "generation_strategy": generation_strategy,
+                    "exercise_plan": [{
+                        "plan_item_id": "plan_item_01",
+                        "question_type": "单选题",
+                        "difficulty": "进阶",
+                        "required_knowledge_points": ["晶体结构"],
+                    }],
+                },
+            },
+        }
+        provider = SimpleNamespace(name="test", supports_vision=False)
+        with (
+            patch("app.exercise_generation._primary_model_runtime", return_value=(provider, "test-model")),
+            patch("app.exercise_generation.OpenAICompatibleClient", return_value=object()),
+            patch("app.exercise_generation._call_practice_json", side_effect=fake_call),
+        ):
+            result = generate_practice_from_plan(payload)
+
+        assert repair_calls == 2
+        assert result["exercises"][0]["generation_status"] == "completed"
+        assert len(result["exercises"][0]["options"]) == 4
+        diagnostic = result["generation"]["batch_diagnostics"][0]["content_gate_retries"][0]
+        assert diagnostic["status"] == "repaired"
+        assert diagnostic["issue_transitions"] == [
+            {"before": ["choice_options_missing"], "after": ["stem_answer_leak"]},
+            {"before": ["stem_answer_leak"], "after": []},
+        ]
+
+
+def test_content_gate_reports_latest_issue_when_progressive_repairs_are_exhausted() -> None:
+    def choice(*, options: list[str], formula_value: int | None = None) -> dict:
+        return {
+            "batch_index": 1,
+            "question_type": "单选题",
+            "difficulty": "进阶",
+            "target_skill": "晶体结构判断",
+            "variation_type": "条件变式",
+            "stem": "根据已知条件，选出正确的晶体结构。",
+            "options": options,
+            "knowledge_points": ["晶体结构"],
+            "verification_note": "条件充分",
+            "formulas": ([{
+                "latex": f"x={formula_value}",
+                "role": "result",
+                "location": "stem",
+            }] if formula_value is not None else []),
+            "tables": [],
+            "figures": [],
+        }
+
+    repair_calls = 0
+
+    def fake_call(_client, messages, **_kwargs):
+        nonlocal repair_calls
+        prompt = "\n".join(str(message.get("content") or "") for message in messages if message.get("role") == "user")
+        if "只修复这一题" not in prompt:
+            return {"exercises": [choice(options=[])]}
+        repair_calls += 1
+        if repair_calls == 1:
+            assert "choice_options_missing" in prompt
+        else:
+            assert "stem_answer_leak" in prompt
+            current_candidate = next(
+                str(message.get("content") or "") for message in reversed(messages)
+                if message.get("role") == "assistant"
+            )
+            assert "A. 选项一" in current_candidate
+        return {"exercises": [choice(
+            options=["A. 选项一", "B. 选项二", "C. 选项三", "D. 选项四"],
+            formula_value=repair_calls,
+        )]}
+
+    payload = {
+        "source_mode": "knowledge",
+        "generation_strategy": "knowledge_item_wise",
+        "question_text": "晶体结构判断材料",
+        "generation_batch_size": 1,
+        "generation_concurrency": 1,
+        "plan": {
+            "source_mode": "knowledge",
+            "blueprint": {
+                "generation_strategy": "knowledge_item_wise",
+                "exercise_plan": [{
+                    "plan_item_id": "plan_item_01",
+                    "question_type": "单选题",
+                    "difficulty": "进阶",
+                    "required_knowledge_points": ["晶体结构"],
+                }],
+            },
+        },
+    }
+    provider = SimpleNamespace(name="test", supports_vision=False)
+    with (
+        patch("app.exercise_generation._primary_model_runtime", return_value=(provider, "test-model")),
+        patch("app.exercise_generation.OpenAICompatibleClient", return_value=object()),
+        patch("app.exercise_generation._call_practice_json", side_effect=fake_call),
+    ):
+        result = generate_practice_from_plan(payload)
+
+    assert repair_calls == 3
+    assert result["exercises"][0]["generation_status"] == "failed"
+    final_error = result["exercises"][0]["generation_error"]
+    assert "题干结构化公式" in final_error["detail"]
+    assert "缺少有效选项" not in final_error["detail"]
+    diagnostic = result["generation"]["batch_diagnostics"][0]["content_gate_retries"][0]
+    assert diagnostic["issue_transitions"][0] == {
+        "before": ["choice_options_missing"],
+        "after": ["stem_answer_leak"],
+    }
+    assert diagnostic["remaining_issues"][0]["code"] == "stem_answer_leak"
 
 
 def test_partial_batch_fails_only_slot_still_missing_after_one_bounded_probe() -> None:

@@ -3346,6 +3346,83 @@ def test_enabled_generation_uses_selected_primary_and_confirmed_material_without
     assert "FULL_SOURCE_TEXT_WITH_FORMULA_AND_TABLE" in captured["content"]
 
 
+def test_confirmed_vision_analysis_is_handed_to_text_primary_during_planning(monkeypatch):
+    captured = {}
+    source = {
+        "source_question_id": "source_1",
+        "number": "1",
+        "title": "压强温度相图",
+        "stem_excerpt": "三条两相平衡线交于三相点。",
+        "recognized_content": "横轴是温度，纵轴是压强；三条两相平衡线交于三相点。",
+        "source_content": "根据相图判断区域。⟦IMAGE_REF:1;MEMBER:image1.png⟧",
+        "content_refs": ["C01P0001"],
+        "evidence_refs": ["C01P0001", "image:1"],
+        "visual_evidence_refs": ["image:1"],
+        "question_type": "知识单元",
+        "knowledge_points": ["相图关系"],
+        "required_constraints": {"essential_definitions": ["三相点定义"]},
+        "constraint_status": "complete",
+    }
+    monkeypatch.setattr(exercise_generation, "parse_practice_sources", lambda _payload: {
+        "text": "根据相图判断区域。⟦IMAGE_REF:1;MEMBER:image1.png⟧",
+        "images": [],
+        "reference_images": ["data:image/png;base64,ZmFrZQ=="],
+        "file_names": ["source.docx"],
+        "file_diagnostics": [],
+    })
+    text_provider = SimpleNamespace(name="text-primary", supports_vision=False)
+    monkeypatch.setattr(
+        exercise_generation,
+        "_primary_model_runtime",
+        lambda _payload: (text_provider, "text-model"),
+    )
+
+    def unexpected_vision_route(_payload, _has_images):
+        raise AssertionError("confirmed vision output must not be sent through vision again")
+
+    monkeypatch.setattr(exercise_generation, "_model_runtime", unexpected_vision_route)
+    monkeypatch.setattr(exercise_generation, "_practice_generation_client", lambda _provider, _model: object())
+    monkeypatch.setattr(exercise_generation, "_model_route", lambda *_args: "selected_primary")
+
+    def fake_call(_client, messages, **kwargs):
+        captured["content"] = messages[-1]["content"]
+        captured["required_evidence_refs"] = list(kwargs.get("required_evidence_refs") or [])
+        captured["delivered_evidence_refs"] = list(kwargs.get("delivered_evidence_refs") or [])
+        return {"blueprint": {
+            "training_goal": "训练相图判断",
+            "progression": ["条件变化"],
+            "design_notes": ["使用已识别的相图关系"],
+            "exercise_plan": [{
+                "source_refs": ["S1"],
+                "question_type": "简答题",
+                "target_skill": "相图关系分析",
+                "variation_type": "改变边界条件",
+                "design_intent": "改变温压条件后判断区域。",
+                "required_knowledge_points": ["相图关系"],
+                "required_constraints": {"essential_definitions": ["三相点定义"]},
+            }],
+        }}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    plan = plan_practice_set({
+        "source_mode": "knowledge",
+        "generation_strategy": "knowledge_overall",
+        "strategy_count": 1,
+        "question_types": ["简答题"],
+        "selected_source_questions": [source],
+        "source_scope": {"mode": "single", "questions": [source]},
+        "source_analysis": {"subject": "物理化学", "knowledge_points": ["相图关系"]},
+    })
+
+    assert isinstance(captured["content"], str)
+    assert "横轴是温度，纵轴是压强" in captured["content"]
+    assert "image:1" not in captured["required_evidence_refs"]
+    assert "vision_text:image:1" in captured["required_evidence_refs"]
+    assert "vision_text:image:1" in captured["delivered_evidence_refs"]
+    assert plan["generation"]["provider"] == "text-primary"
+    assert plan["planning_evidence"]["visual_evidence_handoff"] == "source_analysis_text"
+
+
 def test_generation_rejects_output_missing_required_knowledge_points(monkeypatch):
     calls = []
     source = {

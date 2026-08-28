@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.exercise_generation import (
+    _apply_text_only_visual_handoff,
     _batch_needs_visual_reference,
     _batch_reference_images,
     _normalize_plan,
     _normalize_source_scope,
 )
+from app.model_context_planner import context_plan_block_reason
 from app.practice_context_planner import (
     aggregate_source_evidence,
     apply_source_evidence_contract,
@@ -14,7 +18,6 @@ from app.practice_context_planner import (
     image_numbers_from_evidence_refs,
     model_stage_quality_limit,
 )
-from app.model_context_planner import context_plan_block_reason
 
 
 def _visual_source() -> dict:
@@ -23,6 +26,7 @@ def _visual_source() -> dict:
         "number": "1",
         "title": "曲线题",
         "stem_excerpt": "根据曲线回答",
+        "recognized_content": "横轴为时间，纵轴为相变量；曲线在中段出现转折点。",
         "source_content": "根据下图判断转折点。⟦IMAGE_REF:2;MEMBER:word/media/image2.png⟧",
         "content_refs": ["C01P0001"],
         "question_type": "综合题",
@@ -50,6 +54,7 @@ def test_normalized_source_scope_cannot_drop_visual_contract() -> None:
     item = scope["questions"][0]
     assert item["evidence_refs"] == ["C01P0001", "image:2"]
     assert item["visual_evidence_refs"] == ["image:2"]
+    assert item["recognized_content"] == "横轴为时间，纵轴为相变量；曲线在中段出现转折点。"
 
 
 def test_blueprint_items_inherit_evidence_from_bound_source() -> None:
@@ -87,6 +92,60 @@ def test_explicit_visual_evidence_selects_exact_images_without_keywords() -> Non
         semantic_sources,
         [{"requires_source_visuals": True, "visual_evidence_refs": ["image:2"]}],
     ) is True
+
+
+def test_visual_primary_keeps_raw_image_evidence_unchanged() -> None:
+    sources = {"items": [{"sources": [{
+        "recognized_content": "已识别的曲线说明",
+        "required_evidence_refs": ["C01P0001", "image:2"],
+        "visual_evidence_refs": ["image:2"],
+    }]}]}
+    plan = [{
+        "required_evidence_refs": ["C01P0001", "image:2"],
+        "visual_evidence_refs": ["image:2"],
+        "requires_source_visuals": True,
+    }]
+    provider = SimpleNamespace(
+        name="vision-provider",
+        supports_vision=True,
+        vision_model="vision-model",
+        vision_model_options=("vision-model",),
+    )
+
+    applied = _apply_text_only_visual_handoff(
+        sources,
+        plan,
+        provider=provider,
+        model="vision-model",
+    )
+
+    assert applied is False
+    assert sources["items"][0]["sources"][0]["visual_evidence_refs"] == ["image:2"]
+    assert plan[0]["required_evidence_refs"] == ["C01P0001", "image:2"]
+
+
+def test_text_primary_cannot_replace_image_without_saved_recognition() -> None:
+    sources = {"items": [{"sources": [{
+        "recognized_content": "",
+        "required_evidence_refs": ["image:2"],
+        "visual_evidence_refs": ["image:2"],
+    }]}]}
+    plan = [{
+        "required_evidence_refs": ["image:2"],
+        "visual_evidence_refs": ["image:2"],
+        "requires_source_visuals": True,
+    }]
+    provider = SimpleNamespace(name="text-provider", supports_vision=False)
+
+    applied = _apply_text_only_visual_handoff(
+        sources,
+        plan,
+        provider=provider,
+        model="text-model",
+    )
+
+    assert applied is False
+    assert plan[0]["required_evidence_refs"] == ["image:2"]
 
 
 def test_context_plan_blocks_omitted_required_image() -> None:
