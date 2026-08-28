@@ -214,7 +214,7 @@
     .primary, .download { background: linear-gradient(145deg, #2376e6, #3566d4); box-shadow: 0 9px 20px rgba(43,91,185,.2); color: #fff; }
     .primary:hover, .download:hover { transform: translateY(-1px); box-shadow: 0 12px 24px rgba(43,91,185,.25); }
     .secondary { border: 1px solid #bfd4f2; background: #eff6ff; color: var(--blue-strong); }
-    button:disabled { opacity: .58; cursor: wait; transform: none !important; }
+    button:disabled { opacity: .58; cursor: not-allowed; transform: none !important; }
     #status { margin-left: 10px; color: var(--muted); font-size: 12px; }
     .error { margin-top: 16px; padding: 11px 13px; border: 1px solid #f5c3bf; border-radius: 10px; background: var(--bad-bg); color: var(--bad); font-size: 13px; }
     .error-actions { display: flex; gap: 8px; margin-top: 9px; }
@@ -369,7 +369,7 @@
       </div>
       <div class="nav-actions">
         <button class="nav-standard-button" type="button" onclick="showStandards()">查看格式标准</button>
-        <button id="platformTasksButton" class="nav-standard-button hidden" type="button" onclick="window.location.href='/?page=tasks&kind=format'">任务管理</button>
+        <button id="platformTasksButton" class="nav-standard-button hidden" type="button" onclick="window.location.href='/?page=tasks&kind=format'">格式任务</button>
         <button id="platformHomeButton" class="nav-standard-button hidden" type="button" onclick="window.location.href='/'">返回平台</button>
         <span id="standaloneBadge" class="standalone-badge">独立试用版</span>
       </div>
@@ -437,7 +437,7 @@
 
         <div class="submit-row">
           <span id="storageNote" class="privacy-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 10V8a5 5 0 0 1 10 0v2"/><rect x="5" y="10" width="14" height="10" rx="2"/></svg>文件仅保存在本机临时目录，24 小时后自动清理</span>
-          <div><button id="submit" class="primary">开始处理</button><span id="status"></span></div>
+          <div><button id="submit" class="primary" disabled title="请先选择一个 .docx 文件">开始处理</button><span id="status"></span></div>
         </div>
         <div id="error" class="error hidden"><span id="errorText"></span><div id="errorActions" class="error-actions hidden"></div></div>
       </div>
@@ -755,6 +755,7 @@
         savedProfiles[profile] = data.profiles[profile].saved ? clone(data.profiles[profile].saved) : null;
       }
       settingsReady = true;
+      syncSubmitAvailability();
     }
     async function loadSettings() {
       try {
@@ -778,8 +779,15 @@
         $('#submit').disabled=true;
       }
     }
+    function syncSubmitAvailability() {
+      const submit = $('#submit');
+      const ready = settingsReady && Boolean($('#file').files[0]);
+      submit.disabled = !ready;
+      submit.title = ready ? '开始格式审查' : '请先选择一个 .docx 文件';
+      return ready;
+    }
     function setBusy(on, text='') {
-      $('#submit').disabled = on;
+      $('#submit').disabled = on || !settingsReady || !$('#file').files[0];
       $('#status').textContent = text;
       const existing = $('#cancelOperation');
       if (existing) existing.remove();
@@ -851,6 +859,8 @@
       const file = event.target.files[0];
       $('#fileName').textContent = file ? file.name : '点击选择 .docx 文件';
       $('#fileMeta').textContent = file ? `${formatSize(file.size)} · 点击可重新选择` : '最大 50 MB，原文件不会被覆盖';
+      syncSubmitAvailability();
+      if (file) showError();
     });
     function issueRows(issues, emptyText) {
       return issues.length ? issues.map(issue => `<tr><td>${esc(issue.location)}</td><td>${esc(issue.item)}${issue.affected > 1 ? `<br><span class="muted">影响 ${issue.affected} 处</span>` : ''}</td><td>${esc(issue.current)}</td><td>${esc(issue.expected)}</td><td>${esc(issue.suggestion)}</td><td><span class="tag ${issue.fixable ? 'fix' : 'manual'}">${esc(issue.change_status || (issue.fixable ? '自动修改' : '人工确认'))}</span></td></tr>`).join('') : `<tr><td colspan="6">${esc(emptyText)}</td></tr>`;

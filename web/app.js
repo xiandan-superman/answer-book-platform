@@ -1615,6 +1615,7 @@ function updateEnvironmentSummary(env) {
   const requiredRoutes = [textRoleRoute("reasoning", ""), textRoleRoute("answer", "")];
   const providerNetwork = env?.network?.by_provider || {};
   const routesConfigured = requiredRoutes.every((route) => route.keySaved && route.capabilityOk);
+  syncExamModelTestAvailability();
   const networkReady = hasNetworkCheck && requiredRoutes.every((route) => providerNetwork[route.provider] === true);
   const routeTests = requiredRoutes
     .map((route) => modelConnectionTests[modelConnectionTestKey(route.provider, route.model)])
@@ -1667,6 +1668,17 @@ function updateEnvironmentSummary(env) {
   renderEnvironmentRepairs(env);
 }
 
+function syncExamModelTestAvailability() {
+  const button = $("testExamModelRoutesBtn");
+  if (!button) return false;
+  const routes = [textRoleRoute("reasoning", "知识识别"), textRoleRoute("answer", "结构化解析")];
+  const ready = routes.every((route) => route.provider && route.model && route.keySaved && route.capabilityOk);
+  button.disabled = !ready;
+  button.setAttribute("aria-disabled", ready ? "false" : "true");
+  button.title = ready ? "实际调用当前知识识别和结构化解析模型" : "请先配置知识识别、结构化解析模型及对应 API Key";
+  return ready;
+}
+
 async function testExamModelRoutes() {
   const button = $("testExamModelRoutesBtn");
   const routes = [textRoleRoute("reasoning", "知识识别"), textRoleRoute("answer", "结构化解析")]
@@ -1707,8 +1719,8 @@ async function testExamModelRoutes() {
     }
   } finally {
     if (button) {
-      button.disabled = false;
       button.innerHTML = '<i class="fas fa-plug"></i>重新测试当前模型组合';
+      syncExamModelTestAvailability();
     }
   }
 }
@@ -1923,13 +1935,39 @@ async function sendSupportFeedback(scope = "page", extra = {}) {
 }
 
 async function submitSupportFeedback(scope = "page", extra = {}, button = null) {
+  const scopeLabels = {
+    page: "当前页面",
+    task: "当前任务",
+    question: "当前题目",
+  };
+  let normalizedDescription = String(extra.user_description || "").trim();
+  if (!normalizedDescription) {
+    const description = await platformPrompt({
+      eyebrow: "问题反馈",
+      title: `反馈${scopeLabels[scope] || "当前问题"}`,
+      message: "请简要说明遇到的问题。提交时会附带当前页面、任务状态和最近操作，便于定位；不会附带 API Key。",
+      inputLabel: "问题描述",
+      placeholder: "例如：点击审核结果后页面没有切换……",
+      confirmText: "提交反馈",
+      cancelText: "取消",
+    });
+    if (description === null) return null;
+    normalizedDescription = String(description).trim();
+  }
+  if (!normalizedDescription) {
+    await platformAlert("请先填写问题描述，再提交反馈。", { title: "反馈内容为空", tone: "warning" });
+    return null;
+  }
   const original = button?.innerHTML || "";
   if (button) {
     button.disabled = true;
     button.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>正在提交</span>';
   }
   try {
-    const result = await sendSupportFeedback(scope, extra);
+    const result = await sendSupportFeedback(scope, {
+      ...extra,
+      user_description: normalizedDescription,
+    });
     const queued = result.status === "queued";
     await platformAlert(
       `${result.message || (queued ? "反馈已保存，将自动提交。" : "问题反馈已提交。")}\n问题编号：${result.report_id || "-"}`,
@@ -2019,23 +2057,26 @@ async function submitTaskSupportFeedback(task, button = null) {
   const status = taskDisplayStatus(task);
   const failed = status === "failed";
   const reported = failedTaskFeedbackReported(task);
-  let feedbackNote = "";
-  if (!failed || reported) {
-    feedbackNote = await platformPrompt({
-      eyebrow: reported ? "再次反馈" : (task.is_format_task ? "Word 与格式反馈" : "任务质量反馈"),
-      title: reported ? "补充说明或重新发送" : (task.is_format_task ? "说明 Word 或排版问题" : "说明结果哪里需要改进"),
-      message: reported
-        ? "之前反馈不影响再次提交。可以补充新的情况；如果只是重新发送，问题描述可留空。"
+  const feedbackNote = await platformPrompt({
+    eyebrow: reported ? "再次反馈" : failed ? "任务失败反馈" : (task.is_format_task ? "Word 与格式反馈" : "任务质量反馈"),
+    title: reported ? "补充新的情况" : failed ? "说明任务失败时的现象" : (task.is_format_task ? "说明 Word 或排版问题" : "说明结果哪里需要改进"),
+    message: reported
+      ? "之前反馈不影响再次提交，也不会被覆盖。请补充这次新发现的情况。"
+      : failed
+        ? "系统会自动附带失败诊断；请补充你实际看到的现象或操作，便于还原问题。"
         : (task.is_format_task
           ? "任务显示成功也可以反馈。请说明下载、排版、公式、图片、分页或格式上的问题。"
           : "任务显示成功也可以反馈。可说明题目质量、答案内容、模型表现、Word 导出或使用体验问题。"),
-      inputLabel: reported ? "补充说明（选填）" : "问题描述（选填）",
-      placeholder: reported
-        ? "例如：刚才显示为待发送；还需要补充第 3 题导出后图片缺失"
-        : "例如：Word 中第 3 题图片缺失；题目难度与选择不一致；答案解释不充分",
-      confirmText: reported ? "再次提交反馈" : "提交反馈"
-    });
-    if (feedbackNote === null) return null;
+    inputLabel: "问题描述",
+    placeholder: failed
+      ? "例如：任务停在 91%，点击重试后仍回到同一状态"
+      : "例如：Word 中第 3 题图片缺失；题目难度与选择不一致；答案解释不充分",
+    confirmText: reported ? "再次提交反馈" : "提交反馈"
+  });
+  if (feedbackNote === null) return null;
+  if (!String(feedbackNote).trim()) {
+    await platformAlert("请先填写问题描述，再提交反馈。", { title: "反馈内容为空", tone: "warning" });
+    return null;
   }
   const feedbackKind = failed
     ? "task_failure"
@@ -2044,6 +2085,7 @@ async function submitTaskSupportFeedback(task, button = null) {
     ...taskSupportContext(task),
     feedback_kind: feedbackKind,
     feedback_note: feedbackNote,
+    user_description: feedbackNote,
   }, button);
   if (result) {
     rememberFailedTaskFeedback(task, result.report_id);
@@ -8596,6 +8638,7 @@ function updateModelRoleCards() {
   setModelRoleStatus("correctnessRoleStatus", routeConnectionStatus(textRoleRoute("correctness", "")));
   setModelRoleStatus("visionRoleStatus", routeConnectionStatus(visionRoute()));
   setModelRoleStatus("imageRoleStatus", routeConnectionStatus(imageRoute()));
+  syncExamModelTestAvailability();
 }
 
 function questionTypeModelCards() {
@@ -10020,16 +10063,19 @@ function renderAnswerProgressDetails(progress) {
 }
 
 function updateTaskManagerStats(tasks) {
-  const failedTasks = tasks.filter((task) => taskDisplayStatus(task) === "failed");
+  const scopedTasks = activeTaskKind === "all"
+    ? tasks
+    : tasks.filter((task) => (task.task_kind || "exam") === activeTaskKind);
+  const failedTasks = scopedTasks.filter((task) => taskDisplayStatus(task) === "failed");
   const counts = {
-    total: tasks.length,
-    running: tasks.filter((task) => taskDisplayStatus(task) === "running").length,
-    queued: tasks.filter((task) => taskDisplayStatus(task) === "queued").length,
-    needsInput: tasks.filter((task) => taskDisplayStatus(task) === "needs_input").length,
-    issues: tasks.filter((task) => taskDisplayStatus(task) === "completed_with_issues").length,
+    total: scopedTasks.length,
+    running: scopedTasks.filter((task) => taskDisplayStatus(task) === "running").length,
+    queued: scopedTasks.filter((task) => taskDisplayStatus(task) === "queued").length,
+    needsInput: scopedTasks.filter((task) => taskDisplayStatus(task) === "needs_input").length,
+    issues: scopedTasks.filter((task) => taskDisplayStatus(task) === "completed_with_issues").length,
     failed: failedTasks.length,
-    cancelled: tasks.filter((task) => taskDisplayStatus(task) === "cancelled").length,
-    completed: tasks.filter((task) => taskDisplayStatus(task) === "completed").length
+    cancelled: scopedTasks.filter((task) => taskDisplayStatus(task) === "cancelled").length,
+    completed: scopedTasks.filter((task) => taskDisplayStatus(task) === "completed").length
   };
   setText("taskStatTotal", counts.total);
   setText("taskStatRunning", counts.running);
@@ -10904,13 +10950,15 @@ function taskManagerActions(task = {}, reviewPending = false) {
       add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
     }
   } else {
+    const completedNeedsReview = task.status === "completed_with_issues" && caps.view_result;
+    add(completedNeedsReview, "result", "yellow-action", "fas fa-clipboard-check", "审核结果");
     add(caps.reopen_review, "reopen-review", "red-action", "fas fa-pen-to-square", "重新打开结构确认");
     add(caps.view_progress || caps.view_detail, "detail", "blue-action", "fas fa-eye", reviewPending && !caps.reopen_review ? "去处理" : "查看详情");
     add(caps.view_quality && !reviewPending, "log", "gray-action", "fas fa-list-check", "质量与诊断");
     add(caps.pause, "pause", "yellow-action", "fas fa-pause", "暂停");
     add(caps.resume, "resume", "green-action", "fas fa-play", "继续");
     add(caps.cancel, "cancel", "red-action", "fas fa-times", "取消");
-      add(caps.view_result, "result", task.status === "completed_with_issues" ? "yellow-action" : "blue-action", "fas fa-eye", task.status === "completed_with_issues" ? "审核结果" : "查看结果");
+    add(caps.view_result && !completedNeedsReview, "result", "blue-action", "fas fa-eye", "查看结果");
     add(caps.retry && !caps.reopen_review, "retry-exam", "green-action", "fas fa-rotate", "从检查点重跑");
     add(caps.download, "download", "green-action", "fas fa-download", "下载交付物");
     add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
@@ -10931,7 +10979,7 @@ function taskManagerActions(task = {}, reviewPending = false) {
   const secondary = bounded.slice(1);
   return primary + (secondary.length ? `
     <details class="task-card-more">
-      <summary aria-label="更多任务操作"><i class="fas fa-ellipsis"></i><span>更多</span></summary>
+      <summary aria-label="更多任务操作" aria-expanded="false"><i class="fas fa-ellipsis"></i><span>更多</span></summary>
       <div>${secondary.map(renderAction).join("")}</div>
     </details>` : "");
 }
@@ -11451,9 +11499,14 @@ function filterTasks(filter) {
     button.classList.toggle("active", button.dataset.filter === filter);
     button.setAttribute("aria-pressed", button.dataset.filter === filter ? "true" : "false");
   });
-  const labels = { all: "全部任务", running: "进行中", queued: "排队中", needs_input: "待人工处理", completed_with_issues: "有待处理项", completed: "已完成", failed: "执行失败", cancelled: "已取消" };
-  setText("taskActiveFilterSummary", `当前显示：${labels[filter] || "全部任务"}`);
+  updateTaskActiveFilterSummary();
   renderTaskManager();
+}
+
+function updateTaskActiveFilterSummary() {
+  const statusLabels = { all: "全部状态", running: "进行中", queued: "排队中", needs_input: "待人工处理", completed_with_issues: "有待处理项", completed: "已完成", failed: "执行失败", cancelled: "已取消" };
+  const kindLabels = { all: "全部业务", exam: "真题解析", practice: "按题出题", knowledge: "知识点出题", format: "格式审查" };
+  setText("taskActiveFilterSummary", `当前显示：${kindLabels[activeTaskKind] || "全部业务"} · ${statusLabels[activeTaskFilter] || "全部状态"}`);
 }
 
 function filterTaskKind(kind) {
@@ -11461,7 +11514,9 @@ function filterTaskKind(kind) {
   taskManagerPage = 1;
   document.querySelectorAll(".task-kind-btn").forEach((button) => {
     button.classList.toggle("active", button.dataset.kind === activeTaskKind);
+    button.setAttribute("aria-pressed", button.dataset.kind === activeTaskKind ? "true" : "false");
   });
+  updateTaskActiveFilterSummary();
   renderTaskManager();
 }
 
@@ -12729,6 +12784,7 @@ function startTaskManagerPolling() {
   if (taskManagerPollTimer) return;
   taskManagerPollTimer = setInterval(async () => {
     if (currentPage !== "tasks" || document.hidden || taskManagerPollInFlight) return;
+    if (document.querySelector("#taskManagerList .task-card-more[open]")) return;
     taskManagerPollInFlight = true;
     try {
       await loadTasks({ silent: true, includeLiveDetails: true });
@@ -14514,12 +14570,42 @@ function initPlatformSelects() {
   }, true);
 }
 
+function closeTaskCardMenus(except = null) {
+  document.querySelectorAll("#taskManagerList .task-card-more[open]").forEach((menu) => {
+    if (menu !== except) menu.open = false;
+  });
+}
+
+function initTaskCardMenus() {
+  if (document.body.dataset.taskCardMenus === "ready") return;
+  document.body.dataset.taskCardMenus = "ready";
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("#taskManagerList .task-card-more")) closeTaskCardMenus();
+  });
+  document.addEventListener("toggle", (event) => {
+    const menu = event.target;
+    if (!(menu instanceof HTMLDetailsElement) || !menu.classList.contains("task-card-more")) return;
+    menu.closest(".task-manager-item")?.classList.toggle("task-menu-open", menu.open);
+    menu.querySelector(":scope > summary")?.setAttribute("aria-expanded", menu.open ? "true" : "false");
+    if (menu.open) closeTaskCardMenus(menu);
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const openMenu = document.querySelector("#taskManagerList .task-card-more[open]");
+    if (!openMenu) return;
+    event.preventDefault();
+    openMenu.open = false;
+    openMenu.querySelector(":scope > summary")?.focus({ preventScroll: true });
+  });
+}
+
 // 初始化
 function initSiteEnhancements() {
   // 核心交互控件优先初始化；动画或装饰层异常不能阻断全局控件接管。
   initPlatformDialog();
   applyIconAccessibility();
   initPracticeActionMenus();
+  initTaskCardMenus();
   normalizePracticeInlineLayout();
   initPlatformSelects();
   const initialQuery = new URLSearchParams(window.location.search);

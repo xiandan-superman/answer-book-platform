@@ -1771,7 +1771,7 @@
             <button class="outline-button" type="button" onclick="startWizard()"><i class="fas fa-book-open"></i>真题解析</button>
             <button class="outline-button" type="button" onclick="openPracticeEntry('exam')"><i class="fas fa-layer-group"></i>按题出题</button>
             <button class="outline-button" type="button" onclick="openWordFormatReviewer()"><i class="fas fa-file-alt"></i>格式审查</button>
-            <button class="primary-button" type="button" onclick="openKnowledgeEntry()"><i class="fas fa-lightbulb"></i>知识点出题</button>
+            <button class="outline-button" type="button" onclick="openKnowledgeEntry()"><i class="fas fa-lightbulb"></i>知识点出题</button>
           </div>
         </div>
 
@@ -1875,7 +1875,7 @@
               <h3><i class="fas fa-server"></i>运行监控</h3>
               <p id="systemMonitorSubtitle">显示当前打开服务所在电脑的运行状态</p>
             </div>
-            <button id="refreshSystemBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新</button>
+            <button id="refreshSystemBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新运行状态</button>
           </div>
           <div id="systemHealthOverview" class="system-health-overview health-unknown">
             <span id="systemHealthIcon"><i class="fas fa-circle-question"></i></span>
@@ -1923,6 +1923,58 @@
               <div id="systemRunningTasks" class="system-running-task-list"></div>
             </section>
           </div>
+          <details class="monitor-advanced-settings">
+            <summary>
+              <span class="monitor-advanced-settings__icon"><i class="fas fa-sliders"></i></span>
+              <span class="monitor-advanced-settings__copy">
+                <strong>高级运行设置</strong>
+                <small id="monitorAdvancedSummary">本机执行 · 正在读取局域网状态</small>
+              </span>
+              <i class="fas fa-chevron-down monitor-advanced-settings__chevron" aria-hidden="true"></i>
+            </summary>
+            <div class="monitor-advanced-settings__body">
+              <article id="lanAccessPanel" class="lan-access-panel">
+                <div>
+                  <span class="lan-access-icon"><i class="fas fa-network-wired"></i></span>
+                  <div>
+                    <h3>局域网监控入口</h3>
+                    <p id="lanAccessHint">正在读取本机局域网访问地址……</p>
+                  </div>
+                </div>
+                <div class="lan-access-values">
+                  <label>
+                    <span>访问地址</span>
+                    <code id="lanAccessUrl">读取中</code>
+                  </label>
+                  <label>
+                    <span>监控账号</span>
+                    <code id="lanAccessUsername">monitor</code>
+                  </label>
+                  <label id="lanAccessPasswordRow">
+                    <span>监控密码</span>
+                    <code id="lanAccessPassword">仅本机显示</code>
+                  </label>
+                  <button id="copyLanAccessBtn" class="task-card-button blue-action" type="button">
+                    <i class="far fa-copy"></i>复制访问信息
+                  </button>
+                </div>
+              </article>
+              <article id="hybridExecutionPanel" class="execution-mode-panel local-mode">
+                <div class="execution-mode-copy">
+                  <span class="execution-mode-icon"><i class="fas fa-laptop"></i></span>
+                  <div>
+                    <h3>真题解析执行位置</h3>
+                    <p id="hybridExecutionHint">默认在当前电脑执行，任务材料不上传到混合云服务器。</p>
+                  </div>
+                </div>
+                <label class="execution-mode-switch" for="hybridExecutionEnabled">
+                  <span id="hybridExecutionLabel">本机执行（默认）</span>
+                  <input id="hybridExecutionEnabled" type="checkbox" role="switch" aria-label="启用混合云服务器执行">
+                  <i aria-hidden="true"></i>
+                </label>
+              </article>
+            </div>
+          </details>
           <details class="system-technical-details system-log-details">
             <summary>技术日志与内部事件</summary>
             <p class="system-log-explanation">以下内容用于排查故障。普通使用只需查看上方运行摘要和“需要处理”数量。</p>
@@ -1946,7 +1998,7 @@
               <p id="storageSubtitle">管理教材缓存占用的磁盘空间。删除缓存不会丢失教材文件，需要时会自动重建。</p>
             </div>
             <div class="flex items-center gap-2">
-              <button id="refreshStorageBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新</button>
+              <button id="refreshStorageBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>重新统计磁盘</button>
               <button id="cleanupStorageBtn" class="task-card-button danger-action" type="button"><i class="fas fa-broom"></i>清理可删除项</button>
             </div>
           </div>
@@ -1961,58 +2013,6 @@
             <p class="text-[13px] text-[var(--brand-muted-foreground)]">读取中……</p>
           </div>
         </article>
-        <details class="monitor-advanced-settings">
-          <summary>
-            <span class="monitor-advanced-settings__icon"><i class="fas fa-sliders"></i></span>
-            <span class="monitor-advanced-settings__copy">
-              <strong>高级运行设置</strong>
-              <small id="monitorAdvancedSummary">本机执行 · 正在读取局域网状态</small>
-            </span>
-            <i class="fas fa-chevron-down monitor-advanced-settings__chevron" aria-hidden="true"></i>
-          </summary>
-          <div class="monitor-advanced-settings__body">
-            <article id="lanAccessPanel" class="lan-access-panel">
-              <div>
-                <span class="lan-access-icon"><i class="fas fa-network-wired"></i></span>
-                <div>
-                  <h3>局域网监控入口</h3>
-                  <p id="lanAccessHint">正在读取本机局域网访问地址……</p>
-                </div>
-              </div>
-              <div class="lan-access-values">
-                <label>
-                  <span>访问地址</span>
-                  <code id="lanAccessUrl">读取中</code>
-                </label>
-                <label>
-                  <span>监控账号</span>
-                  <code id="lanAccessUsername">monitor</code>
-                </label>
-                <label id="lanAccessPasswordRow">
-                  <span>监控密码</span>
-                  <code id="lanAccessPassword">仅本机显示</code>
-                </label>
-                <button id="copyLanAccessBtn" class="task-card-button blue-action" type="button">
-                  <i class="far fa-copy"></i>复制访问信息
-                </button>
-              </div>
-            </article>
-            <article id="hybridExecutionPanel" class="execution-mode-panel local-mode">
-              <div class="execution-mode-copy">
-                <span class="execution-mode-icon"><i class="fas fa-laptop"></i></span>
-                <div>
-                  <h3>真题解析执行位置</h3>
-                  <p id="hybridExecutionHint">默认在当前电脑执行，任务材料不上传到混合云服务器。</p>
-                </div>
-              </div>
-              <label class="execution-mode-switch" for="hybridExecutionEnabled">
-                <span id="hybridExecutionLabel">本机执行（默认）</span>
-                <input id="hybridExecutionEnabled" type="checkbox" role="switch" aria-label="启用混合云服务器执行">
-                <i aria-hidden="true"></i>
-              </label>
-            </article>
-          </div>
-        </details>
       </div>
     </section>
   </main>

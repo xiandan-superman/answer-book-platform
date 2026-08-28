@@ -5,6 +5,7 @@ APP_JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 MOTION_JS = (ROOT / "web" / "motion.js").read_text(encoding="utf-8")
 PLATFORM_THEME_CSS = (ROOT / "web" / "platform-theme.css").read_text(encoding="utf-8")
+WORD_FORMAT_HTML = (ROOT / "standalone_word_format_reviewer" / "web" / "index.html").read_text(encoding="utf-8")
 
 
 def test_practice_formula_renderer_strips_provider_delimiters_before_wrapping() -> None:
@@ -690,10 +691,11 @@ def test_monitor_prioritizes_health_and_collapses_infrequent_settings() -> None:
     assert '<details class="monitor-advanced-settings">' in monitor
     assert 'id="monitorAdvancedSummary"' in monitor
     assert monitor.index('id="systemMonitorPanel"') < monitor.index('id="storagePanel"')
-    assert monitor.index('id="storagePanel"') < monitor.index('<details class="monitor-advanced-settings">')
+    assert monitor.index('id="systemMonitorPanel"') < monitor.index('<details class="monitor-advanced-settings">') < monitor.index('id="storagePanel"')
+    assert monitor.count('<details class="monitor-advanced-settings">') == 1
     assert "function syncMonitorAdvancedSummary()" in APP_JS
     assert "#page-monitor #systemMonitorPanel { order: 1; }" in PLATFORM_THEME_CSS
-    assert "#page-monitor .monitor-advanced-settings { order: 3; }" in PLATFORM_THEME_CSS
+    assert "#page-monitor #systemMonitorPanel > .monitor-advanced-settings" in PLATFORM_THEME_CSS
 
 
 def test_practice_question_actions_have_visible_labels() -> None:
@@ -727,6 +729,33 @@ def test_task_statistics_are_the_only_status_filter_and_secondary_actions_collap
     assert 'id="taskActiveFilterSummary"' in tasks
     assert 'class="task-card-more"' in APP_JS
     assert 'bounded.slice(0, 1)' in APP_JS
+    assert '#taskManagerList .task-card-more[open]' in APP_JS
+    assert 'function initTaskCardMenus()' in APP_JS
+    assert 'event.target.closest("#taskManagerList .task-card-more")' in APP_JS
+    assert 'event.key !== "Escape"' in APP_JS
+    assert 'aria-expanded="false"' in APP_JS
+    assert '.task-manager-item.task-menu-open' in PLATFORM_THEME_CSS
+    assert '.task-manager-list:has(.task-card-more[open])' in PLATFORM_THEME_CSS
+    assert '当前显示：${kindLabels[activeTaskKind]' in APP_JS
+
+
+def test_completed_exam_with_issues_prioritizes_review_result() -> None:
+    action_start = APP_JS.index("function taskManagerActions")
+    action_end = APP_JS.index("function generationTaskManagerActions", action_start)
+    actions = APP_JS[action_start:action_end]
+
+    assert 'add(completedNeedsReview, "result"' in actions
+    assert actions.index('add(completedNeedsReview, "result"') < actions.index('add(caps.view_progress || caps.view_detail, "detail"')
+
+
+def test_feedback_requires_user_description_before_posting() -> None:
+    start = APP_JS.index("async function submitSupportFeedback")
+    end = APP_JS.index("function taskSupportContext", start)
+    feedback = APP_JS[start:end]
+
+    assert "await platformPrompt" in feedback
+    assert "user_description: normalizedDescription" in feedback
+    assert feedback.index("await platformPrompt") < feedback.index("sendSupportFeedback")
 
 
 def test_practice_secondary_result_context_is_collapsed_behind_one_summary() -> None:
@@ -742,6 +771,13 @@ def test_environment_distinguishes_network_configuration_and_actual_model_call()
     assert "async function testExamModelRoutes()" in APP_JS
     assert 'api("/api/provider-test"' in APP_JS
     assert 'rememberModelConnectionTest(route.provider' in APP_JS
+    assert "function syncExamModelTestAvailability()" in APP_JS
+
+
+def test_word_format_start_requires_a_selected_document() -> None:
+    assert 'id="submit" class="primary" disabled' in WORD_FORMAT_HTML
+    assert "function syncSubmitAvailability()" in WORD_FORMAT_HTML
+    assert "settingsReady && Boolean($('#file').files[0])" in WORD_FORMAT_HTML
 
 
 def test_desktop_focus_and_secondary_text_contrast_have_shared_guards() -> None:

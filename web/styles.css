@@ -8142,6 +8142,7 @@ input:focus, select:focus, textarea:focus {
 .knowledge-type-picker input:checked + span { border-color: #7c3aed; color: #6d28d9; background: #f3e8ff; }
 .knowledge-model-note {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   min-height: 64px;
@@ -8157,7 +8158,7 @@ input:focus, select:focus, textarea:focus {
 .knowledge-model-note span { display: block; }
 .knowledge-model-note strong { color: #1f337f; font-size: 14px; line-height: 1.35; }
 .knowledge-model-note span { overflow: hidden; margin-top: 4px; color: #465fc2; font-size: 13px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
-.knowledge-model-note .knowledge-model-button { display: inline-flex; flex: none; align-items: center; gap: 6px; min-height: 36px; border: 1px solid #9eb0ee; border-radius: 8px; background: #fff; padding: 0 11px; color: #2946a5; font-size: 13px; font-weight: 700; cursor: pointer; }
+.knowledge-model-note .knowledge-model-button { display: inline-flex; flex: none; align-items: center; gap: 6px; min-height: 36px; margin-left: auto; border: 1px solid #9eb0ee; border-radius: 8px; background: #fff; padding: 0 11px; color: #2946a5; font-size: 13px; font-weight: 700; cursor: pointer; }
 .knowledge-model-note .knowledge-model-button:hover { border-color: #6f86d8; background: #f8faff; }
 
 /* 业务首页：合并稿视觉系统 */
