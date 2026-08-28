@@ -57,3 +57,54 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Run critical Chromium flows
         run: python -m pytest -q -m e2e tests/e2e/test_platform_smoke.py
+
+  source-dependency-locks:
+    name: Source dependency locks (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            python-version: "3.9"
+            base-constraint: constraints-py39.txt
+            platform-constraint: constraints-source-macos-py39.txt
+          - os: macos-14
+            python-version: "3.11"
+            base-constraint: constraints-py311.txt
+            platform-constraint: constraints-source-macos-py311.txt
+          - os: windows-latest
+            python-version: "3.9"
+            base-constraint: constraints-py39.txt
+            platform-constraint: constraints-source-windows-py39.txt
+          - os: windows-latest
+            python-version: "3.11"
+            base-constraint: constraints-py311.txt
+            platform-constraint: constraints-source-windows-py311.txt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install locked macOS source runtime
+        if: runner.os == 'macOS'
+        run: >-
+          python -m pip install --upgrade pip &&
+          python -m pip install -r requirements.txt
+          -c ${{ matrix.base-constraint }}
+          -c ${{ matrix.platform-constraint }}
+      - name: Install locked Windows source runtime
+        if: runner.os == 'Windows'
+        run: >-
+          python -m pip install --upgrade pip &&
+          python -m pip install -r requirements.txt -r requirements-windows.txt
+          -c ${{ matrix.base-constraint }}
+          -c ${{ matrix.platform-constraint }}
+      - name: Validate resolved source runtime
+        run: |
+          python -m pip check
+          python -c "import docx,lxml,latex2mathml,PIL,pydantic,pypdfium2,bm25s,huey,matplotlib,numpy,webview,pystray"
+      - name: Validate Windows Word integration import
+        if: runner.os == 'Windows'
+        run: python -c "import win32com.client"

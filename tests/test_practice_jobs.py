@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from app import practice_jobs
+from app import practice_jobs, practice_worker
 
 
 def test_practice_job_is_visible_while_running_and_persists_result(tmp_path, monkeypatch):
@@ -51,6 +51,63 @@ def test_practice_job_records_worker_failure(tmp_path, monkeypatch):
     assert failed["diagnostic_context"]["exception_type"] == "RuntimeError"
     assert "raise error" in failed["diagnostic_context"]["traceback"]
     assert failed["support_id"].startswith("PJ-")
+
+
+def test_postprocess_failure_reuses_full_result_checkpoint_without_regeneration(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
+    payload = {
+        "source_mode": "exam",
+        "generation_strategy": "parallel_exam",
+        "plan": {"blueprint": {"exercise_plan": [{"plan_item_id": "plan_item_01"}]}},
+    }
+    generated = {
+        "exercises": [{"plan_item_id": "plan_item_01", "stem": "已生成题目"}],
+        "quality": {"status": "passed"},
+    }
+    generation_calls = []
+
+    def generate(_payload):
+        generation_calls.append("generated")
+        return generated
+
+    monkeypatch.setattr(practice_worker, "generate_practice_from_plan", generate)
+    monkeypatch.setattr(
+        practice_worker,
+        "save_practice_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("历史保存失败")),
+    )
+    first = practice_jobs.create_practice_job("generate_from_plan", payload)
+    practice_jobs.run_practice_job(first["job_id"], practice_worker.execute_practice_operation)
+
+    failed = practice_jobs.load_practice_job(first["job_id"])
+    assert failed["status"] == "failed"
+    assert failed["checkpoint_stage"] == "result_ready_for_history_save"
+    assert failed["postprocess_checkpoint"]["result"] == generated
+    assert "后处理检查点" in failed["suggested_action"]
+
+    monkeypatch.setattr(
+        practice_worker,
+        "generate_practice_from_plan",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("不应重复调用生成模型")),
+    )
+    monkeypatch.setattr(
+        practice_worker,
+        "save_practice_record",
+        lambda result, **_kwargs: {
+            "history_id": "practice_20260828120000_abcdefgh",
+            "data": {**result, "history_id": "practice_20260828120000_abcdefgh"},
+        },
+    )
+    retry = practice_jobs.create_practice_job(
+        "generate_from_plan",
+        {**payload, "resume_from_job_id": first["job_id"]},
+    )
+    practice_jobs.run_practice_job(retry["job_id"], practice_worker.execute_practice_operation)
+
+    completed = practice_jobs.load_practice_job(retry["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["result"]["exercises"][0]["stem"] == "已生成题目"
+    assert generation_calls == ["generated"]
 
 
 def test_only_explicit_selected_provider_missing_key_marks_configuration_required(tmp_path, monkeypatch):

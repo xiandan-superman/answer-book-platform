@@ -13,19 +13,12 @@ from dataclasses import replace
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from .concurrency import ModelRequestAborted, model_request_slot
 from .llm_client import LLMError, OpenAICompatibleClient
+from .paths import OUTPUTS_DIR
 from .practice_batch_contracts import complete_practice_slots, partition_practice_batch_rows
-from .practice_export import (
-    has_unrenderable_practice_markup,
-    normalize_practice_markup,
-    normalize_practice_question_text,
-    preflight_practice_inline_expressions,
-    practice_stem_answer_leak_reasons,
-)
-from .practice_inputs import parse_practice_sources
 from .practice_context_planner import (
     aggregate_source_evidence,
     apply_source_evidence_contract,
@@ -33,7 +26,14 @@ from .practice_context_planner import (
     image_evidence_refs,
     image_numbers_from_evidence_refs,
 )
-from .paths import OUTPUTS_DIR
+from .practice_export import (
+    has_unrenderable_practice_markup,
+    normalize_practice_markup,
+    normalize_practice_question_text,
+    practice_stem_answer_leak_reasons,
+    preflight_practice_inline_expressions,
+)
+from .practice_inputs import parse_practice_sources
 from .practice_result_assembly import (
     PracticeGenerationMetadataContext,
     build_practice_generation_metadata,
@@ -44,10 +44,11 @@ from .practice_runtime import (
     ensure_practice_generation_active,
     iter_bounded_futures,
     load_practice_generation_checkpoint,
+    mark_practice_generation_checkpoint_complete,
     partition_compatible_batches,
 )
-from .redaction import redact_credentials
 from .provider_errors import classify_provider_error
+from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
 from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, provider_model_supports_vision, resolve_provider_model
 
@@ -55,6 +56,20 @@ SCHEMA_VERSION = "answer_book.practice_set.v1"
 DIFFICULTY_LEVELS = ("基础", "进阶", "挑战")
 ALLOWED_DIFFICULTIES = set(DIFFICULTY_LEVELS)
 ALLOWED_TYPES = {"单选题", "多选题", "判断题", "填空题", "简答题", "计算题", "作图题", "综合题"}
+
+
+def _observe_pydantic_shadow(object_type: str, data: dict[str, Any]) -> None:
+    """Keep optional shadow diagnostics outside every production failure path."""
+
+    try:
+        from .pydantic_shadow import observe_practice_plan, observe_practice_set
+
+        if object_type == "blueprint":
+            observe_practice_plan(data)
+        else:
+            observe_practice_set(data)
+    except Exception:
+        pass
 
 
 def _practice_source_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
@@ -4195,6 +4210,7 @@ def normalize_practice_set(
     # Recompute once more from the normalized, program-owned representation so
     # edits and model output use exactly the same gate implementation.
     result["quality"] = recompute_practice_quality(result)
+    _observe_pydantic_shadow("practice_output", result)
     return result
 
 
@@ -6116,6 +6132,7 @@ def _normalize_plan(
     }
     plan["mode_contract"] = validate_practice_mode_contract(plan)
     plan["blueprint_audit"] = audit_practice_blueprint(plan)
+    _observe_pydantic_shadow("blueprint", plan)
     return plan
 
 
@@ -8099,6 +8116,92 @@ def _selectively_repair_practice_diversity(
     return report, failures
 
 
+def _selectively_repair_practice_format(
+    practice: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Repair only questions rejected by the deterministic Word preflight."""
+    try:
+        repair_limit = max(0, min(8, int(payload.get("format_auto_repair_limit", 5))))
+    except (TypeError, ValueError):
+        repair_limit = 5
+    enabled = payload.get("automatic_targeted_repair", True) is not False and repair_limit > 0
+    exercises = practice.get("exercises") if isinstance(practice.get("exercises"), list) else []
+
+    def issues_for(index: int) -> list[str]:
+        if not (0 <= index < len(exercises)) or not isinstance(exercises[index], dict):
+            return []
+        return preflight_practice_inline_expressions({"exercises": [exercises[index]]})
+
+    affected = [index for index in range(len(exercises)) if issues_for(index)]
+    report: dict[str, Any] = {
+        "schema_version": "answer_book.practice_targeted_format_repair.v1",
+        "enabled": enabled,
+        "initial_affected_indexes": [index + 1 for index in affected],
+        "repair_limit": repair_limit,
+        "attempts": [],
+    }
+    if not affected or not enabled:
+        report["status"] = "passed" if not affected else "repair_disabled"
+        report["remaining_affected_indexes"] = [index + 1 for index in affected]
+        return report
+
+    for index in affected[:repair_limit]:
+        ensure_practice_generation_active(payload)
+        item = exercises[index]
+        initial_issues = issues_for(index)
+        attempt: dict[str, Any] = {
+            "exercise_index": index,
+            "number": item.get("number") or index + 1,
+            "initial_issues": initial_issues,
+        }
+
+        # First re-run the platform-owned lossless normalizers. This fixes bare
+        # LaTeX delimiters and renderer-owned layout without spending a model
+        # call or altering the question's semantics.
+        item["stem"], _ = _normalize_generated_stem(item.get("stem"), limit=6000)
+        item["target_skill"], _ = _normalize_generated_markup(item.get("target_skill"), limit=500)
+        item["options"], _ = _normalize_generated_options(item.get("options"))
+        item["tables"], _ = _normalize_generated_tables(item.get("tables"))
+        deterministic_remaining = issues_for(index)
+        if not deterministic_remaining:
+            attempt["status"] = "repaired_deterministically"
+            report["attempts"].append(attempt)
+            continue
+
+        try:
+            response = regenerate_practice_exercise({
+                **payload,
+                "practice": practice,
+                "exercise_index": index,
+                "instruction": (
+                    "Word 公式预检只阻断了当前这一题。保持题型、难度、知识点、题意和数值关系不变，"
+                    "只重写无法转换为 Word 原生公式的标记；所有 LaTeX 必须使用完整、平衡且受支持的语法。"
+                    "当前问题：" + "；".join(deterministic_remaining[:6])
+                ),
+            })
+            ensure_practice_generation_active(payload)
+            replacement = response.get("exercise") if isinstance(response, dict) else None
+            if not isinstance(replacement, dict):
+                raise ValueError("定向修复没有返回有效题目。")
+            exercises[index] = replacement
+            remaining = issues_for(index)
+            attempt["status"] = "repaired_by_targeted_regeneration" if not remaining else "still_blocked"
+            attempt["remaining_issues"] = remaining
+        except PracticeGenerationStopped:
+            raise
+        except Exception as exc:
+            attempt["status"] = "repair_failed"
+            attempt["error"] = _clean(exc, 600)
+        report["attempts"].append(attempt)
+
+    remaining_indexes = [index + 1 for index in range(len(exercises)) if issues_for(index)]
+    report["remaining_affected_indexes"] = remaining_indexes
+    report["unattempted_indexes"] = [index + 1 for index in affected[repair_limit:]]
+    report["status"] = "repaired" if not remaining_indexes else "partial"
+    return report
+
+
 def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
     _validate_practice_source_snapshot(payload, plan.get("source_snapshot") or payload.get("source_snapshot"))
@@ -8123,6 +8226,29 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("blueprint_review_enabled") is False
         else audit_practice_blueprint(plan)
     )
+    blueprint_audit_repair: dict[str, Any] = {}
+    repairable_blueprint_ids = [
+        _clean(finding.get("plan_item_id"), 80)
+        for finding in (plan_audit.get("findings") or [])
+        if isinstance(finding, dict)
+        and finding.get("code") == "cross_source_design_leak"
+        and _clean(finding.get("plan_item_id"), 80)
+    ]
+    if (
+        payload.get("blueprint_review_enabled") is not False
+        and payload.get("automatic_targeted_repair", True) is not False
+        and repairable_blueprint_ids
+        and plan_audit.get("status") != "blocked"
+    ):
+        blueprint_audit_repair = repair_blueprint_audit_findings(
+            plan,
+            payload,
+            plan_audit,
+            target_item_ids=repairable_blueprint_ids,
+        )
+        plan = ensure_practice_blueprint_defaults(plan)
+        blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
+        plan_audit = audit_practice_blueprint(plan)
     if plan_audit["status"] == "blocked":
         raise ValueError("确认后的蓝图未通过生成门禁：" + "；".join(plan_audit["errors"]))
     audit_failed_root_ids = {
@@ -9287,6 +9413,13 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             except Exception:
                 pass
         ensure_practice_generation_active(payload)
+    mark_practice_generation_checkpoint_complete(
+        payload,
+        exercises=all_exercises,
+        batch_errors=batch_failures,
+        batch_diagnostics=generation_batch_diagnostics,
+        total_count=count,
+    )
     all_exercises = complete_practice_slots(
         all_exercises,
         exercise_plan[:count],
@@ -9315,6 +9448,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     result["generation_strategy"] = reviewed_blueprint.get("generation_strategy") or "single"
     result["include_source_content_in_generation"] = include_source_content
     result["blueprint_audit"] = plan_audit
+    result["blueprint_audit_repair"] = blueprint_audit_repair
     result["source_mode"] = "knowledge" if is_knowledge_mode else "exam"
     result_ids = [str(item.get("plan_item_id") or "").strip() for item in all_exercises]
     expected_all_ids = [str(item.get("plan_item_id") or "").strip() for item in exercise_plan[:count]]
@@ -9322,6 +9456,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"合并后的 plan_item_id 未完整覆盖蓝图：期望 {expected_all_ids}，实际 {result_ids}。")
     if is_knowledge_mode:
         result["knowledge_title"] = _clean(plan.get("knowledge_title"), 300) or "知识点模拟题"
+    result["format_repair"] = _selectively_repair_practice_format(result, payload)
+    result["quality"] = recompute_practice_quality(result)
     diversity_repair, diversity_failures = _selectively_repair_practice_diversity(result, payload)
     result["diversity_repair"] = diversity_repair
     batch_failures.update(diversity_failures)

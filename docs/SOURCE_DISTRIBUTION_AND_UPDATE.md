@@ -22,7 +22,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 
 1. 应用待处理的已校验源码更新。
 2. 在用户数据目录创建 `runtime/python-env`。
-3. 按当前 Python 与平台选择锁定约束（Python 3.9 使用 `constraints-py39.txt`，Python 3.11+ 使用 `constraints-py311.txt`），并比较运行依赖、Windows 补充依赖和所选约束的联合指纹。Python 3.10 保持有界依赖兼容路径。
+3. 按当前 Python 与平台组合选择锁定约束：Python 3.9 使用 `constraints-py39.txt`，Python 3.11+ 使用 `constraints-py311.txt`；macOS 额外叠加对应的 `constraints-source-macos-*.txt`，Windows 额外叠加 `constraints-source-windows-*.txt`，并比较运行依赖、Windows 补充依赖和全部所选约束的联合指纹。Python 3.10 保持有界依赖兼容路径。
 4. 首次运行自动安装依赖；已安装环境异常或指纹变化时请求用户确认。
 5. 启动 `scripts/start_platform.py`，等待 `/api/version` 健康检查通过。
 6. 持续等待 `/api/version` 就绪后只打开一次默认浏览器，不设置会导致慢启动漏开网页的固定 30 秒截止时间；默认浏览器调用失败时使用系统打开命令兜底。如果服务已运行，则只打开页面，不启动第二个工作器。
@@ -70,7 +70,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 1. 完成源码修改和独立数据目录的本地预览。
 2. 用户确认后提交并推送 Git。
 3. 累积到正式版本时同步 `APP_VERSION`、`VERSION`、`RELEASE_MANIFEST.json` 和对应的 `CHANGELOG.md` 条目，只推送 `main`，不人工创建标签。
-4. `.github/workflows/quality.yml` 完成 Python 3.9、Python 3.11 和 Chromium 门禁；失败只停留在预检阶段，不产生正式版本标签。
+4. `.github/workflows/quality.yml` 完成 Python 3.9、Python 3.11、Chromium，以及 macOS/Windows 源码运行依赖锁解析门禁；失败只停留在预检阶段，不产生正式版本标签。
 5. 门禁全部成功后，`.github/workflows/source-release.yml` 仅为尚未公开的新版本运行。它使用 `scripts/package_release.py` 从 Git 索引白名单生成源码 ZIP，再由 `scripts/verify_release_package.py` 反向检查启动文件、Logo、版本清单和运行数据排除规则；禁止直接用未筛选的 `git archive` 作为普通用户附件。打包反向验证和启动冒烟全部通过后，工作流才自动创建完全匹配的 `v<APP_VERSION>` 标签。
 6. 生成包含版本、附件名、大小、SHA256 和依赖指纹的 `update-manifest.json`。
 7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新仅供 0.9.19+ 安全替换器使用的 `update-stable-v2.json`。上传和稳定源更新使用有限重试；结束时重新下载公开附件，核对大小、SHA256 和稳定源。若稳定源更新中断，后续运行从已发布清单幂等恢复。旧版固定读取的 `update-stable.json` 保持禁用，防止旧替换逻辑再次触发。
@@ -93,5 +93,9 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 - 运行中的 Python 服务不直接覆盖自身；所有替换由外层监督器在服务退出后执行。
 - 有运行中或排队任务时不得开始会重启服务的程序更新。
 - 依赖安装只进入用户级虚拟环境，不写系统 Python。
+- 环境页显示实际版本与当前平台推荐锁的差异；该信息用于诊断，不单独阻断启动。真正缺包或关键模块无法导入时仍按原有规则请求修复依赖。
+- `THIRD_PARTY_NOTICES.md` 必须覆盖声明和锁定的第三方包以及仓库内置前端组件；日常质量门禁自动审计，防止新增依赖遗漏用途或许可证记录。
+- MathJax 源码附件只保留正在使用的 `tex-mml-chtml.js`、输入扩展、CHTML 官方 WOFF 字体和许可证；TeX/MathML 动态扩展（包括 `boldsymbol`、`mhchem`）及字体不得因体积优化被删除，SVG、语音语义数据、Node 适配器和未调用组合包不进入源码 ZIP。
+- Pydantic 严格契约放在程序已经规范化的练习蓝图和练习结果保存边界，用字段路径定位内部结构回归；原始模型 JSON 仍先经过现有清洗、修复和语义校验，避免把可恢复的供应商格式波动直接升级为整任务失败。
 - API Key 不进入源码包、更新清单、日志或备份说明。
 - 修改更新协议、数据路径、版本判断或启动入口时，必须同步更新 `AGENTS.md`、README、本文件和对应测试。

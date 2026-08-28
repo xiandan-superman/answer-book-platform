@@ -1606,7 +1606,11 @@ function renderTaskStepList(currentStage = "", status = "") {
 function updateEnvironmentSummary(env) {
   const formulaReady = Boolean(env?.formula_conversion?.preferred_chain_ready);
   const packages = env?.python_packages || {};
-  const packageReady = ["python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib"].every((name) => Boolean(packages[name]));
+  const dependencyDriftCount = Number(env?.dependency_versions?.mismatch_count || 0);
+  const dependencyReadyLabel = dependencyDriftCount > 0
+    ? `通过 · ${dependencyDriftCount} 项版本偏差（不阻断）`
+    : "通过";
+  const packageReady = ["python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "numpy"].every((name) => Boolean(packages[name]));
   const renderReady = Boolean(env?.document_tools?.pdf_render_available);
   const drawingRuntimeReady = Boolean(env?.drawing_runtime?.ok);
   const runtimeReady = Boolean(Object.keys(packages).length);
@@ -1640,7 +1644,7 @@ function updateEnvironmentSummary(env) {
     "toolsCheckIcon",
     "environmentHint",
     toolsReady,
-    "通过",
+    dependencyReadyLabel,
     !drawingRuntimeReady ? "绘图运行异常" : renderReady ? "依赖不完整" : "渲染工具缺失"
   );
   if (hasNetworkCheck) setCheckState("networkCheckIcon", "networkSummary", networkReady);
@@ -3596,6 +3600,9 @@ function ensurePracticeMathJax() {
   if (window.MathJax?.typesetPromise) return Promise.resolve(window.MathJax);
   if (practiceMathJaxPromise) return practiceMathJaxPromise;
   window.MathJax = {
+    startup: {
+      typeset: false
+    },
     loader: {
       load: ["[tex]/boldsymbol"]
     },
@@ -3613,7 +3620,17 @@ function ensurePracticeMathJax() {
     const script = document.createElement("script");
     script.src = "/vendor/mathjax/tex-mml-chtml.js";
     script.async = true;
-    script.onload = () => resolve(window.MathJax);
+    script.onload = async () => {
+      try {
+        await window.MathJax?.startup?.promise;
+        if (typeof window.MathJax?.typesetPromise !== "function") {
+          throw new Error("公式渲染组件尚未完成初始化");
+        }
+        resolve(window.MathJax);
+      } catch (error) {
+        reject(error);
+      }
+    };
     script.onerror = () => reject(new Error("公式渲染组件加载失败"));
     document.head.appendChild(script);
   });
@@ -7353,13 +7370,27 @@ function setPracticeExportButtonsEnabled(enabled, data = latestPracticeSet) {
 async function loadEnvironmentStatus() {
   setEnvironmentChecking();
   $("environmentBox").textContent = "环境检查中...";
-  const [env] = await Promise.all([
+  const [env, shadow] = await Promise.all([
     api("/api/environment"),
+    api("/api/quality/pydantic-shadow").catch(() => null),
     new Promise((resolve) => setTimeout(resolve, 500))
   ]);
   latestEnvironmentStatus = env;
   updateEnvironmentSummary(env);
   $("environmentBox").textContent = pretty(env);
+  const shadowSummary = $("pydanticShadowSummary");
+  const shadowReport = $("pydanticShadowReport");
+  if (shadowSummary) {
+    if (!shadow) {
+      shadowSummary.textContent = "报告暂不可用（不影响任务）";
+    } else if (!Number(shadow.sample_count || 0)) {
+      shadowSummary.textContent = "尚无样本 · 0 额外模型调用";
+    } else {
+      const readiness = shadow.review_readiness?.ready ? "待人工评审" : "观察中";
+      shadowSummary.textContent = `${readiness} · ${Number(shadow.sample_count || 0)} 个样本 · 0 额外模型调用`;
+    }
+  }
+  if (shadowReport) shadowReport.textContent = shadow ? pretty(shadow) : "影子报告读取失败；任务主流程不受影响。";
   return env;
 }
 

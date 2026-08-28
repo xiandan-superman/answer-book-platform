@@ -41,12 +41,12 @@ from .http_errors import public_error_payload
 from .hybrid_client import HybridClientError, hybrid_settings_payload, save_hybrid_enabled
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
 from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
-from .storage_cleanup import cleanup_storage, storage_overview
 from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
 from .local_config import update_dotenv_values
 from .page_map_admin import page_map_summary, write_page_map_rows
 from .paths import PROJECT_ROOT, TEXTBOOKS_DIR, WEB_DIR, ensure_project_dirs
 from .pipeline import output_dir, stage_dir
+from .practice_diagnostics import build_practice_diagnostics
 from .practice_export import (
     build_practice_question_docx,
     resolve_practice_export_payload,
@@ -92,11 +92,11 @@ from .practice_store import (
     undo_last_practice_revision,
     update_practice_exercise,
 )
-from .provider_errors import classify_provider_error
-from .redaction import redact_credentials
 from .process_lock import platform_process_lock
 from .prompts import build_answer_fragment_prompt
+from .provider_errors import classify_provider_error
 from .read_snapshot import READ_SNAPSHOTS
+from .redaction import redact_credentials
 from .review_export import build_question_review, write_question_review_csv
 from .runtime_monitor import append_exception_log, append_runtime_log, build_system_status, read_runtime_logs, task_health_summary
 from .settings import (
@@ -116,6 +116,7 @@ from .shared_textbook_library import (
     shared_library_package_path,
     sync_shared_textbook_library,
 )
+from .storage_cleanup import cleanup_storage, storage_overview
 from .support_reporting import start_support_retry_worker, stop_support_retry_worker, submit_support_report, support_status
 from .task_contracts import present_error, public_support_id
 from .task_control import delete_task
@@ -547,6 +548,7 @@ def _practice_job_api_payload(record: dict) -> dict:
     }
     payload.pop("diagnostic_context", None)
     payload.pop("failure_context", None)
+    payload.pop("postprocess_checkpoint", None)
     return payload
 
 
@@ -1095,6 +1097,23 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/quality/metrics":
             self.send_json(build_quality_metrics_report())
             return
+        if parsed.path == "/api/quality/pydantic-shadow":
+            try:
+                from .pydantic_shadow import build_pydantic_shadow_report
+
+                report = build_pydantic_shadow_report()
+            except Exception:
+                report = {
+                    "mode": "shadow",
+                    "enforced": False,
+                    "sample_count": 0,
+                    "report_unavailable": True,
+                    "added_model_calls": 0,
+                    "added_tokens": 0,
+                    "added_network_requests": 0,
+                }
+            self.send_json(report)
+            return
         if parsed.path == "/api/tasks":
             def build_task_list() -> dict:
                 exam_tasks = []
@@ -1170,7 +1189,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
             return
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "diagnostics":
             task_id = parts[2]
-            self.send_json(build_task_diagnostics(task_id))
+            if task_id.startswith(("generation_", "practice_")):
+                self.send_json(build_practice_diagnostics(task_id))
+            else:
+                self.send_json(build_task_diagnostics(task_id))
             return
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "review-decision":
             task_id = parts[2]

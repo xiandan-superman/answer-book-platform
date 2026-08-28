@@ -15,6 +15,11 @@ logs/
 cache/
 tmp/
 output/
+!web/vendor/mathjax/output/
+!web/vendor/mathjax/output/chtml/
+!web/vendor/mathjax/output/chtml/fonts/
+!web/vendor/mathjax/output/chtml/fonts/woff-v2/
+!web/vendor/mathjax/output/chtml/fonts/woff-v2/*.woff
 practice_history/
 practice_sources/
 backups/

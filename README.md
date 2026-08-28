@@ -259,6 +259,8 @@ python3 -m pip install -r requirements.txt -r requirements-dev.txt -c constraint
 python3 scripts/run_quality_gates.py --full
 ```
 
+普通用户仍然只需下载源码 ZIP 并双击启动器。启动器会在 Python 3.9 或 3.11+ 的通用约束上，自动叠加 macOS/Windows 对应的源码运行约束；环境页会非阻塞地提示实际版本偏差。第三方依赖、用途和许可证记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 跨任务查看 Shadow 质量规则的样本量、影响范围和无人值守动作上限：
 
 ```bash

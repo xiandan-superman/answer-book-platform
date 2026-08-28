@@ -1,0 +1,11 @@
+# Source launcher shell resolved for Windows x64 with Python 3.11+.
+# Core scientific/runtime packages remain pinned in constraints-py311.txt.
+pywebview==6.2.1
+pystray==0.19.5
+pywin32==312
+bottle==0.13.4
+proxy-tools==0.1.0
+pythonnet==3.1.0
+clr-loader==0.3.1
+cffi==2.0.0
+pycparser==2.23

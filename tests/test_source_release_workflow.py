@@ -64,6 +64,12 @@ def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> 
     assert "constraints-py311.txt" in QUALITY
     assert "playwright install --with-deps chromium" in QUALITY
     assert "tests/e2e/test_platform_smoke.py" in QUALITY
+    assert "source-dependency-locks:" in QUALITY
+    assert "constraints-source-macos-py39.txt" in QUALITY
+    assert "constraints-source-macos-py311.txt" in QUALITY
+    assert "constraints-source-windows-py39.txt" in QUALITY
+    assert "constraints-source-windows-py311.txt" in QUALITY
+    assert "python -m pip check" in QUALITY
 
 
 def test_manifest_builder_runs_outside_repository_working_directory(tmp_path: Path) -> None:

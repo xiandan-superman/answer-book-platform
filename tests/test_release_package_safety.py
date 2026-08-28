@@ -34,3 +34,15 @@ def test_release_packager_uses_only_git_index_entries(tmp_path: Path) -> None:
 
     assert selected == [source]
     assert untracked_key not in selected
+
+
+def test_release_packager_keeps_only_the_allowlisted_mathjax_output_assets(tmp_path: Path) -> None:
+    font = tmp_path / "web/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+    font.parent.mkdir(parents=True)
+    font.write_bytes(b"official-font-fixture")
+    runtime_output = tmp_path / "output/generated.docx"
+    runtime_output.parent.mkdir()
+    runtime_output.write_bytes(b"private-output")
+
+    assert package_release.should_include(font, tmp_path) is True
+    assert package_release.should_include(runtime_output, tmp_path) is False

@@ -280,6 +280,8 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         "progress_message": "任务已提交，等待后台处理。",
         "payload": payload,
         "result": None,
+        "checkpoint_stage": "",
+        "postprocess_checkpoint": {},
         "failure_context": {},
         "support_id": "",
         "history_id": "",
@@ -335,6 +337,7 @@ def load_practice_job(job_id: str, *, include_payload: bool = True) -> dict[str,
     if not include_payload:
         record.pop("payload", None)
         record.pop("result", None)
+        record.pop("postprocess_checkpoint", None)
     return record
 
 
@@ -611,6 +614,7 @@ def list_practice_jobs_for_batch(batch_id: str) -> list[dict[str, Any]]:
             continue
         record.pop("payload", None)
         record.pop("result", None)
+        record.pop("postprocess_checkpoint", None)
         record.pop("failure_context", None)
         rows.append(record)
     return rows
@@ -781,6 +785,11 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             failure_context = redact_diagnostic_value(getattr(exc, "failure_context", {}))
             if not isinstance(failure_context, dict):
                 failure_context = {}
+            checkpoint_stage = str(latest.get("checkpoint_stage") or "")
+            postprocess_recoverable = checkpoint_stage in {
+                "model_generation_complete",
+                "result_ready_for_history_save",
+            }
             failed_record = update_practice_job(
                 job_id,
                 expected_status="running",
@@ -799,11 +808,19 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
                     "traceback": exception_traceback,
                 },
                 **_terminal_model_usage(job_id),
-                progress_message="后台任务异常结束。",
+                progress_message=(
+                    "后处理异常结束；已生成题目和检查点均已保留。"
+                    if postprocess_recoverable
+                    else "后台任务异常结束。"
+                ),
                 last_heartbeat_at=_now(),
                 health_status="error",
                 warning_reason=exception_text,
-                suggested_action="可重新运行任务。",
+                suggested_action=(
+                    "可从后处理检查点恢复，不会重复生成已完成题目。"
+                    if postprocess_recoverable
+                    else "可重新运行任务。"
+                ),
                 completed_at=_now(),
                 elapsed_seconds=max(0, int(time.monotonic() - started)),
             )

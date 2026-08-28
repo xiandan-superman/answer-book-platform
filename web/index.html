@@ -1266,12 +1266,17 @@
             <div class="check-row"><span><i id="networkCheckIcon" class="fas fa-circle-notch fa-spin"></i>网络连通性</span><strong id="networkSummary">检测中...</strong></div>
             <div class="check-row"><span><i id="modelConfigCheckIcon" class="fas fa-circle-question"></i>API Key 与模型配置</span><strong id="modelConfigSummary">检测中...</strong></div>
             <div class="check-row"><span><i id="modelCallCheckIcon" class="fas fa-circle-question"></i>当前模型实际调用</span><strong id="modelCallSummary">尚未测试</strong></div>
+            <div class="check-row"><span><i id="pydanticShadowCheckIcon" class="fas fa-eye"></i>Pydantic 影子观察</span><strong id="pydanticShadowSummary">正在读取...</strong></div>
           </div>
           <div id="environmentVisualResult" class="status-result result-info"><i class="fas fa-circle-notch fa-spin"></i><strong>正在检查运行环境...</strong></div>
           <div id="environmentRepairBox" class="env-repair-box hidden"></div>
           <details class="technical-details reference-extra">
             <summary>查看技术详情</summary>
             <pre id="environmentBox">加载中...</pre>
+          </details>
+          <details class="technical-details reference-extra">
+            <summary>查看影子观察报告</summary>
+            <pre id="pydanticShadowReport">加载中...</pre>
           </details>
         </article>
 

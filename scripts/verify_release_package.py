@@ -67,10 +67,15 @@ def verify(zip_path: Path) -> dict:
             "APP_VERSION",
             "VERSION",
             "SOFTWARE_LICENSE.md",
+            "THIRD_PARTY_NOTICES.md",
             "RELEASE_MANIFEST.json",
             "assets/app-icon/app-icon.ico",
             "assets/app-icon/app-icon-transparent.png",
             "requirements.txt",
+            "constraints-source-macos-py39.txt",
+            "constraints-source-macos-py311.txt",
+            "constraints-source-windows-py39.txt",
+            "constraints-source-windows-py311.txt",
             "start_platform_windows.bat",
             "启动平台.bat",
             "app/server.py",
@@ -79,6 +84,7 @@ def verify(zip_path: Path) -> dict:
             "scripts/source_launcher_gui.py",
             "scripts/windows_launcher_bootstrap.py",
             "web/index.html",
+            "web/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff",
         ]
         missing = [name for name in required if name not in names]
         if missing:

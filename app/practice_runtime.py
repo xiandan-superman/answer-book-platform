@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import copy
+import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
-import time
 from typing import Any, Callable, Hashable, Iterable, Iterator, TypeVar
 
 InputT = TypeVar("InputT")
@@ -95,6 +96,13 @@ class PracticeGenerationCheckpoint:
     source_job_id: str
     exercises: tuple[dict[str, Any], ...]
     generated_plan_item_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PracticePostprocessCheckpoint:
+    source_job_id: str
+    stage: str
+    result: dict[str, Any] | None
 
 
 def iter_bounded_futures(
@@ -243,4 +251,77 @@ def load_practice_generation_checkpoint(
         source_job_id,
         tuple(accepted),
         tuple(accepted_ids),
+    )
+
+
+def mark_practice_generation_checkpoint_complete(
+    payload: dict[str, Any],
+    *,
+    exercises: list[dict[str, Any]],
+    batch_errors: dict[str, dict[str, Any]],
+    batch_diagnostics: list[dict[str, Any]],
+    total_count: int,
+) -> None:
+    """Persist the model-complete boundary before risky result assembly.
+
+    A retry can already validate and reuse ``partial_exercises``.  The explicit
+    stage marker makes that durability contract observable and lets the worker
+    distinguish a provider retry from a post-processing retry.
+    """
+    job_id = str(payload.get("_job_id") or "").strip()[:100]
+    if not job_id:
+        return
+    from .practice_jobs import update_practice_job
+
+    completed = len({
+        str(item.get("plan_item_id") or "").strip()
+        for item in exercises
+        if isinstance(item, dict) and str(item.get("generation_status") or "completed") != "failed"
+    })
+    update_practice_job(
+        job_id,
+        expected_status="running",
+        checkpoint_stage="model_generation_complete",
+        current_stage="postprocessing",
+        current_operation="模型生成已完成，正在组装与审查结果",
+        partial_exercises=copy.deepcopy(exercises),
+        generated_count=completed,
+        failed_count=len(batch_errors),
+        total_count=max(0, int(total_count)),
+        batch_errors=[
+            {"plan_item_id": plan_item_id, **copy.deepcopy(error)}
+            for plan_item_id, error in sorted(batch_errors.items())
+        ],
+        batch_diagnostics=copy.deepcopy(batch_diagnostics),
+        progress_message=(
+            f"模型阶段已完成 {completed}/{max(0, int(total_count))} 题；"
+            "正在执行结果组装、质量审查与保存。失败后可从本检查点恢复，不重复生成已完成题目。"
+        ),
+    )
+
+
+def load_practice_postprocess_checkpoint(payload: dict[str, Any]) -> PracticePostprocessCheckpoint:
+    """Return a validated full-result checkpoint from a failed source job."""
+    resume_job_id = str(payload.get("resume_from_job_id") or "").strip()[:100]
+    if not resume_job_id:
+        return PracticePostprocessCheckpoint("", "", None)
+    from .practice_jobs import load_practice_job
+    from .practice_store import plan_fingerprint
+
+    record = load_practice_job(resume_job_id)
+    source_payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    if plan_fingerprint(source_payload) != plan_fingerprint(payload):
+        raise ValueError("恢复任务的已确认蓝图与后处理检查点不一致，已阻止混用旧结果。")
+    checkpoint = record.get("postprocess_checkpoint")
+    if not isinstance(checkpoint, dict):
+        return PracticePostprocessCheckpoint(
+            resume_job_id,
+            str(record.get("checkpoint_stage") or ""),
+            None,
+        )
+    result = checkpoint.get("result")
+    return PracticePostprocessCheckpoint(
+        resume_job_id,
+        str(checkpoint.get("stage") or record.get("checkpoint_stage") or ""),
+        copy.deepcopy(result) if isinstance(result, dict) else None,
     )

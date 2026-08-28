@@ -143,7 +143,7 @@ def gui_subprocess_kwargs() -> dict[str, Any]:
 
 
 def dependencies_healthy(python: Path) -> bool:
-    probe = "import docx,lxml,latex2mathml,PIL,pydantic,pypdfium2,bm25s,huey,matplotlib"
+    probe = "import docx,lxml,latex2mathml,PIL,pydantic,pypdfium2,bm25s,huey,matplotlib,numpy"
     if sys.platform.startswith("win") or sys.platform == "darwin":
         probe += ",webview,pystray"
     result = subprocess.run([str(python), "-c", probe], capture_output=True, timeout=30)

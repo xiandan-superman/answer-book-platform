@@ -24,7 +24,13 @@ def dependency_profile_key(
 ) -> str:
     profile = python_dependency_profile(version_info)
     platform_value = str(platform_name or sys.platform).lower()
-    return f"{profile}-windows" if platform_value.startswith("win") else profile
+    if platform_value.startswith("win"):
+        return f"{profile}-windows"
+    if platform_value == "darwin":
+        return f"{profile}-macos"
+    if platform_value.startswith("linux"):
+        return f"{profile}-linux"
+    return profile
 
 
 def constraint_filename(version_info: Iterable[int] | None = None) -> str:
@@ -33,6 +39,22 @@ def constraint_filename(version_info: Iterable[int] | None = None) -> str:
         "py39": "constraints-py39.txt",
         "py311": "constraints-py311.txt",
     }.get(profile, "")
+
+
+def platform_constraint_filename(
+    version_info: Iterable[int] | None = None,
+    *,
+    platform_name: str | None = None,
+) -> str:
+    profile = python_dependency_profile(version_info)
+    if profile not in {"py39", "py311"}:
+        return ""
+    platform_value = str(platform_name or sys.platform).lower()
+    if platform_value == "darwin":
+        return f"constraints-source-macos-{profile}.txt"
+    if platform_value.startswith("win"):
+        return f"constraints-source-windows-{profile}.txt"
+    return ""
 
 
 def runtime_dependency_files(
@@ -48,6 +70,12 @@ def runtime_dependency_files(
     constraint = constraint_filename(version_info)
     if constraint:
         files.append(project_root / constraint)
+    platform_constraint = platform_constraint_filename(
+        version_info,
+        platform_name=platform_value,
+    )
+    if platform_constraint:
+        files.append(project_root / platform_constraint)
     return [path for path in files if path.is_file()]
 
 
@@ -71,7 +99,15 @@ def runtime_dependency_fingerprint(
 def release_dependency_fingerprints(project_root: Path) -> dict[str, str]:
     profiles: dict[str, str] = {}
     for version_info in ((3, 9), (3, 10), (3, 11)):
-        for platform_name in ("linux", "win32"):
+        # Keep the legacy generic profile for older source launchers, while
+        # publishing exact profiles for every currently understood platform.
+        generic = python_dependency_profile(version_info)
+        profiles[generic] = runtime_dependency_fingerprint(
+            project_root,
+            version_info,
+            platform_name="other",
+        )
+        for platform_name in ("darwin", "linux", "win32"):
             key = dependency_profile_key(version_info, platform_name=platform_name)
             profiles[key] = runtime_dependency_fingerprint(
                 project_root,

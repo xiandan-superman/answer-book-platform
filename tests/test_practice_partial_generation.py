@@ -174,6 +174,7 @@ def test_blueprint_item_audit_failure_skips_only_that_item_and_preserves_healthy
         "generation_strategy": "knowledge_item_wise",
         "question_text": "来源材料",
         "plan": plan,
+        "automatic_targeted_repair": False,
         "generation_batch_size": 2,
         "generation_concurrency": 1,
     })

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .dependency_diagnostics import dependency_version_report
 from .drawing_code import run_drawing_code
 from .omml import clear_omml_caches, find_mathml2omml_xsl
 from .omml_input import clear_omml_input_caches, find_omml2mathml_xsl
@@ -324,6 +325,7 @@ def check_environment() -> dict[str, Any]:
         "math_ml2omml": bool(find_spec("math_ml2omml")),
         "Pillow": bool(find_spec("PIL")),
         "matplotlib": bool(find_spec("matplotlib")),
+        "numpy": bool(find_spec("numpy")),
         "pydantic": bool(find_spec("pydantic")),
         "pypdfium2": bool(find_spec("pypdfium2")),
         "bm25s": bool(find_spec("bm25s")),
@@ -333,6 +335,7 @@ def check_environment() -> dict[str, Any]:
     env: dict[str, Any] = {
         "platform": platform.platform(),
         "python": platform.python_version(),
+        "dependency_versions": dependency_version_report(PROJECT_ROOT),
         "executables": {
             "python3": shutil.which("python3"),
             "pdftoppm": shutil.which("pdftoppm"),

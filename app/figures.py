@@ -3647,6 +3647,12 @@ def generate_figures(specs_json: Path, output_dir: Path, progress_callback: Any 
             if not figure_id:
                 continue
             spec["figure_id"] = figure_id
+            try:
+                from .pydantic_shadow import observe_figure_spec
+
+                observe_figure_spec(spec)
+            except Exception:
+                pass
             normalized_figures.append(spec)
     data["figures"] = normalized_figures
     specs_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

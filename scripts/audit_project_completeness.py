@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -12,9 +11,16 @@ REQUIRED_FILES = [
     "README.md",
     "CHANGELOG.md",
     "MIGRATION_README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "AGENTS.md",
     "VERSION",
     "requirements.txt",
     "requirements-windows.txt",
+    "constraints-source-macos-py39.txt",
+    "constraints-source-macos-py311.txt",
+    "constraints-source-windows-py39.txt",
+    "constraints-source-windows-py311.txt",
+    "web/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff",
     ".env.example",
     "assets/app-icon/app-icon-transparent.png",
     "assets/app-icon/app-icon.ico",
@@ -26,6 +32,7 @@ REQUIRED_FILES = [
     "app/pipeline_delivery.py",
     "app/pipeline_checkpoints.py",
     "app/pipeline_telemetry.py",
+    "app/pydantic_shadow.py",
     "app/answer_generation.py",
     "app/v4_schema.py",
     "app/omml.py",
@@ -50,6 +57,7 @@ REQUIRED_FILES = [
     "scripts/audit_answer_fragments.py",
     "scripts/audit_answer_coverage.py",
     "scripts/audit_final_acceptance.py",
+    "scripts/audit_pydantic_shadow.py",
     "scripts/export_question_review.py",
     "scripts/package_task_delivery.py",
     "scripts/check_version_consistency.py",
@@ -76,6 +84,7 @@ REQUIRED_FILES = [
     "docs/DELIVERY_CHECKLIST.md",
     "docs/V4_FORMULA_CHAIN.md",
     "docs/ARCHITECTURE.md",
+    "docs/operations/OPTIMIZATION_LOG.md",
 ]
 
 
@@ -127,6 +136,10 @@ REQUIRED_TEXT = {
         "passed_with_warnings",
         "结构化答案复核",
         "逐题复核",
+    ],
+    "AGENTS.md": [
+        "docs/operations/OPTIMIZATION_LOG.md",
+        "完成后必须在该文档顶部追加一条记录",
     ],
     "MIGRATION_README.md": [
         "/api/version",

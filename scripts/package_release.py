@@ -65,16 +65,21 @@ EXCLUDED_PREFIXES = {
     "build/pyinstaller-work/",
 }
 EXCLUDED_SUFFIXES = {".pyc"}
+INCLUDED_VENDOR_PREFIXES = {
+    "web/vendor/mathjax/output/chtml/fonts/woff-v2/",
+}
 RELEASE_MANIFEST_NAME = "RELEASE_MANIFEST.json"
 
 
 def should_include(path: Path, root: Path | None = None) -> bool:
     source_root = root or ROOT
     rel = path.relative_to(source_root)
+    rel_posix = rel.as_posix()
+    if any(rel_posix.startswith(prefix) for prefix in INCLUDED_VENDOR_PREFIXES):
+        return path.is_file()
     parts = set(rel.parts)
     if parts & EXCLUDED_DIRS:
         return False
-    rel_posix = rel.as_posix()
     if rel_posix in EXCLUDED_FILES or path.name in EXCLUDED_FILES:
         return False
     if any(rel_posix.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
@@ -139,6 +144,7 @@ def build_release(output: Path) -> dict:
             "excluded_files": sorted(EXCLUDED_FILES),
             "excluded_suffixes": sorted(EXCLUDED_SUFFIXES),
             "excluded_prefixes": sorted(EXCLUDED_PREFIXES),
+            "included_vendor_prefixes": sorted(INCLUDED_VENDOR_PREFIXES),
             "notes": "Runtime data, uploaded materials, task history, outputs, API keys, validation artifacts and development-only files are intentionally excluded.",
         }
         zf.writestr(RELEASE_MANIFEST_NAME, json.dumps(release_manifest, ensure_ascii=False, indent=2))
@@ -153,6 +159,7 @@ def build_release(output: Path) -> dict:
         "excluded_dirs": sorted(EXCLUDED_DIRS),
         "excluded_files": sorted(EXCLUDED_FILES),
         "excluded_prefixes": sorted(EXCLUDED_PREFIXES),
+        "included_vendor_prefixes": sorted(INCLUDED_VENDOR_PREFIXES),
     }
     return manifest
 

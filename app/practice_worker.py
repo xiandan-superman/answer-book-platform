@@ -8,7 +8,8 @@ from .exercise_generation import (
     generate_practice_from_plan,
     plan_practice_set,
 )
-from .practice_runtime import ensure_practice_generation_active
+from .practice_jobs import update_practice_job
+from .practice_runtime import ensure_practice_generation_active, load_practice_postprocess_checkpoint
 from .practice_store import find_completed_by_plan, save_practice_continuation_record, save_practice_record
 
 
@@ -28,12 +29,31 @@ def execute_practice_operation(operation: str, payload: dict[str, Any]) -> dict[
                 "reused": True,
             }
             return {"result": reused, "history_id": str(existing.get("history_id") or "")}
-        result = (
-            generate_practice_from_contract(payload)
-            if operation == "generate_from_contract"
-            else generate_practice_from_plan(payload)
-        )
+        checkpoint = load_practice_postprocess_checkpoint(payload)
+        result = checkpoint.result
+        if result is None:
+            result = (
+                generate_practice_from_contract(payload)
+                if operation == "generate_from_contract"
+                else generate_practice_from_plan(payload)
+            )
         ensure_practice_generation_active(payload)
+        job_id = str(payload.get("_job_id") or "").strip()[:100]
+        if job_id:
+            update_practice_job(
+                job_id,
+                expected_status="running",
+                checkpoint_stage="result_ready_for_history_save",
+                current_stage="saving",
+                current_operation="题目结果已就绪，正在保存历史记录",
+                postprocess_checkpoint={
+                    "schema_version": "answer_book.practice_postprocess_checkpoint.v1",
+                    "stage": "result_ready_for_history_save",
+                    "source_job_id": checkpoint.source_job_id,
+                    "result": result,
+                },
+                progress_message="题目结果已完成组装与审查，正在保存；保存异常时可直接复用本结果。",
+            )
         record = (
             save_practice_continuation_record(result, request=payload)
             if payload.get("resume_from_history_id")

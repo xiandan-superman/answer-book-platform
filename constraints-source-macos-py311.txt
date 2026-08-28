@@ -1,0 +1,12 @@
+# Source launcher shell resolved for macOS with Python 3.11+.
+# Core scientific/runtime packages remain pinned in constraints-py311.txt.
+pywebview==6.2.1
+pystray==0.19.5
+bottle==0.13.4
+proxy-tools==0.1.0
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-Quartz==12.2.2
+pyobjc-framework-WebKit==12.2.2
+pyobjc-framework-security==12.2.2
+pyobjc-framework-UniformTypeIdentifiers==12.2.2

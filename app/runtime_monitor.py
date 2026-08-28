@@ -152,6 +152,12 @@ def model_call_cost_summary(task_id: str) -> dict[str, Any]:
     }
 
 
+def current_model_call_context() -> dict[str, str]:
+    """Return a detached snapshot for local diagnostics and shadow observers."""
+
+    return dict(_MODEL_CALL_CONTEXT.get() or {})
+
+
 @contextmanager
 def model_call_context(
     *,
