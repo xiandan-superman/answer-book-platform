@@ -3,7 +3,16 @@ import json
 import pytest
 
 from app import runtime_monitor
-from app.concurrency import run_limited_concurrent
+from app.concurrency import ModelRequestAborted, run_limited_concurrent
+
+
+@pytest.fixture(autouse=True)
+def _isolate_execution_event_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        runtime_monitor,
+        "MODEL_EXECUTION_EVENT_LEDGER",
+        tmp_path / "model_execution_events.jsonl",
+    )
 
 
 def test_public_pipeline_entry_always_sets_task_call_context(monkeypatch) -> None:
@@ -37,6 +46,219 @@ def test_model_call_ledger_records_usage_and_failure_disposition(tmp_path, monke
     assert row["reasoning_tokens"] == 10 and row["outcome"] == "succeeded"
     assert row["billable_disposition"] == "unclassified_success"
     assert "prompt" not in row and "response" not in row
+
+
+def test_execution_event_ledger_records_intent_before_result_without_content(
+    tmp_path, monkeypatch
+) -> None:
+    event_ledger = tmp_path / "execution.jsonl"
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", event_ledger)
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "calls.jsonl")
+    request_payload = {
+        "model": "model-a",
+        "messages": [{"role": "user", "content": "不得写入事件账本的正文"}],
+    }
+
+    with runtime_monitor.model_call_context(
+        task_id="task-shadow",
+        stage="answer_generation",
+        operation="draft",
+    ):
+        with runtime_monitor.track_model_call(
+            provider="provider-a",
+            model="model-a",
+            purpose="chat_json",
+            timeout=60,
+            request_payload=request_payload,
+            protocol="chat_completions",
+            endpoint="https://example.invalid/v1/chat/completions?api_key=secret",
+        ) as record:
+            runtime_monitor.record_model_call_usage(
+                record,
+                {"id": "response-a", "usage": {"prompt_tokens": 20, "completion_tokens": 5}},
+            )
+
+    rows = [json.loads(line) for line in event_ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event_type"] for row in rows] == ["invocation.intent", "invocation.result"]
+    assert rows[0]["invocation_id"] == rows[1]["invocation_id"] == record["invocation_id"]
+    assert rows[0]["run_id"]
+    route = rows[0]["route_decision"]
+    assert route["selection"]["provider"] == "provider-a"
+    assert route["selection"]["model"] == "model-a"
+    assert route["selection"]["required_capabilities"] == ["text_generation"]
+    assert route["transport"]["protocol"] == "chat_completions"
+    assert route["transport"]["endpoint_path"] == "/v1/chat/completions"
+    assert route["authority"] == "shadow"
+    assert route["policy_expectation"]["silent_model_switch_allowed"] is False
+    assert route["policy_enforced_by_snapshot"] is False
+    assert rows[0]["request_summary"]["payload_fingerprint_sha256"]
+    assert rows[1]["usage"]["response_id"] == "response-a"
+    assert "不得写入事件账本的正文" not in event_ledger.read_text(encoding="utf-8")
+    assert "api_key" not in event_ledger.read_text(encoding="utf-8")
+
+
+def test_implicit_execution_run_id_does_not_enable_existing_business_budget(
+    tmp_path, monkeypatch
+) -> None:
+    event_ledger = tmp_path / "implicit-run.jsonl"
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", event_ledger)
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "calls.jsonl")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="legacy-entry-without-run-id"):
+        with runtime_monitor.track_model_call(
+            provider="provider-a",
+            model="model-a",
+            purpose="chat_json",
+            timeout=60,
+            request_payload={"model": "model-a"},
+        ):
+            pass
+
+    intent = json.loads(event_ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert intent["run_id"]
+    assert not any(key[0] == "legacy-entry-without-run-id" for key in runtime_monitor._RUN_MODEL_BUDGETS)
+
+
+def test_execution_intent_write_failure_stops_call_before_body(tmp_path, monkeypatch) -> None:
+    blocked_path = tmp_path / "blocked-ledger"
+    blocked_path.mkdir()
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", blocked_path)
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "calls.jsonl")
+    monkeypatch.setenv("MODEL_EXECUTION_LEDGER_WRITE_ATTEMPTS", "1")
+    entered = False
+
+    with pytest.raises(runtime_monitor.ModelExecutionLedgerError, match="无法持久化"):
+        with runtime_monitor.model_call_context(task_id="task-blocked", run_id="run-blocked"):
+            with runtime_monitor.track_model_call(
+                provider="provider-a",
+                model="model-a",
+                purpose="chat_json",
+                timeout=60,
+                request_payload={"model": "model-a"},
+                protocol="chat_completions",
+                endpoint="https://example.invalid/chat/completions",
+            ):
+                entered = True
+
+    assert entered is False
+    assert runtime_monitor._RUN_MODEL_BUDGETS[("task-blocked", "run-blocked")]["call_count"] == 0
+    assert not (tmp_path / "calls.jsonl").exists()
+
+
+def test_execution_result_write_failure_discards_returned_result(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "calls.jsonl")
+    calls = 0
+
+    def fail_second_event(event_type, record, **payload):
+        nonlocal calls
+        calls += 1
+        if event_type == "invocation.result":
+            raise runtime_monitor.ModelExecutionLedgerError("result ledger unavailable")
+
+    monkeypatch.setattr(runtime_monitor, "_append_model_execution_event", fail_second_event)
+
+    with pytest.raises(runtime_monitor.ModelExecutionLedgerError, match="result ledger unavailable"):
+        with runtime_monitor.track_model_call(
+            provider="provider-a",
+            model="model-a",
+            purpose="chat_json",
+            timeout=60,
+            request_payload={"model": "model-a"},
+            protocol="chat_completions",
+            endpoint="https://example.invalid/chat/completions",
+        ):
+            pass
+
+    assert calls == 2
+    final = json.loads((tmp_path / "calls.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert final["provider_outcome"] == "succeeded"
+    assert final["outcome"] == "execution_ledger_failed"
+    assert final["billable_disposition"] == "discarded_after_provider_return"
+    assert final["result_adoption"] == "discarded"
+
+
+def test_cancelled_paid_result_is_recorded_as_discarded(tmp_path, monkeypatch) -> None:
+    event_ledger = tmp_path / "cancelled-execution.jsonl"
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", event_ledger)
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "cancelled-calls.jsonl")
+
+    with pytest.raises(ModelRequestAborted, match="cancelled after response"):
+        with runtime_monitor.track_model_call(
+            provider="provider-a",
+            model="model-a",
+            purpose="chat_json",
+            timeout=60,
+            request_payload={"model": "model-a"},
+            protocol="chat_completions",
+            endpoint="https://example.invalid/chat/completions",
+        ):
+            raise ModelRequestAborted("cancelled after response")
+
+    result = json.loads(event_ledger.read_text(encoding="utf-8").splitlines()[-1])
+    assert result["event_type"] == "invocation.result"
+    assert result["outcome"] == "cancelled"
+    assert result["billable_disposition"] == "cancelled_discarded"
+
+
+def test_retry_observation_is_durable_sanitized_and_does_not_change_budget_policy(
+    tmp_path, monkeypatch
+) -> None:
+    event_ledger = tmp_path / "retry-events.jsonl"
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", event_ledger)
+    error = RuntimeError('Provider HTTP 429: {"request_id":"secret-retry-id"}')
+    vars(error).update(
+        {
+            "status_code": 429,
+            "retry_after_seconds": 12,
+            "model_invocation_id": "invocation-source",
+            "model_call_id": "call-source",
+        }
+    )
+
+    with runtime_monitor.model_call_context(
+        task_id="retry-task",
+        run_id="retry-run",
+        stage="generating",
+        operation="question-batch",
+    ):
+        observation = runtime_monitor.record_model_retry_scheduled(
+            error,
+            category="transport_retry",
+            retry_number=1,
+            max_attempts=2,
+            delay_seconds=5.125,
+            provider="provider-a",
+            model="model-a",
+            from_protocol="responses",
+            to_protocol="responses",
+            budget_scope="practice_generation_retry_budget",
+            budget_charged=False,
+        )
+        runtime_monitor.record_model_retry_started(observation)
+
+    content = event_ledger.read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in content.splitlines()]
+    assert [row["event_type"] for row in rows] == ["retry.scheduled", "retry.started"]
+    assert rows[0]["retry_id"] == rows[1]["retry_id"]
+    assert rows[0]["invocation_id"] == "invocation-source"
+    assert rows[0]["failure"] == {
+        "kind": "provider_rate_limit",
+        "status_code": 429,
+        "transport_phase": "",
+        "retryable_by_provider_classifier": True,
+        "requires_configuration": False,
+    }
+    assert rows[0]["delay"] == {
+        "seconds": 5.125,
+        "provider_retry_after_seconds": 12.0,
+    }
+    assert rows[0]["budget_observation"]["charged"] is False
+    assert rows[0]["budget_observation"]["policy_changed"] is False
+    assert rows[0]["authority"] == "observation_only"
+    assert rows[0]["behavior_changed"] is False
+    assert rows[1]["provider"] == "provider-a" and rows[1]["model"] == "model-a"
+    assert "secret-retry-id" not in content
 
 
 def test_task_context_survives_parallel_model_workers(tmp_path, monkeypatch) -> None:

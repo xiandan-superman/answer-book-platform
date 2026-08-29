@@ -24,6 +24,21 @@
 - OpenAI Codex Harness 的 [`spec_plan.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs) 先按功能开关、账户/服务商能力和主模型图片输入能力决定是否向模型暴露图片工具；[`image-generation/src/tool.rs`](https://github.com/openai/codex/blob/main/codex-rs/ext/image-generation/src/tool.rs) 暴露 `referenced_image_paths` 与 `num_last_images_to_include`：两者均未提供时执行 `Generate`，任一参考选择器存在时执行 `ImageEditRequest`，两者不得并用、单次最多 5 张，本地参考图按原始画质读取；生成的真实图片字节再作为 `InputImage` 放入同一工具调用结果，供原主模型下一步检查。它是本平台“能力门 + 原图编辑/从零生成分流 + 图片真实回灌”的直接实现参考。
 - DeepSeek Harness 的 [`tools/README.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/tools/README.md)、[`tool-calls.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/src/tool-calls.ts) 和 [`core.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/core.md) 定义通用工具注册、前后置门禁、模型可见 `ContentBlock[]`、追加上下文、按模型顺序提交结果及耐久会话事件。DeepSeek Harness 核心没有内置图片生成工具，因此只作为跨模型/协议工具循环的抽象参考，不得把不存在的专用生图实现写成本项目依据。
 
+2026-08-29 再次逐项复核后的实现对照如下。这里的“未采用”不是遗漏免责，而是明确的架构边界；一旦平台增加第二类可并行工具或需要进程中断后原位续跑，必须重新评估。
+
+| 上游合同 | 本平台状态 | 对应实现或必要差异 |
+|---|---|---|
+| Codex 按功能、服务商和主模型图片输入能力暴露工具 | 已采用 | `tool_loop_supported` 使用服务商通道、模型、协议、视觉和原生工具闭环白名单；本地 API Key 模式没有 ChatGPT 套餐层，不能虚构 Free/Plus 判断。 |
+| Codex `deny_unknown_fields`、严格选择器及 1–5 张限制 | 已采用 | 模型可见 JSON schema 和执行前运行时校验同时生效；未知字段、错误类型、未登记路径和互斥选择器在付费图片请求前返回 `INVALID_TOOL_ARGUMENTS`。 |
+| Codex Generate/Edit 分流、原始参考像素、真实图片回传、请求元数据 | 已采用 | 未选参考图才 Generate；来源图和最近生成图执行 Edit；结果校验后以真实图片回到同一主模型；可用时保留 `request_id`/`revised_prompt`。平台生成图上限 25 MB，比 Codex 的 32 MB 更严格。 |
+| Codex started/completed/failed 工具事件 | 已采用等价实现 | 每个任务图片目录写入追加式 `tool_events.jsonl`，在调用前、结果后立即 flush/fsync；同时记录主模型请求、完成或请求错误的模型/协议/摘要哈希。 |
+| DeepSeek 参数快照、调用身份、结构化失败及错误后继续循环 | 已采用 | 参数在策略/执行前做 JSON 快照；同一 `call_id` + 同一参数在同一答案/修复事务内幂等复用，不同参数复用同一 ID 返回 `TOOL_CALL_ID_REUSED`；未知工具、参数、执行失败和预算耗尽均作为模型可见结构化结果，不直接终止整题。 |
+| DeepSeek 重复调用提醒 | 已采用 | 连续第三次相同工具与规范化参数时追加可耐久、模型可见的 advisory；不硬阻断合法的随机重绘，仍由主模型决定改参、结束或继续。 |
+| DeepSeek 并发分类、有界滚动池、按模型顺序提交 | 单工具场景采用串行等价 | 生图是计费、状态相关且“最近 N 张”依赖顺序的 exclusive 工具，故不并行；结果天然按模型调用顺序提交。增加其他并行安全工具前不得直接复用这一简化。 |
+| DeepSeek 声明式工具 deadline 与协作取消 | 部分采用 | 图片工具声明独立 240 秒供应商请求期限并传入生成/编辑 HTTP 调用；当前同步 `urllib` 客户端没有贯穿任务取消信号，无法承诺 Harness 的 cooperative quiescence。 |
+| DeepSeek 通用 pre/guard/around/post/finalize/observe 插件流水线 | 暂未整体移植 | 当前只有隔离的 `generate_image`，参数门、预算、执行、结果校验和观察仍是显式固定流水线；扩展为多工具平台时应抽成通用注册与单调 guard，不能继续堆在模型循环中。 |
+| DeepSeek 完整会话事件重建、压缩后续跑和请求重放不变量 | 部分采用 | 已增加完整请求组成计量和只裁剪旧失败工具结果的确定性压缩，并保持 call/result 配对；仍不保存可无损重建的全部 provider 原始请求、不做模型摘要，也不支持进程崩溃后从未完成工具调用原位续跑；不得把现有账本表述为完整 session replay。 |
+
 本平台只允许在两者共同闭环上增加教学业务约束：
 
 1. 能力登记和任务级用户开关决定工具是否可以暴露，不决定内容是否需要图片；
@@ -35,6 +50,14 @@
 7. 传统程序绘图是用户选择的另一条隔离链路，不得作为主模型工具失败后的隐式降级。
 
 遇到新问题时必须先形成“Codex 直接实现、DeepSeek 通用合同、本项目教学约束”三列对照，再决定最小完整修改。若上游源码已经变化，以当前官方实现为准并更新本节查阅日期、能力登记、回归和变更账本；禁止用关键词、题型规则、第三方分类器或代理主观判断取代主模型调用决策。
+
+### 1.2 Token 计量与上下文压缩边界
+
+2026-08-29 对照 OpenAI Codex 当前 [`context_window.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/session/context_window.rs) 与 DeepSeek Harness 当前 [`compaction.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/compaction.md)、[`compaction-basic/README.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/compaction/compaction-basic/README.md) 后，平台采用以下边界：
+
+- Token Meter 独立于压缩策略，计量实际请求中的 system/user/assistant/tool 消息、工具 schema、历史工具结果、图片估算和结构开销；同一服务商通道与模型累计至少 3 条 provider-reported usage 后，使用中位比例校准本地估算。现有任务质量预算仍保持原权威，新增完整计量先作为并列观察，防止估算变化提前提高失败率。
+- DeepSeek Harness 会先裁剪超大工具结果、重新计量并保持工具调用/结果边界平衡；本平台当前只在主模型工具循环超过质量预算时，确定性压缩较旧且失败的工具结果正文，保留最近 2 条失败及所有调用身份。成功结果、图片像素、采用资产、题干、答案约束、教材/真题证据、用户消息和工具 schema 均不可压缩。
+- 当前不调用模型生成上下文摘要，因此压缩新增模型调用、Token 和网络请求均为 0；也不宣称具备 Codex/DeepSeek 的完整会话压缩、跨进程 replay 或上下文溢出自动重放。未来扩大到历史对话摘要前，必须先用固定真实任务语料验证答案质量和任务完成率，并取得用户确认。
 
 ## 2. 强制登记字段
 

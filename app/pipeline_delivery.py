@@ -13,6 +13,7 @@ from .final_acceptance import (
     build_final_acceptance_report,
     read_json,
 )
+from .image_artifacts import mark_final_adopted_assets
 from .model_usage_report import build_model_usage_report
 from .question_review_docx import (
     build_figure_review_docx,
@@ -439,6 +440,14 @@ def complete_pipeline_delivery(
         docx_path,
         final_report,
     )
+    try:
+        final_artifact_adoption = mark_final_adopted_assets(read_json(fragments_json) or {})
+    except Exception:
+        final_artifact_adoption = {
+            "final_adopted_count": 0,
+            "unresolved_selected_asset_count": 0,
+            "report_unavailable": True,
+        }
     if review_candidate_docx:
         write_json(stage_dir / "final_acceptance_report.json", final_report)
     answer_delivery_summary = final_report.get("answer_fragment_delivery_summary") or {}
@@ -452,6 +461,7 @@ def complete_pipeline_delivery(
         "review_candidate_docx": review_candidate_docx,
         "review_docx": str(output_dir / "question_review.docx"),
         "answer_fragment_delivery_summary": answer_delivery_summary,
+        "artifact_adoption": final_artifact_adoption,
         "message": delivery_status_message(final_report),
     }
     write_json(output_dir / "delivery_status.json", delivery_status)

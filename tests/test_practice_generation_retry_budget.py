@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app import exercise_generation, practice_jobs, practice_store, task_read_model
+from app import exercise_generation, practice_jobs, practice_store, runtime_monitor, task_read_model
 from app.llm_client import LLMError
 
 
@@ -303,7 +304,7 @@ def test_retry_after_is_honoured_with_cap_without_real_wait(monkeypatch) -> None
     assert attempts[0]["provider_retry_after_seconds"] == 20
 
 
-def test_glm_429_is_recorded_but_does_not_consume_generation_budget(monkeypatch) -> None:
+def test_glm_429_is_recorded_but_does_not_consume_generation_budget(tmp_path, monkeypatch) -> None:
     calls = 0
     coordinator = exercise_generation._GenerationRetryCoordinator({})
     client = SimpleNamespace(config=SimpleNamespace(name="bigmodel"))
@@ -317,6 +318,8 @@ def test_glm_429_is_recorded_but_does_not_consume_generation_budget(monkeypatch)
 
     monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
     monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    event_ledger = tmp_path / "retry-events.jsonl"
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", event_ledger)
     attempts = []
     result = exercise_generation._call_practice_json_with_transport_retry(
         client,
@@ -342,6 +345,11 @@ def test_glm_429_is_recorded_but_does_not_consume_generation_budget(monkeypatch)
     assert summary["batches"]["batch"]["network_attempts"] == 2
     assert summary["batches"]["batch"]["attempts"][0]["budget_charged"] is False
     assert attempts[0]["retry_budget_charged"] is False
+    retry_events = [json.loads(line) for line in event_ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["event_type"] for row in retry_events] == ["retry.scheduled", "retry.started"]
+    assert retry_events[0]["category"] == "transport_retry"
+    assert retry_events[0]["failure"]["kind"] == "provider_rate_limit"
+    assert retry_events[0]["budget_observation"]["charged"] is False
 
 
 def test_non_glm_429_still_uses_the_existing_generation_budget(monkeypatch) -> None:

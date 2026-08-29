@@ -43,8 +43,8 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 
 没有 `.git` 时，更新清单选择 `platforms.source`：
 
-1. 下载到用户数据目录 `runtime/updates/<version>`。
-2. 校验清单声明的大小和 SHA256。
+1. 下载到用户数据目录 `runtime/updates/<version>`；连接重置、超时、限流或 GitHub 5xx 时有限重试，服务器支持 Range 时从已写入字节续传，不支持时安全从头重下。
+2. 校验清单声明的大小和 SHA256；只有完整校验通过才把 `.part` 转为可安装附件。
 3. 写入 `pending-source-update.json`，向浏览器返回成功结果。
 4. 监督器收到退出码 75 后验证 ZIP 路径，防止 Zip Slip，并确认包中只有一个有效项目根。
 5. 先把新源码完整复制到安装目录旁的临时目录，并验证通用入口与 Windows 启动入口。
@@ -87,6 +87,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 ## 安全和兼容约束
 
 - 更新 URL 必须为 HTTPS，仓库、标签和附件名必须通过白名单格式验证。
+- 稳定清单优先读取配置的 Raw GitHub 地址；瞬时失败经有限重试仍不可用时，只能切换到同一仓库、分支和文件的 GitHub Contents API，不得使用未受信第三方镜像改变更新来源。
 - 任何下载都必须校验大小与 SHA256；失败的 `.part` 文件必须删除。
 - 更新 API 只能由运行服务的本机调用。
 - 更新进度只记录版本、阶段、字节数和公开错误，不记录 API Key、任务材料或用户输出内容。

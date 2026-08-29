@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import threading
 import time
+import urllib.error
+from email.message import Message
 from types import SimpleNamespace
+
+import pytest
 
 from app import server as app_server
 from app import update_manager
@@ -21,6 +26,76 @@ def test_version_comparison_handles_beta_and_stable_versions() -> None:
 def test_platform_asset_keys_are_stable() -> None:
     assert update_manager.platform_asset_key(system="Darwin", machine="arm64") == "macos-arm64"
     assert update_manager.platform_asset_key(system="Windows", machine="AMD64") == "windows-x86_64"
+
+
+def test_update_json_retries_windows_connection_reset(monkeypatch) -> None:
+    payload = {"schema_version": update_manager.UPDATE_MANIFEST_SCHEMA, "version": "1.0.0"}
+    calls = 0
+    sleeps: list[float] = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def fake_urlopen(_request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 20
+        if calls < 3:
+            raise ConnectionResetError(10054, "connection reset")
+        return Response(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(update_manager.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(update_manager.time, "sleep", sleeps.append)
+
+    assert update_manager._github_json("https://raw.githubusercontent.com/example/repo/main/feed.json") == payload
+    assert calls == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_update_json_does_not_retry_not_found(monkeypatch) -> None:
+    calls = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 20
+        raise urllib.error.HTTPError(request.full_url, 404, "not found", Message(), None)
+
+    monkeypatch.setattr(update_manager.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(update_manager.UpdateError, match="不存在"):
+        update_manager._github_json("https://raw.githubusercontent.com/example/repo/main/feed.json")
+    assert calls == 1
+
+
+def test_manifest_feed_falls_back_to_github_contents_api(monkeypatch) -> None:
+    manifest = {"schema_version": update_manager.UPDATE_MANIFEST_SCHEMA, "version": "1.0.0"}
+    calls: list[tuple[str, dict]] = []
+
+    def fake_github_json(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.startswith("https://raw.githubusercontent.com/"):
+            raise update_manager._UpdateNetworkError("reset")
+        return manifest
+
+    monkeypatch.setattr(update_manager, "_github_json", fake_github_json)
+
+    result = update_manager._manifest_feed({
+        "repository": "example/releases",
+        "source_branch": "main",
+        "manifest_url": "https://raw.githubusercontent.com/example/releases/main/update-stable-v2.json",
+    })
+
+    assert result == manifest
+    assert calls[1][0] == (
+        "https://api.github.com/repos/example/releases/contents/update-stable-v2.json?ref=main"
+    )
+    assert calls[1][1]["attempts"] == update_manager.UPDATE_FALLBACK_ATTEMPTS
+    assert calls[1][1]["accept"] == "application/vnd.github.raw+json"
 
 
 def test_update_guard_only_blocks_running_and_queued_tasks(monkeypatch) -> None:
@@ -232,6 +307,165 @@ def test_download_reports_real_byte_progress(tmp_path, monkeypatch) -> None:
     assert target.read_bytes() == payload
     assert any(event[0] == "downloading" and event[3]["downloaded_bytes"] == len(payload) for event in events)
     assert events[-1][0] == "verifying"
+
+
+def test_download_resumes_after_connection_reset(tmp_path, monkeypatch) -> None:
+    payload = b"verified-update-content-with-resume"
+    first_size = 11
+    digest = hashlib.sha256(payload).hexdigest()
+    requests: list[str | None] = []
+    sleeps: list[float] = []
+
+    class InterruptedResponse:
+        status = 200
+
+        def __init__(self):
+            self.read_count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size):
+            self.read_count += 1
+            if self.read_count == 1:
+                return payload[:first_size]
+            raise ConnectionResetError(10054, "connection reset")
+
+    class ResumedResponse(io.BytesIO):
+        status = 206
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 60
+        range_header = request.get_header("Range")
+        requests.append(range_header)
+        if len(requests) == 1:
+            return InterruptedResponse()
+        assert range_header == f"bytes={first_size}-"
+        return ResumedResponse(payload[first_size:])
+
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(update_manager.time, "sleep", sleeps.append)
+    events = []
+
+    target = update_manager._download_asset(
+        {
+            "latest_version": "1.0.0",
+            "asset": {
+                "name": "answer-book-source.zip",
+                "size_bytes": len(payload),
+                "sha256": digest,
+                "download_url": "https://github.com/example/releases/download/v1.0.0/source.zip",
+            },
+        },
+        lambda status, percent, message, **details: events.append((status, percent, message, details)),
+    )
+
+    assert target.read_bytes() == payload
+    assert requests == [None, f"bytes={first_size}-"]
+    assert sleeps == [0.5]
+    assert any("自动续传" in event[2] for event in events)
+    assert not target.with_suffix(target.suffix + ".part").exists()
+
+
+def test_download_restarts_safely_when_server_ignores_range(tmp_path, monkeypatch) -> None:
+    payload = b"verified-update-content-with-restart"
+    first_size = 7
+    digest = hashlib.sha256(payload).hexdigest()
+    calls = 0
+
+    class InterruptedResponse:
+        status = 200
+
+        def __init__(self):
+            self.read_count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _size):
+            self.read_count += 1
+            if self.read_count == 1:
+                return payload[:first_size]
+            raise ConnectionResetError(10054, "connection reset")
+
+    class FullResponse(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 60
+        if calls == 1:
+            return InterruptedResponse()
+        assert request.get_header("Range") == f"bytes={first_size}-"
+        return FullResponse(payload)
+
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(update_manager.time, "sleep", lambda _seconds: None)
+
+    target = update_manager._download_asset({
+        "latest_version": "1.0.0",
+        "asset": {
+            "name": "answer-book-source.zip",
+            "size_bytes": len(payload),
+            "sha256": digest,
+            "download_url": "https://github.com/example/releases/download/v1.0.0/source.zip",
+        },
+    })
+
+    assert target.read_bytes() == payload
+    assert calls == 2
+
+
+def test_download_exhaustion_removes_partial_file(tmp_path, monkeypatch) -> None:
+    payload = b"never-completed"
+    digest = hashlib.sha256(payload).hexdigest()
+    calls = 0
+
+    def fake_urlopen(_request, timeout):
+        nonlocal calls
+        calls += 1
+        assert timeout == 60
+        raise ConnectionResetError(10054, "connection reset")
+
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(update_manager.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(update_manager.UpdateError, match="自动重试 4 次"):
+        update_manager._download_asset({
+            "latest_version": "1.0.0",
+            "asset": {
+                "name": "answer-book-source.zip",
+                "size_bytes": len(payload),
+                "sha256": digest,
+                "download_url": "https://github.com/example/releases/download/v1.0.0/source.zip",
+            },
+        })
+
+    partial = tmp_path / "runtime" / "updates" / "1.0.0" / "answer-book-source.zip.part"
+    assert calls == update_manager.UPDATE_DOWNLOAD_ATTEMPTS
+    assert not partial.exists()
 
 
 def test_start_update_returns_before_network_work_finishes(tmp_path, monkeypatch) -> None:

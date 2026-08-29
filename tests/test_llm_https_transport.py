@@ -140,6 +140,30 @@ def _chat(base_url: str, *, timeout: int = 3) -> llm_client.LLMResult:
     )
 
 
+def test_execution_intent_failure_prevents_transport_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocked_path = tmp_path / "blocked-execution-ledger"
+    blocked_path.mkdir()
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", blocked_path)
+    monkeypatch.setenv("MODEL_EXECUTION_LEDGER_WRITE_ATTEMPTS", "1")
+    client = llm_client.OpenAICompatibleClient(_provider("https://example.invalid/v1"))
+    transport_called = False
+
+    def forbidden_transport(*args, **kwargs):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("transport must not run before durable intent")
+
+    client._urlopen = forbidden_transport
+
+    with pytest.raises(runtime_monitor.ModelExecutionLedgerError, match="无法持久化"):
+        client.chat_text([{"role": "user", "content": "local-only test"}], timeout=3)
+
+    assert transport_called is False
+
+
 def test_https_handler_uses_verified_standard_context_only(monkeypatch: pytest.MonkeyPatch) -> None:
     handler = llm_client._LayeredHTTPSHandler(
         connect_timeout=1,

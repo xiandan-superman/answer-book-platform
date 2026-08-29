@@ -60,9 +60,11 @@ from .practice_runtime import (
     mark_practice_generation_checkpoint_complete,
     partition_compatible_batches,
 )
+from .prompt_registry import practice_prompt_contract_id, prompt_contract
 from .provider_errors import classify_provider_error
 from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
+from .runtime_monitor import record_model_retry_scheduled, record_model_retry_started
 from .settings import (
     DEFAULT_MODEL_MAX_TOKENS,
     get_provider,
@@ -2390,12 +2392,13 @@ This image is a blank student response template, never an answer image."""
     metadata = exercise.setdefault("figure_generation", {})
     try:
         if not output.is_file():
-            OpenAICompatibleClient(get_provider(image_provider_name)).generate_image(
-                prompt,
-                output,
-                model=image_model,
-                timeout=max(240, int(payload.get("image_generation_timeout_seconds") or 300)),
-            )
+            with prompt_contract("practice.direct_image_generation"):
+                OpenAICompatibleClient(get_provider(image_provider_name)).generate_image(
+                    prompt,
+                    output,
+                    model=image_model,
+                    timeout=max(240, int(payload.get("image_generation_timeout_seconds") or 300)),
+                )
         figures[0]["image_path"] = str(output)
         figures[0]["image_provider"] = image_provider_name
         figures[0]["image_model"] = image_model
@@ -3790,6 +3793,7 @@ def _repair_exercise_figures(
         thinking="disabled",
         timeout_seconds=_practice_stage_timeout("figure_repair", 120),
         ensure_active=ensure_active,
+        prompt_contract_id="practice.figure_repair",
     )
     return [figure for figure in (raw.get("figures") or []) if isinstance(figure, dict)][:6]
 
@@ -4666,6 +4670,7 @@ def _bind_practice_generated_images(raw: dict[str, Any]) -> dict[str, Any]:
             figures.append(
                 {
                     "figure_id": f"agent_img_{index:02d}",
+                    "asset_id": asset_id,
                     "location": str(accepted.get("location") or "stem"),
                     "figure_type": "diagram",
                     "title": str(accepted.get("title") or "题图"),
@@ -5215,43 +5220,48 @@ def _call_practice_json(
     item_ids: Iterable[Any] = (),
     enforce_context_budget: bool = False,
     tool_loop: ModelToolLoop | None = None,
+    prompt_contract_id: str = "",
 ) -> dict[str, Any]:
     if timeout_seconds is None:
         timeout_seconds = _practice_stage_timeout("general", 300)
     if ensure_active is not None:
         ensure_active()
     output_token_budget = max(2000, min(DEFAULT_MODEL_MAX_TOKENS, int(max_tokens or DEFAULT_MODEL_MAX_TOKENS)))
+    contract_id = prompt_contract_id or practice_prompt_contract_id(task_stage)
     if tool_loop is not None:
-        agent_result = tool_loop.run_json(
-            messages,
-            model=model,
-            max_tokens=output_token_budget,
-            thinking=thinking or "auto",
-            timeout=timeout_seconds,
-        )
+        with prompt_contract(contract_id):
+            agent_result = tool_loop.run_json(
+                messages,
+                model=model,
+                max_tokens=output_token_budget,
+                thinking=thinking or "auto",
+                timeout=timeout_seconds,
+            )
         raw = agent_result.value
         raw["_image_tool_artifacts"] = agent_result.generated_artifacts
         raw["_image_tool_loop"] = {
             "steps": agent_result.steps,
             "tool_calls": agent_result.tool_calls,
+            "tool_event_log": getattr(agent_result, "tool_event_log", ""),
         }
         if ensure_active is not None:
             ensure_active()
         return raw
-    with model_request_slot(getattr(client, "config", None)):
-        result = client.chat_json(
-            messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=output_token_budget,
-            thinking=thinking,
-            timeout=timeout_seconds,
-            task_stage=task_stage,
-            required_evidence_refs=required_evidence_refs,
-            delivered_evidence_refs=delivered_evidence_refs,
-            item_ids=item_ids,
-            enforce_context_budget=enforce_context_budget,
-        )
+    with prompt_contract(contract_id):
+        with model_request_slot(getattr(client, "config", None)):
+            result = client.chat_json(
+                messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=output_token_budget,
+                thinking=thinking,
+                timeout=timeout_seconds,
+                task_stage=task_stage,
+                required_evidence_refs=required_evidence_refs,
+                delivered_evidence_refs=delivered_evidence_refs,
+                item_ids=item_ids,
+                enforce_context_budget=enforce_context_budget,
+            )
     if ensure_active is not None:
         ensure_active()
     try:
@@ -5277,20 +5287,43 @@ def _call_practice_json(
         ]
         if ensure_active is not None:
             ensure_active()
-        with model_request_slot(getattr(repair_client, "config", None)):
-            repaired = repair_client.chat_json(
-                repair_messages,
-                model=model,
-                temperature=0,
-                max_tokens=output_token_budget,
-                thinking=_practice_retry_thinking(repair_client, model),
-                timeout=timeout_seconds,
-                task_stage=task_stage,
-                required_evidence_refs=required_evidence_refs,
-                delivered_evidence_refs=delivered_evidence_refs,
-                item_ids=item_ids,
-                enforce_context_budget=enforce_context_budget,
-            )
+        source_config = getattr(client, "config", None)
+        repair_config = getattr(repair_client, "config", None)
+        observation = record_model_retry_scheduled(
+            first_error,
+            category="json_structure_repair",
+            retry_number=1,
+            max_attempts=2,
+            provider=str(getattr(repair_config, "name", "") or ""),
+            model=model,
+            failure_kind="generation_response_invalid",
+            failure_retryable=True,
+            from_protocol=str(getattr(source_config, "api_protocol", "") or client.__class__.__name__),
+            to_protocol=str(getattr(repair_config, "api_protocol", "") or repair_client.__class__.__name__),
+            from_model=model,
+            to_model=model,
+            from_strategy="practice_json_generation",
+            to_strategy="syntax_only_json_repair",
+            budget_scope="run_model_call",
+            budget_charged=True,
+            decision_source="existing_practice_json_repair",
+        )
+        record_model_retry_started(observation)
+        with prompt_contract(contract_id):
+            with model_request_slot(getattr(repair_client, "config", None)):
+                repaired = repair_client.chat_json(
+                    repair_messages,
+                    model=model,
+                    temperature=0,
+                    max_tokens=output_token_budget,
+                    thinking=_practice_retry_thinking(repair_client, model),
+                    timeout=timeout_seconds,
+                    task_stage=task_stage,
+                    required_evidence_refs=required_evidence_refs,
+                    delivered_evidence_refs=delivered_evidence_refs,
+                    item_ids=item_ids,
+                    enforce_context_budget=enforce_context_budget,
+                )
         if ensure_active is not None:
             ensure_active()
         try:
@@ -5889,6 +5922,7 @@ def _call_practice_json_with_transport_retry(
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     retrying_invalid_json = initial_json_error
+    pending_retry_observation: dict[str, Any] | None = None
     # A user-selected main-model tool transaction cannot cross to a protocol
     # fallback that lacks the same conversation and image bindings. Keep every
     # retry on the registered route; otherwise fail instead of becoming text-only.
@@ -5915,6 +5949,9 @@ def _call_practice_json_with_transport_retry(
             if retrying_invalid_json and overall_attempt >= 3
             else messages
         )
+        if pending_retry_observation is not None:
+            record_model_retry_started(pending_retry_observation)
+            pending_retry_observation = None
         try:
             result = _call_practice_json(
                 attempt_client,
@@ -5997,12 +6034,47 @@ def _call_practice_json_with_transport_retry(
             retry_after = detail.get("retry_after_seconds")
             if isinstance(retry_after, (int, float)):
                 delay = max(delay, min(max(0.0, max_retry_after_seconds), max(0.0, float(retry_after))))
+            sleep_seconds = delay + random.uniform(0, min(0.25, delay / 2)) if delay else 0.0
             if delay:
-                sleep_seconds = delay + random.uniform(0, min(0.25, delay / 2))
                 if attempt_log is not None and attempt_log:
                     attempt_log[-1]["retry_delay_seconds"] = round(sleep_seconds, 3)
                     if isinstance(retry_after, (int, float)):
                         attempt_log[-1]["provider_retry_after_seconds"] = round(float(retry_after), 3)
+            config = getattr(attempt_client, "config", None)
+            current_protocol = str(getattr(config, "api_protocol", "") or attempt_client.__class__.__name__)
+            next_overall_attempt = overall_attempt + 1
+            next_use_primary_protocol = (
+                next_overall_attempt < 4 or not allow_equivalent_chat_fallback
+                if retrying_invalid_json
+                else attempt + 1 <= 1 + max(0, int(same_protocol_retries)) or not allow_equivalent_chat_fallback
+            )
+            next_protocol = (
+                str(getattr(getattr(client, "config", None), "api_protocol", "") or client.__class__.__name__)
+                if next_use_primary_protocol
+                else "chat_completions"
+            )
+            pending_retry_observation = record_model_retry_scheduled(
+                exc,
+                category=("json_structure_repair" if detail.get("code") == "generation_response_invalid" else "transport_retry"),
+                retry_number=attempt,
+                max_attempts=max(1, attempts),
+                delay_seconds=sleep_seconds,
+                provider_retry_after_seconds=(float(retry_after) if isinstance(retry_after, (int, float)) else None),
+                provider=str(getattr(config, "name", "") or ""),
+                model=model,
+                failure_kind=("generation_response_invalid" if detail.get("code") == "generation_response_invalid" else ""),
+                failure_retryable=bool(detail.get("retryable", retryable)),
+                from_protocol=current_protocol,
+                to_protocol=next_protocol,
+                from_model=model,
+                to_model=model,
+                from_strategy=("strict_json_contract" if attempt_messages is not messages else "selected_route"),
+                to_strategy=("strict_json_contract" if retrying_invalid_json and next_overall_attempt >= 3 else "selected_route"),
+                budget_scope="practice_generation_retry_budget",
+                budget_charged=detail.get("retry_budget_charge") is not False,
+                decision_source="existing_practice_transport_retry",
+            )
+            if delay:
                 time.sleep(sleep_seconds)
     raise last_error or LLMError("上游模型生成失败。")
 
@@ -6761,6 +6833,7 @@ def _refine_blueprint_batch(
         thinking=_clean(payload.get("thinking"), 20) or None,
         timeout_seconds=240,
         ensure_active=lambda: ensure_practice_generation_active(payload),
+        prompt_contract_id="practice.planning",
     )
     ensure_practice_generation_active(payload)
     rows = raw.get("plan_items") if isinstance(raw.get("plan_items"), list) else raw.get("exercise_plan")
@@ -7771,6 +7844,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
                 temperature=0.1,
                 thinking=_clean(payload.get("thinking"), 20) or None,
                 ensure_active=lambda: ensure_practice_generation_active(payload),
+                prompt_contract_id="practice.source_analysis",
             )
             repaired_by_id = {
                 _clean(item.get("source_question_id"), 80): _required_constraints_for_refs(
@@ -9672,6 +9746,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         timeout_seconds=_practice_stage_timeout("generation", 480),
                         ensure_active=lambda: ensure_practice_generation_active(payload),
                         tool_loop=generation_tool_loop,
+                        prompt_contract_id="practice.generation",
                     )
                     repaired_raw = _bind_practice_generated_images(repaired_raw)
                     repaired_item = next(
@@ -10469,6 +10544,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         thinking=_clean(payload.get("thinking"), 20) or None,
         ensure_active=lambda: ensure_practice_generation_active(payload),
         tool_loop=regeneration_tool_loop,
+        prompt_contract_id="practice.generation",
     )
     if image_orchestration == MAIN_MODEL_TOOL_LOOP:
         raw = _bind_practice_generated_images(raw)
@@ -10494,6 +10570,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             thinking=_clean(payload.get("thinking"), 20) or None,
             ensure_active=lambda: ensure_practice_generation_active(payload),
             tool_loop=regeneration_tool_loop,
+            prompt_contract_id="practice.generation",
         )
         if image_orchestration == MAIN_MODEL_TOOL_LOOP:
             raw = _bind_practice_generated_images(raw)
@@ -10750,17 +10827,18 @@ def regenerate_plan_item(payload: dict[str, Any]) -> dict[str, Any]:
     # never performs a response_format compatibility retry, so this action is
     # exactly one provider request even on providers without JSON mode.
     revision_client = _practice_generation_client(provider, model)
-    result = revision_client.chat_text(
-        messages,
-        model=model,
-        temperature=0.25,
-        max_tokens=max(DEFAULT_MODEL_MAX_TOKENS, 10000),
-        thinking=_clean(payload.get("thinking"), 20) or None,
-        timeout=_practice_stage_timeout("blueprint_revision", 300),
-        task_stage="planning",
-        item_ids=[_clean(original.get("plan_item_id"), 80)],
-        enforce_context_budget=True,
-    )
+    with prompt_contract("practice.blueprint_revision"):
+        result = revision_client.chat_text(
+            messages,
+            model=model,
+            temperature=0.25,
+            max_tokens=max(DEFAULT_MODEL_MAX_TOKENS, 10000),
+            thinking=_clean(payload.get("thinking"), 20) or None,
+            timeout=_practice_stage_timeout("blueprint_revision", 300),
+            task_stage="planning",
+            item_ids=[_clean(original.get("plan_item_id"), 80)],
+            enforce_context_budget=True,
+        )
     raw = _parse_safe_practice_json(result.content)
     redesigned = raw.get("plan_item") if isinstance(raw.get("plan_item"), dict) else {}
     if not _clean(redesigned.get("target_skill"), 500):
@@ -10993,6 +11071,7 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
         temperature=0.45,
         thinking=_clean(payload.get("thinking"), 20) or None,
         tool_loop=draft_tool_loop,
+        prompt_contract_id="practice.generation",
     )
     if image_orchestration == MAIN_MODEL_TOOL_LOOP:
         raw = _bind_practice_generated_images(raw)

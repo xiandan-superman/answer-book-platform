@@ -18,11 +18,19 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from .analysis_profiles import analysis_uses_textbook_evidence, normalize_analysis_profile
 from .answer_coverage_audit import audit_answer_coverage
 from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info, recover_damaged_api_key_file
+from .artifact_store import build_artifact_integrity_report
 from .audit_review_gate import get_pending_review_decision, submit_review_decision
 from .capabilities.quality_metrics import build_quality_metrics_report
 from .delivery_package import build_task_delivery_package
 from .environment import check_environment, repair_environment
 from .exam_structure_review import get_pending_exam_structure_review, submit_exam_structure_review
+from .execution_projection import (
+    EXAM_PROGRESS_STAGE_ORDER,
+    build_execution_projection_report,
+    exam_stage_progress_percent,
+    practice_presentation_progress,
+    stage_order_index,
+)
 from .exercise_generation import (
     audit_practice_blueprint,
     ensure_practice_blueprint_defaults,
@@ -41,6 +49,7 @@ from .final_acceptance import build_final_acceptance_report
 from .http_errors import public_error_payload
 from .hybrid_client import HybridClientError, hybrid_settings_payload, save_hybrid_enabled
 from .image_orchestration import MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
+from .invariant_service import build_invariant_report
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
 from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
 from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
@@ -96,6 +105,7 @@ from .practice_store import (
     update_practice_exercise,
 )
 from .process_lock import platform_process_lock
+from .prompt_registry import build_prompt_registry_report, prompt_contract
 from .prompts import build_answer_fragment_prompt
 from .provider_errors import classify_provider_error
 from .read_snapshot import READ_SNAPSHOTS
@@ -129,6 +139,7 @@ from .task_result_view import build_task_result_view
 from .task_runner import control_exam_task, start_exam_task
 from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
 from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
+from .token_meter import build_token_meter_report
 from .update_manager import UpdateError, check_for_updates, start_update, update_progress
 from .v4_schema import validate_v4_answer_fragment
 from .version import get_app_version, get_source_revision, get_version, release_manifest_status
@@ -147,32 +158,7 @@ from .word_format_tasks import (
     word_format_task_payload,
 )
 
-PROGRESS_STAGE_ORDER = [
-    "environment",
-    "extract_exam",
-    "exam_structure_review",
-    "question_understanding",
-    "figure_schema_planning",
-    "textbook_index",
-    "knowledge_planning",
-    "retrieval",
-    "evidence_selection",
-    "answer_generation",
-    "answer_coverage",
-    "figures",
-    "content_quality",
-    "content_quality_model_repair",
-    "figures_after_content_quality_model_repair",
-    "content_quality_local_repair",
-    "docx",
-    "docx_model_repair",
-    "docx_repair",
-    "question_review",
-    "render",
-    "acceptance",
-    "final_acceptance",
-    "completed",
-]
+PROGRESS_STAGE_ORDER = list(EXAM_PROGRESS_STAGE_ORDER)
 
 
 def _json_bytes(value) -> bytes:
@@ -279,18 +265,11 @@ def _task_current_progress(task_id: str, current_stage: str | None = None):
 
 
 def _stage_order_index(stage: str | None) -> int:
-    try:
-        return PROGRESS_STAGE_ORDER.index(str(stage or ""))
-    except ValueError:
-        return -1
+    return stage_order_index(stage)
 
 
 def _stage_progress_percent(stage: str | None) -> int:
-    text = str(stage or "")
-    if text == "completed":
-        return 100
-    index = max(0, _stage_order_index(text))
-    return min(95, round(((index + 1) / len(PROGRESS_STAGE_ORDER)) * 100))
+    return exam_stage_progress_percent(stage)
 
 
 def _task_progress_summary(task_id: str, task_row: dict) -> dict:
@@ -488,7 +467,7 @@ def _practice_job_task_row(record: dict) -> dict:
     status = str(record.get("status") or "queued")
     stage = str(record.get("current_stage") or "planning")
     elapsed = max(0, int(record.get("elapsed_seconds") or 0))
-    running_progress = min(88, 30 + elapsed // 15) if record.get("operation") == "generate_from_plan" else min(88, 35 + elapsed // 10)
+    reported_progress, _ = practice_presentation_progress(record)
     deadline_remaining = None
     try:
         deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
@@ -526,7 +505,7 @@ def _practice_job_task_row(record: dict) -> dict:
             else "生成失败" if status == "failed"
             else "已完成"
         ),
-        "progress_percent": 15 if status == "queued" else (running_progress if status in {"running", "paused"} else 100),
+        "progress_percent": reported_progress,
     }
 
 
@@ -1138,6 +1117,88 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     "report_unavailable": True,
                     "added_model_calls": 0,
                     "added_tokens": 0,
+                    "added_network_requests": 0,
+                }
+            self.send_json(report)
+            return
+        if parsed.path == "/api/quality/execution-projection":
+            try:
+                report = build_execution_projection_report()
+            except Exception:
+                report = {
+                    "schema_version": "answer_book.execution_projection.v1",
+                    "mode": "shadow",
+                    "authority": "observation_only",
+                    "enforced": False,
+                    "business_state_changed": False,
+                    "sample_count": 0,
+                    "report_unavailable": True,
+                    "added_model_calls": 0,
+                    "added_tokens": 0,
+                    "added_network_requests": 0,
+                }
+            self.send_json(report)
+            return
+        if parsed.path == "/api/quality/prompt-registry":
+            try:
+                report = build_prompt_registry_report()
+            except Exception:
+                report = {
+                    "schema_version": "answer_book.prompt_registry.v1",
+                    "mode": "shadow",
+                    "authority": "observation_only",
+                    "enforced": False,
+                    "behavior_changed": False,
+                    "catalog_count": 0,
+                    "report_unavailable": True,
+                    "added_model_calls": 0,
+                    "added_tokens": 0,
+                    "added_network_requests": 0,
+                }
+            self.send_json(report)
+            return
+        if parsed.path == "/api/quality/invariants":
+            try:
+                report = build_invariant_report()
+            except Exception:
+                report = {
+                    "schema_version": "answer_book.invariant_report.v1",
+                    "mode": "shadow",
+                    "authority": "observation_only",
+                    "enforced": False,
+                    "actual_blocked_count": 0,
+                    "report_unavailable": True,
+                    "added_model_calls": 0,
+                    "added_tokens": 0,
+                    "added_network_requests": 0,
+                }
+            self.send_json(report)
+            return
+        if parsed.path == "/api/quality/artifacts":
+            try:
+                report = build_artifact_integrity_report()
+            except Exception:
+                report = {
+                    "schema_version": "answer_book.artifact_integrity.v1",
+                    "mode": "read_only",
+                    "authority": "integrity_observation",
+                    "integrity_violation_count": 0,
+                    "report_unavailable": True,
+                    "added_model_calls": 0,
+                    "added_tokens": 0,
+                    "added_network_requests": 0,
+                }
+            self.send_json(report)
+            return
+        if parsed.path == "/api/quality/token-meter":
+            try:
+                report = build_token_meter_report()
+            except Exception:
+                report = {
+                    "schema_version": "answer_book.token_meter.v1",
+                    "mode": "active_measurement_shadow_policy",
+                    "report_unavailable": True,
+                    "added_model_calls": 0,
                     "added_network_requests": 0,
                 }
             self.send_json(report)
@@ -2178,12 +2239,13 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     image_model = str(body.get("model") or provider.image_model or "").strip()
                     try:
                         with tempfile.TemporaryDirectory(prefix="answer-book-provider-image-test-") as raw_tmp:
-                            result = client.generate_image(
-                                "A single small black circle centered on a plain white background.",
-                                Path(raw_tmp) / "connection-test.png",
-                                model=image_model,
-                                size=provider.image_size,
-                            )
+                            with prompt_contract("system.provider_connection_image"):
+                                result = client.generate_image(
+                                    "A single small black circle centered on a plain white background.",
+                                    Path(raw_tmp) / "connection-test.png",
+                                    model=image_model,
+                                    size=provider.image_size,
+                                )
                     except LLMError as exc:
                         self.send_json(_provider_test_error_payload(provider.name, image_model, exc), status=400)
                         return
@@ -2202,13 +2264,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     {"role": "user", "content": "Return the JSON object now."},
                 ]
                 try:
-                    parsed_content = client.chat_json_object(
-                        messages,
-                        model=model,
-                        max_tokens=DEFAULT_MODEL_MAX_TOKENS,
-                        attempts=1,
-                        task_stage="general",
-                    )
+                    with prompt_contract("system.provider_connection_text"):
+                        parsed_content = client.chat_json_object(
+                            messages,
+                            model=model,
+                            max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+                            attempts=1,
+                            task_stage="general",
+                        )
                 except LLMError as exc:
                     error_payload = _provider_test_error_payload(provider.name, model, exc)
                     if protocol_overridden:
@@ -2232,7 +2295,13 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 client = OpenAICompatibleClient(provider)
                 messages = build_answer_fragment_prompt(body.get("question") or {}, body.get("evidence") or [])
                 model = resolve_provider_model(provider, body.get("model"))
-                result = client.chat_json(messages, model=model, task_stage="answer_generation", enforce_context_budget=True)
+                with prompt_contract("exam.answer_draft_single"):
+                    result = client.chat_json(
+                        messages,
+                        model=model,
+                        task_stage="answer_generation",
+                        enforce_context_budget=True,
+                    )
                 parsed_content = parse_json_content(result.content)
                 issues = validate_v4_answer_fragment(parsed_content)
                 self.send_json({

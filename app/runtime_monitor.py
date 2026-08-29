@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -16,10 +17,19 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from .capabilities.quality_budget import QualityExecutionBudget
-from .concurrency import ensure_model_request_active, model_request_context, model_request_snapshot
+from .concurrency import (
+    ModelRequestAborted,
+    ensure_model_request_active,
+    model_request_context,
+    model_request_snapshot,
+)
 from .paths import DATA_ROOT, LOGS_DIR, PROJECT_ROOT, TASKS_DIR, ensure_project_dirs
+from .prompt_registry import observe_prompt_request
+from .provider_errors import classify_provider_error
 from .redaction import redact_credentials
 from .resource_ids import bounded_resource_path
 from .task_store import list_tasks, load_task
@@ -27,18 +37,46 @@ from .version import get_version
 
 RUNTIME_LOG = LOGS_DIR / "runtime_server.jsonl"
 MODEL_CALL_LEDGER = LOGS_DIR / "model_calls.jsonl"
+MODEL_EXECUTION_EVENT_LEDGER = LOGS_DIR / "model_execution_events.jsonl"
 ERROR_TRACE_LOG = LOGS_DIR / "error_traces.jsonl"
+MODEL_EXECUTION_EVENT_SCHEMA = "answer_book.model_execution_event.v1"
+ROUTE_DECISION_SCHEMA = "answer_book.route_decision.v1"
+MODEL_RETRY_OBSERVATION_SCHEMA = "answer_book.model_retry_observation.v1"
+MODEL_RETRY_CATEGORIES = frozenset(
+    {
+        "transport_retry",
+        "protocol_adaptation",
+        "json_structure_repair",
+        "output_limit_repair",
+        "generation_strategy_adjustment",
+        "capability_equivalent_route_fallback",
+        "deterministic_business_repair",
+        "history_compaction",
+        "policy_retry",
+    }
+)
 MAX_TEXT_LENGTH = 1200
 SERVICE_STARTED_AT = datetime.now().astimezone()
 HEARTBEAT_ERROR_SECONDS = max(30, int(os.environ.get("RUNTIME_HEARTBEAT_ERROR_SECONDS", "90")))
 MODEL_WAIT_SECONDS = max(30, int(os.environ.get("RUNTIME_MODEL_WAIT_SECONDS", "150")))
 PROGRESS_WARNING_SECONDS = max(MODEL_WAIT_SECONDS, int(os.environ.get("RUNTIME_PROGRESS_WARNING_SECONDS", "240")))
 _MODEL_CALL_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar("model_call_context", default=None)
+_LAST_MODEL_INVOCATION: ContextVar[dict[str, str] | None] = ContextVar(
+    "last_model_invocation",
+    default=None,
+)
 _MODEL_LOCK = threading.RLock()
 _MODEL_ACTIVE: dict[str, dict[str, Any]] = {}
 _MODEL_HISTORY: deque[dict[str, Any]] = deque(maxlen=240)
 _MODEL_SEQUENCE = 0
 _RUN_MODEL_BUDGETS: dict[tuple[str, str], dict[str, Any]] = {}
+_MODEL_EXECUTION_EVENT_LOCK = threading.RLock()
+_MODEL_EXECUTION_EVENT_SEQUENCE = 0
+_MODEL_EXECUTION_SESSION_ID = uuid4().hex
+
+
+class ModelExecutionLedgerError(RuntimeError):
+    """A durable execution event could not be recorded safely."""
 
 
 def _now() -> str:
@@ -134,7 +172,8 @@ def model_call_cost_summary(task_id: str) -> dict[str, Any]:
     known_waste_tokens = sum(
         int(row.get("prompt_tokens") or 0) + int(row.get("completion_tokens") or 0)
         for row in rows
-        if row.get("billable_disposition") == "failed_attempt"
+        if row.get("billable_disposition")
+        in {"failed_attempt", "cancelled_discarded", "discarded_after_provider_return"}
     )
     provider_costs = [float(row["provider_cost"]) for row in rows if isinstance(row.get("provider_cost"), (int, float))]
     return {
@@ -158,6 +197,12 @@ def current_model_call_context() -> dict[str, str]:
     return dict(_MODEL_CALL_CONTEXT.get() or {})
 
 
+def current_model_invocation_reference() -> dict[str, str]:
+    """Return the latest completed invocation in this context without mutating responses."""
+
+    return dict(_LAST_MODEL_INVOCATION.get() or {})
+
+
 @contextmanager
 def model_call_context(
     *,
@@ -169,12 +214,18 @@ def model_call_context(
     lease_epoch: int | None = None,
 ) -> Iterator[None]:
     current = dict(_MODEL_CALL_CONTEXT.get() or {})
+    execution_run_id = str(current.get("execution_run_id") or "")
+    if run_id:
+        execution_run_id = run_id
+    elif task_id and not execution_run_id:
+        execution_run_id = uuid4().hex
     current.update(
         {
             key: value
             for key, value in {
                 "task_id": task_id,
                 "run_id": run_id,
+                "execution_run_id": execution_run_id,
                 "stage": stage,
                 "operation": operation,
                 "active_item": active_item,
@@ -227,6 +278,8 @@ def model_call_context(
 
 
 def _model_error_kind(error: BaseException) -> str:
+    if isinstance(error, ModelRequestAborted):
+        return "cancelled"
     text = str(error).lower()
     if "429" in text or "rate limit" in text or "限流" in text:
         return "rate_limited"
@@ -310,6 +363,335 @@ def _model_request_size_metrics(payload: Any) -> dict[str, int]:
         "image_input_count": image_count,
         "image_input_bytes": image_bytes,
     }
+
+
+def _request_sha256(payload: Any) -> str:
+    try:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = str(payload or "").encode("utf-8", errors="replace")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_endpoint_path(endpoint: str) -> str:
+    try:
+        parsed = urlsplit(str(endpoint or ""))
+    except ValueError:
+        return "<invalid-endpoint>"
+    path = parsed.path or "/"
+    return _safe_text(path, 300)
+
+
+def _required_capabilities(
+    purpose: str,
+    *,
+    image_input_count: int = 0,
+    has_tools: bool = False,
+) -> list[str]:
+    normalized = str(purpose or "").strip().lower()
+    capabilities = ["image_generation"] if normalized.startswith("image_") else ["text_generation"]
+    if image_input_count > 0 or normalized == "image_edit":
+        capabilities.append("image_input")
+    if has_tools or "tools" in normalized:
+        capabilities.append("native_tool_calls")
+    return capabilities
+
+
+def _route_decision_snapshot(
+    *,
+    provider: str,
+    model: str,
+    purpose: str,
+    protocol: str,
+    endpoint: str,
+    image_input_count: int = 0,
+    has_tools: bool = False,
+) -> dict[str, Any]:
+    selection = {
+        "provider": _safe_text(provider, 120),
+        "model": _safe_text(model, 160),
+        "required_capabilities": _required_capabilities(
+            purpose,
+            image_input_count=image_input_count,
+            has_tools=has_tools,
+        ),
+    }
+    transport = {
+        "protocol": _safe_text(protocol or "unknown", 80),
+        "endpoint_path": _safe_endpoint_path(endpoint),
+        "software_version": _safe_text(get_version(), 80),
+    }
+    fingerprint_payload = {"selection": selection, "transport": transport}
+    return {
+        "schema_version": ROUTE_DECISION_SCHEMA,
+        "authority": "shadow",
+        "selection": selection,
+        "transport": transport,
+        "policy_expectation": {
+            "preserve_selection_and_capabilities": True,
+            "use_current_transport_and_safety_fixes": True,
+            "silent_model_switch_allowed": False,
+        },
+        "policy_enforced_by_snapshot": False,
+        "fingerprint_sha256": _request_sha256(fingerprint_payload),
+    }
+
+
+def _execution_event_write_attempts() -> int:
+    try:
+        return max(1, min(5, int(os.environ.get("MODEL_EXECUTION_LEDGER_WRITE_ATTEMPTS", "3"))))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _append_model_execution_event(event_type: str, record: dict[str, Any], **payload: Any) -> None:
+    global _MODEL_EXECUTION_EVENT_SEQUENCE
+    with _MODEL_EXECUTION_EVENT_LOCK:
+        _MODEL_EXECUTION_EVENT_SEQUENCE += 1
+        event = {
+            "schema_version": MODEL_EXECUTION_EVENT_SCHEMA,
+            "event_id": uuid4().hex,
+            "ledger_session_id": _MODEL_EXECUTION_SESSION_ID,
+            "sequence": _MODEL_EXECUTION_EVENT_SEQUENCE,
+            "event_type": str(event_type),
+            "recorded_at": _now(),
+            "invocation_id": str(record.get("invocation_id") or ""),
+            "call_id": str(record.get("call_id") or ""),
+            "task_id": str(record.get("task_id") or ""),
+            "run_id": str(record.get("run_id") or ""),
+            "stage": str(record.get("stage") or ""),
+            "operation": str(record.get("operation") or ""),
+            "active_item": str(record.get("active_item") or ""),
+            **payload,
+        }
+        line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        attempts = _execution_event_write_attempts()
+        last_error: OSError | None = None
+        for attempt in range(attempts):
+            try:
+                ensure_project_dirs()
+                MODEL_EXECUTION_EVENT_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+                with MODEL_EXECUTION_EVENT_LEDGER.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(0.05 * (attempt + 1))
+        raise ModelExecutionLedgerError(
+            f"模型执行事件无法持久化，已停止采用本次调用：{_safe_text(last_error, 240)}"
+        ) from last_error
+
+
+def _retry_event_record(
+    *,
+    provider: str,
+    model: str,
+    source_invocation_id: str,
+    source_call_id: str,
+) -> dict[str, Any]:
+    context = dict(_MODEL_CALL_CONTEXT.get() or {})
+    return {
+        "invocation_id": _safe_text(source_invocation_id, 80),
+        "call_id": _safe_text(source_call_id, 80),
+        "task_id": _safe_text(context.get("task_id"), 120),
+        "run_id": _safe_text(
+            context.get("run_id") or context.get("execution_run_id"),
+            120,
+        ),
+        "stage": _safe_text(context.get("stage"), 80),
+        "operation": _safe_text(context.get("operation"), 120),
+        "active_item": _safe_text(context.get("active_item"), 120),
+        "provider": _safe_text(provider, 120),
+        "model": _safe_text(model, 160),
+    }
+
+
+def record_model_retry_scheduled(
+    error: BaseException | None,
+    *,
+    category: str,
+    retry_number: int,
+    max_attempts: int,
+    delay_seconds: float = 0.0,
+    provider_retry_after_seconds: float | None = None,
+    provider: str = "",
+    model: str = "",
+    source_invocation_id: str = "",
+    source_call_id: str = "",
+    failure_kind: str = "",
+    failure_retryable: bool | None = None,
+    from_protocol: str = "",
+    to_protocol: str = "",
+    from_model: str = "",
+    to_model: str = "",
+    from_strategy: str = "",
+    to_strategy: str = "",
+    budget_scope: str = "run_model_call",
+    budget_charged: bool | None = None,
+    decision_source: str = "existing_policy",
+) -> dict[str, Any]:
+    """Durably observe an existing retry decision without changing that decision."""
+
+    normalized_category = str(category or "").strip().lower()
+    if normalized_category not in MODEL_RETRY_CATEGORIES:
+        normalized_category = "policy_retry"
+    status_code = getattr(error, "status_code", None) if error is not None else None
+    retry_after = (
+        provider_retry_after_seconds
+        if isinstance(provider_retry_after_seconds, (int, float))
+        else getattr(error, "retry_after_seconds", None)
+        if error is not None
+        else None
+    )
+    transport_phase = str(getattr(error, "transport_phase", "") or "") if error is not None else ""
+    if failure_kind:
+        normalized_failure_kind = _safe_text(failure_kind, 120)
+        retryable = bool(failure_retryable) if failure_retryable is not None else True
+        requires_configuration = False
+    else:
+        failure = classify_provider_error(
+            error,
+            status_code=status_code if isinstance(status_code, int) else None,
+            transport_phase=transport_phase,
+            retry_after_seconds=retry_after if isinstance(retry_after, (int, float)) else None,
+        )
+        normalized_failure_kind = failure.kind
+        retryable = failure.retryable if failure_retryable is None else bool(failure_retryable)
+        requires_configuration = failure.requires_configuration
+    last_invocation = dict(_LAST_MODEL_INVOCATION.get() or {})
+    source_invocation = str(
+        source_invocation_id
+        or (getattr(error, "model_invocation_id", "") if error is not None else "")
+        or last_invocation.get("invocation_id")
+        or ""
+    )
+    source_call = str(
+        source_call_id
+        or (getattr(error, "model_call_id", "") if error is not None else "")
+        or last_invocation.get("call_id")
+        or ""
+    )
+    retry_id = uuid4().hex
+    scheduled_at = _now()
+    record = _retry_event_record(
+        provider=provider,
+        model=model,
+        source_invocation_id=source_invocation,
+        source_call_id=source_call,
+    )
+    observation = {
+        **record,
+        "retry_id": retry_id,
+        "scheduled_at": scheduled_at,
+        "retry_number": max(1, int(retry_number)),
+        "next_attempt_number": max(2, int(retry_number) + 1),
+        "max_attempts": max(1, int(max_attempts)),
+        "category": normalized_category,
+        "decision_source": _safe_text(decision_source, 120),
+        "authority": "observation_only",
+        "behavior_changed": False,
+        "failure": {
+            "kind": normalized_failure_kind,
+            "status_code": status_code if isinstance(status_code, int) else None,
+            "transport_phase": _safe_text(transport_phase, 80),
+            "retryable_by_provider_classifier": bool(retryable),
+            "requires_configuration": bool(requires_configuration),
+        },
+        "delay": {
+            "seconds": round(max(0.0, float(delay_seconds or 0.0)), 3),
+            "provider_retry_after_seconds": (
+                round(max(0.0, float(retry_after)), 3)
+                if isinstance(retry_after, (int, float))
+                else None
+            ),
+        },
+        "route_transition": {
+            "from_protocol": _safe_text(from_protocol, 80),
+            "to_protocol": _safe_text(to_protocol, 80),
+            "from_model": _safe_text(from_model or model, 160),
+            "to_model": _safe_text(to_model or model, 160),
+            "from_strategy": _safe_text(from_strategy, 120),
+            "to_strategy": _safe_text(to_strategy, 120),
+        },
+        "budget_observation": {
+            "scope": _safe_text(budget_scope, 120),
+            "charged": budget_charged if isinstance(budget_charged, bool) else None,
+            "authority": "existing_budget_policy",
+            "policy_changed": False,
+        },
+    }
+    _append_model_execution_event(
+        "retry.scheduled",
+        record,
+        retry_observation_schema=MODEL_RETRY_OBSERVATION_SCHEMA,
+        **{
+            key: observation[key]
+            for key in (
+                "retry_id",
+                "scheduled_at",
+                "provider",
+                "model",
+                "retry_number",
+                "next_attempt_number",
+                "max_attempts",
+                "category",
+                "decision_source",
+                "authority",
+                "behavior_changed",
+                "failure",
+                "delay",
+                "route_transition",
+                "budget_observation",
+            )
+        },
+    )
+    return observation
+
+
+def record_model_retry_started(observation: dict[str, Any]) -> None:
+    """Mark the durability boundary immediately before an observed retry starts."""
+
+    if not isinstance(observation, dict) or not observation.get("retry_id"):
+        raise ValueError("retry observation is missing retry_id")
+    record = {
+        key: observation.get(key)
+        for key in (
+            "invocation_id",
+            "call_id",
+            "task_id",
+            "run_id",
+            "stage",
+            "operation",
+            "active_item",
+            "provider",
+            "model",
+        )
+    }
+    _append_model_execution_event(
+        "retry.started",
+        record,
+        retry_observation_schema=MODEL_RETRY_OBSERVATION_SCHEMA,
+        retry_id=str(observation["retry_id"]),
+        retry_number=int(observation.get("retry_number") or 1),
+        next_attempt_number=int(observation.get("next_attempt_number") or 2),
+        max_attempts=int(observation.get("max_attempts") or 1),
+        category=str(observation.get("category") or "policy_retry"),
+        authority="observation_only",
+        behavior_changed=False,
+        scheduled_at=str(observation.get("scheduled_at") or ""),
+        provider=str(observation.get("provider") or ""),
+        model=str(observation.get("model") or ""),
+        route_transition=dict(observation.get("route_transition") or {}),
+        budget_observation=dict(observation.get("budget_observation") or {}),
+    )
 
 
 def record_model_call_estimate(record: dict[str, Any] | None, payload: Any) -> None:
@@ -421,7 +803,17 @@ def _wait_for_provider_circuit_probe(
 
 
 @contextmanager
-def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -> Iterator[dict[str, Any]]:
+def track_model_call(
+    *,
+    provider: str,
+    model: str,
+    purpose: str,
+    timeout: int,
+    request_payload: Any = None,
+    request_fingerprint_scope: str = "request_payload",
+    protocol: str = "",
+    endpoint: str = "",
+) -> Iterator[dict[str, Any]]:
     global _MODEL_SEQUENCE
     started = time.monotonic()
     context = dict(_MODEL_CALL_CONTEXT.get() or {})
@@ -485,13 +877,18 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
             state["call_count"] = int(state["call_count"]) + 1
         _MODEL_SEQUENCE += 1
         call_id = str(_MODEL_SEQUENCE)
+        invocation_id = uuid4().hex
         record = {
             "call_id": call_id,
+            "invocation_id": invocation_id,
             "provider": _safe_text(provider, 120),
             "model": _safe_text(model, 160),
             "purpose": _safe_text(purpose, 80),
             "task_id": _safe_text(context.get("task_id"), 120),
-            "run_id": _safe_text(context.get("run_id"), 120),
+            "run_id": _safe_text(
+                context.get("run_id") or context.get("execution_run_id"),
+                120,
+            ),
             "stage": _safe_text(context.get("stage"), 80),
             "operation": _safe_text(context.get("operation"), 120),
             "active_item": _safe_text(context.get("active_item"), 120),
@@ -499,27 +896,135 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
             "timeout_seconds": max(1, int(timeout or 1)),
             "circuit_probe": circuit_probe,
         }
+        if request_payload is not None:
+            record_model_call_estimate(record, request_payload)
+        route_snapshot = _route_decision_snapshot(
+            provider=provider,
+            model=model,
+            purpose=purpose,
+            protocol=protocol,
+            endpoint=endpoint,
+            image_input_count=int(record.get("image_input_count") or 0),
+            has_tools=isinstance(request_payload, dict) and bool(request_payload.get("tools")),
+        )
+        record["route_decision"] = route_snapshot
         _MODEL_ACTIVE[call_id] = record
+    request_summary = {
+        "available": request_payload is not None,
+        "payload_fingerprint_sha256": (
+            _request_sha256(request_payload) if request_payload is not None else ""
+        ),
+        "fingerprint_scope": _safe_text(request_fingerprint_scope, 80),
+        "request_bytes": int(record.get("request_bytes") or 0),
+        "estimated_text_tokens": int(record.get("estimated_text_tokens") or 0),
+        "image_input_count": int(record.get("image_input_count") or 0),
+        "image_input_bytes": int(record.get("image_input_bytes") or 0),
+    }
+    try:
+        prompt_observation = observe_prompt_request(request_payload)
+    except Exception:
+        # Prompt registration is shadow-only. Observation defects must never
+        # delay, mutate, retry, or block the paid business request.
+        prompt_observation = {
+            "schema_version": "answer_book.prompt_observation.v1",
+            "mode": "shadow",
+            "authority": "observation_only",
+            "prompt_id": "unavailable",
+            "registered": False,
+            "report_unavailable": True,
+            "behavior_changed": False,
+        }
+    try:
+        _append_model_execution_event(
+            "invocation.intent",
+            record,
+            purpose=record["purpose"],
+            timeout_seconds=record["timeout_seconds"],
+            circuit_probe=record["circuit_probe"],
+            route_decision=route_snapshot,
+            request_summary=request_summary,
+            prompt_observation=prompt_observation,
+        )
+    except ModelExecutionLedgerError:
+        with _MODEL_LOCK:
+            _MODEL_ACTIVE.pop(call_id, None)
+            if budget is not None and all(budget_key):
+                state = _RUN_MODEL_BUDGETS.get(budget_key)
+                if state is not None:
+                    state["call_count"] = max(0, int(state.get("call_count") or 0) - 1)
+                    if circuit_probe:
+                        circuit = (state.get("provider_circuits") or {}).get(provider)
+                        if isinstance(circuit, dict):
+                            circuit["probe_in_flight"] = False
+        raise
     outcome = "succeeded"
     error_text = ""
+    result_ledger_error: ModelExecutionLedgerError | None = None
     try:
         yield record
     except BaseException as exc:
         outcome = _model_error_kind(exc)
         error_text = _safe_text(exc, 300)
+        try:
+            vars(exc).setdefault("model_invocation_id", invocation_id)
+            vars(exc).setdefault("model_call_id", call_id)
+        except (TypeError, AttributeError):
+            pass
         raise
     finally:
         elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
         with _MODEL_LOCK:
             record = _MODEL_ACTIVE.pop(call_id, record)
-            final_record = {
-                **record,
-                "finished_at": _now(),
-                "elapsed_ms": elapsed_ms,
-                "outcome": outcome,
-                "billable_disposition": "unclassified_success" if outcome == "succeeded" else "failed_attempt",
-                "error": error_text,
-            }
+        final_record = {
+            **record,
+            "finished_at": _now(),
+            "elapsed_ms": elapsed_ms,
+            "outcome": outcome,
+            "provider_outcome": outcome,
+            "billable_disposition": (
+                "unclassified_success"
+                if outcome == "succeeded"
+                else "cancelled_discarded"
+                if outcome == "cancelled"
+                else "failed_attempt"
+            ),
+            "error": error_text,
+        }
+        try:
+            _append_model_execution_event(
+                "invocation.result",
+                final_record,
+                outcome=outcome,
+                billable_disposition=final_record["billable_disposition"],
+                elapsed_ms=elapsed_ms,
+                error_kind=outcome if outcome != "succeeded" else "",
+                error=error_text,
+                usage={
+                    key: final_record.get(key)
+                    for key in (
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "reasoning_tokens",
+                        "total_tokens",
+                        "provider_cost",
+                        "currency",
+                        "usage_source",
+                        "response_id",
+                    )
+                    if final_record.get(key) is not None
+                },
+            )
+        except ModelExecutionLedgerError as exc:
+            result_ledger_error = exc
+            final_record.update(
+                {
+                    "outcome": "execution_ledger_failed",
+                    "billable_disposition": "discarded_after_provider_return",
+                    "result_adoption": "discarded",
+                    "error": _safe_text(exc, 300),
+                }
+            )
+        with _MODEL_LOCK:
             _MODEL_HISTORY.append(final_record)
             _append_model_ledger(final_record)
             if budget is not None and all(budget_key):
@@ -530,7 +1035,9 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
                         token_value = int(record.get("prompt_tokens") or 0) + int(record.get("completion_tokens") or 0)
                     state["token_count"] = int(state.get("token_count") or 0) + int(token_value or 0)
                     failures = dict(state.get("provider_failures") or {})
-                    failures[provider] = 0 if outcome == "succeeded" else int(failures.get(provider, 0) or 0) + 1
+                    failures[provider] = (
+                        0 if outcome == "succeeded" else int(failures.get(provider, 0) or 0) + 1
+                    )
                     state["provider_failures"] = failures
                     circuits = state.setdefault("provider_circuits", {})
                     if outcome == "succeeded":
@@ -546,6 +1053,16 @@ def track_model_call(*, provider: str, model: str, purpose: str, timeout: int) -
                         key=lambda key: float(_RUN_MODEL_BUDGETS[key].get("started_monotonic") or 0),
                     )
                     _RUN_MODEL_BUDGETS.pop(oldest_key, None)
+        if result_ledger_error is not None:
+            raise result_ledger_error
+        _LAST_MODEL_INVOCATION.set(
+            {
+                "invocation_id": invocation_id,
+                "call_id": call_id,
+                "provider": str(record.get("provider") or ""),
+                "model": str(record.get("model") or ""),
+            }
+        )
 
 
 def model_call_summary() -> dict[str, Any]:

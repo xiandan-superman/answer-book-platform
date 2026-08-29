@@ -13,6 +13,7 @@ from typing import Any
 from .concurrency import run_limited_concurrent
 from .evidence_trace_export import write_evidence_trace_csv
 from .llm_client import LLMError, OpenAICompatibleClient
+from .prompt_registry import prompt_contract
 from .question_understanding import attach_question_visuals, needs_vision_model
 from .retrieval import EvidenceCandidate, build_candidates, candidates_for_question, formula_match_score, planned_formulas_for_query
 from .settings import ProviderConfig, provider_model_supports_vision
@@ -783,18 +784,19 @@ def _select_one(
         )
         if include_visual_assets and needs_vision_model(question):
             messages = attach_question_visuals(messages, question)
-        data = client.chat_json_object(
-            messages,
-            model=model,
-            max_tokens=EVIDENCE_SELECTION_MAX_TOKENS,
-            fallback_model=fallback_model,
-            compact_messages=_compact_selection_prompt_messages,
-            thinking="disabled",
-            timeout=EVIDENCE_SELECTION_TIMEOUT_SECONDS,
-            task_stage="evidence_selection",
-            item_ids=[str(question.get("question_id") or question.get("number") or "")],
-            enforce_context_budget=True,
-        )
+        with prompt_contract("exam.evidence_selection"):
+            data = client.chat_json_object(
+                messages,
+                model=model,
+                max_tokens=EVIDENCE_SELECTION_MAX_TOKENS,
+                fallback_model=fallback_model,
+                compact_messages=_compact_selection_prompt_messages,
+                thinking="disabled",
+                timeout=EVIDENCE_SELECTION_TIMEOUT_SECONDS,
+                task_stage="evidence_selection",
+                item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                enforce_context_budget=True,
+            )
         selection = _normalize_selection(question, plan, data, candidates)
         selection["_meta"] = {
             "provider": provider.name,

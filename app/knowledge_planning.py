@@ -11,10 +11,10 @@ from typing import Any
 
 from .concurrency import run_limited_concurrent
 from .llm_client import LLMError, OpenAICompatibleClient
+from .prompt_registry import prompt_contract
 from .question_understanding import attach_question_visuals, needs_vision_model
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text, tokenize_zh_en
-
 
 SCHEMA_VERSION = "answer_book.knowledge_plans.v1"
 
@@ -260,16 +260,17 @@ def generate_knowledge_plans(
         )
         client = OpenAICompatibleClient(active_provider)
         try:
-            data = client.chat_json_object(
-                build_knowledge_plan_prompt(question, include_visual_assets=include_visual_assets),
-                model=active_model,
-                max_tokens=DEFAULT_MODEL_MAX_TOKENS,
-                timeout=timeout,
-                attempts=1,
-                task_stage="knowledge_planning",
-                item_ids=[qid],
-                enforce_context_budget=True,
-            )
+            with prompt_contract("exam.knowledge_planning"):
+                data = client.chat_json_object(
+                    build_knowledge_plan_prompt(question, include_visual_assets=include_visual_assets),
+                    model=active_model,
+                    max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+                    timeout=timeout,
+                    attempts=1,
+                    task_stage="knowledge_planning",
+                    item_ids=[qid],
+                    enforce_context_budget=True,
+                )
             report = getattr(client, "last_json_retry_report", {})
             feedback = []
             if report.get("attempts"):

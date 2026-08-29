@@ -27,6 +27,7 @@ from .image_orchestration import DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE
 from .llm_client import LLMError, OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .omml_input import strip_structured_math_metadata
+from .prompt_registry import prompt_contract
 from .prompts import build_answer_depth_profile, build_answer_draft_prompt
 from .question_requirements import answer_figure_required
 from .question_types import (
@@ -2682,15 +2683,16 @@ def explain_missing_evidence_binding(
         },
     ]
     try:
-        data = client.chat_json_object(
-            messages,
-            model=model,
-            max_tokens=DEFAULT_MODEL_MAX_TOKENS,
-            fallback_model=next((item for item in getattr(client.config, "model_options", ()) if item != model), None),
-            task_stage="review",
-            item_ids=[str(question.get("question_id") or question.get("number") or "")],
-            enforce_context_budget=True,
-        )
+        with prompt_contract("exam.evidence_binding_audit"):
+            data = client.chat_json_object(
+                messages,
+                model=model,
+                max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+                fallback_model=next((item for item in getattr(client.config, "model_options", ()) if item != model), None),
+                task_stage="review",
+                item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                enforce_context_budget=True,
+            )
         reason = str(data.get("reason") or "").strip()
         closest = str(data.get("closest_evidence_id") or "").strip()
         if reason and closest:
@@ -2897,31 +2899,32 @@ def generate_one_fragment(
             timeout_seconds = min(timeout_seconds, max(1, math.ceil(remaining_seconds)))
         try:
             agent_result = None
-            if tool_loop is not None:
-                agent_result = tool_loop.run_json(
-                    messages,
-                    model=model,
-                    max_tokens=max_tokens,
-                    thinking=thinking_mode,
-                    timeout=timeout_seconds,
-                )
-                data = agent_result.value
-            else:
-                data = client.chat_json_object(
-                    messages,
-                    model=model,
-                    max_tokens=max_tokens,
-                    fallback_model=fallback_model,
-                    attempt_callback=attempt_callback,
-                    attempts=1,
-                    thinking=thinking_mode,
-                    timeout=timeout_seconds,
-                    task_stage="answer_generation",
-                    required_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
-                    delivered_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
-                    item_ids=[str(question.get("question_id") or question.get("number") or "")],
-                    enforce_context_budget=True,
-                )
+            with prompt_contract("exam.answer_draft_single"):
+                if tool_loop is not None:
+                    agent_result = tool_loop.run_json(
+                        messages,
+                        model=model,
+                        max_tokens=max_tokens,
+                        thinking=thinking_mode,
+                        timeout=timeout_seconds,
+                    )
+                    data = agent_result.value
+                else:
+                    data = client.chat_json_object(
+                        messages,
+                        model=model,
+                        max_tokens=max_tokens,
+                        fallback_model=fallback_model,
+                        attempt_callback=attempt_callback,
+                        attempts=1,
+                        thinking=thinking_mode,
+                        timeout=timeout_seconds,
+                        task_stage="answer_generation",
+                        required_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
+                        delivered_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
+                        item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                        enforce_context_budget=True,
+                    )
             assistant_content = json.dumps(data, ensure_ascii=False)
         except LLMError as exc:
             last_issues = [str(exc)]
@@ -2954,6 +2957,7 @@ def generate_one_fragment(
                 "steps": agent_result.steps,
                 "tool_calls": agent_result.tool_calls,
                 "generated_artifacts": agent_result.generated_artifacts,
+                "tool_event_log": getattr(agent_result, "tool_event_log", ""),
             }
         if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
             data["answer"] = "见解析"
@@ -3197,29 +3201,30 @@ def generate_batch_fragments(
         sum(structured_answer_max_tokens(provider, item["question"]) for item in batch_items),
     )
     agent_result = None
-    if tool_loop is not None:
-        agent_result = tool_loop.run_json(
-            messages,
-            model=model,
-            max_tokens=max_tokens,
-            thinking=thinking_mode,
-            timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
-        )
-        raw = agent_result.value
-    else:
-        raw = client.chat_json_object(
-            messages,
-            model=model,
-            max_tokens=max_tokens,
-            fallback_model=fallback_model,
-            attempt_callback=attempt_callback,
-            attempts=1,
-            timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
-            thinking=thinking_mode,
-            task_stage="answer_generation",
-            item_ids=[str(item["question"].get("question_id") or "") for item in batch_items],
-            enforce_context_budget=True,
-        )
+    with prompt_contract("exam.answer_draft_batch"):
+        if tool_loop is not None:
+            agent_result = tool_loop.run_json(
+                messages,
+                model=model,
+                max_tokens=max_tokens,
+                thinking=thinking_mode,
+                timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
+            )
+            raw = agent_result.value
+        else:
+            raw = client.chat_json_object(
+                messages,
+                model=model,
+                max_tokens=max_tokens,
+                fallback_model=fallback_model,
+                attempt_callback=attempt_callback,
+                attempts=1,
+                timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
+                thinking=thinking_mode,
+                task_stage="answer_generation",
+                item_ids=[str(item["question"].get("question_id") or "") for item in batch_items],
+                enforce_context_budget=True,
+            )
     drafts = _extract_batch_drafts(raw)
     drafts_by_qid = {str(item.get("question_id") or "").strip(): item for item in drafts if str(item.get("question_id") or "").strip()}
     batch_qids = [str(item["question"].get("question_id") or "").strip() for item in batch_items]
@@ -3247,6 +3252,7 @@ def generate_batch_fragments(
                 "steps": agent_result.steps,
                 "tool_calls": agent_result.tool_calls,
                 "generated_artifacts": agent_result.generated_artifacts,
+                "tool_event_log": getattr(agent_result, "tool_event_log", ""),
             }
         results.append({"question_id": qid, "fragment": fragment, "issues": issues})
     return results

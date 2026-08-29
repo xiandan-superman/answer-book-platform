@@ -25,6 +25,7 @@ from .formula_audit import audit_text_segments_no_formula
 from .image_artifacts import ImageArtifactStore
 from .llm_client import OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
+from .prompt_registry import prompt_contract
 from .prompts import question_image_parts
 from .question_requirements import answer_figure_required
 from .question_types import question_has_type
@@ -566,6 +567,7 @@ def _attach_image_tool_loop_result(repaired: dict[str, Any], result: Any) -> Non
         "steps": result.steps,
         "tool_calls": result.tool_calls,
         "generated_artifacts": result.generated_artifacts,
+        "tool_event_log": getattr(result, "tool_event_log", ""),
     }
 
 
@@ -772,28 +774,29 @@ def repair_fragments_with_model_for_audit(
             for attempt in range(2):
                 messages = base_messages if attempt == 0 else _repair_retry_prompt(base_messages, draft, candidate_issues)
                 agent_result = None
-                if tool_loop is not None:
-                    agent_result = tool_loop.run_json(
-                        messages,
-                        model=model,
-                        max_tokens=max(structured_answer_max_tokens(provider, question), DEFAULT_MODEL_MAX_TOKENS),
-                        thinking=answer_generation_thinking_mode(provider),
-                        timeout=audit_model_repair_timeout_seconds(question),
-                    )
-                    draft = agent_result.value
-                else:
-                    with model_request_slot(provider):
-                        draft = repair_client.chat_json_object(
+                with prompt_contract("exam.answer_audit_repair"):
+                    if tool_loop is not None:
+                        agent_result = tool_loop.run_json(
                             messages,
                             model=model,
-                            max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                            fallback_model=fallback_model,
-                            thinking="disabled",
+                            max_tokens=max(structured_answer_max_tokens(provider, question), DEFAULT_MODEL_MAX_TOKENS),
+                            thinking=answer_generation_thinking_mode(provider),
                             timeout=audit_model_repair_timeout_seconds(question),
-                            task_stage="review",
-                            item_ids=[qid],
-                            enforce_context_budget=True,
                         )
+                        draft = agent_result.value
+                    else:
+                        with model_request_slot(provider):
+                            draft = repair_client.chat_json_object(
+                                messages,
+                                model=model,
+                                max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
+                                fallback_model=fallback_model,
+                                thinking="disabled",
+                                timeout=audit_model_repair_timeout_seconds(question),
+                                task_stage="review",
+                                item_ids=[qid],
+                                enforce_context_budget=True,
+                            )
                 candidate = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
                 candidate = promote_inline_reactions(candidate)
                 candidate = promote_inline_mathematical_expressions(candidate)

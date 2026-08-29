@@ -11,6 +11,7 @@ from .answer_generation import attach_program_evidence_block, evidence_for_answe
 from .concurrency import model_request_slot, run_limited_concurrent
 from .formula_audit import audit_text_segments_no_formula, formula_like_matches
 from .llm_client import OpenAICompatibleClient
+from .prompt_registry import prompt_contract
 from .retrieval import EvidenceCandidate
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 from .v4_schema import validate_v4_answer_fragment
@@ -223,16 +224,17 @@ def repair_fragments_with_model_for_docx(
         )
         try:
             repair_client = client or OpenAICompatibleClient(provider)
-            with model_request_slot(provider):
-                draft = repair_client.chat_json_object(
-                    messages,
-                    model=model,
-                    max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                    fallback_model=fallback_model,
-                    task_stage="format_repair",
-                    item_ids=[qid],
-                    enforce_context_budget=True,
-                )
+            with prompt_contract("exam.answer_docx_repair"):
+                with model_request_slot(provider):
+                    draft = repair_client.chat_json_object(
+                        messages,
+                        model=model,
+                        max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
+                        fallback_model=fallback_model,
+                        task_stage="format_repair",
+                        item_ids=[qid],
+                        enforce_context_budget=True,
+                    )
             repaired = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
             attach_program_evidence_block(repaired, evidence, evidence_selection)
             syntax_issues = validate_v4_answer_fragment(repaired)

@@ -477,6 +477,14 @@ def save_practice_record(
         "revisions": revisions,
     }
     _write_json_atomic(path, record)
+    try:
+        from .image_artifacts import mark_final_adopted_assets
+
+        mark_final_adopted_assets(record["data"])
+    except Exception:
+        # Artifact metadata must never turn an otherwise valid saved exercise
+        # set into a failed or unsaved user result.
+        pass
     # Keep edit tokens out of the audit file, but include them in the very
     # first response. Otherwise a newly generated set is unprotected until
     # the browser happens to reload it from history.

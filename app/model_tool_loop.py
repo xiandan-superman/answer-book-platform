@@ -3,8 +3,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
+import threading
+import uuid
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Protocol
@@ -20,9 +24,14 @@ from .llm_client import (
     ResponsesAPIClient,
     parse_json_content,
 )
+from .model_context_planner import model_stage_quality_limit
+from .prompt_registry import prompt_contract
+from .token_meter import compact_non_core_history, measure_request_tokens
 
 IMAGE_TOOL_NAME = "generate_image"
 MAX_REFERENCE_IMAGES = 5
+DEFAULT_REPEAT_REMINDER_THRESHOLD = 3
+TOOL_EVENT_LOG_SCHEMA = "answer_book.tool_events.v1"
 _REFERENCE_IMAGE_MIMES = {
     "PNG": ("image/png", ".png"),
     "JPEG": ("image/jpeg", ".jpg"),
@@ -49,6 +58,8 @@ class AgentTool(Protocol):
 
     def definition(self) -> dict[str, Any]: ...
 
+    def validate_arguments(self, arguments: dict[str, Any]) -> None: ...
+
     def execute(self, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]: ...
 
 
@@ -59,6 +70,56 @@ class ToolLoopResult:
     tool_calls: int
     generated_artifacts: list[dict[str, Any]] = field(default_factory=list)
     raw_responses: list[dict[str, Any]] = field(default_factory=list)
+    tool_event_log: str = ""
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _tool_call_fingerprint(name: str, arguments: Any) -> str:
+    payload = _canonical_json({"name": str(name or ""), "arguments": arguments})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _tool_failure(code: str, message: str, *, name: str = "ToolError") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "is_error": True,
+        "error": {
+            "message": str(message),
+            "info": {"name": str(name), "code": str(code)},
+        },
+        "content": f"Error: {message}",
+    }
+
+
+class ToolEventLog:
+    """Task-local append-only tool lifecycle log with a flush barrier per event."""
+
+    def __init__(self, path: Path, *, session_id: str) -> None:
+        self.path = Path(path)
+        self.session_id = str(session_id)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._sequence = 0
+
+    def append(self, event_type: str, **payload: Any) -> None:
+        with self._lock:
+            self._sequence += 1
+            event = {
+                "schema_version": TOOL_EVENT_LOG_SCHEMA,
+                "session_id": self.session_id,
+                "sequence": self._sequence,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": str(event_type),
+                **payload,
+            }
+            line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
 
 
 def _function_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -151,12 +212,14 @@ class ImageGenerationTool:
         store: ImageArtifactStore,
         *,
         size: str = "",
+        timeout_seconds: int = 240,
         reference_images: Iterable[str | Path] = (),
     ) -> None:
         self.provider = provider
         self.model = str(model or getattr(provider, "image_model", "") or "")
         self.store = store
         self.size = str(size or getattr(provider, "image_size", "") or "")
+        self.timeout_seconds = max(1, int(timeout_seconds))
         self.reference_paths = self._materialize_reference_images(reference_images)
         self._allowed_reference_paths = {
             str(path): path for path in self.reference_paths
@@ -283,75 +346,105 @@ class ImageGenerationTool:
             },
         }
 
-    def execute(self, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
-        prompt = str(arguments.get("prompt") or "").strip()
+    def validate_arguments(self, arguments: dict[str, Any]) -> None:
+        if not isinstance(arguments, dict):
+            raise ValueError("tool arguments must be a JSON object")
+        unknown_fields = sorted(set(arguments) - {"prompt", "referenced_image_paths", "num_last_images_to_include"})
+        if unknown_fields:
+            raise ValueError("unknown image tool argument(s): " + ", ".join(unknown_fields))
+        raw_prompt = arguments.get("prompt")
+        if not isinstance(raw_prompt, str):
+            raise ValueError("prompt must be a string")
+        prompt = raw_prompt.strip()
         if not prompt:
             raise ValueError("prompt is required")
-        temporary = self.store.root / f".{re.sub(r'[^0-9A-Za-z_.-]+', '_', call_id or 'call')}.png"
         raw_paths = arguments.get("referenced_image_paths")
         recent_count = arguments.get("num_last_images_to_include")
         if raw_paths is not None and recent_count is not None:
             raise ValueError(
                 "referenced_image_paths and num_last_images_to_include cannot be used together"
             )
-        reference_paths: list[Path] = []
         if raw_paths is not None:
             if not isinstance(raw_paths, list):
                 raise ValueError("referenced_image_paths must be an array")
             if len(raw_paths) > MAX_REFERENCE_IMAGES:
                 raise ValueError("referenced_image_paths cannot contain more than 5 paths")
             for raw_path in raw_paths:
-                requested = str(raw_path or "").strip()
+                if not isinstance(raw_path, str):
+                    raise ValueError("referenced_image_paths entries must be strings")
+                requested = raw_path.strip()
                 path = self._allowed_reference_paths.get(requested)
                 if path is None:
                     raise ValueError("referenced_image_paths contains an unregistered task-local path")
-                reference_paths.append(path)
         elif recent_count is not None:
             if isinstance(recent_count, bool):
                 raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
-            try:
-                recent_count = int(recent_count)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("num_last_images_to_include must be an integer from 1 to 5") from exc
+            if not isinstance(recent_count, int):
+                raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
             if not 1 <= recent_count <= MAX_REFERENCE_IMAGES:
                 raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
             if len(self._generated_paths) < recent_count:
                 raise ValueError(
                     f"only {len(self._generated_paths)} recent generated image(s) are available for editing"
                 )
+
+    def execute(self, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
+        self.validate_arguments(arguments)
+        prompt = arguments["prompt"].strip()
+        temporary = self.store.root / f".{re.sub(r'[^0-9A-Za-z_.-]+', '_', call_id or 'call')}.png"
+        raw_paths = arguments.get("referenced_image_paths")
+        recent_count = arguments.get("num_last_images_to_include")
+        reference_paths: list[Path] = []
+        if raw_paths is not None:
+            reference_paths = [self._allowed_reference_paths[path.strip()] for path in raw_paths]
+        elif recent_count is not None:
             reference_paths = self._generated_paths[-recent_count:]
 
         client = OpenAICompatibleClient(self.provider)
-        if reference_paths:
-            result = client.edit_image(
-                prompt,
-                reference_paths,
-                temporary,
-                model=self.model,
-                size=self.size or None,
+        try:
+            with prompt_contract("tool.image_generation"):
+                if reference_paths:
+                    result = client.edit_image(
+                        prompt,
+                        reference_paths,
+                        temporary,
+                        model=self.model,
+                        size=self.size or None,
+                        timeout=self.timeout_seconds,
+                    )
+                    operation = "edit"
+                else:
+                    result = client.generate_image(
+                        prompt,
+                        temporary,
+                        model=self.model,
+                        size=self.size or None,
+                        timeout=self.timeout_seconds,
+                    )
+                    operation = "generate"
+            artifact = self.store.register(
+                result.path,
+                provider=result.provider,
+                model=result.model,
+                source_call_id=call_id,
             )
-            operation = "edit"
-        else:
-            result = client.generate_image(
-                prompt,
-                temporary,
-                model=self.model,
-                size=self.size or None,
-            )
-            operation = "generate"
-        artifact = self.store.register(
-            result.path,
-            provider=result.provider,
-            model=result.model,
-            source_call_id=call_id,
-        )
-        self._generated_paths.append(Path(artifact.path))
-        temporary.unlink(missing_ok=True)
+            self._generated_paths.append(Path(artifact.path))
+        finally:
+            temporary.unlink(missing_ok=True)
+        raw_result = result.raw if isinstance(getattr(result, "raw", None), dict) else {}
+        first_data = raw_result.get("data", [None])[0] if isinstance(raw_result.get("data"), list) and raw_result.get("data") else None
+        provider_metadata = {
+            "request_id": str(raw_result.get("id") or raw_result.get("request_id") or ""),
+            "revised_prompt": str(
+                (first_data.get("revised_prompt") if isinstance(first_data, dict) else "") or raw_result.get("revised_prompt") or ""
+            ),
+        }
         return {
             "ok": True,
             "asset": artifact.to_dict(),
             "operation": operation,
             "reference_image_count": len(reference_paths),
+            "provider_metadata": {key: value for key, value in provider_metadata.items() if value},
             "instruction": "Inspect the attached image. Use its asset_id in generated_images only if it satisfies your task.",
         }
 
@@ -420,11 +513,166 @@ class ModelToolLoop:
         self.artifact_store = artifact_store
         self.max_steps = max(1, int(max_steps))
         self.max_tool_calls = max(1, int(max_tool_calls))
+        self.session_id = str(uuid.uuid4())
+        self._event_log = ToolEventLog(
+            self.artifact_store.root / "tool_events.jsonl",
+            session_id=self.session_id,
+        )
         # One logical answer/repair transaction may invoke ``run_json`` again
         # after deterministic validation rejects a candidate.  Assets already
         # generated and shown in that same transaction remain eligible, but are
         # re-delivered below so the next model request actually sees them.
         self._session_artifacts: dict[str, ImageArtifact] = {}
+        self._session_call_cache: dict[str, dict[str, Any]] = {}
+        self._repeat_signature = ""
+        self._repeat_count = 0
+
+    @property
+    def tool_event_log_path(self) -> Path:
+        return self._event_log.path
+
+    @staticmethod
+    def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
+        arguments = raw_arguments
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments or "{}")
+        if not isinstance(arguments, dict):
+            raise ValueError("tool arguments must be a JSON object")
+        # Snapshot the JSON value before policy/dispatch so a tool cannot
+        # mutate the authoritative call arguments in-place.
+        return json.loads(json.dumps(arguments, ensure_ascii=False))
+
+    def _repeat_reminder(self, signature: str, *, tool_name: str, arguments: Any) -> str:
+        if signature == self._repeat_signature:
+            self._repeat_count += 1
+        else:
+            self._repeat_signature = signature
+            self._repeat_count = 1
+        if self._repeat_count != DEFAULT_REPEAT_REMINDER_THRESHOLD:
+            return ""
+        preview = _canonical_json(arguments)
+        if len(preview) > 500:
+            omitted = len(preview) - 500
+            preview = preview[:500] + f"… (+{omitted} more chars)"
+        return (
+            "You are repeating the exact same tool call with identical arguments. "
+            "Carefully analyze the previous result before calling again: if the task is not complete, "
+            "try a different approach or different arguments instead of repeating the call. "
+            f"tool={tool_name}; consecutive_calls={self._repeat_count}; arguments={preview}"
+        )
+
+    def _dispatch_tool_call(
+        self,
+        call: dict[str, Any],
+        *,
+        model: str,
+        protocol: str,
+        step: int,
+        call_index: int,
+        budget_exhausted: bool,
+    ) -> tuple[dict[str, Any], str]:
+        call_id = str(call.get("call_id") or "")
+        tool_name = str(call.get("name") or "")
+        raw_arguments = call.get("arguments")
+        try:
+            arguments: Any = self._parse_tool_arguments(raw_arguments)
+            argument_error: Exception | None = None
+        except Exception as exc:
+            arguments = raw_arguments
+            argument_error = exc
+        fingerprint = _tool_call_fingerprint(tool_name, arguments)
+        self._event_log.append(
+            "tool/call",
+            call_id=call_id,
+            tool=tool_name,
+            model=model,
+            protocol=protocol,
+            step=step,
+            call_index=call_index,
+            arguments=arguments,
+            arguments_sha256=fingerprint,
+        )
+        cached = self._session_call_cache.get(call_id)
+        cache_hit = False
+        if cached is not None:
+            cache_hit = cached.get("fingerprint") == fingerprint
+            if cache_hit:
+                result = json.loads(json.dumps(cached["result"], ensure_ascii=False))
+            else:
+                result = _tool_failure(
+                    "TOOL_CALL_ID_REUSED",
+                    "the same call_id was reused with a different tool name or arguments",
+                    name="ToolCallIdentityError",
+                )
+        elif budget_exhausted:
+            result = _tool_failure(
+                "TOOL_CALL_LIMIT",
+                f"main model exceeded image tool call limit ({self.max_tool_calls})",
+                name="ToolCallLimitError",
+            )
+        elif argument_error is not None:
+            result = _tool_failure(
+                "INVALID_TOOL_ARGUMENTS",
+                f"{type(argument_error).__name__}: {argument_error}",
+                name="ToolArgumentsError",
+            )
+        else:
+            tool = self.tools.get(tool_name)
+            if tool is None:
+                result = _tool_failure(
+                    "UNKNOWN_TOOL",
+                    f"unknown tool: {tool_name}",
+                    name="UnknownToolError",
+                )
+            else:
+                validator = getattr(tool, "validate_arguments", None)
+                try:
+                    if callable(validator):
+                        validator(arguments)
+                except ValueError as exc:
+                    result = _tool_failure(
+                        "INVALID_TOOL_ARGUMENTS",
+                        f"{type(exc).__name__}: {exc}",
+                        name="ToolArgumentsError",
+                    )
+                else:
+                    try:
+                        result = tool.execute(arguments, call_id=call_id)
+                    except Exception as exc:
+                        result = _tool_failure(
+                            "TOOL_EXECUTION_FAILED",
+                            f"{type(exc).__name__}: {exc}",
+                            name=type(exc).__name__,
+                        )
+            self._session_call_cache[call_id] = {
+                "fingerprint": fingerprint,
+                "result": json.loads(json.dumps(result, ensure_ascii=False)),
+            }
+        reminder = self._repeat_reminder(
+            fingerprint,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        self._event_log.append(
+            "tool/result",
+            call_id=call_id,
+            tool=tool_name,
+            model=model,
+            protocol=protocol,
+            step=step,
+            call_index=call_index,
+            arguments_sha256=fingerprint,
+            cache_hit=cache_hit,
+            result=result,
+        )
+        if reminder:
+            self._event_log.append(
+                "user/message",
+                source="repeat-tool-reminder",
+                step=step,
+                content=reminder,
+            )
+        return result, reminder
 
     def run_json(
         self,
@@ -448,7 +696,6 @@ class ModelToolLoop:
         )
         tool_definitions = [tool.definition() for tool in self.tools.values()]
         raw_responses: list[dict[str, Any]] = []
-        call_cache: dict[str, dict[str, Any]] = {}
         delivered_assets: set[str] = set()
         generated_assets: dict[str, ImageArtifact] = {}
         tool_call_count = 0
@@ -486,17 +733,78 @@ class ModelToolLoop:
             input_items.append({"role": "user", "content": prior_content})
 
         for step in range(1, self.max_steps + 1):
-            raw = active_client.create_tool_response(
+            protocol = "responses" if responses_protocol else "chat_completions"
+            provider_name = str(getattr(provider, "name", "") or "")
+            before_measurement = measure_request_tokens(
                 input_items,
-                tools=tool_definitions,
+                provider=provider_name,
                 model=model,
-                max_tokens=max_tokens,
-                thinking=thinking,
-                timeout=timeout,
-                json_object=True,
+                tools=tool_definitions,
             )
+            quality_limit = model_stage_quality_limit(provider_name, model, "answer_generation")
+            if before_measurement.estimated_input_tokens > quality_limit:
+                candidate_items, compaction = compact_non_core_history(input_items)
+                if compaction["compacted_result_count"]:
+                    input_items = candidate_items
+                    after_measurement = measure_request_tokens(
+                        input_items,
+                        provider=provider_name,
+                        model=model,
+                        tools=tool_definitions,
+                    )
+                    self._event_log.append(
+                        "history/compacted",
+                        provider=provider_name,
+                        model=model,
+                        protocol=protocol,
+                        step=step,
+                        quality_input_token_limit=quality_limit,
+                        estimated_tokens_before=before_measurement.estimated_input_tokens,
+                        estimated_tokens_after=after_measurement.estimated_input_tokens,
+                        **compaction,
+                    )
+            self._event_log.append(
+                "agent/request",
+                provider=provider_name,
+                model=model,
+                protocol=protocol,
+                step=step,
+                thinking=thinking,
+                max_tokens=max_tokens,
+                input_sha256=hashlib.sha256(_canonical_json(input_items).encode("utf-8")).hexdigest(),
+                tools_sha256=hashlib.sha256(_canonical_json(tool_definitions).encode("utf-8")).hexdigest(),
+            )
+            try:
+                raw = active_client.create_tool_response(
+                    input_items,
+                    tools=tool_definitions,
+                    model=model,
+                    max_tokens=max_tokens,
+                    thinking=thinking,
+                    timeout=timeout,
+                    json_object=True,
+                )
+            except Exception as exc:
+                self._event_log.append(
+                    "agent/request_error",
+                    provider=str(getattr(provider, "name", "") or ""),
+                    model=model,
+                    protocol=protocol,
+                    step=step,
+                    error={"name": type(exc).__name__, "message": str(exc)},
+                )
+                raise
             raw_responses.append(raw)
             calls = _function_calls(raw) if responses_protocol else _chat_function_calls(raw)
+            self._event_log.append(
+                "agent/completion",
+                provider=str(getattr(provider, "name", "") or ""),
+                model=model,
+                protocol=protocol,
+                step=step,
+                tool_call_count=len(calls),
+                response_sha256=hashlib.sha256(_canonical_json(raw).encode("utf-8")).hexdigest(),
+            )
             if not calls:
                 content = (
                     active_client.responses_output_text(raw)
@@ -528,7 +836,8 @@ class ModelToolLoop:
                         input_items.append({"role": "assistant", "content": content})
                         input_items.append({"role": "user", "content": repair_text})
                     continue
-                unknown = _generated_image_refs(value) - delivered_assets
+                selected_asset_ids = _generated_image_refs(value)
+                unknown = selected_asset_ids - delivered_assets
                 if unknown:
                     raise LLMError("main model referenced image assets it had not inspected: " + ", ".join(sorted(unknown)))
                 return ToolLoopResult(
@@ -537,6 +846,7 @@ class ModelToolLoop:
                     tool_calls=tool_call_count,
                     generated_artifacts=[item.to_dict() for item in generated_assets.values()],
                     raw_responses=raw_responses,
+                    tool_event_log=str(self.tool_event_log_path.resolve()),
                 )
 
             if responses_protocol:
@@ -549,29 +859,22 @@ class ModelToolLoop:
                 # native tool calls.
                 input_items.append(json.loads(json.dumps(_chat_message(raw), ensure_ascii=False)))
             chat_visual_content: list[dict[str, Any]] = []
+            repeat_reminders: list[str] = []
             for call_index, call in enumerate(calls, start=1):
                 tool_call_count += 1
-                if tool_call_count > self.max_tool_calls:
-                    raise LLMError(f"main model exceeded image tool call limit ({self.max_tool_calls})")
                 call_id = call["call_id"]
                 if not call_id:
                     raise LLMError(f"tool call {call_index} in step {step} is missing call_id")
-                result = call_cache.get(call_id)
-                if result is None:
-                    tool = self.tools.get(call["name"])
-                    if tool is None:
-                        result = {"ok": False, "error": f"unknown tool: {call['name']}"}
-                    else:
-                        try:
-                            arguments = call["arguments"]
-                            if isinstance(arguments, str):
-                                arguments = json.loads(arguments or "{}")
-                            if not isinstance(arguments, dict):
-                                raise ValueError("tool arguments must be a JSON object")
-                            result = tool.execute(arguments, call_id=call_id)
-                        except Exception as exc:
-                            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-                    call_cache[call_id] = result
+                result, repeat_reminder = self._dispatch_tool_call(
+                    call,
+                    model=model,
+                    protocol=protocol,
+                    step=step,
+                    call_index=call_index,
+                    budget_exhausted=tool_call_count > self.max_tool_calls,
+                )
+                if repeat_reminder:
+                    repeat_reminders.append(repeat_reminder)
 
                 content: list[dict[str, Any]] = [
                     {"type": "input_text", "text": json.dumps(result, ensure_ascii=False)}
@@ -625,6 +928,14 @@ class ModelToolLoop:
                 # one subsequent multimodal user message only after all tool
                 # acknowledgements have been appended.
                 input_items.append({"role": "user", "content": chat_visual_content})
+            if repeat_reminders:
+                reminder_text = "\n\n".join(repeat_reminders)
+                input_items.append(
+                    {
+                        "role": "user",
+                        "content": ([{"type": "input_text", "text": reminder_text}] if responses_protocol else reminder_text),
+                    }
+                )
         raise LLMError(f"main model did not produce final JSON within {self.max_steps} agent steps")
 
 

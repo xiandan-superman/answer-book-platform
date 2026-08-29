@@ -4,7 +4,7 @@ import math
 from typing import Any, Iterable
 
 from .model_capability_registry import get_model_capability, model_accepts_input, model_task_support
-
+from .token_meter import measure_request_tokens
 
 DEFAULT_QUALITY_INPUT_TOKENS = {
     "source_analysis": 18000,
@@ -121,9 +121,17 @@ def build_model_context_plan(
     delivered_refs = _unique_strings(delivered_evidence_refs)
     omitted_refs = [item for item in required_refs if item not in delivered_refs]
     estimated_tokens = estimate_text_tokens(inspected["text"]) + max(0, int(fixed_overhead_tokens))
+    token_measurement = measure_request_tokens(
+        message_list,
+        provider=provider_name,
+        model=model_name,
+        fixed_overhead_tokens=fixed_overhead_tokens,
+    )
     quality_limit = model_stage_quality_limit(provider_name, model_name, stage)
     capability = get_model_capability(provider_name, model_name)
-    quality_limits = capability.get("quality_limits") if isinstance(capability, dict) and isinstance(capability.get("quality_limits"), dict) else {}
+    quality_limits = (
+        capability.get("quality_limits") if isinstance(capability, dict) and isinstance(capability.get("quality_limits"), dict) else {}
+    )
     stage_limits = quality_limits.get(stage) if isinstance(quality_limits.get(stage), dict) else {}
     try:
         max_images = max(0, int(stage_limits.get("max_images") or 0))
@@ -147,6 +155,11 @@ def build_model_context_plan(
         "registered_model": capability is not None,
         "task_support": support,
         "estimated_input_tokens": estimated_tokens,
+        "token_meter": {
+            **token_measurement.to_dict(),
+            "budget_authority": "shadow",
+            "legacy_budget_behavior_changed": False,
+        },
         "quality_input_token_limit": quality_limit,
         "quality_budget_ratio": round(estimated_tokens / quality_limit, 3),
         "over_quality_budget": estimated_tokens > quality_limit,

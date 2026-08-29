@@ -21,9 +21,10 @@ from .capabilities.figure_semantics import (
 from .concurrency import model_request_slot, run_limited_concurrent
 from .drawing_code import question_drawing_mode
 from .llm_client import LLMError, OpenAICompatibleClient
+from .prompt_registry import prompt_contract
 from .prompts import question_image_parts
 from .question_requirements import answer_figure_required
-from .question_types import explicit_question_type, iter_leaf_question_parts, question_has_type
+from .question_types import iter_leaf_question_parts
 from .settings import DEFAULT_MODEL_MAX_TOKENS
 
 SCHEMA_VERSION = "answer_book.figure_schema_plan.v1"
@@ -244,15 +245,16 @@ def _resolve_with_model(question: dict[str, Any], provider: Any, model: str) -> 
         return None
     client = OpenAICompatibleClient(provider)
     try:
-        with model_request_slot(provider):
-            result = client.chat_json_object(
-                _model_plan_prompt(question, include_images=bool(getattr(provider, "supports_vision", False))),
-                model=model or getattr(provider, "default_model", ""),
-                max_tokens=DEFAULT_MODEL_MAX_TOKENS,
-                task_stage="figure_schema",
-                item_ids=[str(question.get("question_id") or question.get("number") or "")],
-                enforce_context_budget=True,
-            )
+        with prompt_contract("exam.figure_schema_planning"):
+            with model_request_slot(provider):
+                result = client.chat_json_object(
+                    _model_plan_prompt(question, include_images=bool(getattr(provider, "supports_vision", False))),
+                    model=model or getattr(provider, "default_model", ""),
+                    max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+                    task_stage="figure_schema",
+                    item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                    enforce_context_budget=True,
+                )
     except (LLMError, Exception):
         return None
     if not isinstance(result, dict):

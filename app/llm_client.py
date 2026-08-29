@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import email.utils
+import hashlib
 import http.client
 import json
 import os
@@ -21,16 +22,34 @@ from typing import Any, Protocol
 from .concurrency import ModelRequestAborted, ensure_model_request_active, model_request_slot
 from .model_context_planner import build_model_context_plan, context_plan_block_reason
 from .model_diagnostics import model_diagnostic_hint, record_model_diagnostic
+from .provider_errors import classify_provider_error
 from .redaction import redact_credentials
 from .runtime_monitor import (
-    record_model_call_estimate,
+    ModelExecutionLedgerError,
+    current_model_invocation_reference,
     record_model_call_usage,
+    record_model_retry_scheduled,
+    record_model_retry_started,
     record_model_stream_progress,
     track_model_call,
 )
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 
 _DEFAULT_URLOPEN = urllib.request.urlopen
+
+
+def _execution_protocol(url: str, purpose: str) -> str:
+    path = urllib.parse.urlsplit(str(url or "")).path.lower()
+    normalized_purpose = str(purpose or "").lower()
+    if "/images/" in path or normalized_purpose.startswith("image_"):
+        return "images"
+    if path.endswith("/responses"):
+        return "responses"
+    if path.endswith("/messages"):
+        return "anthropic_messages"
+    if "generatecontent" in path:
+        return "gemini_generate_content"
+    return "chat_completions"
 
 
 def _provider_request_headers(config: ProviderConfig, *, accept: str = "") -> dict[str, str]:
@@ -67,6 +86,50 @@ class LLMError(RuntimeError):
 
 class LLMTimeoutError(LLMError, TimeoutError):
     """Timeout that remains compatible with legacy ``TimeoutError`` checks."""
+
+
+def _result_execution_reference(result: LLMResult | None) -> tuple[str, str]:
+    if result is None:
+        return "", ""
+    execution = current_model_invocation_reference()
+    return str(execution.get("invocation_id") or ""), str(execution.get("call_id") or "")
+
+
+def _json_retry_category(
+    error: LLMError,
+    result: LLMResult | None,
+    plan: dict[str, Any],
+    next_plan: dict[str, Any],
+) -> str:
+    if result is not None and _finish_reason(result) == "length":
+        return "output_limit_repair"
+    if result is not None:
+        return "json_structure_repair"
+    if str(next_plan.get("model") or "") != str(plan.get("model") or ""):
+        return "capability_equivalent_route_fallback"
+    if next_plan.get("strategy") == "compact_fallback_disable_thinking":
+        return "history_compaction"
+    if next_plan.get("strategy") != plan.get("strategy"):
+        current_strategy = str(plan.get("strategy") or "")
+        next_strategy = str(next_plan.get("strategy") or "")
+        if re.fullmatch(r"attempt_\d+", current_strategy) and re.fullmatch(
+            r"attempt_\d+", next_strategy
+        ):
+            info = classify_provider_error(
+                error,
+                status_code=getattr(error, "status_code", None),
+                transport_phase=str(getattr(error, "transport_phase", "") or ""),
+                retry_after_seconds=getattr(error, "retry_after_seconds", None),
+            )
+            return "transport_retry" if info.retryable else "policy_retry"
+        return "generation_strategy_adjustment"
+    info = classify_provider_error(
+        error,
+        status_code=getattr(error, "status_code", None),
+        transport_phase=str(getattr(error, "transport_phase", "") or ""),
+        retry_after_seconds=getattr(error, "retry_after_seconds", None),
+    )
+    return "transport_retry" if info.retryable else "policy_retry"
 
 
 def _transport_timeout(name: str, default: int, hard_timeout: int) -> int:
@@ -869,6 +932,9 @@ class OpenAICompatibleClient:
                     model=str(payload["model"]),
                     purpose="chat_json" if use_response_format else "chat_text",
                     timeout=timeout,
+                    request_payload=payload,
+                    protocol="chat_completions",
+                    endpoint=f"{self.config.base_url}/chat/completions",
                 ) as call_record:
                     hard_deadline = time.monotonic() + max(1, int(timeout))
                     try:
@@ -876,7 +942,6 @@ class OpenAICompatibleClient:
                             "PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout
                         )
                         first_byte_timeout = _first_byte_timeout(timeout)
-                        record_model_call_estimate(call_record, payload)
                         with _open_provider_response(
                             self._urlopen,
                             req,
@@ -908,7 +973,7 @@ class OpenAICompatibleClient:
                         raise
                     record_model_call_usage(call_record, raw)
                     record_model_diagnostic(call_record, payload, response_payload=raw)
-        except (LLMError, ModelRequestAborted):
+        except (LLMError, ModelRequestAborted, ModelExecutionLedgerError):
             raise
         except Exception as exc:
             raise LLMError(f"Provider request failed: {exc}") from exc
@@ -975,7 +1040,7 @@ class OpenAICompatibleClient:
             "recommendations": [],
         }
         plans = self._json_retry_plans(messages, model, max_tokens, attempts, fallback_model, compact_messages, thinking)
-        for plan in plans:
+        for plan_index, plan in enumerate(plans):
             current_messages = plan["messages"]
             result: LLMResult | None = None
             if callable(attempt_callback):
@@ -1013,6 +1078,27 @@ class OpenAICompatibleClient:
                 self.last_json_retry_report["recommendations"] = _token_recommendations(self.last_json_retry_report["attempts"])
                 if callable(attempt_callback):
                     attempt_callback("failed", report)
+                if plan_index + 1 < len(plans):
+                    next_plan = plans[plan_index + 1]
+                    source_invocation_id, source_call_id = _result_execution_reference(result)
+                    observation = record_model_retry_scheduled(
+                        exc,
+                        category=_json_retry_category(exc, result, plan, next_plan),
+                        retry_number=plan_index + 1,
+                        max_attempts=len(plans),
+                        provider=self.config.name,
+                        model=str(plan.get("model") or self.config.default_model),
+                        source_invocation_id=source_invocation_id,
+                        source_call_id=source_call_id,
+                        from_model=str(plan.get("model") or ""),
+                        to_model=str(next_plan.get("model") or ""),
+                        from_strategy=str(plan.get("strategy") or ""),
+                        to_strategy=str(next_plan.get("strategy") or ""),
+                        budget_scope="run_model_call",
+                        budget_charged=True,
+                        decision_source="existing_json_retry_plan",
+                    )
+                    record_model_retry_started(observation)
         raise last_error or LLMError("Model JSON task failed")
 
     def generate_image(
@@ -1084,8 +1170,36 @@ class OpenAICompatibleClient:
             except LLMError as exc:
                 last_error = exc
                 if use_response_format and _is_unsupported_response_format_error(str(exc)):
+                    observation = record_model_retry_scheduled(
+                        exc,
+                        category="protocol_adaptation",
+                        retry_number=1,
+                        max_attempts=2,
+                        provider=self.config.name,
+                        model=image_model,
+                        from_protocol="images:b64_json",
+                        to_protocol="images:provider_default",
+                        budget_scope="run_model_call",
+                        budget_charged=True,
+                        decision_source="existing_image_response_format_fallback",
+                    )
+                    record_model_retry_started(observation)
                     continue
                 if use_response_format and "response_format" in str(exc):
+                    observation = record_model_retry_scheduled(
+                        exc,
+                        category="protocol_adaptation",
+                        retry_number=1,
+                        max_attempts=2,
+                        provider=self.config.name,
+                        model=image_model,
+                        from_protocol="images:b64_json",
+                        to_protocol="images:provider_default",
+                        budget_scope="run_model_call",
+                        budget_charged=True,
+                        decision_source="existing_image_response_format_fallback",
+                    )
+                    record_model_retry_started(observation)
                     continue
                 raise
         raise last_error or LLMError("Image generation failed")
@@ -1239,6 +1353,11 @@ class OpenAICompatibleClient:
             "field_names": sorted(fields),
             "reference_image_count": len(files),
             "request_bytes": len(body),
+            "field_sha256": {
+                name: hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+                for name, value in sorted(fields.items())
+            },
+            "reference_image_sha256": [hashlib.sha256(raw).hexdigest() for _, _, _, raw in files],
         }
         try:
             with model_request_slot(self.config):
@@ -1247,12 +1366,15 @@ class OpenAICompatibleClient:
                     model=model,
                     purpose="image_edit",
                     timeout=timeout,
+                    request_payload=diagnostic_payload,
+                    request_fingerprint_scope="metadata_only",
+                    protocol="images",
+                    endpoint=f"{self.config.base_url}/images/edits",
                 ) as call_record:
                     hard_deadline = time.monotonic() + max(1, int(timeout))
                     try:
                         connect = _transport_timeout("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout)
                         first_byte = _first_byte_timeout(timeout)
-                        record_model_call_estimate(call_record, diagnostic_payload)
                         with _open_provider_response(
                             self._urlopen,
                             request,
@@ -1286,7 +1408,7 @@ class OpenAICompatibleClient:
             if not isinstance(raw, dict):
                 raise LLMError("Provider returned a non-object image edit response")
             return raw
-        except ModelRequestAborted:
+        except (ModelRequestAborted, ModelExecutionLedgerError):
             raise
         except LLMError:
             raise
@@ -1320,7 +1442,7 @@ class OpenAICompatibleClient:
             },
         }
         endpoint = _dashscope_multimodal_generation_endpoint(self.config.base_url)
-        raw = self._post_json(endpoint, payload, timeout=timeout)
+        raw = self._post_json(endpoint, payload, timeout=timeout, purpose="image_generation")
         image_bytes = _dashscope_image_bytes_from_response(raw)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(image_bytes)
@@ -1347,22 +1469,25 @@ class OpenAICompatibleClient:
             headers=headers or _provider_request_headers(self.config),
             method="POST",
         )
+        effective_purpose = (
+            purpose
+            or ("image_generation" if "/images/" in url or "generateContent" in url else "responses")
+        )
         try:
             with model_request_slot(self.config):
                 with track_model_call(
                     provider=self.config.name,
                     model=str(payload.get("model") or self.config.default_model),
-                    purpose=(
-                        purpose
-                        or ("image_generation" if "/images/" in url or "generateContent" in url else "responses")
-                    ),
+                    purpose=effective_purpose,
                     timeout=timeout,
+                    request_payload=payload,
+                    protocol=_execution_protocol(url, effective_purpose),
+                    endpoint=url,
                 ) as call_record:
                     hard_deadline = time.monotonic() + max(1, int(timeout))
                     try:
                         connect = _transport_timeout("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout)
                         first_byte = _first_byte_timeout(timeout)
-                        record_model_call_estimate(call_record, payload)
                         with _open_provider_response(
                             self._urlopen,
                             req,
@@ -1394,7 +1519,7 @@ class OpenAICompatibleClient:
                         raise
                     record_model_call_usage(call_record, raw)
                     record_model_diagnostic(call_record, payload, response_payload=raw)
-        except ModelRequestAborted:
+        except (ModelRequestAborted, ModelExecutionLedgerError):
             raise
         except LLMError:
             raise
@@ -1427,12 +1552,14 @@ class OpenAICompatibleClient:
                     model=str(payload.get("model") or self.config.default_model),
                     purpose="responses_stream",
                     timeout=timeout,
+                    request_payload=streaming_payload,
+                    protocol="responses",
+                    endpoint=url,
                 ) as call_record:
                     deadline_monotonic = time.monotonic() + max(1, int(timeout))
                     try:
                         connect = _transport_timeout("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout)
                         first_byte = _first_byte_timeout(timeout)
-                        record_model_call_estimate(call_record, streaming_payload)
                         with _open_provider_response(
                             self._urlopen,
                             req,
@@ -1474,7 +1601,7 @@ class OpenAICompatibleClient:
                     record_model_call_usage(call_record, raw)
                     record_model_diagnostic(call_record, streaming_payload, response_payload=raw)
                     return raw
-        except (LLMError, ModelRequestAborted):
+        except (LLMError, ModelRequestAborted, ModelExecutionLedgerError):
             raise
         except Exception as exc:
             raise LLMError(f"Provider streaming request failed: {exc}") from exc
@@ -1666,6 +1793,22 @@ class ResponsesAPIClient(OpenAICompatibleClient):
                 raw = self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
         except LLMError as exc:
             if bool(getattr(self.config, "responses_fallback_to_chat", True)) and _is_responses_endpoint_unsupported(str(exc)):
+                observation = record_model_retry_scheduled(
+                    exc,
+                    category="protocol_adaptation",
+                    retry_number=1,
+                    max_attempts=2,
+                    provider=self.config.name,
+                    model=target_model,
+                    from_protocol="responses",
+                    to_protocol="chat_completions",
+                    from_model=target_model,
+                    to_model=target_model,
+                    budget_scope="run_model_call",
+                    budget_charged=True,
+                    decision_source="existing_responses_endpoint_fallback",
+                )
+                record_model_retry_started(observation)
                 fallback_client = _client_for_model_protocol(self.config, target_model, "chat_completions")
                 fallback_client._urlopen = self._urlopen
                 fallback = fallback_client._chat_json_once(
@@ -1789,6 +1932,22 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
         except LLMError as exc:
             profile = _model_profile(self.config, target_model)
             if bool(profile.get("messages_fallback_to_chat")) and _is_responses_endpoint_unsupported(str(exc)):
+                observation = record_model_retry_scheduled(
+                    exc,
+                    category="protocol_adaptation",
+                    retry_number=1,
+                    max_attempts=2,
+                    provider=self.config.name,
+                    model=target_model,
+                    from_protocol="anthropic_messages",
+                    to_protocol="chat_completions",
+                    from_model=target_model,
+                    to_model=target_model,
+                    budget_scope="run_model_call",
+                    budget_charged=True,
+                    decision_source="existing_messages_endpoint_fallback",
+                )
+                record_model_retry_started(observation)
                 fallback_client = _client_for_model_protocol(self.config, target_model, "chat_completions")
                 fallback_client._urlopen = self._urlopen
                 fallback = fallback_client._chat_json_once(

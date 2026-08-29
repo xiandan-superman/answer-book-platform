@@ -46,6 +46,7 @@ from .drawing_code import (
 from .image_artifacts import ImageArtifactStore
 from .llm_client import OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
+from .prompt_registry import prompt_contract
 from .question_requirements import answer_figure_required
 from .settings import FIGURE_AUXILIARY_MAX_TOKENS, provider_supports_image_generation
 
@@ -3459,13 +3460,14 @@ def prepare_figures_for_fragments(
         prompt = _direct_figure_prompt(question, fragment, _explicit_figure_specs(fragment, qid, question))
         try:
             image_client = OpenAICompatibleClient(provider)
-            with model_request_slot(provider):
-                image_result = image_client.generate_image(
-                    prompt,
-                    output,
-                    model=getattr(provider, "image_model", ""),
-                    size=getattr(provider, "image_size", "1024x1024"),
-                )
+            with prompt_contract("figure.direct_image_generation"):
+                with model_request_slot(provider):
+                    image_result = image_client.generate_image(
+                        prompt,
+                        output,
+                        model=getattr(provider, "image_model", ""),
+                        size=getattr(provider, "image_size", "1024x1024"),
+                    )
             output = image_result.path
             if not output.exists() or output.stat().st_size <= 0:
                 raise RuntimeError("image provider returned success but no image file was written")
@@ -4841,22 +4843,23 @@ def repair_figures_with_model_for_visual_qa(
                     continue
                 source_url, _ = _vision_audit_image_data_url(source_path)
                 content.append({"type": "image_url", "image_url": {"url": source_url}})
-            agent_result = tool_loop.run_json(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You repair educational answer figures. You may use generate_image, must visually inspect its output, "
-                            "and may accept only an asset you actually inspected in this transaction."
-                        ),
-                    },
-                    {"role": "user", "content": content},
-                ],
-                model=candidate_model,
-                max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
-                thinking="high",
-                timeout=180,
-            )
+            with prompt_contract("figure.tool_repair"):
+                agent_result = tool_loop.run_json(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You repair educational answer figures. You may use generate_image, must visually inspect its output, "
+                                "and may accept only an asset you actually inspected in this transaction."
+                            ),
+                        },
+                        {"role": "user", "content": content},
+                    ],
+                    model=candidate_model,
+                    max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
+                    thinking="high",
+                    timeout=180,
+                )
             bindings = agent_result.value.get("generated_images") if isinstance(agent_result.value, dict) else None
             if not isinstance(bindings, list) or len(bindings) != 1 or not isinstance(bindings[0], dict):
                 raise ValueError("main model did not return exactly one replacement image binding")
@@ -4886,6 +4889,7 @@ def repair_figures_with_model_for_visual_qa(
                     "steps": agent_result.steps,
                     "tool_calls": agent_result.tool_calls,
                     "generated_artifacts": agent_result.generated_artifacts,
+                    "tool_event_log": getattr(agent_result, "tool_event_log", ""),
                 },
             }
         if kind == "model_drawing_code":
@@ -4916,32 +4920,33 @@ def repair_figures_with_model_for_visual_qa(
             )
         else:
             messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
-        if kind == "model_drawing_code" and hasattr(candidate_client, "chat_text"):
-            result = candidate_client.chat_text(
-                messages,
-                model=candidate_model,
-                max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
-                timeout=90,
-                thinking="disabled",
-                task_stage="drawing_code",
-                item_ids=[str(current_spec.get("question_id") or "")],
-                enforce_context_budget=True,
-            )
-            repaired, repair_notes = parse_drawing_code_model_response(result.content)
-            response: dict[str, Any] = {"drawing_code_spec": repaired, "repair_notes": repair_notes}
-        else:
-            response = candidate_client.chat_json_object(
-                messages,
-                model=candidate_model,
-                max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
-                timeout=90,
-                attempts=1,
-                thinking="disabled" if kind == "model_drawing_code" else None,
-                task_stage="drawing_code" if kind == "model_drawing_code" else "review",
-                item_ids=[str(current_spec.get("question_id") or "")],
-                enforce_context_budget=True,
-            )
-            repaired = response.get(output_key) if isinstance(response, dict) else None
+        with prompt_contract("figure.drawing_code"):
+            if kind == "model_drawing_code" and hasattr(candidate_client, "chat_text"):
+                result = candidate_client.chat_text(
+                    messages,
+                    model=candidate_model,
+                    max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
+                    timeout=90,
+                    thinking="disabled",
+                    task_stage="drawing_code",
+                    item_ids=[str(current_spec.get("question_id") or "")],
+                    enforce_context_budget=True,
+                )
+                repaired, repair_notes = parse_drawing_code_model_response(result.content)
+                response: dict[str, Any] = {"drawing_code_spec": repaired, "repair_notes": repair_notes}
+            else:
+                response = candidate_client.chat_json_object(
+                    messages,
+                    model=candidate_model,
+                    max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
+                    timeout=90,
+                    attempts=1,
+                    thinking="disabled" if kind == "model_drawing_code" else None,
+                    task_stage="drawing_code" if kind == "model_drawing_code" else "review",
+                    item_ids=[str(current_spec.get("question_id") or "")],
+                    enforce_context_budget=True,
+                )
+                repaired = response.get(output_key) if isinstance(response, dict) else None
         if kind == "model_drawing_code" and not isinstance(repaired, dict) and isinstance(response, dict) and response.get("code"):
             repaired = {"code": response.get("code"), "caption": response.get("caption") or current_spec.get("caption")}
         if not isinstance(repaired, dict):
@@ -5382,22 +5387,23 @@ def _audit_figures_with_vision_serial(
         try:
             if callable(progress_callback):
                 progress_callback("visual_qa_started", {"figure_id": figure_id, "question_id": qid, "model": report["vision_model"]})
-            with model_request_slot(provider):
-                qa = client.chat_json_object(
-                    [
-                        {"role": "system", "content": "你是真题解析册插图质量审查器，只输出 JSON。"},
-                        {"role": "user", "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}, {"type": "image_url", "image_url": {"url": image_url}}]},
-                    ],
-                    model=str(report["vision_model"]),
-                    max_tokens=min(FIGURE_AUXILIARY_MAX_TOKENS, 2048),
-                    timeout=120,
-                    attempts=1,
-                    task_stage="review",
-                    required_evidence_refs=[f"figure:{figure_id}"],
-                    delivered_evidence_refs=[f"figure:{figure_id}"],
-                    item_ids=[qid],
-                    enforce_context_budget=True,
-                )
+            with prompt_contract("figure.visual_review"):
+                with model_request_slot(provider):
+                    qa = client.chat_json_object(
+                        [
+                            {"role": "system", "content": "你是真题解析册插图质量审查器，只输出 JSON。"},
+                            {"role": "user", "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}, {"type": "image_url", "image_url": {"url": image_url}}]},
+                        ],
+                        model=str(report["vision_model"]),
+                        max_tokens=min(FIGURE_AUXILIARY_MAX_TOKENS, 2048),
+                        timeout=120,
+                        attempts=1,
+                        task_stage="review",
+                        required_evidence_refs=[f"figure:{figure_id}"],
+                        delivered_evidence_refs=[f"figure:{figure_id}"],
+                        item_ids=[qid],
+                        enforce_context_budget=True,
+                    )
         except Exception as exc:
             qa = {"ok": False, "error": str(exc)[:500]}
         qa = _ground_visual_qa_to_figure_spec(qa, spec)

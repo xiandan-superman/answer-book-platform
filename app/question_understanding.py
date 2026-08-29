@@ -10,14 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities.catalog import apply_capability_policy_transforms, capability_policy_contributions
-from .llm_client import LLMError, OpenAICompatibleClient
 from .concurrency import model_request_slot, run_limited_concurrent
+from .llm_client import OpenAICompatibleClient
+from .prompt_registry import prompt_contract
 from .question_requirements import answer_figure_required
-from .question_types import question_has_type
 from .runtime_monitor import model_call_context
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text
-
 
 COMPLEX_TABLE_MAX_SIMPLE_CELLS = 12
 COMPLEX_TABLE_MAX_SIMPLE_COLS = 5
@@ -417,18 +416,19 @@ def build_question_understanding(
     failures: list[str] = []
     for candidate_model in vision_models:
         try:
-            with model_request_slot(provider):
-                visual = active_client.chat_json_object(
-                    _vision_prompt(question, base),
-                    model=candidate_model,
-                    max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                    attempts=1,
-                    task_stage="source_analysis",
-                    required_evidence_refs=["question_visual"] if needs_vision_model(question) else [],
-                    delivered_evidence_refs=["question_visual"],
-                    item_ids=[str(question.get("question_id") or question.get("number") or "")],
-                    enforce_context_budget=True,
-                )
+            with prompt_contract("exam.question_understanding"):
+                with model_request_slot(provider):
+                    visual = active_client.chat_json_object(
+                        _vision_prompt(question, base),
+                        model=candidate_model,
+                        max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
+                        attempts=1,
+                        task_stage="source_analysis",
+                        required_evidence_refs=["question_visual"] if needs_vision_model(question) else [],
+                        delivered_evidence_refs=["question_visual"],
+                        item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                        enforce_context_budget=True,
+                    )
         except Exception as exc:
             failures.append(f"{candidate_model}: {str(exc)[:240]}")
             continue

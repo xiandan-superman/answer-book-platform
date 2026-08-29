@@ -41,6 +41,20 @@ class _FakeImageTool:
         return {"ok": True, "asset": artifact.to_dict()}
 
 
+class _LargeFailingTool:
+    name = "generate_image"
+
+    def definition(self):
+        return {
+            "type": "function",
+            "name": self.name,
+            "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+        }
+
+    def execute(self, arguments, *, call_id):
+        return {"ok": False, "error": {"code": "IMAGE_FAILED", "message": "x" * 3000}}
+
+
 class ModelToolLoopTests(unittest.TestCase):
     def _client(self):
         from app.llm_client import ResponsesAPIClient
@@ -153,6 +167,7 @@ class ModelToolLoopTests(unittest.TestCase):
 
             def generate(prompt, output_path, **kwargs):
                 self.assertEqual("教学示意图", prompt)
+                self.assertEqual(240, kwargs["timeout"])
                 Image.new("RGB", (128, 96), "white").save(output_path)
                 return SimpleNamespace(
                     path=output_path,
@@ -900,6 +915,302 @@ class ModelToolLoopTests(unittest.TestCase):
 
             content = seen[0][-1]["content"]
             self.assertEqual(["text", "text", "image_url"], [part["type"] for part in content])
+
+    def test_image_tool_runtime_rejects_unknown_and_non_strict_arguments(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ImageGenerationTool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = ImageGenerationTool(
+                SimpleNamespace(image_model="gpt-image-2", image_size=""),
+                "gpt-image-2",
+                ImageArtifactStore(Path(tmp)),
+            )
+            with self.assertRaisesRegex(ValueError, "unknown image tool argument"):
+                tool.execute({"prompt": "diagram", "quality": "high"}, call_id="unknown")
+            with self.assertRaisesRegex(ValueError, "prompt must be a string"):
+                tool.execute({"prompt": 123}, call_id="prompt-type")
+            with self.assertRaisesRegex(ValueError, "must be an integer"):
+                tool.execute(
+                    {"prompt": "revise", "num_last_images_to_include": 1.0},
+                    call_id="count-type",
+                )
+
+    def test_tool_lifecycle_is_durable_and_invalid_arguments_remain_model_visible(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ImageGenerationTool, ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            tool = ImageGenerationTool(
+                SimpleNamespace(image_model="gpt-image-2", image_size=""),
+                "gpt-image-2",
+                store,
+            )
+            client = self._client()
+            requests = []
+
+            def create(input_items, **kwargs):
+                requests.append(json.loads(json.dumps(input_items)))
+                if len(requests) == 1:
+                    return {
+                        "output": [{
+                            "type": "function_call",
+                            "call_id": "bad_args",
+                            "name": "generate_image",
+                            "arguments": '{"prompt":"diagram","quality":"high"}',
+                        }]
+                    }
+                tool_result = json.loads(input_items[-1]["output"][0]["text"])
+                self.assertEqual("INVALID_TOOL_ARGUMENTS", tool_result["error"]["info"]["code"])
+                return {
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": '{"answer":"text fallback","generated_images":[]}',
+                        }],
+                    }]
+                }
+
+            client.create_tool_response = create
+            with patch("app.model_tool_loop.OpenAICompatibleClient.generate_image") as generate:
+                result = ModelToolLoop(client, [tool], store).run_json(
+                    [{"role": "user", "content": "answer"}],
+                    model="fake-vision-model",
+                    max_tokens=1000,
+                    thinking="medium",
+                    timeout=30,
+                )
+
+            generate.assert_not_called()
+            self.assertEqual("text fallback", result.value["answer"])
+            events = [
+                json.loads(line)
+                for line in Path(result.tool_event_log).read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                ["agent/request", "agent/completion", "tool/call", "tool/result", "agent/request", "agent/completion"],
+                [event["type"] for event in events],
+            )
+            self.assertEqual("INVALID_TOOL_ARGUMENTS", events[3]["result"]["error"]["info"]["code"])
+            self.assertTrue(events[2]["arguments_sha256"])
+
+    def test_same_call_id_is_idempotent_across_answer_repair_rounds(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            tool = _FakeImageTool(store)
+            client = self._client()
+            turn = 0
+
+            def create(input_items, **kwargs):
+                nonlocal turn
+                turn += 1
+                if turn in {1, 3}:
+                    return {
+                        "output": [{
+                            "type": "function_call",
+                            "call_id": "stable_call",
+                            "name": "generate_image",
+                            "arguments": '{"prompt":"same diagram"}',
+                        }]
+                    }
+                output = next(
+                    item["output"]
+                    for item in reversed(input_items)
+                    if isinstance(item, dict) and item.get("type") == "function_call_output"
+                )
+                asset_id = json.loads(output[0]["text"])["asset"]["asset_id"]
+                return {
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": json.dumps({
+                                "answer": "ok",
+                                "generated_images": [{"asset_id": asset_id}],
+                            }),
+                        }],
+                    }]
+                }
+
+            client.create_tool_response = create
+            loop = ModelToolLoop(client, [tool], store)
+            for _ in range(2):
+                loop.run_json(
+                    [{"role": "user", "content": "answer"}],
+                    model="fake-vision-model",
+                    max_tokens=1000,
+                    thinking="medium",
+                    timeout=30,
+                )
+
+            self.assertEqual(1, len(tool.calls))
+            results = [
+                json.loads(line)
+                for line in loop.tool_event_log_path.read_text(encoding="utf-8").splitlines()
+                if json.loads(line)["type"] == "tool/result"
+            ]
+            self.assertEqual([False, True], [event["cache_hit"] for event in results])
+
+    def test_repeat_reminder_is_advisory_and_appended_after_the_third_call(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            tool = _FakeImageTool(store)
+            client = self._client()
+            requests = []
+
+            def create(input_items, **kwargs):
+                requests.append(json.loads(json.dumps(input_items)))
+                if len(requests) <= 3:
+                    return {
+                        "output": [{
+                            "type": "function_call",
+                            "call_id": f"repeat_{len(requests)}",
+                            "name": "generate_image",
+                            "arguments": '{"prompt":"same diagram"}',
+                        }]
+                    }
+                reminder = input_items[-1]["content"][0]["text"]
+                self.assertIn("repeating the exact same tool call", reminder)
+                return {
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": '{"answer":"done","generated_images":[]}',
+                        }],
+                    }]
+                }
+
+            client.create_tool_response = create
+            result = ModelToolLoop(client, [tool], store).run_json(
+                [{"role": "user", "content": "answer"}],
+                model="fake-vision-model",
+                max_tokens=1000,
+                thinking="medium",
+                timeout=30,
+            )
+
+            self.assertEqual("done", result.value["answer"])
+            self.assertEqual(3, len(tool.calls))
+            event_types = [
+                json.loads(line)["type"]
+                for line in Path(result.tool_event_log).read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(1, event_types.count("user/message"))
+
+    def test_tool_call_limit_returns_a_structured_result_instead_of_ending_the_turn(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            tool = _FakeImageTool(store)
+            client = self._client()
+            requests = []
+
+            def create(input_items, **kwargs):
+                requests.append(json.loads(json.dumps(input_items)))
+                if len(requests) <= 2:
+                    return {
+                        "output": [{
+                            "type": "function_call",
+                            "call_id": f"budget_{len(requests)}",
+                            "name": "generate_image",
+                            "arguments": json.dumps({"prompt": f"diagram {len(requests)}"}),
+                        }]
+                    }
+                denied = json.loads(input_items[-1]["output"][0]["text"])
+                self.assertEqual("TOOL_CALL_LIMIT", denied["error"]["info"]["code"])
+                return {
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": '{"answer":"finished without another image","generated_images":[]}',
+                        }],
+                    }]
+                }
+
+            client.create_tool_response = create
+            result = ModelToolLoop(client, [tool], store, max_tool_calls=1).run_json(
+                [{"role": "user", "content": "answer"}],
+                model="fake-vision-model",
+                max_tokens=1000,
+                thinking="medium",
+                timeout=30,
+            )
+
+            self.assertEqual("finished without another image", result.value["answer"])
+            self.assertEqual(1, len(tool.calls))
+            self.assertEqual(2, result.tool_calls)
+
+    def test_context_pressure_compacts_only_old_failed_tool_result(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            client = self._client()
+            requests = []
+
+            def create(input_items, **kwargs):
+                requests.append(json.loads(json.dumps(input_items)))
+                if len(requests) <= 3:
+                    return {
+                        "output": [{
+                            "type": "function_call",
+                            "call_id": f"failed_{len(requests)}",
+                            "name": "generate_image",
+                            "arguments": json.dumps({"prompt": f"diagram {len(requests)}"}),
+                        }]
+                    }
+                return {
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": '{"answer":"text result","generated_images":[]}',
+                        }],
+                    }]
+                }
+
+            client.create_tool_response = create
+            with (
+                patch(
+                    "app.model_tool_loop.measure_request_tokens",
+                    return_value=SimpleNamespace(estimated_input_tokens=999999),
+                ),
+                patch("app.model_tool_loop.model_stage_quality_limit", return_value=1),
+            ):
+                result = ModelToolLoop(client, [_LargeFailingTool()], store).run_json(
+                    [{"role": "user", "content": "不可压缩的题干与证据"}],
+                    model="fake-vision-model",
+                    max_tokens=1000,
+                    thinking="medium",
+                    timeout=30,
+                )
+
+            first_result = next(
+                item for item in requests[3] if item.get("type") == "function_call_output"
+            )
+            self.assertIn("original_sha256", first_result["output"][0]["text"])
+            self.assertEqual("不可压缩的题干与证据", requests[3][0]["content"])
+            events = [
+                json.loads(line)
+                for line in Path(result.tool_event_log).read_text(encoding="utf-8").splitlines()
+            ]
+            compacted = [event for event in events if event["type"] == "history/compacted"]
+            self.assertEqual(1, len(compacted))
+            self.assertFalse(compacted[0]["core_history_changed"])
+            self.assertFalse(compacted[0]["tool_pairing_changed"])
 
 
 if __name__ == "__main__":

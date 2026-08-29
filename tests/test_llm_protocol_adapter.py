@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -578,6 +579,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual("stop", attempts[1]["finish_reason"])
 
     def test_responses_endpoint_404_falls_back_to_chat_completions(self):
+        from app import runtime_monitor
         from app.llm_client import ResponsesAPIClient
 
         client = ResponsesAPIClient(self._provider(api_protocol="responses"))
@@ -606,10 +608,18 @@ class LLMProtocolAdapterTests(unittest.TestCase):
             )
 
         client._urlopen = fake_urlopen
-        result = client.chat_json(
-            [{"role": "user", "content": "return JSON"}],
-            model="test-model",
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            event_ledger = Path(temp_dir) / "events.jsonl"
+            with patch.object(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", event_ledger):
+                result = client.chat_json(
+                    [{"role": "user", "content": "return JSON"}],
+                    model="test-model",
+                )
+            retry_events = [
+                json.loads(line)
+                for line in event_ledger.read_text(encoding="utf-8").splitlines()
+                if '"event_type":"retry.' in line
+            ]
 
         self.assertEqual(
             ["https://example.test/v1/responses", "https://example.test/v1/chat/completions"],
@@ -622,6 +632,12 @@ class LLMProtocolAdapterTests(unittest.TestCase):
             "responses_endpoint_http_404",
             result.raw["_request"]["protocol_fallback_reason"],
         )
+        self.assertEqual(["retry.scheduled", "retry.started"], [row["event_type"] for row in retry_events])
+        self.assertEqual("protocol_adaptation", retry_events[0]["category"])
+        self.assertEqual("responses", retry_events[0]["route_transition"]["from_protocol"])
+        self.assertEqual("chat_completions", retry_events[0]["route_transition"]["to_protocol"])
+        self.assertEqual("provider_target_not_found", retry_events[0]["failure"]["kind"])
+        self.assertFalse(retry_events[0]["failure"]["retryable_by_provider_classifier"])
 
     def test_responses_auth_failure_does_not_fall_back(self):
         from app.llm_client import LLMError, ResponsesAPIClient

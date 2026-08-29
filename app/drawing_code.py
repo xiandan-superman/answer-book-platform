@@ -16,6 +16,7 @@ from typing import Any
 
 from .capabilities.catalog import capability_policy_contributions
 from .llm_client import OpenAICompatibleClient, parse_json_content
+from .prompt_registry import prompt_contract
 from .question_types import explicit_question_type, iter_leaf_question_parts
 from .settings import DRAWING_CODE_MAX_TOKENS
 
@@ -1197,30 +1198,31 @@ def generate_drawing_code_spec(client: OpenAICompatibleClient, question: dict[st
         previous_issues=previous_issues,
         include_images=bool(getattr(getattr(client, "config", None), "supports_vision", False)),
     )
-    if hasattr(client, "chat_text"):
-        result = client.chat_text(
-            messages,
-            model=model,
-            max_tokens=DRAWING_CODE_MAX_TOKENS,
-            timeout=90,
-            thinking="disabled",
-            task_stage="drawing_code",
-            item_ids=[str(question.get("question_id") or fragment.get("question_id") or "")],
-            enforce_context_budget=True,
-        )
-        data, _notes = parse_drawing_code_model_response(result.content)
-    else:
-        data = client.chat_json_object(
-            messages,
-            model=model,
-            max_tokens=DRAWING_CODE_MAX_TOKENS,
-            timeout=90,
-            attempts=1,
-            thinking="disabled",
-            task_stage="drawing_code",
-            item_ids=[str(question.get("question_id") or fragment.get("question_id") or "")],
-            enforce_context_budget=True,
-        )
+    with prompt_contract("figure.drawing_code"):
+        if hasattr(client, "chat_text"):
+            result = client.chat_text(
+                messages,
+                model=model,
+                max_tokens=DRAWING_CODE_MAX_TOKENS,
+                timeout=90,
+                thinking="disabled",
+                task_stage="drawing_code",
+                item_ids=[str(question.get("question_id") or fragment.get("question_id") or "")],
+                enforce_context_budget=True,
+            )
+            data, _notes = parse_drawing_code_model_response(result.content)
+        else:
+            data = client.chat_json_object(
+                messages,
+                model=model,
+                max_tokens=DRAWING_CODE_MAX_TOKENS,
+                timeout=90,
+                attempts=1,
+                thinking="disabled",
+                task_stage="drawing_code",
+                item_ids=[str(question.get("question_id") or fragment.get("question_id") or "")],
+                enforce_context_budget=True,
+            )
     code = str(data.get("code") or "").strip()
     if not code:
         raise ValueError("model did not return drawing code")

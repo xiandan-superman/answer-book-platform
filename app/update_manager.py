@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import errno
 import hashlib
+import http.client
 import json
 import os
 import platform
 import re
+import ssl
 import subprocess
 import sys
 import threading
@@ -23,9 +28,24 @@ UPDATE_MANIFEST_SCHEMA = "answer_book.update_manifest.v1"
 DEFAULT_MANIFEST_ASSET = "update-manifest.json"
 UPDATE_CACHE_SECONDS = 600
 MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
+UPDATE_JSON_ATTEMPTS = 3
+UPDATE_FALLBACK_ATTEMPTS = 2
+UPDATE_DOWNLOAD_ATTEMPTS = 4
+UPDATE_RETRY_BASE_SECONDS = 0.5
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _RELEASE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
+_RETRYABLE_ERRNOS = {
+    errno.ECONNABORTED,
+    errno.ECONNRESET,
+    errno.EHOSTUNREACH,
+    errno.ENETDOWN,
+    errno.ENETUNREACH,
+    errno.EPIPE,
+    errno.ETIMEDOUT,
+}
+_RETRYABLE_WINDOWS_ERRORS = {10053, 10054, 10060, 10065}
 _STATUS_CACHE: dict[str, Any] = {}
 _STATUS_CACHE_LOCK = threading.Lock()
 _UPDATE_PROGRESS: dict[str, Any] = {}
@@ -34,6 +54,10 @@ _UPDATE_THREAD: threading.Thread | None = None
 
 
 class UpdateError(RuntimeError):
+    pass
+
+
+class _UpdateNetworkError(UpdateError):
     pass
 
 
@@ -149,24 +173,116 @@ def is_newer_version(candidate: str, current: str) -> bool:
     return candidate_pre > current_pre
 
 
-def _github_json(url: str, *, timeout: int = 20) -> Any:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Answer-Book-Platform-Updater",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise UpdateError("更新仓库或发布版本不存在。") from exc
-        raise UpdateError(f"检查更新失败：GitHub HTTP {exc.code}。") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise UpdateError(f"检查更新失败：{str(exc)[:180]}") from exc
+def _retry_delay(attempt: int, exc: BaseException | None = None) -> float:
+    headers = getattr(exc, "headers", None)
+    retry_after = headers.get("Retry-After") if headers is not None else None
+    if retry_after:
+        try:
+            return min(10.0, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+    return min(4.0, UPDATE_RETRY_BASE_SECONDS * (2**attempt))
+
+
+def _is_retryable_network_error(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_HTTP_CODES
+    if isinstance(
+        exc,
+        (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            ssl.SSLError,
+            http.client.IncompleteRead,
+        ),
+    ):
+        return True
+    if isinstance(exc, OSError):
+        return (
+            getattr(exc, "errno", None) in _RETRYABLE_ERRNOS
+            or getattr(exc, "winerror", None) in _RETRYABLE_WINDOWS_ERRORS
+        )
+    return False
+
+
+def _decode_json_payload(payload: bytes) -> Any:
+    parsed = json.loads(payload.decode("utf-8"))
+    if (
+        isinstance(parsed, dict)
+        and parsed.get("encoding") == "base64"
+        and isinstance(parsed.get("content"), str)
+        and "schema_version" not in parsed
+    ):
+        encoded = str(parsed["content"]).replace("\n", "")
+        parsed = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+    return parsed
+
+
+def _github_json(
+    url: str,
+    *,
+    timeout: int = 20,
+    attempts: int = UPDATE_JSON_ATTEMPTS,
+    accept: str = "application/vnd.github+json",
+) -> Any:
+    attempts = max(1, attempts)
+    last_error: BaseException | None = None
+    for attempt in range(attempts):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": accept,
+                "User-Agent": "Answer-Book-Platform-Updater",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return _decode_json_payload(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise UpdateError("更新仓库或发布版本不存在。") from exc
+            if not _is_retryable_network_error(exc):
+                raise UpdateError(f"检查更新失败：GitHub HTTP {exc.code}。") from exc
+            last_error = exc
+        except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            last_error = exc
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, OSError) as exc:
+            if not _is_retryable_network_error(exc):
+                raise UpdateError(f"检查更新失败：{str(exc)[:180]}") from exc
+            last_error = exc
+        if attempt + 1 < attempts:
+            time.sleep(_retry_delay(attempt, last_error))
+    if isinstance(last_error, (binascii.Error, json.JSONDecodeError, UnicodeDecodeError)):
+        raise UpdateError("检查更新失败：更新清单响应无法解析。") from last_error
+    raise _UpdateNetworkError(
+        f"检查更新失败：网络连接在自动重试 {attempts} 次后仍不可用。"
+    ) from last_error
+
+
+def _github_contents_fallback_url(source: dict[str, Any], manifest_url: str) -> str:
+    parsed = urllib.parse.urlparse(manifest_url)
+    repository = str(source.get("repository") or "").strip()
+    branch = str(source.get("source_branch") or "main").strip()
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "raw.githubusercontent.com"
+        or not _REPOSITORY_PATTERN.fullmatch(repository)
+        or not branch
+    ):
+        return ""
+    decoded_path = urllib.parse.unquote(parsed.path)
+    expected_prefix = f"/{repository}/{branch}/"
+    if not decoded_path.startswith(expected_prefix):
+        return ""
+    content_path = decoded_path[len(expected_prefix):]
+    if not content_path or any(part in {"", ".", ".."} for part in content_path.split("/")):
+        return ""
+    encoded_repository = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/"))
+    encoded_content_path = "/".join(urllib.parse.quote(part, safe="") for part in content_path.split("/"))
+    query = urllib.parse.urlencode({"ref": branch})
+    return f"https://api.github.com/repos/{encoded_repository}/contents/{encoded_content_path}?{query}"
 
 
 def _select_release(releases: Any, channel: str) -> dict[str, Any]:
@@ -204,7 +320,26 @@ def _manifest_feed(source: dict[str, Any]) -> dict[str, Any]:
     url = str(source.get("manifest_url") or "").strip()
     if not url.startswith("https://"):
         raise UpdateError("更新清单地址无效。")
-    manifest = _github_json(url)
+    candidates = [(url, UPDATE_JSON_ATTEMPTS, "application/vnd.github+json")]
+    fallback_url = _github_contents_fallback_url(source, url)
+    if fallback_url:
+        candidates.append((fallback_url, UPDATE_FALLBACK_ATTEMPTS, "application/vnd.github.raw+json"))
+    errors: list[UpdateError] = []
+    manifest: Any = None
+    for candidate_url, attempts, accept in candidates:
+        try:
+            manifest = _github_json(candidate_url, attempts=attempts, accept=accept)
+            break
+        except UpdateError as exc:
+            errors.append(exc)
+    else:
+        if errors and all(isinstance(error, _UpdateNetworkError) for error in errors):
+            raise UpdateError(
+                "检查更新失败：GitHub 连接中断；程序已自动重试并尝试备用地址，请稍后再试。"
+            ) from errors[-1]
+        if errors:
+            raise errors[-1]
+        raise UpdateError("检查更新失败：没有可用的更新清单地址。")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != UPDATE_MANIFEST_SCHEMA:
         raise UpdateError("更新清单格式无效。")
     return manifest
@@ -395,30 +530,75 @@ def _download_asset(
         return target
     partial = target.with_suffix(target.suffix + ".part")
     partial.unlink(missing_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "Answer-Book-Platform-Updater"})
     written = 0
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as stream:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > MAX_UPDATE_BYTES:
-                    raise UpdateError("更新包超出安全限制。")
-                stream.write(chunk)
-                if progress:
-                    ratio = min(1.0, written / expected_size) if expected_size else 0.0
-                    progress(
-                        "downloading",
-                        12 + int(ratio * 58) if expected_size else 35,
-                        "正在下载更新包，请保持程序运行。",
-                        downloaded_bytes=written,
-                        total_bytes=expected_size,
-                    )
-    except Exception:
+    last_error: BaseException | None = None
+    completed = False
+    for attempt in range(UPDATE_DOWNLOAD_ATTEMPTS):
+        written = partial.stat().st_size if partial.exists() else 0
+        if expected_size and written == expected_size:
+            completed = True
+            break
+        if expected_size and written > expected_size:
+            partial.unlink(missing_ok=True)
+            written = 0
+        headers = {"User-Agent": "Answer-Book-Platform-Updater"}
+        if written:
+            headers["Range"] = f"bytes={written}-"
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                response_status = int(getattr(response, "status", 200) or 200)
+                resume = bool(written and response_status == 206)
+                if not resume:
+                    written = 0
+                with partial.open("ab" if resume else "wb") as stream:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > MAX_UPDATE_BYTES or (expected_size and written > expected_size):
+                            raise UpdateError("更新包超出清单声明的安全限制。")
+                        stream.write(chunk)
+                        if progress:
+                            ratio = min(1.0, written / expected_size) if expected_size else 0.0
+                            progress(
+                                "downloading",
+                                12 + int(ratio * 58) if expected_size else 35,
+                                "正在下载更新包，请保持程序运行。",
+                                downloaded_bytes=written,
+                                total_bytes=expected_size,
+                            )
+            if expected_size and written < expected_size:
+                raise ConnectionError(
+                    f"更新包连接提前结束：应为 {expected_size} 字节，当前 {written} 字节。"
+                )
+            completed = True
+            break
+        except Exception as exc:
+            if isinstance(exc, UpdateError) or not _is_retryable_network_error(exc):
+                partial.unlink(missing_ok=True)
+                if isinstance(exc, urllib.error.HTTPError):
+                    raise UpdateError(f"下载更新包失败：GitHub HTTP {exc.code}。") from exc
+                raise
+            last_error = exc
+            if attempt + 1 >= UPDATE_DOWNLOAD_ATTEMPTS:
+                break
+            written = partial.stat().st_size if partial.exists() else 0
+            if progress:
+                progress(
+                    "downloading",
+                    12 + int(min(1.0, written / expected_size) * 58) if expected_size else 35,
+                    f"网络连接中断，正在自动续传（第 {attempt + 2}/{UPDATE_DOWNLOAD_ATTEMPTS} 次）。",
+                    downloaded_bytes=written,
+                    total_bytes=expected_size,
+                )
+            time.sleep(_retry_delay(attempt, exc))
+    if not completed:
         partial.unlink(missing_ok=True)
-        raise
+        raise UpdateError(
+            f"下载更新包失败：网络连接在自动重试 {UPDATE_DOWNLOAD_ATTEMPTS} 次后仍不可用。"
+        ) from last_error
     if expected_size and written != expected_size:
         partial.unlink(missing_ok=True)
         raise UpdateError(f"更新包大小校验失败：应为 {expected_size}，实际 {written}。")

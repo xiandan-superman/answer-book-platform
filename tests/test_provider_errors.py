@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.llm_client import LLMError
+from app.llm_client import LLMError, _json_retry_category
 from app.provider_errors import classify_provider_error
 from app.server import _provider_test_error_payload
 
@@ -68,3 +68,14 @@ def test_provider_test_payload_never_returns_raw_provider_body() -> None:
     assert "8 秒" in str(payload["suggested_action"])
     assert "req-secret" not in str(payload)
     assert "Provider HTTP" not in str(payload)
+
+
+def test_same_strategy_retry_exposes_non_retryable_policy_mismatch() -> None:
+    category = _json_retry_category(
+        LLMError("Provider HTTP 401: invalid API key", status_code=401),
+        None,
+        {"strategy": "attempt_1", "model": "model-a"},
+        {"strategy": "attempt_2", "model": "model-a"},
+    )
+
+    assert category == "policy_retry"

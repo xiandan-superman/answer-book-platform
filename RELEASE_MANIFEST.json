@@ -1,19 +1,19 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.35",
+  "version": "0.9.36",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.35",
+  "source_revision": "release-v0.9.36",
   "build_kind": "stable-source-release",
   "created_at": "2026-08-29T00:00:00+08:00",
   "validation": {
-    "pytest": "the locked Python 3.11 full local quality gate passed with 1849 tests and 16 configured deselections",
-    "platform_quality_gate": "local compilation, full pytest and 69 percent branch coverage, version consistency, formula conversion, third-party notices, project completeness, Ruff and Mypy passed; locked Python 3.9/3.11, Chromium and macOS/Windows source-lock gates must still pass on main before the release tag is created",
+    "pytest": "the locked Python 3.11 full local quality gate passed with 1899 tests and 16 configured deselections",
+    "platform_quality_gate": "local compilation, full pytest and 70 percent branch coverage, version consistency, formula conversion, third-party notices, project completeness, Ruff and Mypy passed; locked Python 3.9/3.11, Chromium and macOS/Windows source-lock gates must still pass on main before the release tag is created",
     "version_consistency": "passed",
-    "saved_real_task_replay": "the saved illustrated-question candidate and model-route diagnostics that triggered these fixes were inspected; deterministic replays confirmed the corrected intent and asset gates without repeating paid image-edit requests",
-    "cross_subject_regressions": "true-exam, question-only analysis, per-question generation and knowledge-generation contracts passed in the full local gate; main-model image-tool generation, editing, inspection, retry and legacy-route isolation are covered by deterministic regressions",
-    "paid_model_regression": "earlier scoped provider probes in this development cycle verified registered native tool calls and the generated-image inspection loop; no paid image-edit request was run for the final 0.9.35 release candidate",
-    "cost_model_routing": "the main model alone decides whether to call the image tool; text-only tasks retain zero image calls, image edits do not silently fall back to new generation, and existing request budgets remain enforced",
+    "saved_real_task_replay": "existing durable model, task and image-artifact records were audited read-only; intent/result pairs, prompt coverage, task projection and artifact hashes were checked without repeating paid model or image requests",
+    "cross_subject_regressions": "true-exam, question-only analysis, per-question generation and knowledge-generation contracts passed in the full local gate; prompt identity, tool-event durability, artifact adoption, context metering and update recovery are covered by deterministic regressions",
+    "paid_model_regression": "no paid model or image request was run for the final 0.9.36 release candidate; this release adds deterministic observation, integrity and network-recovery behavior around previously verified routes",
+    "cost_model_routing": "observers do not add model calls; safe compaction only trims older failed tool-result bodies under context pressure, preserves core content and successful results, and existing request budgets remain enforced",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

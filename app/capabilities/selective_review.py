@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from ..calculation_consistency import evaluate_simple_numeric_expression
 from ..concurrency import model_request_slot, run_limited_concurrent
 from ..llm_client import OpenAICompatibleClient
+from ..prompt_registry import prompt_contract
 
 SELECTIVE_REVIEW_VERSION = "answer_book.selective_quality_review.v27"
 SELECTIVE_CONTENT_WARNING_CODES = frozenset(
@@ -1112,21 +1113,22 @@ def review_selective_quality(
                 "confirmed_textbook_evidence_by_question": batch_evidence,
             }
             try:
-                with model_request_slot(provider):
-                    response = review_client.chat_json_object(
-                        [
-                            {"role": "system", "content": "你是跨学科学术符号和表达质量复核器，只输出 JSON。结论必须简洁。"},
-                            {"role": "user", "content": json.dumps(batch_payload, ensure_ascii=False)},
-                        ],
-                        model=selected_model,
-                        max_tokens=8192,
-                        attempts=1,
-                        thinking="disabled",
-                        timeout=90,
-                        task_stage="review",
-                        item_ids=sorted(batch_qids),
-                        enforce_context_budget=True,
-                    )
+                with prompt_contract("exam.selective_review"):
+                    with model_request_slot(provider):
+                        response = review_client.chat_json_object(
+                            [
+                                {"role": "system", "content": "你是跨学科学术符号和表达质量复核器，只输出 JSON。结论必须简洁。"},
+                                {"role": "user", "content": json.dumps(batch_payload, ensure_ascii=False)},
+                            ],
+                            model=selected_model,
+                            max_tokens=8192,
+                            attempts=1,
+                            thinking="disabled",
+                            timeout=90,
+                            task_stage="review",
+                            item_ids=sorted(batch_qids),
+                            enforce_context_budget=True,
+                        )
                 return {
                     "decisions": _normalized_decisions(
                         response,
@@ -1180,21 +1182,22 @@ def review_selective_quality(
                     "hard_rules": payload["hard_rules"],
                 }
                 try:
-                    with model_request_slot(provider):
-                        response = review_client.chat_json_object(
-                            [
-                                {"role": "system", "content": "你是跨学科学术正确性复核器。只输出最短合法 JSON，不写检查过程。"},
-                                {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
-                            ],
-                            model=selected_model,
-                            max_tokens=4096,
-                            attempts=1,
-                            thinking="disabled",
-                            timeout=90,
-                            task_stage="review",
-                            item_ids=sorted(batch_qids),
-                            enforce_context_budget=True,
-                        )
+                    with prompt_contract("exam.selective_review"):
+                        with model_request_slot(provider):
+                            response = review_client.chat_json_object(
+                                [
+                                    {"role": "system", "content": "你是跨学科学术正确性复核器。只输出最短合法 JSON，不写检查过程。"},
+                                    {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
+                                ],
+                                model=selected_model,
+                                max_tokens=4096,
+                                attempts=1,
+                                thinking="disabled",
+                                timeout=90,
+                                task_stage="review",
+                                item_ids=sorted(batch_qids),
+                                enforce_context_budget=True,
+                            )
                     return {
                         "decisions": _normalized_decisions(
                             response,
