@@ -86,6 +86,12 @@ class FormulaRenderingGuardTests(unittest.TestCase):
         self.assertIn("Ni", texts)
         self.assertNotIn("%Ni", texts)
 
+    def test_xrightarrow_annotations_use_portable_plain_arrow(self) -> None:
+        self.assertEqual(
+            normalize_latex(r"\gamma\xrightarrow[\,T<M_s\,]{\text{水淬}}\mathrm{M}"),
+            r"\gamma\rightarrow\mathrm{M}",
+        )
+
     def test_docx_audit_reports_empty_formula_delimiter_slots(self) -> None:
         xml = etree.fromstring(
             b"""

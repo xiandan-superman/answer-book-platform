@@ -166,6 +166,19 @@
           </div>
         </section>
 
+        <section class="home-utility-entry" aria-labelledby="questionAnalysisUtilityTitle">
+          <div class="utility-entry-icon utility-entry-icon-analysis" aria-hidden="true"><i class="fas fa-magnifying-glass-chart"></i></div>
+          <div class="utility-entry-copy">
+            <span>辅助工具</span>
+            <h2 id="questionAnalysisUtilityTitle">题目解析</h2>
+            <p>复用真题解析的识别、作答与质量审查能力，只解析题目本身，不选择教材，也不生成教材依据。</p>
+          </div>
+          <div class="utility-entry-actions">
+            <button class="utility-entry-primary" type="button" onclick="startQuestionAnalysis()">开始解析<i class="fas fa-arrow-right"></i></button>
+            <button class="utility-entry-link" type="button" onclick="openTaskManager('exam')">查看相关任务</button>
+          </div>
+        </section>
+
         <section class="platform-strengths" aria-labelledby="platformStrengthsTitle">
           <h2 id="platformStrengthsTitle">平台特点</h2>
           <div class="platform-strength-grid">
@@ -1189,7 +1202,11 @@
           </details>
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>作图生图模型</h3><p>作图题优先使用规则绘图；规则绘图无法完成时，使用此模型生成兜底图片。</p></div>
+            <div><h3>作图链路</h3><p>由用户明确选择主模型自主生图或传统程序绘图；两条链路互斥运行。</p></div>
+            <label class="image-orchestration-switch" for="practiceImageOrchestrationSwitch">
+              <span id="practiceImageOrchestrationLabel">主模型自主生图</span>
+              <input id="practiceImageOrchestrationSwitch" type="checkbox" role="switch" checked onchange="syncImageOrchestrationUi('practice', true)"><i></i>
+            </label>
             <label>服务商<select id="practiceImageProviderSelect"></select></label>
             <label>具体模型<select id="practiceImageModelSelect"></select></label>
             <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
@@ -1235,7 +1252,11 @@
           </details>
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>作图生图模型</h3><p>作图题优先使用规则绘图；规则绘图无法完成时，使用此模型生成兜底图片。</p></div>
+            <div><h3>作图链路</h3><p>由用户明确选择主模型自主生图或传统程序绘图；两条链路互斥运行。</p></div>
+            <label class="image-orchestration-switch" for="knowledgeImageOrchestrationSwitch">
+              <span id="knowledgeImageOrchestrationLabel">主模型自主生图</span>
+              <input id="knowledgeImageOrchestrationSwitch" type="checkbox" role="switch" checked onchange="syncImageOrchestrationUi('knowledge', true)"><i></i>
+            </label>
             <label>服务商<select id="knowledgeImageProviderSelect"></select></label>
             <label>具体模型<select id="knowledgeImageModelSelect"></select></label>
             <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
@@ -1253,8 +1274,8 @@
     <section id="page-env" class="page">
       <div class="reference-narrow">
         <div class="page-title reference-title">
-          <h2>环境配置</h2>
-          <p>检查运行环境并配置 AI 模型 API</p>
+          <h2 id="environmentPageTitle">环境配置</h2>
+          <p id="environmentPageDescription">检查运行环境并选择 AI 模型</p>
         </div>
 
         <div class="env-config-grid">
@@ -1283,7 +1304,7 @@
         <article class="reference-card provider-card">
           <div class="model-config-header">
             <div>
-              <h3><i class="fas fa-key text-purple"></i>模型 API 配置</h3>
+              <h3 id="examModelSelectionTitle"><i class="fas fa-key text-purple"></i>模型选择</h3>
               <p>先选择一套默认方案即可开始；只有需要精细控制时才展开详细分工。</p>
             </div>
             <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置默认模型和 Thinking 模式"><i class="fas fa-sliders"></i>全局设置</button>
@@ -1311,7 +1332,7 @@
             <details id="examModelRoleDetails" class="exam-model-role-details">
               <summary><i class="fas fa-sliders"></i>高级：查看或自定义各环节模型</summary>
               <div class="model-role-config-grid">
-              <section class="model-role-config-card">
+              <section id="reasoningModelRoleCard" class="model-role-config-card">
                 <div class="model-role-card-head">
                   <span class="model-role-icon indigo"><i class="fas fa-magnifying-glass-chart"></i></span>
                   <div>
@@ -1388,10 +1409,14 @@
                   <span class="model-role-icon orange"><i class="fas fa-wand-magic-sparkles"></i></span>
                   <div>
                     <strong>作图题生图</strong>
-                    <p>根据规格生成专业图形兜底图片。</p>
+                    <p>由用户选择主模型自主生图或传统程序绘图；两条链路互斥运行。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
+                  <label class="image-orchestration-switch" for="imageOrchestrationSwitch">
+                    <span id="imageOrchestrationLabel">主模型自主生图</span>
+                    <input id="imageOrchestrationSwitch" type="checkbox" role="switch" checked onchange="syncImageOrchestrationUi('exam', true)"><i></i>
+                  </label>
                   <label><i class="fas fa-cloud"></i>服务商</label>
                   <select id="imageProviderSelect"></select>
                   <label><i class="fas fa-microchip"></i>模型</label>
@@ -1523,16 +1548,16 @@
 
     <section id="page-exam" class="page">
       <div class="page-title task-page-title">
-        <p class="task-page-eyebrow">真题解析 · 准备材料</p>
-        <h2>确认本次解析材料</h2>
-        <p>选好一份真题和对应教材即可开始。模型与运行环境沿用已保存的配置，无需在这里重复设置。</p>
+        <p id="examPageEyebrow" class="task-page-eyebrow">真题解析 · 准备材料</p>
+        <h2 id="examPageTitle">确认本次解析材料</h2>
+        <p id="examPageDescription">选好一份真题和对应教材即可开始。模型与运行环境沿用已保存的配置，无需在这里重复设置。</p>
       </div>
       <div class="material-readiness" role="status" aria-live="polite">
         <span class="material-readiness-icon"><i class="fas fa-list-check"></i></span>
         <div><strong>材料准备情况</strong><p id="examReadinessHint">请选择真题和至少一本教材。</p></div>
       </div>
-      <div id="currentTextbookDisplay" class="selection-bar material-selection-summary">正在读取教材选择结果。</div>
-      <article class="panel-card material-step-card">
+      <div id="currentTextbookDisplay" class="selection-bar material-selection-summary exam-textbook-requirement">正在读取教材选择结果。</div>
+      <article class="panel-card material-step-card exam-textbook-requirement">
         <div class="task-textbook-head">
           <div>
             <span class="material-step-number">1</span>
@@ -1545,7 +1570,7 @@
       </article>
       <article class="panel-card material-step-card exam-source-card">
         <div class="material-step-heading">
-          <span class="material-step-number">2</span>
+          <span id="examSourceStepNumber" class="material-step-number">2</span>
           <div><h3><i class="fas fa-file-lines"></i>选择真题</h3><p>从已有真题中选择，或上传一份新的 DOCX。</p></div>
         </div>
         <div class="tab-row material-source-tabs">
@@ -1577,7 +1602,7 @@
       <div id="taskVisualResult" class="result-card muted-card reference-extra">创建结果会显示在这里。</div>
       <details class="technical-details reference-extra"><summary>查看技术详情</summary><pre id="taskResult"></pre></details>
       <div class="page-actions sticky-page-actions task-primary-actions">
-        <button class="text-button" type="button" onclick="goToPage('env')"><i class="fas fa-arrow-left"></i>上一步</button>
+        <button id="examBackBtn" class="text-button" type="button" onclick="leaveExamPreparation()"><i class="fas fa-arrow-left"></i>上一步</button>
         <button id="createTaskBtn" class="primary-button" type="button">确认材料并开始解析<i class="fas fa-arrow-right"></i></button>
       </div>
     </section>
@@ -1586,7 +1611,7 @@
       <div class="page-title inline-title task-page-title">
         <button class="icon-button" type="button" onclick="goToPage('exam')" title="返回选择真题"><i class="fas fa-arrow-left"></i></button>
         <div>
-          <p class="task-page-eyebrow">真题解析 · 解析进行中</p>
+          <p id="taskPageEyebrow" class="task-page-eyebrow">真题解析 · 解析进行中</p>
           <h2>解析进度</h2>
           <p>任务会在后台持续执行，可以离开本页；需要确认或出现问题时，平台会明确提示。</p>
         </div>
@@ -1684,7 +1709,7 @@
     <section id="page-result" class="page">
       <div class="page-title result-page-title">
         <div id="resultStateIcon" class="result-icon result-icon-neutral"><i class="fas fa-file-circle-question"></i></div>
-        <p class="task-page-eyebrow">真题解析 · 审阅与下载</p>
+        <p id="resultPageEyebrow" class="task-page-eyebrow">真题解析 · 审阅与下载</p>
         <h2 id="resultPageTitle">解析结果</h2>
         <p id="resultPageSubtitle">选择一个已完成的任务后查看解析内容和交付文件。</p>
       </div>
@@ -1718,7 +1743,7 @@
               <button id="deliveryPackageBtn" type="button">下载解析结果</button>
             </div>
             <div id="finalAcceptanceSummary" class="result-card muted-card">最终验收状态会显示在这里。</div>
-            <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查和审查报告。</div>
+            <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示当前任务实际生成的解析文件和审查报告。</div>
             <div id="resultFileList" class="file-list compact-file-list"></div>
           </div>
         </div>

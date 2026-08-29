@@ -45,7 +45,8 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         for name, env_name in expected.items():
             with self.subTest(provider=name):
                 provider = providers[name]
-                self.assertEqual("https://lingsuan.top/v1", provider.base_url)
+                self.assertEqual("https://lingsuan.org/v1", provider.base_url)
+                self.assertTrue(provider.user_agent.startswith("Mozilla/5.0 "))
                 self.assertEqual(expected_protocols[name], provider.api_protocol)
                 if expected_protocols[name] == "responses":
                     self.assertTrue(provider.responses_streaming)
@@ -56,6 +57,36 @@ class LingsuanProviderConfigTests(unittest.TestCase):
                 self.assertFalse(provider.allow_custom_model)
 
         self.assertEqual(len(set(expected.values())), len(expected))
+
+    def test_stale_local_transport_values_cannot_restore_blocked_gateway_client(self) -> None:
+        import json
+
+        from app.settings import list_providers
+
+        raw = json.loads((ROOT / "config" / "providers.example.json").read_text(encoding="utf-8"))
+        for name in (
+            "lingsuan_openai",
+            "lingsuan_image",
+            "lingsuan_google",
+            "lingsuan_xai",
+            "lingsuan_anthropic",
+        ):
+            raw["providers"][name]["base_url"] = "https://lingsuan.top/v1"
+            raw["providers"][name]["user_agent"] = ""
+
+        with patch("app.settings.load_provider_config_file", return_value=raw):
+            providers = list_providers()
+
+        for name in (
+            "lingsuan_openai",
+            "lingsuan_image",
+            "lingsuan_google",
+            "lingsuan_xai",
+            "lingsuan_anthropic",
+        ):
+            with self.subTest(provider=name):
+                self.assertEqual("https://lingsuan.org/v1", providers[name].base_url)
+                self.assertTrue(providers[name].user_agent.startswith("Mozilla/5.0 "))
 
     def test_image_provider_is_image_only_and_uses_gpt_image_2(self) -> None:
         from app.settings import provider_supports_image_generation, resolve_provider_model
@@ -71,6 +102,8 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             resolve_provider_model(provider)
 
     def test_openai_and_google_models_are_isolated_and_multimodal(self) -> None:
+        from app.llm_client import OpenAICompatibleClient
+        from app.model_tool_loop import tool_loop_supported
         from app.settings import provider_model_supports_vision
 
         providers = self._providers()
@@ -95,6 +128,12 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         self.assertEqual("gemini-3.6-flash", google.vision_model)
         self.assertTrue(all(provider_model_supports_vision(openai, model) for model in openai.model_options))
         self.assertTrue(all(provider_model_supports_vision(google, model) for model in google.model_options))
+        self.assertTrue(
+            all(
+                tool_loop_supported(OpenAICompatibleClient(google), google, model)
+                for model in google.model_options
+            )
+        )
         self.assertTrue(set(openai.model_options).isdisjoint(google.model_options))
 
     def test_stale_local_google_model_arrays_gain_gemini_37_without_losing_saved_defaults(self) -> None:

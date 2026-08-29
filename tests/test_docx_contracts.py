@@ -17,7 +17,7 @@ from app.document_contracts import (
 )
 from app.document_presentation import question_unit_rows
 from app.docx_audit import audit_docx_v4
-from app.docx_v4 import build_docx_from_fragments
+from app.docx_v4 import _display_formula_lines, add_mixed_paragraph, build_docx_from_fragments
 
 
 def _cm(value) -> float:
@@ -135,6 +135,7 @@ def test_generated_docx_obeys_page_font_spacing_and_answer_indent_contract(tmp_p
     assert footer_run.font.size.pt == HEADER_FOOTER_CONTRACT.footer_size_pt
     with zipfile.ZipFile(output) as archive:
         font_table = etree.fromstring(archive.read("word/fontTable.xml"))
+        settings_xml = etree.fromstring(archive.read("word/settings.xml"))
     namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     alternate_fonts = {
         node.get(qn("w:name")): node.find("w:altName", namespaces=namespace).get(qn("w:val"))
@@ -144,7 +145,67 @@ def test_generated_docx_obeys_page_font_spacing_and_answer_indent_contract(tmp_p
     assert alternate_fonts[TEXT_CONTRACT.east_asia_font] == TEXT_CONTRACT.east_asia_fallback_font
     assert alternate_fonts[HEADER_FOOTER_CONTRACT.header_font] == HEADER_FOOTER_CONTRACT.header_fallback_font
     assert alternate_fonts[HEADER_FOOTER_CONTRACT.footer_font] == HEADER_FOOTER_CONTRACT.footer_fallback_font
+    assert settings_xml.find(".//w:useFELayout", namespaces=namespace) is None
     assert audit_docx_v4(output) == []
+
+
+def test_long_display_reaction_is_split_at_arrow_for_page_width() -> None:
+    latex = (
+        r"n\,\mathrm{H_2N-(CH_2)_6-NH_2}+n\,\mathrm{HOOC-(CH_2)_8-COOH}"
+        r"\xrightarrow{\text{缩聚}}"
+        r"\left[\mathrm{-NH-(CH_2)_6-NH-CO-(CH_2)_8-CO-}\right]_n+2n\,\mathrm{H_2O}"
+    )
+
+    lines = _display_formula_lines(latex)
+
+    assert len(lines) == 2
+    assert lines[0].endswith(r"\mathrm{HOOC-(CH_2)_8-COOH}")
+    assert lines[1].startswith(r"{}\rightarrow")
+
+
+def test_short_display_reaction_remains_on_one_line() -> None:
+    latex = r"\mathrm{-NCO+HO-\longrightarrow-NH-COO-}"
+
+    assert _display_formula_lines(latex) == [latex]
+
+
+def test_long_outer_upright_reaction_keeps_valid_groups_when_split() -> None:
+    latex = (
+        r"\mathrm{n\,OCN-C_{6}H_{3}(CH_{3})-NCO+n\,HOCH_{2}CH_{2}OH"
+        r"\longrightarrow\left[-NHCOOCH_{2}CH_{2}OOCNH-C_{6}H_{3}(CH_{3})-\right]_{n}}"
+    )
+
+    lines = _display_formula_lines(latex)
+
+    assert len(lines) == 2
+    assert lines[0].startswith(r"\mathrm{") and lines[0].endswith("}")
+    assert lines[1].startswith(r"{}\longrightarrow\mathrm{") and lines[1].endswith("}")
+
+
+def test_promoted_long_inline_reaction_is_laid_out_as_two_display_lines() -> None:
+    document = Document()
+    latex = (
+        r"\mathrm{n\,OCN-C_{6}H_{3}(CH_{3})-NCO+n\,HOCH_{2}CH_{2}OH"
+        r"\longrightarrow\left[-NHCOOCH_{2}CH_{2}OOCNH-C_{6}H_{3}(CH_{3})-\right]_{n}}"
+    )
+    add_mixed_paragraph(
+        document,
+        [{"type": "formula_ref", "formula_id": "f1"}],
+        {
+            "f1": {
+                "formula_id": "f1",
+                "latex": latex,
+                "source_note": "Word 生成前从普通文本中识别出的公式片段",
+            }
+        },
+    )
+
+    math_paragraphs = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph._p.xpath(".//*[local-name()='oMath']")
+    ]
+    assert len(math_paragraphs) == 2
 
 
 def test_generated_docx_disambiguates_repeated_visible_question_numbers(tmp_path) -> None:

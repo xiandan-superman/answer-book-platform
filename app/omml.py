@@ -66,6 +66,11 @@ class FormulaConversionError(RuntimeError):
 
 def normalize_latex(src: str) -> str:
     text = normalize_expression_latex(str(src or "").replace(r"\ominus", r"\theta"))
+    # LibreOffice renders MathML/OMML ``xrightarrow`` annotations as empty
+    # square glyphs. The surrounding answer prose already carries the
+    # temperature/condition, so use the portable relation arrow in the Word
+    # formula instead of emitting a visibly corrupt annotation.
+    text = re.sub(r"\\xrightarrow(?:\[[^\]]*\])?\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", r"\\rightarrow", text)
     # LibreOffice's OMML importer can misread one upright run such as
     # ``\mathrm{at.\%Ni}`` as the internal token ``%N`` and draw a red
     # unknown-glyph marker.  Keep the percent sign and following chemical

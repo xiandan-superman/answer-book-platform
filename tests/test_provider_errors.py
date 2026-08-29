@@ -14,6 +14,7 @@ from app.server import _provider_test_error_payload
         ("insufficient_quota: credit balance is empty", 429, "provider_quota_exhausted", "模型服务额度不足", False, True),
         ("too many concurrent requests", 429, "provider_concurrency_limit", "模型并发已达上限", True, False),
         ("rate limit exceeded", 429, "provider_rate_limit", "模型请求过于频繁", True, False),
+        ("Provider HTTP 403: error code: 1010", 403, "provider_gateway_client_blocked", "模型网关拒绝了当前客户端", False, False),
         ("context_length_exceeded", 400, "provider_input_too_long", "提交给模型的内容过长", False, False),
         ("blocked by content_filter", 400, "provider_content_blocked", "内容未通过模型安全检查", False, False),
         ("service unavailable: overloaded", 503, "provider_overloaded", "模型服务当前繁忙", True, False),

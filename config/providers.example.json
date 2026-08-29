@@ -19,7 +19,7 @@
       },
       "model_profiles": {
         "deepseek-v4-flash": {"api_protocol": "responses", "omit_parameters": ["store"]},
-        "deepseek-v4-flash-vision-exp": {"api_protocol": "chat_completions"}
+        "deepseek-v4-flash-vision-exp": {"api_protocol": "chat_completions", "supports_tool_calls": true}
       },
       "image_model": "",
       "image_size": "1024x1024",
@@ -80,6 +80,31 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "ark_image": {
+      "type": "openai_compatible",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key_env": "ARK_API_KEY",
+      "api_key": "",
+      "default_model": "doubao-seedream-5-0-260128",
+      "supports_text_generation": false,
+      "supports_vision": false,
+      "supports_image_generation": true,
+      "image_model": "doubao-seedream-5-0-260128",
+      "image_model_options": [
+        "doubao-seedream-5-0-260128",
+        "doubao-seedream-5-0-lite-260128"
+      ],
+      "image_model_option_labels": {
+        "doubao-seedream-5-0-260128": "Seedream-5.0-pro",
+        "doubao-seedream-5-0-lite-260128": "Doubao-Seedream-5.0-lite"
+      },
+      "image_size": "2K",
+      "model_options": [],
+      "allow_custom_model": false,
+      "model_hint": "仅用于火山方舟 Seedream 5.0 图片生成；不展示或用于文字模型任务。",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
     "bailian": {
       "type": "openai_compatible",
       "api_protocol": "responses",
@@ -103,10 +128,14 @@
         "qwen-vl-ocr": ["text", "vision"]
       },
       "model_profiles": {
-        "qwen3-vl-flash": {"api_protocol": "chat_completions"},
+        "qwen3.7-plus": {"supports_tool_calls": true},
+        "qwen3.7-flash": {"supports_tool_calls": true},
+        "qwen3.6-plus": {"supports_tool_calls": true},
+        "qwen3.6-flash": {"supports_tool_calls": true},
+        "qwen3-vl-flash": {"api_protocol": "chat_completions", "supports_tool_calls": true},
         "qwen-vl-max": {"api_protocol": "chat_completions"},
         "qwen-vl-plus": {"api_protocol": "chat_completions"},
-        "qwen-vl-ocr": {"api_protocol": "chat_completions", "max_tokens": 4096}
+        "qwen-vl-ocr": {"api_protocol": "chat_completions", "max_tokens": 4096, "supports_tool_calls": true}
       },
       "image_model_env": "BAILIAN_IMAGE_MODEL",
       "image_model": "qwen-image-2.0-pro",
@@ -390,7 +419,8 @@
       "api_protocol": "responses",
       "responses_streaming": true,
       "responses_fallback_to_chat": false,
-      "base_url": "https://lingsuan.top/v1",
+      "base_url": "https://lingsuan.org/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_OPENAI_API_KEY",
       "api_key": "",
       "default_model": "gpt-5.6-sol",
@@ -407,6 +437,11 @@
         "gpt-5.6-terra": ["text", "vision"],
         "gpt-5.6-luna": ["text", "vision"],
         "gpt-5.5": ["text", "vision"]
+      },
+      "model_profiles": {
+        "gpt-5.6-sol": {"supports_tool_calls": true},
+        "gpt-5.6-terra": {"supports_tool_calls": true},
+        "gpt-5.5": {"supports_tool_calls": true}
       },
       "supports_image_generation": false,
       "image_model": "",
@@ -430,7 +465,8 @@
     },
     "lingsuan_image": {
       "type": "openai_compatible",
-      "base_url": "https://lingsuan.top/v1",
+      "base_url": "https://lingsuan.org/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_IMAGE_API_KEY",
       "api_key": "",
       "default_model": "gpt-image-2",
@@ -453,7 +489,8 @@
     "lingsuan_google": {
       "type": "openai_compatible",
       "api_protocol": "chat_completions",
-      "base_url": "https://lingsuan.top/v1",
+      "base_url": "https://lingsuan.org/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_GOOGLE_API_KEY",
       "api_key": "",
       "default_model": "gemini-3.6-flash",
@@ -468,11 +505,11 @@
         "gemini-3.5-flash": ["text", "vision"]
       },
       "model_profiles": {
-        "gemini-3.7-flash-low": {"api_protocol": "chat_completions", "thinking_minimum": "low", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.7-flash-medium": {"api_protocol": "chat_completions", "thinking_minimum": "medium", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.7-flash-high": {"api_protocol": "chat_completions", "thinking_minimum": "high", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.6-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.5-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"]}
+        "gemini-3.7-flash-low": {"api_protocol": "chat_completions", "thinking_minimum": "low", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
+        "gemini-3.7-flash-medium": {"api_protocol": "chat_completions", "thinking_minimum": "medium", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
+        "gemini-3.7-flash-high": {"api_protocol": "chat_completions", "thinking_minimum": "high", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
+        "gemini-3.6-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
+        "gemini-3.5-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true}
       },
       "supports_image_generation": false,
       "image_model": "",
@@ -495,7 +532,8 @@
       "api_protocol": "responses",
       "responses_streaming": true,
       "responses_fallback_to_chat": false,
-      "base_url": "https://lingsuan.top/v1",
+      "base_url": "https://lingsuan.org/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_XAI_API_KEY",
       "api_key": "",
       "default_model": "grok-4.5",
@@ -517,7 +555,8 @@
     "lingsuan_anthropic": {
       "type": "openai_compatible",
       "api_protocol": "anthropic_messages",
-      "base_url": "https://lingsuan.top/v1",
+      "base_url": "https://lingsuan.org/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_ANTHROPIC_API_KEY",
       "api_key": "",
       "default_model": "claude-opus-5",

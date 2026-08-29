@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from .api_key_config import load_api_keys
-from .model_capability_registry import ensure_provider_registry_sync, model_accepts_input
+from .model_capability_registry import (
+    ensure_provider_registry_sync,
+    get_native_tool_route,
+    model_accepts_input,
+    provider_has_capability_registry,
+)
 from .paths import CONFIG_DIR, DATA_ROOT, LOCAL_CONFIG_DIR
 
 DEFAULT_MODEL_MAX_TOKENS = 24576
@@ -27,6 +32,14 @@ BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
     "qwen3.7-max-2026-05-20",
     "qwen3.7-max-preview",
 )
+ARK_SEEDREAM_IMAGE_MODELS = (
+    "doubao-seedream-5-0-260128",
+    "doubao-seedream-5-0-lite-260128",
+)
+ARK_SEEDREAM_IMAGE_LABELS = {
+    "doubao-seedream-5-0-260128": "Seedream-5.0-pro",
+    "doubao-seedream-5-0-lite-260128": "Doubao-Seedream-5.0-lite",
+}
 REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
 LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
 LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
@@ -36,6 +49,12 @@ LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
     "lingsuan_xai": "auto",
     "lingsuan_anthropic": "auto",
 }
+LINGSUAN_PROVIDER_NAMES = frozenset(LINGSUAN_OFFICIAL_THINKING_DEFAULTS)
+LINGSUAN_GATEWAY_BASE_URL = "https://lingsuan.org/v1"
+LINGSUAN_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"
+)
 BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "deepseek",
     "ark",
@@ -185,6 +204,11 @@ def list_providers() -> dict[str, ProviderConfig]:
         base_url = str(item.get("base_url", "")).rstrip("/")
         if name == "deepseek" and re.fullmatch(r"https://api\.deepseek\.com/v1", base_url, re.IGNORECASE):
             base_url = "https://api.deepseek.com"
+        if name in LINGSUAN_PROVIDER_NAMES:
+            # Older local overlays may still restore the retired .top endpoint.
+            # The current gateway also rejects urllib's default client signature
+            # with Cloudflare 1010, so both transport values are vendor defaults.
+            base_url = LINGSUAN_GATEWAY_BASE_URL
         env_name = str(item.get("api_key_env", "")).strip()
         # Frontend key saving writes to .env. Let that saved value override
         # legacy providers.local.json entries so replacing a bad key takes effect.
@@ -193,6 +217,8 @@ def list_providers() -> dict[str, ProviderConfig]:
         default_image_model = ""
         if name == "ark":
             default_image_model = "doubao-seedream-5-0-260128"
+        if name == "ark_image":
+            default_image_model = ARK_SEEDREAM_IMAGE_MODELS[0]
         if name == "bailian":
             default_image_model = "qwen-image-2.0-pro"
         supports_image_generation = bool(item.get("supports_image_generation", True))
@@ -250,14 +276,34 @@ def list_providers() -> dict[str, ProviderConfig]:
             ):
                 model_option_labels.setdefault(model, f"Gemini 3.7 Flash（{label}）")
                 model_capabilities.setdefault(model, ("text", "vision"))
-                model_profiles.setdefault(
-                    model,
-                    {
-                        "api_protocol": "chat_completions",
-                        "thinking_minimum": level,
-                        "omit_parameters": ["temperature", "top_p", "top_k"],
-                    },
-                )
+                profile = model_profiles.setdefault(model, {})
+                profile.setdefault("api_protocol", "chat_completions")
+                profile.setdefault("thinking_minimum", level)
+                profile.setdefault("omit_parameters", ["temperature", "top_p", "top_k"])
+            for gemini_model in model_options:
+                if not str(gemini_model).lower().startswith("gemini-"):
+                    continue
+                profile = model_profiles.setdefault(str(gemini_model), {})
+                profile.setdefault("api_protocol", "chat_completions")
+        # Keep the public Ark entry image-only even if a future or copied local
+        # override tries to restore unrelated Ark text/image model lists.
+        if name == "ark_image":
+            supports_image_generation = True
+            image_model = ARK_SEEDREAM_IMAGE_MODELS[0]
+            vision_model = ""
+            supports_vision = False
+            model_options = []
+            model_option_labels = {}
+        # The registry is a closed allowlist for built-in routes. A copied
+        # local config may be older or may overstate a model's capability, so
+        # normalize the public profile from the verified provider/model entry.
+        if provider_has_capability_registry(name):
+            for configured_model in model_options:
+                profile = model_profiles.setdefault(configured_model, {})
+                if get_native_tool_route(name, configured_model) is not None:
+                    profile["supports_tool_calls"] = True
+                else:
+                    profile.pop("supports_tool_calls", None)
         providers[name] = ProviderConfig(
             name=name,
             type=str(item.get("type", "openai_compatible")),
@@ -272,9 +318,15 @@ def list_providers() -> dict[str, ProviderConfig]:
             temperature=float(item.get("temperature", 0.1)),
             max_tokens=int(item.get("max_tokens", DEFAULT_MODEL_MAX_TOKENS)),
             image_model=image_model,
-            image_model_options=tuple(str(x) for x in item.get("image_model_options", []) if supports_image_generation and str(x).strip()),
+            image_model_options=(
+                ARK_SEEDREAM_IMAGE_MODELS
+                if name == "ark_image"
+                else tuple(str(x) for x in item.get("image_model_options", []) if supports_image_generation and str(x).strip())
+            ),
             image_model_option_labels=(
-                {
+                ARK_SEEDREAM_IMAGE_LABELS
+                if name == "ark_image"
+                else {
                     str(key): str(value)
                     for key, value in dict(item.get("image_model_option_labels", {})).items()
                     if str(key).strip()
@@ -283,7 +335,7 @@ def list_providers() -> dict[str, ProviderConfig]:
                 else {}
             ),
             image_size=str(item.get("image_size", "") or os.environ.get("ANSWER_BOOK_IMAGE_SIZE", "") or "1024x1024"),
-            supports_text_generation=bool(item.get("supports_text_generation", True)),
+            supports_text_generation=False if name == "ark_image" else bool(item.get("supports_text_generation", True)),
             supports_image_generation=supports_image_generation,
             vision_model=vision_model,
             vision_model_options=tuple(vision_model_options),
@@ -308,7 +360,11 @@ def list_providers() -> dict[str, ProviderConfig]:
                 False if builtin_responses else bool(item.get("responses_fallback_to_chat", True))
             ),
             responses_streaming=True if builtin_responses else bool(item.get("responses_streaming", True)),
-            user_agent=str(item.get("user_agent", "") or "").strip(),
+            user_agent=(
+                LINGSUAN_BROWSER_USER_AGENT
+                if name in LINGSUAN_PROVIDER_NAMES
+                else str(item.get("user_agent", "") or "").strip()
+            ),
         )
     return providers
 

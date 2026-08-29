@@ -118,6 +118,42 @@ class FigureRuntimeObservabilityTests(unittest.TestCase):
         self.assertEqual(1, second["cache"]["reused_count"])
         self.assertTrue(second["items"][0]["reused"])
 
+    def test_visual_qa_does_not_cache_transient_reviewer_error(self) -> None:
+        from app.figures import audit_figures_with_vision
+        from app.settings import ProviderConfig
+
+        provider = ProviderConfig(
+            name="vision", type="openai_compatible", base_url="http://unused", api_key="key",
+            default_model="text", model_options=("text",), allow_custom_model=True, model_hint="",
+            temperature=0.2, max_tokens=12288, vision_model="vision-model", supports_vision=True,
+        )
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            figures = root / "figures"
+            figures.mkdir()
+            Image.new("RGB", (200, 120), "white").save(figures / "f1.png")
+            specs = root / "figure_specs.json"
+            specs.write_text(
+                json.dumps({"figures": [{"figure_id": "f1", "question_id": "q1", "kind": "curve"}]}),
+                encoding="utf-8",
+            )
+            report_path = root / "figure_visual_qa.json"
+            errored = {"items": [{"question_id": "q1", "figure_id": "f1", "qa": {"ok": False, "error": "timeout"}}]}
+            passed = {"items": [{"question_id": "q1", "figure_id": "f1", "qa": {"ok": True}}]}
+            with patch("app.figures._audit_figures_with_vision_serial", side_effect=[errored, passed]) as audit:
+                audit_figures_with_vision(
+                    {"items": [{"question_id": "q1", "stem": "画图"}]}, specs, figures, report_path,
+                    provider=provider, model="vision-model",
+                )
+                second = audit_figures_with_vision(
+                    {"items": [{"question_id": "q1", "stem": "画图"}]}, specs, figures, report_path,
+                    provider=provider, model="vision-model",
+                )
+
+        self.assertEqual(2, audit.call_count)
+        self.assertEqual(1, second["cache"]["audited_count"])
+        self.assertEqual(0, second["cache"]["reused_count"])
+
     def test_wide_figure_is_flagged_when_embedded_too_short(self) -> None:
         from app.figure_size_audit import audit_docx_figure_sizes
 

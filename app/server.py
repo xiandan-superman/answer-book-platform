@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from .analysis_profiles import analysis_uses_textbook_evidence, normalize_analysis_profile
 from .answer_coverage_audit import audit_answer_coverage
 from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info, recover_damaged_api_key_file
 from .audit_review_gate import get_pending_review_decision, submit_review_decision
@@ -39,10 +40,12 @@ from .exercise_generation import (
 from .final_acceptance import build_final_acceptance_report
 from .http_errors import public_error_payload
 from .hybrid_client import HybridClientError, hybrid_settings_payload, save_hybrid_enabled
+from .image_orchestration import MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
 from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
 from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
 from .local_config import update_dotenv_values
+from .model_tool_loop import tool_loop_supported
 from .page_map_admin import page_map_summary, write_page_map_rows
 from .paths import PROJECT_ROOT, TEXTBOOKS_DIR, WEB_DIR, ensure_project_dirs
 from .pipeline import output_dir, stage_dir
@@ -558,6 +561,31 @@ def _start_practice_job(operation: str, payload: dict) -> dict:
     if record.get("deduplicated"):
         return record
     return enqueue_practice_job(str(record["job_id"]))
+
+
+def _validate_main_model_tool_route(
+    payload: dict,
+    *,
+    provider_name: str = "",
+    model_name: str = "",
+) -> None:
+    """Fail before task creation when an explicitly selected agent route is incomplete."""
+
+    if normalize_image_orchestration(payload.get("image_orchestration")) != MAIN_MODEL_TOOL_LOOP:
+        return
+    image_provider_name = str(payload.get("image_provider") or "").strip()
+    image_model = str(payload.get("image_model") or "").strip()
+    if not image_provider_name or not image_model:
+        raise ValueError("主模型自主生图模式必须配置可用的生图服务商和模型。")
+    image_provider = get_provider(image_provider_name)
+    if not provider_supports_image_generation(image_provider):
+        raise ValueError("所选生图服务商没有可用的图片生成能力。")
+    main_provider = get_provider(provider_name or str(payload.get("provider") or "").strip() or None)
+    main_model = resolve_provider_model(main_provider, model_name or payload.get("model"))
+    if not tool_loop_supported(OpenAICompatibleClient(main_provider), main_provider, main_model):
+        raise ValueError(
+            "所选主模型或接口未登记原生工具调用与视觉回看能力，不能使用主模型自主生图模式。"
+        )
 
 
 def _validate_answer_fragments_payload(data) -> list[str]:
@@ -1405,6 +1433,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 operation = str(body.get("operation") or "")
                 payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                _validate_main_model_tool_route(payload)
                 record = _start_practice_job(operation, payload)
                 append_runtime_log(
                     "practice",
@@ -1502,6 +1531,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/practice/regenerate":
                 body = self.read_json()
+                _validate_main_model_tool_route(body)
                 result = regenerate_practice_exercise(body)
                 self.send_json(result)
                 return
@@ -1721,6 +1751,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/tasks":
                 body = self.read_json()
+                analysis_profile = normalize_analysis_profile(body.get("analysis_profile"))
+                uses_textbook_evidence = analysis_uses_textbook_evidence(analysis_profile)
                 provider = get_provider(str(body.get("provider") or "").strip() or None)
                 model = resolve_provider_model(provider, body.get("model"))
                 model_thinking = _normalize_thinking_mode(body.get("model_thinking") or body.get("thinking_mode"))
@@ -1745,6 +1777,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 vision_model = str(body.get("vision_model") or "").strip()
                 image_provider_name = str(body.get("image_provider") or "").strip()
                 image_model = str(body.get("image_model") or "").strip()
+                image_orchestration = normalize_image_orchestration(body.get("image_orchestration"))
                 if vision_provider_name and not direct_answer_multimodal:
                     vision_provider = get_provider(vision_provider_name)
                     if not vision_model:
@@ -1759,12 +1792,25 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         image_model = str(getattr(image_provider, "image_model", "") or "").strip()
                     if not image_model:
                         raise ValueError(f"Provider {image_provider.name} is not configured for image_model")
+                if image_orchestration == MAIN_MODEL_TOOL_LOOP and not (image_provider_name and image_model):
+                    raise ValueError("主模型自主生图模式必须配置可用的生图服务商和模型。")
+                _validate_main_model_tool_route(
+                    {
+                        **body,
+                        "image_provider": image_provider_name,
+                        "image_model": image_model,
+                        "image_orchestration": image_orchestration,
+                    },
+                    provider_name=answer_provider_name,
+                    model_name=answer_model,
+                )
                 key_checks = [
                     ("基础/作图规则模型", provider),
-                    ("知识点与教材依据模型", get_provider(reasoning_provider_name)),
                     ("答案生成模型", get_provider(answer_provider_name)),
                     ("高风险正确性复核模型", get_provider(correctness_provider_name)),
                 ]
+                if uses_textbook_evidence:
+                    key_checks.insert(1, ("知识点与教材依据模型", get_provider(reasoning_provider_name)))
                 if vision_provider_name and not direct_answer_multimodal:
                     key_checks.append(("读图模型", get_provider(vision_provider_name)))
                 if image_provider_name and image_model:
@@ -1775,16 +1821,17 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 selected_textbooks = body.get("selected_textbooks") or []
                 if not isinstance(selected_textbooks, list):
                     raise ValueError("selected_textbooks must be a list")
-                if not selected_textbooks:
+                if uses_textbook_evidence and not selected_textbooks:
                     raise ValueError("请先选择已建立索引的教材。教材上传和索引建立已前置到教材管理页，解析流程不再临时建立索引。")
                 textbook_display_names = body.get("textbook_display_names") or {}
                 if not isinstance(textbook_display_names, dict):
                     raise ValueError("textbook_display_names must be an object")
-                require_textbook_index_cache(
-                    [str(x) for x in selected_textbooks],
-                    {str(key): str(value) for key, value in textbook_display_names.items()},
-                )
-                textbooks_dir = str(body.get("textbooks_dir", "") or TEXTBOOKS_DIR)
+                if uses_textbook_evidence:
+                    require_textbook_index_cache(
+                        [str(x) for x in selected_textbooks],
+                        {str(key): str(value) for key, value in textbook_display_names.items()},
+                    )
+                textbooks_dir = str(body.get("textbooks_dir", "") or TEXTBOOKS_DIR) if uses_textbook_evidence else ""
                 record = create_task(
                     exam_path=str(body.get("exam_path", "")),
                     textbooks_dir=textbooks_dir,
@@ -1801,6 +1848,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     vision_model=vision_model,
                     image_provider=image_provider_name,
                     image_model=image_model,
+                    image_orchestration=image_orchestration,
+                    analysis_profile=analysis_profile,
                 )
                 append_runtime_log(
                     "task",
@@ -1820,15 +1869,18 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         "vision_model": vision_model,
                         "image_provider": image_provider_name,
                         "image_model": image_model,
+                        "image_orchestration": image_orchestration,
+                        "analysis_profile": analysis_profile,
                     },
                 )
-                selected_dir = _prepare_selected_textbooks(
-                    record.task_id,
-                    [str(x) for x in selected_textbooks],
-                    {str(key): str(value) for key, value in textbook_display_names.items()},
-                )
-                if selected_dir is not None:
-                    record = load_task(record.task_id)
+                if uses_textbook_evidence:
+                    selected_dir = _prepare_selected_textbooks(
+                        record.task_id,
+                        [str(x) for x in selected_textbooks],
+                        {str(key): str(value) for key, value in textbook_display_names.items()},
+                    )
+                    if selected_dir is not None:
+                        record = load_task(record.task_id)
                 self.send_json({"task": record.__dict__})
                 return
             if parsed.path == "/api/library-upload":

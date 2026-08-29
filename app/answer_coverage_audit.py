@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 
-def audit_answer_coverage(structured_exam: dict[str, Any], fragments_data: dict[str, Any], output_json: Path | None = None) -> dict[str, Any]:
+def audit_answer_coverage(
+    structured_exam: dict[str, Any],
+    fragments_data: dict[str, Any],
+    output_json: Path | None = None,
+    *,
+    require_evidence: bool = True,
+) -> dict[str, Any]:
     items = structured_exam.get("items", [])
     fragments = fragments_data.get("fragments", [])
     expected_ids = [str(item.get("question_id", "")).strip() for item in items if str(item.get("question_id", "")).strip()]
@@ -42,7 +48,7 @@ def audit_answer_coverage(structured_exam: dict[str, Any], fragments_data: dict[
             issues.append(f"{qid}: answer is empty")
         if str(fragment.get("answer", "")).strip() in {"待复核", "待补充", "未完成"}:
             warnings.append(f"{qid}: answer is pending review")
-        if not fragment.get("evidence_ids"):
+        if require_evidence and not fragment.get("evidence_ids"):
             warnings.append(f"{qid}: evidence_ids is empty")
 
     report = {

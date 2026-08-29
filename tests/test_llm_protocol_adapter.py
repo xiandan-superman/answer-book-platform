@@ -58,7 +58,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
     def test_lingsuan_transport_bypasses_system_proxy_by_default(self):
         from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
 
-        request = urllib.request.Request("https://lingsuan.top/v1/responses")
+        request = urllib.request.Request("https://lingsuan.org/v1/responses")
         with patch.dict(os.environ, {}, clear=True), patch("app.llm_client.urllib.request.build_opener") as build_opener:
             _open_provider_response(
                 _DEFAULT_URLOPEN,
@@ -74,7 +74,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
     def test_lingsuan_transport_can_explicitly_reenable_system_proxy(self):
         from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
 
-        request = urllib.request.Request("https://lingsuan.top/v1/responses")
+        request = urllib.request.Request("https://lingsuan.org/v1/responses")
         with patch.dict(os.environ, {"ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY": "1"}), patch(
             "app.llm_client.urllib.request.build_opener"
         ) as build_opener:
@@ -138,6 +138,9 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual("bailian", get_provider("bailian").name)
         for name, provider in providers.items():
             with self.subTest(provider=name):
+                if provider.supports_text_generation is False:
+                    self.assertEqual((), provider.model_options)
+                    continue
                 client = OpenAICompatibleClient(provider)
                 if name in BUILTIN_RESPONSES_PROVIDER_NAMES:
                     self.assertEqual("responses", provider.api_protocol)
@@ -184,6 +187,9 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         for name, provider in providers.items():
             with self.subTest(provider=name):
+                if provider.supports_text_generation is False:
+                    self.assertEqual((), provider.model_options)
+                    continue
                 if name in BUILTIN_RESPONSES_PROVIDER_NAMES:
                     self.assertEqual("responses", provider.api_protocol)
                     self.assertFalse(provider.responses_fallback_to_chat)
@@ -244,6 +250,50 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertNotIn("temperature", body)
         self.assertTrue(result.raw["_request"]["stream"])
         self.assertEqual("provider_default", result.raw["_request"]["reasoning_effort"])
+
+    def test_responses_tool_request_preserves_complete_output(self):
+        from app.llm_client import ResponsesAPIClient
+
+        client = ResponsesAPIClient(
+            self._provider(
+                api_protocol="responses",
+                responses_streaming=False,
+                supports_vision=True,
+                vision_model="test-model",
+                vision_model_options=("test-model",),
+                model_capabilities={"test-model": ("text", "vision")},
+                model_profiles={"test-model": {"supports_tool_calls": True}},
+            )
+        )
+        requests = []
+        expected = {
+            "id": "resp_tool",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "generate_image",
+                    "arguments": '{"prompt":"diagram"}',
+                }
+            ],
+        }
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            return _FakeResponse(expected)
+
+        client._urlopen = fake_urlopen
+        raw = client.create_tool_response(
+            [{"role": "user", "content": "answer"}],
+            tools=[{"type": "function", "name": "generate_image", "parameters": {"type": "object"}}],
+            model="test-model",
+            max_tokens=512,
+        )
+
+        self.assertEqual(expected, raw)
+        self.assertEqual("auto", requests[0]["tool_choice"])
+        self.assertEqual("generate_image", requests[0]["tools"][0]["name"])
+        self.assertFalse(requests[0]["store"])
 
     def test_responses_stream_accumulates_deltas_and_keeps_final_usage(self):
         from app.llm_client import ResponsesAPIClient

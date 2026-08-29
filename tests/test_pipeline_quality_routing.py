@@ -30,6 +30,7 @@ def test_text_only_content_repair_reuses_existing_figures() -> None:
         "questions": [
             {"question_id": "q_text", "question_type": "计算题", "stem": "计算"},
             {"question_id": "q_draw", "question_type": "作图题", "stem": "作图"},
+            {"question_id": "q_embedded_draw", "question_type": "简答题", "stem": "绘出(112)晶面"},
         ]
     }
 
@@ -42,6 +43,9 @@ def test_text_only_content_repair_reuses_existing_figures() -> None:
 
     assert _content_repair_touches_drawing_question(
         {"repaired_question_ids": ["q_draw"]}, {"items": exam["questions"]}
+    )
+    assert _content_repair_touches_drawing_question(
+        {"repaired_question_ids": ["q_embedded_draw"]}, exam
     )
 
 

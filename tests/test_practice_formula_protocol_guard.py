@@ -18,7 +18,7 @@ def _provider(**overrides) -> ProviderConfig:
     values = {
         "name": "lingsuan",
         "type": "openai_compatible",
-        "base_url": "https://lingsuan.top/v1",
+        "base_url": "https://lingsuan.org/v1",
         "api_key": "test-key",
         "default_model": "gpt-5.6-terra",
         "model_options": ("gpt-5.6-terra",),

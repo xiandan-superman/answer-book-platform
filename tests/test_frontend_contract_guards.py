@@ -174,6 +174,7 @@ def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -
 def test_hidden_providers_are_omitted_from_every_user_facing_model_entry() -> None:
     for provider in ("ark", "bailian", "sensenova", "openrouter", "lingsuan_xai", "lingsuan_anthropic"):
         assert f'  "{provider}",' in APP_JS
+    assert '  "ark_image",' not in APP_JS.split("const HIDDEN_USER_PROVIDER_NAMES", 1)[1].split("]);", 1)[0]
     assert "function userVisibleProviderEntries" in APP_JS
     assert "const entries = userVisibleProviderEntries();" in APP_JS
     assert "const entries = userVisibleProviderEntries().sort" in APP_JS
@@ -194,10 +195,16 @@ def test_practice_and_knowledge_expose_one_primary_model_by_default() -> None:
     assert 'class="task-model-fallback-details"' in INDEX_HTML
 
 
-def test_unconfigured_optional_image_fallback_does_not_block_exam_creation() -> None:
+def test_image_route_is_user_selected_and_main_mode_requires_configuration() -> None:
+    assert 'id="imageOrchestrationSwitch"' in INDEX_HTML
+    assert 'id="practiceImageOrchestrationSwitch"' in INDEX_HTML
+    assert 'id="knowledgeImageOrchestrationSwitch"' in INDEX_HTML
+    assert "function imageOrchestrationMode(" in APP_JS
     assert "const imageFallbackConfigured = Boolean" in APP_JS
     assert 'image_provider: imageFallbackConfigured ?' in APP_JS
     assert 'image_model: imageFallbackConfigured ?' in APP_JS
+    assert 'image_orchestration: imageOrchestrationMode("exam")' in APP_JS
+    assert '已选择“主模型自主生图”' in APP_JS
 
 
 def test_api_key_password_fields_belong_to_non_submitting_forms() -> None:
@@ -794,6 +801,7 @@ def test_practice_requests_include_the_configured_image_route() -> None:
     for flow in (practice_flow, knowledge_flow):
         assert 'image_provider: imageConfigured ? imageProvider : ""' in flow
         assert 'image_model: imageConfigured ? imageModel : ""' in flow
+        assert "image_orchestration: imageOrchestrationMode(" in flow
 
 
 def test_practice_and_knowledge_preflight_missing_model_configuration_before_job_submission() -> None:

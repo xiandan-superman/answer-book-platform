@@ -24,6 +24,7 @@ const EXAM_LIBRARY_PREVIEW_LIMIT = 8;
 let latestEnvironmentStatus = null;
 let activeTaskId = "";
 let currentPage = "home";
+let currentExamAnalysisProfile = "evidence_backed";
 let selectedTextbookPaths = new Set();
 let textbookSelectionInitialized = false;
 let activeTextbookGroups = {};
@@ -231,7 +232,60 @@ function setText(id, value) {
 }
 
 function startWizard() {
+  currentExamAnalysisProfile = "evidence_backed";
   goToPage("env");
+}
+
+function startQuestionAnalysis() {
+  currentExamAnalysisProfile = "question_only";
+  goToPage("env");
+}
+
+function syncEnvironmentAnalysisMode() {
+  const questionOnly = currentExamAnalysisProfile === "question_only";
+  $("reasoningModelRoleCard")?.classList.toggle("hidden", questionOnly);
+  setText("environmentPageTitle", questionOnly ? "题目解析模型选择" : "环境配置");
+  setText(
+    "environmentPageDescription",
+    questionOnly
+      ? "选择结构化解析、正确性复核、读图和生图模型；题目解析不使用教材证据模型。"
+      : "检查运行环境并选择 AI 模型"
+  );
+  setText("examModelSelectionTitle", questionOnly ? "题目解析模型选择" : "模型选择");
+  setText(
+    "examModelTestHint",
+    questionOnly
+      ? "连接测试会实际调用当前结构化解析模型。"
+      : "连接测试会实际调用当前知识识别和结构化解析模型。"
+  );
+  const nextButton = $("envNextBtn");
+  if (nextButton) nextButton.innerHTML = `下一步：选择${questionOnly ? "题目" : "真题"}<i class="fas fa-arrow-right"></i>`;
+  if (latestEnvironmentStatus) updateEnvironmentSummary(latestEnvironmentStatus);
+}
+
+function leaveExamPreparation() {
+  goToPage("env");
+}
+
+function syncExamPreparationMode() {
+  const questionOnly = currentExamAnalysisProfile === "question_only";
+  document.querySelectorAll(".exam-textbook-requirement").forEach((element) => {
+    element.classList.toggle("hidden", questionOnly);
+  });
+  setText("examPageEyebrow", questionOnly ? "辅助工具 · 题目解析" : "真题解析 · 准备材料");
+  setText("examPageTitle", questionOnly ? "选择需要解析的题目" : "确认本次解析材料");
+  setText(
+    "examPageDescription",
+    questionOnly
+      ? "选择或上传一份题目 DOCX。系统复用真题解析能力，但不会读取教材、检索教材或生成教材依据。"
+      : "选好一份真题和对应教材即可开始。模型与运行环境沿用已保存的配置，无需在这里重复设置。"
+  );
+  setText("examSourceStepNumber", questionOnly ? "1" : "2");
+  const createButton = $("createTaskBtn");
+  if (createButton) {
+    createButton.innerHTML = `${questionOnly ? "确认题目并开始解析" : "确认材料并开始解析"}<i class="fas fa-arrow-right"></i>`;
+  }
+  updateCreateTaskAvailability();
 }
 
 function goToPage(page) {
@@ -257,6 +311,8 @@ function goToPage(page) {
     if ($("resultQuestionDetail")) $("resultQuestionDetail").innerHTML = "";
   }
   currentPage = page;
+  if (page === "env") syncEnvironmentAnalysisMode();
+  if (page === "exam") syncExamPreparationMode();
   if (page === "tasks" && previousPage !== "tasks") taskManagerMotionEntrancePending = true;
   document.body.dataset.activePage = page;
   if (page !== "practice") $("practiceWorkflowActions")?.classList.add("hidden");
@@ -1455,6 +1511,7 @@ function providerEnvKey(providerName) {
   const map = {
     deepseek: "DEEPSEEK_API_KEY",
     ark: "ARK_API_KEY",
+    ark_image: "ARK_API_KEY",
     bailian: "DASHSCOPE_API_KEY",
     sensenova: "SENSENOVA_API_KEY",
     bai: "BAI_API_KEY",
@@ -1475,6 +1532,7 @@ function displayProviderName(name) {
   const labels = {
     deepseek: "DeepSeek",
     ark: "火山方舟",
+    ark_image: "火山方舟",
     bailian: "阿里云百炼",
     sensenova: "商汤日日新 · SenseNova",
     bai: "B.AI",
@@ -1553,12 +1611,24 @@ function setEnvNextEnabled(enabled, hint = "") {
   if (!button) return;
   button.disabled = !enabled;
   button.classList.toggle("disabled", !enabled);
-  setText("envNextHint", hint || (enabled ? "环境已就绪，可以继续选择真题" : "环境检查通过后即可继续"));
+  setText("envNextHint", hint || (enabled ? `环境已就绪，可以继续选择${currentExamAnalysisProfile === "question_only" ? "题目" : "真题"}` : "环境检查通过后即可继续"));
+}
+
+function examRequiredTextRoutes() {
+  const routes = [textRoleRoute("answer", "结构化解析")];
+  if (currentExamAnalysisProfile !== "question_only") routes.unshift(textRoleRoute("reasoning", "知识识别"));
+  return routes;
+}
+
+function visibleTaskStageGroups() {
+  return currentExamAnalysisProfile === "question_only"
+    ? taskStageGroups.filter((group) => group.key !== "evidence")
+    : taskStageGroups;
 }
 
 function taskStageGroupIndex(stage = "") {
   const normalized = String(stage || "");
-  const index = taskStageGroups.findIndex((group) => group.stages.includes(normalized));
+  const index = visibleTaskStageGroups().findIndex((group) => group.stages.includes(normalized));
   return index;
 }
 
@@ -1580,7 +1650,7 @@ function renderTaskStepList(currentStage = "", status = "") {
             : `当前正在：${stageLabel(currentStage)}`;
   }
   list.innerHTML = "";
-  for (const [index, group] of taskStageGroups.entries()) {
+  for (const [index, group] of visibleTaskStageGroups().entries()) {
     const item = document.createElement("div");
     item.className = "task-step-item";
     if (!hasTaskState) item.classList.add("idle");
@@ -1616,7 +1686,7 @@ function updateEnvironmentSummary(env) {
   const runtimeReady = Boolean(Object.keys(packages).length);
   const toolsReady = formulaReady && packageReady && renderReady && drawingRuntimeReady;
   const hasNetworkCheck = Boolean(env && Object.prototype.hasOwnProperty.call(env, "network"));
-  const requiredRoutes = [textRoleRoute("reasoning", ""), textRoleRoute("answer", "")];
+  const requiredRoutes = examRequiredTextRoutes();
   const providerNetwork = env?.network?.by_provider || {};
   const routesConfigured = requiredRoutes.every((route) => route.keySaved && route.capabilityOk);
   syncExamModelTestAvailability();
@@ -1628,11 +1698,11 @@ function updateEnvironmentSummary(env) {
   const allRoutesTested = routeTests.length === requiredRoutes.length && routeTests.every((test) => test.ok === true);
   const ready = runtimeReady && toolsReady && routesConfigured && networkReady && !routeTestFailed;
   const readyHint = allRoutesTested
-    ? "当前解析模型已测试，可以继续选择真题"
+    ? `当前解析模型已测试，可以继续选择${currentExamAnalysisProfile === "question_only" ? "题目" : "真题"}`
     : ready
       ? "当前模型网络可达；建议先测试连接，再继续选择真题"
       : !routesConfigured
-        ? "请先为知识识别和结构化解析配置模型与 Key"
+        ? (currentExamAnalysisProfile === "question_only" ? "请先为结构化解析选择模型并配置 Key" : "请先为知识识别和结构化解析配置模型与 Key")
         : !networkReady
           ? "当前选用的模型服务网络不可达"
           : routeTestFailed
@@ -1675,17 +1745,19 @@ function updateEnvironmentSummary(env) {
 function syncExamModelTestAvailability() {
   const button = $("testExamModelRoutesBtn");
   if (!button) return false;
-  const routes = [textRoleRoute("reasoning", "知识识别"), textRoleRoute("answer", "结构化解析")];
+  const routes = examRequiredTextRoutes();
   const ready = routes.every((route) => route.provider && route.model && route.keySaved && route.capabilityOk);
   button.disabled = !ready;
   button.setAttribute("aria-disabled", ready ? "false" : "true");
-  button.title = ready ? "实际调用当前知识识别和结构化解析模型" : "请先配置知识识别、结构化解析模型及对应 API Key";
+  button.title = ready
+    ? (currentExamAnalysisProfile === "question_only" ? "实际调用当前结构化解析模型" : "实际调用当前知识识别和结构化解析模型")
+    : (currentExamAnalysisProfile === "question_only" ? "请先选择结构化解析模型并配置对应 API Key" : "请先配置知识识别、结构化解析模型及对应 API Key");
   return ready;
 }
 
 async function testExamModelRoutes() {
   const button = $("testExamModelRoutesBtn");
-  const routes = [textRoleRoute("reasoning", "知识识别"), textRoleRoute("answer", "结构化解析")]
+  const routes = examRequiredTextRoutes()
     .filter((route, index, all) => all.findIndex((item) => item.provider === route.provider && item.model === route.model) === index);
   const invalid = routes.find((route) => !route.provider || !route.model || !route.keySaved || !route.capabilityOk);
   if (invalid) {
@@ -1810,6 +1882,10 @@ function updateTaskSummary(task) {
     setText("taskSummary", "未选择");
     return;
   }
+  currentExamAnalysisProfile = task.analysis_profile || "evidence_backed";
+  const questionOnly = currentExamAnalysisProfile === "question_only";
+  setText("taskPageEyebrow", questionOnly ? "题目解析 · 解析进行中" : "真题解析 · 解析进行中");
+  setText("resultPageEyebrow", questionOnly ? "题目解析 · 审阅与下载" : "真题解析 · 审阅与下载");
   setText("taskSummary", `${statusLabel(task.status)} · ${task.exam_display_name || shortName(task.exam_path)}`);
   applyExamTaskControls(task, task.quality_summary || {});
 }
@@ -2148,6 +2224,23 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
       provider: providerName,
       message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 缺少 ${providerLabel} API Key。请前往 API 配置填写并验证后重试；当前材料已保留。`,
     };
+  }
+  if (String(request.image_orchestration || "") === "main_model_tool_loop") {
+    const mainConfig = providerConfigs?.[providerName] || {};
+    if (!modelSupportsMainToolLoop(model, mainConfig)) {
+      return {
+        provider: providerName,
+        message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 未通过“原生工具调用 + 图片回看”逐模型验证。请改选已验证模型，或切换为“传统程序绘图”；当前材料已保留。`,
+      };
+    }
+    const imageProvider = String(request.image_provider || "").trim();
+    const imageModel = String(request.image_model || "").trim();
+    if (!imageProvider || !imageModel || providerConfigs?.[imageProvider]?.api_key_set !== true) {
+      return {
+        provider: imageProvider,
+        message: `无法开始${workflowLabel}：已选择“主模型自主生图”，但生图模型尚未完整配置。请配置生图服务商、模型和 API Key，或切换为“传统程序绘图”；当前材料已保留。`,
+      };
+    }
   }
   return null;
 }
@@ -4698,6 +4791,7 @@ function practiceRequestPayload() {
     vision_model: knowledgeMode ? selectedKnowledgeModel("vision") : selectedPracticeModel("vision"),
     image_provider: imageConfigured ? imageProvider : "",
     image_model: imageConfigured ? imageModel : "",
+    image_orchestration: imageOrchestrationMode(knowledgeMode ? "knowledge" : "practice"),
     thinking: selectedThinkingMode()
   };
 }
@@ -4732,6 +4826,7 @@ function knowledgeRequestPayload() {
     vision_model: selectedKnowledgeModel("vision"),
     image_provider: imageConfigured ? imageProvider : "",
     image_model: imageConfigured ? imageModel : "",
+    image_orchestration: imageOrchestrationMode("knowledge"),
     thinking: selectedThinkingMode()
   };
 }
@@ -6246,6 +6341,9 @@ function practiceRegenerationPayload(index, instruction) {
     question_types: latestPracticeRequest?.question_types || [],
     question_text: latestPracticeRequest?.question_text || "",
     source_files: latestPracticeRequest?.source_files || practiceSourceFiles || [],
+    image_provider: latestPracticeRequest?.image_provider || "",
+    image_model: latestPracticeRequest?.image_model || "",
+    image_orchestration: latestPracticeRequest?.image_orchestration || "legacy_figure_pipeline",
     ...modelRequest,
     thinking: selectedThinkingMode()
   };
@@ -7997,14 +8095,17 @@ function updateCreateTaskAvailability() {
   if (!button) return;
   const examPath = $("examSelect")?.value || $("examPath")?.value || "";
   const textbookCount = selectedTextbooks().length;
-  const ready = Boolean(examPath && textbookCount);
+  const questionOnly = currentExamAnalysisProfile === "question_only";
+  const ready = Boolean(examPath && (questionOnly || textbookCount));
   button.disabled = !ready;
   button.setAttribute("aria-disabled", ready ? "false" : "true");
   button.title = ready ? "确认本次解析范围后开始" : !examPath ? "请先选择一份真题" : "请至少选择一本教材";
   const readiness = $("examReadinessHint");
   const readinessBox = readiness?.closest(".material-readiness");
   if (readiness) {
-    readiness.textContent = ready
+    readiness.textContent = questionOnly
+      ? (ready ? "题目已准备，可以开始解析；本任务不会使用教材。" : "请选择或上传一份需要解析的题目 DOCX。")
+      : ready
       ? `材料已准备：1 份真题、${textbookCount} 本教材，可以开始解析。`
       : !examPath && !textbookCount
         ? "请选择一份真题和至少一本教材。"
@@ -8454,6 +8555,12 @@ function modelLooksVisionCapable(model, cfg = currentProviderConfig()) {
     || label.includes("视觉")
     || label.includes("识图")
     || label.includes("图像");
+}
+
+function modelSupportsMainToolLoop(model, cfg = currentProviderConfig()) {
+  const value = String(model || "").trim();
+  const profile = (cfg?.model_profiles || {})[value] || {};
+  return modelLooksVisionCapable(value, cfg) && profile.supports_tool_calls === true;
 }
 
 function populateProviderSelect(selectId, kind, preferredName) {
@@ -9232,7 +9339,7 @@ function renderKeyProviderCards() {
             data-key-input="${escapeHtml(name)}" placeholder="${cfg.api_key_set ? "输入新 Key 可替换已保存配置" : "粘贴此平台的 API Key"}">
           <button type="button" class="key-toggle-button" data-key-toggle="${escapeHtml(name)}" title="显示或隐藏 Key" aria-label="显示或隐藏 ${escapeHtml(displayProviderName(name))} API Key"><i class="fas fa-eye" aria-hidden="true"></i></button>
         </div>
-        <p class="key-test-model">连接测试使用：${escapeHtml(cfg.supports_text_generation === false ? (cfg.image_model || "图片生成模型") : (cfg.default_model || "平台默认模型"))}</p>
+        <p class="key-test-model">连接测试使用：${escapeHtml(cfg.supports_text_generation === false ? ((cfg.image_model_option_labels || {})[cfg.image_model] || cfg.image_model || "图片生成模型") : (cfg.default_model || "平台默认模型"))}</p>
         <div class="key-provider-actions">
           <button type="button" class="outline-button" data-key-test="${escapeHtml(name)}"><i class="fas fa-plug"></i>测试连接</button>
           <button type="button" class="secondary-button" data-key-save="${escapeHtml(name)}" disabled><i class="fas fa-floppy-disk"></i>保存</button>
@@ -9519,7 +9626,7 @@ function populateTaskModelControl(profile, kind, preferredModel = "") {
   modelSelect.innerHTML = "";
   const cfg = providerConfigs[providerName] || {};
   const options = practiceModelOptions(kind, cfg);
-  const labels = cfg.model_option_labels || {};
+  const labels = kind === "image" ? (cfg.image_model_option_labels || {}) : (cfg.model_option_labels || {});
   modelSelect.disabled = false;
   if (options.length) {
     for (const model of options) {
@@ -9666,6 +9773,37 @@ function selectedImageModel() {
   return custom || $("imageModelSelect")?.value || cfg.image_model || "";
 }
 
+const IMAGE_ORCHESTRATION_IDS = {
+  exam: ["imageOrchestrationSwitch", "imageOrchestrationLabel"],
+  practice: ["practiceImageOrchestrationSwitch", "practiceImageOrchestrationLabel"],
+  knowledge: ["knowledgeImageOrchestrationSwitch", "knowledgeImageOrchestrationLabel"]
+};
+
+function imageOrchestrationMode(scope = "exam") {
+  const ids = IMAGE_ORCHESTRATION_IDS[scope] || IMAGE_ORCHESTRATION_IDS.exam;
+  return $(ids[0])?.checked === true ? "main_model_tool_loop" : "legacy_figure_pipeline";
+}
+
+function syncImageOrchestrationUi(scope = "exam", persist = false) {
+  const ids = IMAGE_ORCHESTRATION_IDS[scope] || IMAGE_ORCHESTRATION_IDS.exam;
+  const input = $(ids[0]);
+  if (!input) return;
+  const storageKey = `answerBook.imageOrchestration.${scope}`;
+  if (!persist) {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (["main_model_tool_loop", "legacy_figure_pipeline"].includes(saved)) {
+        input.checked = saved === "main_model_tool_loop";
+      }
+    } catch (e) {}
+  }
+  const mode = imageOrchestrationMode(scope);
+  setText(ids[1], mode === "main_model_tool_loop" ? "主模型自主生图" : "传统程序绘图");
+  if (persist) {
+    try { localStorage.setItem(storageKey, mode); } catch (e) {}
+  }
+}
+
 function selectedThinkingMode() {
   const value = $("thinkingModeSelect")?.value || "auto";
   return ["auto", "enabled", "disabled", "low", "medium", "high", "xhigh"].includes(value) ? value : "auto";
@@ -9718,19 +9856,22 @@ function providerErrorAdvice(error) {
 }
 
 async function createTask() {
+  const questionOnly = currentExamAnalysisProfile === "question_only";
   $("taskResult").textContent = "创建中...";
-  setVisual("taskVisualResult", "正在创建真题项目", "平台会检查所选教材是否已有可复用索引。", "info");
+  setVisual("taskVisualResult", questionOnly ? "正在创建题目解析任务" : "正在创建真题项目", questionOnly ? "平台将只处理题目，不读取教材。" : "平台会检查所选教材是否已有可复用索引。", "info");
   try {
     const examPath = $("examSelect").value || $("examPath").value.trim();
     if (!examPath) throw new Error("请先选择或上传一个真题 DOCX");
     const selectedBooks = selectedTextbooks();
-    if (!selectedBooks.length) throw new Error("请至少选择一本已建立索引的教材");
+    if (!questionOnly && !selectedBooks.length) throw new Error("请至少选择一本已建立索引的教材");
     const selectedBookNames = selectedTextbookNames();
-    await requirePreparedTextbookIndex();
+    if (!questionOnly) await requirePreparedTextbookIndex();
     const confirmed = await platformConfirm({
-      eyebrow: "开始真题解析",
+      eyebrow: questionOnly ? "开始题目解析" : "开始真题解析",
       title: "确认本次解析范围",
-      message: `真题：${shortName(examPath)}\n教材：已选择 ${selectedBookNames.length} 本（${selectedBookNames.join("、")}）\n\n开始后会调用当前配置的模型，并在后台持续执行。`,
+      message: questionOnly
+        ? `题目：${shortName(examPath)}\n教材：不使用\n\n开始后会调用当前配置的模型，并在后台持续执行。`
+        : `真题：${shortName(examPath)}\n教材：已选择 ${selectedBookNames.length} 本（${selectedBookNames.join("、")}）\n\n开始后会调用当前配置的模型，并在后台持续执行。`,
       confirmText: "确认开始解析",
       tone: "primary"
     });
@@ -9739,13 +9880,28 @@ async function createTask() {
       return;
     }
     const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel());
+    if (imageOrchestrationMode("exam") === "main_model_tool_loop" && !imageFallbackConfigured) {
+      throw new Error("已选择“主模型自主生图”，请先配置并验证生图模型；也可一键切换为“传统程序绘图”。");
+    }
+    const answerProviderName = $("answerProviderSelect")?.value || $("providerSelect").value;
+    const answerModelName = selectedTextRoleModel("answer") || requireSelectedModel();
+    if (
+      imageOrchestrationMode("exam") === "main_model_tool_loop"
+      && !modelSupportsMainToolLoop(answerModelName, providerConfigs?.[answerProviderName] || {})
+    ) {
+      throw new Error(
+        "已选择“主模型自主生图”，但当前答案模型未通过原生工具调用与图片回看逐模型验证。"
+        + "请改选已验证模型，或切换为“传统程序绘图”。"
+      );
+    }
     const data = await api("/api/tasks", {
       method: "POST",
       body: JSON.stringify({
         exam_path: examPath,
-        textbooks_dir: $("textbooksDir").value.trim() || libraryFiles.textbooks_root,
-        selected_textbooks: selectedBooks,
-        textbook_display_names: selectedTextbookDisplayNames(),
+        textbooks_dir: questionOnly ? "" : ($("textbooksDir").value.trim() || libraryFiles.textbooks_root),
+        selected_textbooks: questionOnly ? [] : selectedBooks,
+        textbook_display_names: questionOnly ? {} : selectedTextbookDisplayNames(),
+        analysis_profile: currentExamAnalysisProfile,
         provider: $("providerSelect").value,
         model: requireSelectedModel(),
         reasoning_provider: $("reasoningProviderSelect")?.value || $("providerSelect").value,
@@ -9758,6 +9914,7 @@ async function createTask() {
         vision_model: selectedVisionModel(),
         image_provider: imageFallbackConfigured ? ($("imageProviderSelect")?.value || "") : "",
         image_model: imageFallbackConfigured ? selectedImageModel() : "",
+        image_orchestration: imageOrchestrationMode("exam"),
         model_thinking: selectedThinkingMode()
       })
     });
@@ -12993,7 +13150,9 @@ function renderFiles(files) {
     const hint = $("finalResultHint");
     if (hint) {
       hint.className = "result-card muted-card";
-      hint.innerHTML = "<strong>暂未读取到最终输出</strong><p>任务完成后会显示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查、审查报告和作图题全流程图片。</p>";
+      hint.innerHTML = currentExamAnalysisProfile === "question_only"
+        ? "<strong>暂未读取到最终输出</strong><p>任务完成后会显示题目解析 Word、解析 PDF、模型调用汇总、审查报告和作图题全流程图片；本模式不生成题目依据排查表。</p>"
+        : "<strong>暂未读取到最终输出</strong><p>任务完成后会显示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查、审查报告和作图题全流程图片。</p>";
     }
     return 0;
   }
@@ -14637,6 +14796,7 @@ function initSiteEnhancements() {
   applyIconAccessibility();
   initPracticeActionMenus();
   initTaskCardMenus();
+  Object.keys(IMAGE_ORCHESTRATION_IDS).forEach((scope) => syncImageOrchestrationUi(scope));
   normalizePracticeInlineLayout();
   initPlatformSelects();
   const initialQuery = new URLSearchParams(window.location.search);

@@ -15,6 +15,7 @@ from .paths import DATA_ROOT
 from .task_titles import friendly_material_title
 
 PRACTICE_HISTORY_DIR = DATA_ROOT / "practice_history"
+PRACTICE_JOB_DIR = DATA_ROOT / "practice_jobs"
 _PRACTICE_ANSWER_FIELDS = {
     "answer",
     "answer_summary",
@@ -215,6 +216,35 @@ def _continuation_snapshot(record: dict[str, Any], data: dict[str, Any], bluepri
 def _continuation_key(snapshot: dict[str, Any]) -> str:
     encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"practice_continuation_v1_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _recover_legacy_image_route(history_id: str, request: dict[str, Any]) -> dict[str, Any]:
+    """Recover image-route fields omitted by history records written before this fix."""
+
+    recovered = copy_request(request)
+    if str(recovered.get("image_orchestration") or "") != "main_model_tool_loop":
+        return recovered
+    if str(recovered.get("image_provider") or "").strip() and str(recovered.get("image_model") or "").strip():
+        return recovered
+    for path in sorted(PRACTICE_JOB_DIR.glob("generation_*.json"), reverse=True):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(job.get("history_id") or "") != str(history_id or ""):
+            continue
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        if str(payload.get("image_orchestration") or "") != "main_model_tool_loop":
+            continue
+        image_provider = str(payload.get("image_provider") or "").strip()
+        image_model = str(payload.get("image_model") or "").strip()
+        if image_provider and image_model:
+            recovered["image_provider"] = image_provider[:100]
+            recovered["image_model"] = image_model[:200]
+            recovered["image_orchestration"] = "main_model_tool_loop"
+            recovered["image_route_recovered_from_job"] = True
+            break
+    return recovered
 
 
 def _with_edit_versions(data: dict[str, Any]) -> dict[str, Any]:
@@ -508,6 +538,12 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
         "question_types": request.get("question_types") or [],
         "focus": str(request.get("focus") or "")[:1000],
         "generation_strategy": request.get("generation_strategy"),
+        # The orchestration mode and its concrete image route are one atomic
+        # user choice.  Persist all three so continuation/regeneration cannot
+        # silently lose the image service or drift onto another route.
+        "image_orchestration": str(request.get("image_orchestration") or "legacy_figure_pipeline")[:40],
+        "image_provider": str(request.get("image_provider") or "")[:100],
+        "image_model": str(request.get("image_model") or "")[:200],
         "include_source_content_in_generation": request.get("include_source_content_in_generation") is not False,
         "strategy_count": request.get("strategy_count"),
         "variants_per_question": request.get("variants_per_question"),
@@ -557,7 +593,10 @@ def build_practice_continuation_payload(history_id: str, *, attempt_id: str = ""
         raise FileNotFoundError("练习记录不存在。")
     record = json.loads(path.read_text(encoding="utf-8"))
     data = _with_current_quality(record.get("data") if isinstance(record.get("data"), dict) else {})
-    request = record.get("request") if isinstance(record.get("request"), dict) else {}
+    request = _recover_legacy_image_route(
+        history_id,
+        record.get("request") if isinstance(record.get("request"), dict) else {},
+    )
     blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
     exercise_plan = blueprint.get("exercise_plan") if isinstance(blueprint.get("exercise_plan"), list) else []
     if not exercise_plan:
@@ -791,7 +830,11 @@ def load_practice_record(history_id: str) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError("练习记录不存在。")
     record = json.loads(path.read_text(encoding="utf-8"))
-    request = record.get("request") if isinstance(record.get("request"), dict) else {}
+    request = _recover_legacy_image_route(
+        history_id,
+        record.get("request") if isinstance(record.get("request"), dict) else {},
+    )
+    record["request"] = request
     if "source_recovery" not in request:
         request["source_recovery"] = {"status": "blocked" if request.get("source_file_names") else "not_required", "missing_files": request.get("source_file_names", [])}
         record["request"] = request

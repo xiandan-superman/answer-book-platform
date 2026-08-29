@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-08-27",
+  "updated_at": "2026-08-29",
   "task_labels": {
     "source_analysis": "材料理解",
     "knowledge_planning": "考查内容规划",
@@ -16,6 +16,31 @@
     "figure_schema": "插图结构规划",
     "drawing_code": "作图代码生成",
     "image_generation": "图片生成"
+  },
+  "native_tool_routes": {
+    "deepseek": {
+      "deepseek-v4-flash-vision-exp": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
+    },
+    "bailian": {
+      "qwen3.7-plus": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "qwen3.7-flash": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "qwen3.6-plus": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "qwen3.6-flash": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "qwen3-vl-flash": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "qwen-vl-ocr": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
+    },
+    "lingsuan_openai": {
+      "gpt-5.6-sol": {"protocol":"responses","evidence":"live_task_tool_loop","last_verified_at":"2026-08-29"},
+      "gpt-5.6-terra": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "gpt-5.5": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
+    },
+    "lingsuan_google": {
+      "gemini-3.7-flash-low": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "gemini-3.7-flash-medium": {"protocol":"chat_completions","evidence":"live_task_tool_loop","last_verified_at":"2026-08-29"},
+      "gemini-3.7-flash-high": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "gemini-3.6-flash": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
+      "gemini-3.5-flash": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
+    }
   },
   "providers": {
     "deepseek": {
@@ -36,6 +61,13 @@
         "glm-5-2-260617": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "kimi-k2": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"forbidden","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "doubao-seedream-5-0-260128": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}
+      }
+    },
+    "ark_image": {
+      "display_name": "火山方舟图片",
+      "models": {
+        "doubao-seedream-5-0-260128": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"},
+        "doubao-seedream-5-0-lite-260128": {"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}
       }
     },
     "bailian": {

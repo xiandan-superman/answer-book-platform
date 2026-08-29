@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import time
@@ -217,7 +218,7 @@ def _open_provider_response(
             ]
             host = str(urllib.parse.urlparse(request.full_url).hostname or "").lower()
             allow_proxy = str(os.environ.get("ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY") or "").strip().lower()
-            if host == "lingsuan.top" and allow_proxy not in {"1", "true", "yes"}:
+            if host in {"lingsuan.top", "lingsuan.org"} and allow_proxy not in {"1", "true", "yes"}:
                 # Local proxy interception has caused TLS EOFs and misleading
                 # gateway 502s. TUN/fake-IP routing still belongs to the OS, but
                 # urllib must not add a second configured proxy hop by default.
@@ -337,6 +338,8 @@ class LLMClientProtocol(Protocol):
 
     def generate_image(self, prompt: str, output: Path, **kwargs: Any) -> ImageGenerationResult: ...
 
+    def edit_image(self, prompt: str, reference_images: list[Path], output: Path, **kwargs: Any) -> ImageGenerationResult: ...
+
 
 _THINKING_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
 
@@ -350,6 +353,22 @@ def _model_profile(config: ProviderConfig, model: str) -> dict[str, Any]:
 def _model_api_protocol(config: ProviderConfig, model: str) -> str:
     profile = _model_profile(config, model)
     return str(profile.get("api_protocol") or getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
+
+
+def _model_supports_registered_tool_calls(config: ProviderConfig, model: str) -> bool:
+    from .model_capability_registry import (
+        get_native_tool_route,
+        provider_has_capability_registry,
+    )
+
+    selected = str(model or "").strip()
+    if _model_profile(config, selected).get("supports_tool_calls") is not True:
+        return False
+    provider_name = str(getattr(config, "name", "") or "").strip()
+    route = get_native_tool_route(provider_name, selected)
+    if route is None:
+        return not provider_has_capability_registry(provider_name)
+    return str(route.get("protocol") or "").strip().lower() == _model_api_protocol(config, selected)
 
 
 def _model_omitted_parameters(config: ProviderConfig, model: str) -> set[str]:
@@ -664,6 +683,109 @@ class OpenAICompatibleClient:
             result.raw.setdefault("_request", {})["context_plan"] = context_plan
         return result
 
+    def create_tool_response(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        model: str,
+        max_tokens: int,
+        thinking: str | None = None,
+        timeout: int = 120,
+        json_object: bool = True,
+    ) -> dict[str, Any]:
+        """Return a native Chat Completions tool-call response.
+
+        The agent loop owns JSON validation and repair.  We intentionally do
+        not combine ``response_format`` with ``tools`` here because several
+        OpenAI-compatible Gemini gateways reject that otherwise valid pairing.
+        """
+
+        if not self.config.api_key:
+            raise LLMError(f"API key is not configured for provider: {self.config.name}")
+        target_model = str(model or self.config.default_model).strip()
+        protocol = _model_api_protocol(self.config, target_model)
+        if protocol not in {"chat_completions", "openai_compatible", ""}:
+            raise LLMError("tool calls require a Chat Completions model")
+        if not _model_supports_registered_tool_calls(self.config, target_model):
+            raise LLMError("the selected Chat Completions model is not registered for native tool calls")
+
+        thinking_mode = _model_thinking_mode(
+            self.config,
+            target_model,
+            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"),
+        )
+        chat_tools: list[dict[str, Any]] = []
+        for definition in tools:
+            if not isinstance(definition, dict):
+                continue
+            if isinstance(definition.get("function"), dict):
+                chat_tools.append(definition)
+                continue
+            function = {
+                key: definition[key]
+                for key in ("name", "description", "parameters")
+                if key in definition
+            }
+            chat_tools.append({"type": "function", "function": function})
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "tools": chat_tools,
+            "tool_choice": "auto",
+            "max_tokens": _effective_model_max_tokens(
+                self.config, target_model, max_tokens, thinking_mode
+            ),
+        }
+        omitted = _model_omitted_parameters(self.config, target_model)
+        if "temperature" not in omitted:
+            payload["temperature"] = self.config.temperature
+        reasoning_effort = _deepseek_reasoning_effort(self.config, thinking_mode)
+        if reasoning_effort:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = reasoning_effort
+        elif thinking_mode in {"enabled", "disabled"}:
+            payload["thinking"] = {"type": thinking_mode}
+        if _is_gemini_model(self.config, target_model):
+            payload.pop("thinking", None)
+            gemini_effort = (
+                _official_gemini_reasoning_effort(thinking_mode)
+                if _is_official_google_ai(self.config)
+                else _chat_reasoning_effort(thinking_mode)
+            )
+            if gemini_effort:
+                payload["reasoning_effort"] = gemini_effort
+                reasoning_effort = gemini_effort
+        if _is_grok_model(self.config, target_model):
+            payload.pop("thinking", None)
+            grok_effort = _chat_reasoning_effort(thinking_mode)
+            if grok_effort:
+                payload["reasoning_effort"] = grok_effort
+                reasoning_effort = grok_effort
+        if _is_bigmodel_glm53_flash(self.config, target_model):
+            reasoning_effort = _bigmodel_reasoning_effort(thinking_mode)
+            payload["thinking"] = {"type": "enabled", "clear_thinking": False}
+            payload["reasoning_effort"] = reasoning_effort
+            payload["top_p"] = 0.95
+
+        raw = self._post_json(
+            f"{self.config.base_url}/chat/completions",
+            payload,
+            timeout=timeout,
+            purpose="chat_tools",
+        )
+        raw.setdefault("_request", {}).update(
+            {
+                "endpoint": "/chat/completions",
+                "response_format": "prompt_only_json" if json_object else "text",
+                "thinking": thinking_mode,
+                "reasoning_effort": reasoning_effort or "provider_default",
+                "max_tokens": payload["max_tokens"],
+                "tool_count": len(chat_tools),
+            }
+        )
+        return raw
+
     def _chat_json_once(
         self,
         messages: list[dict[str, str]],
@@ -707,7 +829,7 @@ class OpenAICompatibleClient:
             payload["reasoning_effort"] = reasoning_effort
         if _is_gemini_model(self.config, target_model):
             payload.pop("thinking", None)
-            # "minimal"/"low" effort values follow the lingsuan.top gateway's
+            # "minimal"/"low" effort values follow the LingSuan gateway's
             # OpenAI-compatible extension; the official Gemini compatibility
             # layer only documents low/medium/high and may reject "minimal".
             gemini_effort = (
@@ -932,6 +1054,13 @@ class OpenAICompatibleClient:
                 "size": image_size,
                 "n": 1,
             }
+            if self.config.name in {"ark", "ark_image"} and image_model.startswith("doubao-seedream-"):
+                # Ark's native image endpoint generates one image when the
+                # sequence mode is disabled; it does not document OpenAI's n.
+                payload.pop("n", None)
+                payload["output_format"] = "png"
+                payload["watermark"] = False
+                payload["sequential_image_generation"] = "disabled"
             if use_response_format:
                 payload["response_format"] = "b64_json"
             if self.config.name == "sensenova" and image_model == "sensenova-u1.5-lite":
@@ -960,6 +1089,209 @@ class OpenAICompatibleClient:
                     continue
                 raise
         raise last_error or LLMError("Image generation failed")
+
+    def edit_image(
+        self,
+        prompt: str,
+        reference_images: list[Path],
+        output: Path,
+        *,
+        model: str | None = None,
+        size: str | None = None,
+        timeout: int = 240,
+    ) -> ImageGenerationResult:
+        """Edit from 1-5 original local images without resizing or recompressing them."""
+
+        if not self.config.api_key:
+            raise LLMError(f"API key is not configured for provider: {self.config.name}")
+        if not getattr(self.config, "supports_image_generation", True):
+            raise LLMError(f"Image generation is disabled for provider: {self.config.name}")
+        image_model = str(model or self.config.image_model or "").strip()
+        if not image_model:
+            raise LLMError(f"Image model is not configured for provider: {self.config.name}")
+        paths = [Path(path).resolve(strict=True) for path in reference_images]
+        if not 1 <= len(paths) <= 5:
+            raise LLMError("Image edits require between 1 and 5 reference images")
+        if _is_dashscope_image_model(self.config, image_model):
+            raise LLMError("The selected image provider does not expose an OpenAI-compatible image edit endpoint")
+
+        files: list[tuple[str, str, str, bytes]] = []
+        reference_metadata: list[dict[str, Any]] = []
+        for path in paths:
+            reference_bytes = path.read_bytes()
+            if not reference_bytes or len(reference_bytes) > 50 * 1024 * 1024:
+                raise LLMError(f"Referenced image has invalid byte size: {path.name}")
+            try:
+                from PIL import Image
+
+                with Image.open(path) as image:
+                    image.verify()
+                    image_format = str(image.format or "").upper()
+            except Exception as exc:
+                raise LLMError(f"Referenced image is unreadable: {path.name}") from exc
+            mime_type = {
+                "PNG": "image/png",
+                "JPEG": "image/jpeg",
+                "WEBP": "image/webp",
+            }.get(image_format)
+            if not mime_type:
+                raise LLMError(f"Referenced image format must be PNG, JPEG, or WebP: {path.name}")
+            files.append(("image[]", path.name, mime_type, reference_bytes))
+            reference_metadata.append(
+                {"name": path.name, "bytes": len(reference_bytes), "mime_type": mime_type}
+            )
+
+        context_plan = build_model_context_plan(
+            stage="image_edit",
+            provider_name=self.config.name,
+            model_name=image_model,
+            messages=[{"role": "user", "content": prompt}],
+            required_evidence_refs=[f"reference_image:{index}" for index in range(1, len(paths) + 1)],
+            delivered_evidence_refs=[f"reference_image:{index}" for index in range(1, len(paths) + 1)],
+        )
+        self.last_context_plan = context_plan
+        block_reason = context_plan_block_reason(context_plan, enforce_budget=True)
+        if block_reason:
+            raise LLMError(block_reason)
+
+        image_size = _effective_image_size(image_model, str(size or self.config.image_size or "1024x1024"))
+        last_error: LLMError | None = None
+        for use_response_format in (True, False):
+            fields = {
+                "model": image_model,
+                "prompt": prompt,
+                "size": image_size,
+                "n": "1",
+            }
+            if use_response_format:
+                fields["response_format"] = "b64_json"
+            try:
+                response_payload = self._post_multipart(
+                    f"{self.config.base_url}/images/edits",
+                    fields,
+                    files,
+                    timeout=timeout,
+                    model=image_model,
+                )
+                image_bytes = _image_bytes_from_response(response_payload)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(image_bytes)
+                response_payload["_request"] = {
+                    "endpoint": "/images/edits",
+                    "response_format": "b64_json" if use_response_format else "provider_default",
+                    "size": image_size,
+                    "reference_images": reference_metadata,
+                    "reference_image_mode": "original_bytes",
+                    "context_plan": context_plan,
+                }
+                return ImageGenerationResult(
+                    self.config.name,
+                    image_model,
+                    output,
+                    response_payload,
+                )
+            except LLMError as exc:
+                last_error = exc
+                if use_response_format and (
+                    _is_unsupported_response_format_error(str(exc)) or "response_format" in str(exc)
+                ):
+                    continue
+                raise
+        raise last_error or LLMError("Image editing failed")
+
+    def _post_multipart(
+        self,
+        url: str,
+        fields: dict[str, str],
+        files: list[tuple[str, str, str, bytes]],
+        *,
+        timeout: int,
+        model: str,
+    ) -> dict[str, Any]:
+        boundary = "----answerbook" + secrets.token_hex(16)
+        chunks: list[bytes] = []
+        for name, value in fields.items():
+            chunks.extend([
+                f"--{boundary}\r\n".encode("ascii"),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                str(value).encode("utf-8"),
+                b"\r\n",
+            ])
+        for name, filename, mime_type, raw in files:
+            safe_filename = Path(filename).name.replace('"', "_")
+            chunks.extend([
+                f"--{boundary}\r\n".encode("ascii"),
+                (
+                    f'Content-Disposition: form-data; name="{name}"; filename="{safe_filename}"\r\n'
+                    f"Content-Type: {mime_type}\r\n\r\n"
+                ).encode("utf-8"),
+                raw,
+                b"\r\n",
+            ])
+        chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+        body = b"".join(chunks)
+        headers = _provider_request_headers(self.config)
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        diagnostic_payload = {
+            "model": model,
+            "endpoint": "/images/edits",
+            "field_names": sorted(fields),
+            "reference_image_count": len(files),
+            "request_bytes": len(body),
+        }
+        try:
+            with model_request_slot(self.config):
+                with track_model_call(
+                    provider=self.config.name,
+                    model=model,
+                    purpose="image_edit",
+                    timeout=timeout,
+                ) as call_record:
+                    hard_deadline = time.monotonic() + max(1, int(timeout))
+                    try:
+                        connect = _transport_timeout("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", 15, timeout)
+                        first_byte = _first_byte_timeout(timeout)
+                        record_model_call_estimate(call_record, diagnostic_payload)
+                        with _open_provider_response(
+                            self._urlopen,
+                            request,
+                            connect_timeout=connect,
+                            first_byte_timeout=first_byte,
+                            hard_deadline_monotonic=hard_deadline,
+                        ) as response:
+                            raw = json.loads(
+                                _read_response_body(
+                                    response,
+                                    hard_timeout=timeout,
+                                    hard_deadline_monotonic=hard_deadline,
+                                ).decode("utf-8")
+                            )
+                    except urllib.error.HTTPError as exc:
+                        error_body = _read_response_body(
+                            exc,
+                            hard_timeout=timeout,
+                            hard_deadline_monotonic=hard_deadline,
+                        ).decode("utf-8", errors="replace")
+                        record_model_diagnostic(
+                            call_record,
+                            diagnostic_payload,
+                            response_payload={"http_status": exc.code, "error_body": error_body},
+                            error=f"Provider HTTP {exc.code}",
+                            outcome="failed",
+                        )
+                        raise _http_llm_error(exc, error_body) from exc
+                    record_model_call_usage(call_record, raw)
+                    record_model_diagnostic(call_record, diagnostic_payload, response_payload=raw)
+            if not isinstance(raw, dict):
+                raise LLMError("Provider returned a non-object image edit response")
+            return raw
+        except ModelRequestAborted:
+            raise
+        except LLMError:
+            raise
+        except Exception as exc:
+            raise LLMError(f"Image editing request failed: {redact_credentials(str(exc))}") from exc
 
     def _generate_dashscope_image(
         self,
@@ -1006,6 +1338,7 @@ class OpenAICompatibleClient:
         *,
         timeout: int,
         headers: dict[str, str] | None = None,
+        purpose: str = "",
     ) -> dict[str, Any]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
@@ -1019,7 +1352,10 @@ class OpenAICompatibleClient:
                 with track_model_call(
                     provider=self.config.name,
                     model=str(payload.get("model") or self.config.default_model),
-                    purpose="image_generation" if "/images/" in url or "generateContent" in url else "responses",
+                    purpose=(
+                        purpose
+                        or ("image_generation" if "/images/" in url or "generateContent" in url else "responses")
+                    ),
                     timeout=timeout,
                 ) as call_record:
                     hard_deadline = time.monotonic() + max(1, int(timeout))
@@ -1221,6 +1557,60 @@ class ResponsesAPIClient(OpenAICompatibleClient):
     It intentionally reuses the existing retry, image, and JSON parsing helpers
     so text and multimodal calls share one transport implementation.
     """
+
+    @staticmethod
+    def responses_input_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _responses_input_items(messages)
+
+    @staticmethod
+    def responses_output_text(raw: dict[str, Any]) -> str:
+        return _responses_output_text(raw)
+
+    def create_tool_response(
+        self,
+        input_items: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        model: str,
+        max_tokens: int,
+        thinking: str | None = None,
+        timeout: int = 120,
+        json_object: bool = True,
+    ) -> dict[str, Any]:
+        """Return the complete Responses payload so an agent loop can execute calls."""
+
+        target_model = str(model or self.config.default_model).strip()
+        if _model_api_protocol(self.config, target_model) not in {"responses", "responses_api"}:
+            raise LLMError("tool calls require a Responses API model")
+        if not _model_supports_registered_tool_calls(self.config, target_model):
+            raise LLMError("the selected Responses model is not registered for native tool calls")
+        thinking_mode = _model_thinking_mode(
+            self.config,
+            target_model,
+            thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"),
+        )
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "input": input_items,
+            "tools": tools,
+            "tool_choice": "auto",
+            "max_output_tokens": _effective_model_max_tokens(
+                self.config, target_model, max_tokens, thinking_mode
+            ),
+        }
+        omitted = _model_omitted_parameters(self.config, target_model)
+        if "store" not in omitted:
+            payload["store"] = False
+        if json_object:
+            payload["text"] = {"format": {"type": "json_object"}}
+        reasoning_effort = _responses_reasoning_effort(thinking_mode)
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if bool(getattr(self.config, "responses_streaming", True)):
+            return self._post_responses_stream(
+                f"{self.config.base_url}/responses", payload, timeout=timeout
+            )
+        return self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
 
     def _chat_json_once(
         self,

@@ -49,9 +49,46 @@ def test_provider_model_profiles_keep_supported_models_on_responses():
 
     assert providers["bailian"].api_protocol == "responses"
     assert providers["bailian"].model_profiles["qwen-vl-max"]["api_protocol"] == "chat_completions"
-    assert "qwen3.7-plus" not in providers["bailian"].model_profiles
+    assert providers["bailian"].model_profiles["qwen3.7-plus"]["supports_tool_calls"] is True
     assert providers["ark"].model_profiles["kimi-k2"]["api_protocol"] == "chat_completions"
     assert providers["openrouter"].model_profiles["z-ai/glm-5.2:free"]["api_protocol"] == "chat_completions"
+
+
+def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
+    from app.model_tool_loop import tool_loop_supported
+
+    providers = list_providers()
+    expected = {
+        "deepseek": {"deepseek-v4-flash-vision-exp"},
+        "bailian": {
+            "qwen3.7-plus",
+            "qwen3.7-flash",
+            "qwen3.6-plus",
+            "qwen3.6-flash",
+            "qwen3-vl-flash",
+            "qwen-vl-ocr",
+        },
+        "lingsuan_openai": {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"},
+        "lingsuan_google": set(providers["lingsuan_google"].model_options),
+    }
+    for provider_name, provider in providers.items():
+        enabled = {
+            model
+            for model in provider.model_options
+            if tool_loop_supported(OpenAICompatibleClient(provider), provider, model)
+        }
+        assert enabled == expected.get(provider_name, set())
+
+    # These are all vision models, but live probing did not prove a usable
+    # native call for them. They must not inherit capability by family/name.
+    assert not tool_loop_supported(
+        OpenAICompatibleClient(providers["bailian"]), providers["bailian"], "qwen-vl-max"
+    )
+    assert not tool_loop_supported(
+        OpenAICompatibleClient(providers["lingsuan_openai"]),
+        providers["lingsuan_openai"],
+        "gpt-5.6-luna",
+    )
 
 
 @pytest.mark.parametrize("model", ["qwen3-vl-flash", "qwen-vl-max", "qwen-vl-plus", "qwen-vl-ocr"])
@@ -155,7 +192,7 @@ def test_anthropic_messages_separates_system_thought_and_final_text():
     )
 
     payload = json.loads(requests[0].data)
-    assert requests[0].full_url == "https://lingsuan.top/v1/messages"
+    assert requests[0].full_url == "https://lingsuan.org/v1/messages"
     assert requests[0].get_header("Anthropic-version") == "2023-06-01"
     assert payload["system"].startswith("Be accurate")
     assert all(message["role"] != "system" for message in payload["messages"])
@@ -177,7 +214,7 @@ def test_anthropic_messages_fall_back_only_when_gateway_endpoint_is_missing():
     client._urlopen = request
     result = client.chat_json([{"role": "user", "content": "Return JSON"}], model="claude-opus-5")
 
-    assert urls == ["https://lingsuan.top/v1/messages", "https://lingsuan.top/v1/chat/completions"]
+    assert urls == ["https://lingsuan.org/v1/messages", "https://lingsuan.org/v1/chat/completions"]
     assert result.raw["_request"]["protocol_requested"] == "anthropic_messages"
 
 

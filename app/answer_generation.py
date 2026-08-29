@@ -3,10 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import time
-import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -22,14 +22,31 @@ from .document_presentation import is_synthetic_requirement_parent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import looks_like_formula
+from .image_artifacts import ImageArtifactStore
+from .image_orchestration import DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE
 from .llm_client import LLMError, OpenAICompatibleClient
+from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .omml_input import strip_structured_math_metadata
 from .prompts import build_answer_depth_profile, build_answer_draft_prompt
-from .question_types import infer_question_type, is_calculation_question, is_term_explanation_question, iter_leaf_question_parts, question_has_type, question_kind
+from .question_requirements import answer_figure_required
+from .question_types import (
+    infer_question_type,
+    is_calculation_question,
+    is_term_explanation_question,
+    iter_leaf_question_parts,
+    question_has_type,
+    question_kind,
+)
 from .question_understanding import attach_question_visuals, is_drawing_question, needs_vision_model
 from .retrieval import EvidenceCandidate, candidates_for_question
 from .runtime_monitor import model_call_context
-from .settings import DEFAULT_MODEL_MAX_TOKENS, STRUCTURED_ANSWER_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
+from .settings import (
+    DEFAULT_MODEL_MAX_TOKENS,
+    STRUCTURED_ANSWER_MAX_TOKENS,
+    ProviderConfig,
+    provider_model_supports_vision,
+    provider_supports_image_generation,
+)
 from .text_utils import cn_to_int
 from .user_facing_text import strip_internal_repair_provenance
 from .v4_schema import validate_v4_answer_fragment
@@ -327,6 +344,20 @@ def _answer_model_candidates_for_question(provider: ProviderConfig, requested_mo
         # answer model remains a visible fallback and is never silently lost.
         return unique([vision_model, requested_model], provider.model_options)
     return unique([requested_model], provider.model_options)
+
+
+def _equivalent_tool_loop_model_candidates(
+    client: OpenAICompatibleClient,
+    provider: ProviderConfig,
+    candidates: list[str],
+) -> list[str]:
+    """Keep only model retries that preserve the native image-tool contract."""
+
+    return [
+        candidate
+        for candidate in candidates
+        if tool_loop_supported(client, provider, candidate)
+    ]
 
 
 def _batch_group_key(question: dict[str, Any]) -> tuple[str, str, str]:
@@ -2108,6 +2139,24 @@ def semantic_generation_issues(
     allow_formula_absence_after_retry: bool = False,
 ) -> list[str]:
     issues: list[str] = []
+    figure_containers = [fragment]
+    figure_containers.extend(
+        item for item in (fragment.get("answer_units") or []) if isinstance(item, dict)
+    )
+    has_required_figure_output = any(
+        any(
+            isinstance(item, dict) and (
+                str(item.get("asset_id") or "").strip()
+                if key == "generated_images"
+                else True
+            )
+            for item in (container.get(key) or [])
+        )
+        for container in figure_containers
+        for key in ("generated_images", "figure_specs", "drawing_code_specs")
+    )
+    if answer_figure_required(question) and not has_required_figure_output:
+        issues.append("missing_required_answer_figure")
     expected_units = _question_subquestion_rows(question)
     if len(expected_units) >= 2:
         units = fragment.get("answer_units") if isinstance(fragment.get("answer_units"), list) else []
@@ -2135,6 +2184,11 @@ def semantic_generation_issues(
         if missing_calculation_steps:
             issues.append("calculation_missing_subquestion_steps:" + ",".join(missing_calculation_steps))
         missing_drawing_outputs: list[str] = []
+        generated_image_units = {
+            _normalize_subquestion_number(item.get("answer_unit_number"))
+            for item in fragment.get("generated_images", []) or []
+            if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
+        }
         for row in expected_units:
             if row.get("question_type") != "作图题":
                 continue
@@ -2143,7 +2197,7 @@ def semantic_generation_issues(
                 missing_drawing_outputs.append(row["number"])
                 continue
             expected_key = "drawing_code_specs" if question_drawing_mode(question) == "code" else "figure_specs"
-            if not unit.get(expected_key):
+            if not unit.get(expected_key) and row["number"] not in generated_image_units:
                 missing_drawing_outputs.append(row["number"])
         if missing_drawing_outputs:
             issues.append("missing_drawing_answer_units:" + ",".join(missing_drawing_outputs))
@@ -2348,6 +2402,16 @@ def fragment_from_analysis_draft(
             formula["display"] = True
     figure_specs = _replace_formula_placeholders_in_value(_draft_figure_specs(draft), formulas)
     drawing_code_specs = _replace_formula_placeholders_in_value(_draft_drawing_code_specs(draft, qid), formulas)
+    generated_images = [
+        {
+            "asset_id": str(item.get("asset_id") or "").strip(),
+            "caption": str(item.get("caption") or "答案图示").strip() or "答案图示",
+            "placement": str(item.get("placement") or "analysis").strip() or "analysis",
+            "answer_unit_number": str(item.get("answer_unit_number") or "").strip(),
+        }
+        for item in (draft.get("generated_images") or [])
+        if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
+    ]
     stem = _clean_question_stem(question)
     raw_analysis_text = _normalize_multipart_text_layout(str(draft.get("analysis", "")), stem)
     draft_analysis_text = _replace_formula_placeholders_in_text(raw_analysis_text, formulas)
@@ -2398,6 +2462,7 @@ def fragment_from_analysis_draft(
         "formulas": formulas,
         "figure_specs": figure_specs,
         "drawing_code_specs": drawing_code_specs,
+        "generated_images": generated_images,
         "warnings": _warning_items(draft.get("uncertainties"), formulas),
         "answer_units": _normalized_answer_units(draft, question),
         # Keep the normalized numerical ledger in the durable fragment.  It is
@@ -2416,6 +2481,7 @@ def fragment_from_analysis_draft(
             "formulas": draft.get("formulas", []),
             "figure_specs": figure_specs,
             "drawing_code_specs": drawing_code_specs,
+            "generated_images": generated_images,
             "mistake_notes": _replace_formula_placeholders_in_value(draft.get("mistake_notes", []), formulas),
             "uncertainties": _replace_formula_placeholders_in_value(draft.get("uncertainties", []), formulas),
             "calculation_contract": draft.get("calculation_contract", {}),
@@ -2662,6 +2728,130 @@ def demote_simple_symbol_formulas(fragment: dict[str, Any]) -> dict[str, Any]:
     return fragment
 
 
+_MAIN_MODEL_IMAGE_TOOL_RULES = [
+    (
+        "The generate_image tool is the only image-execution path for this model call. You alone decide from the "
+        "complete question, answer intent, source visuals, and textbook evidence whether the final answer needs an image. "
+        "Do not let question_type, drawing_generation_mode, a keyword rule, or the mere availability of the tool make that decision for you."
+    ),
+    (
+        "If you decide an image is needed, call generate_image and inspect the returned pixels against the question and "
+        "evidence before accepting it. Correct the prompt and call again when needed; reject an incorrect image."
+    ),
+    (
+        "When a registered source image materially defines the requested visual, pass its exact task-local path in "
+        "referenced_image_paths so the image model receives the original pixels through an image edit request. Omit "
+        "both image selectors for a new image. To revise an image you just generated and inspected, use "
+        "num_last_images_to_include. Never combine the two selectors and never pass more than five references."
+    ),
+    (
+        "Satisfy every explicit user-facing deliverable in the question. A request to draw, plot, sketch, show a structure, "
+        "or provide a diagram is required answer content rather than optional decoration; do not claim such a requirement "
+        "is complete with text alone. Understand that requirement yourself from the full question, then use generate_image "
+        "when an actual visual is required."
+    ),
+    (
+        "When you accept a generated image, bind its inspected asset_id through generated_images and leave figure_specs "
+        "and drawing_code_specs empty for that visual. Do not substitute a program-rendered specification or drawing code "
+        "for the image tool. For a drawing answer unit, set generated_images[].answer_unit_number to that unit number."
+    ),
+    (
+        "Do not return figure_specs or drawing_code_specs anywhere in this response. They are intentionally unavailable "
+        "while the real image tool is attached."
+    ),
+    (
+        "If you decide no image is needed, do not call generate_image, keep generated_images empty, and return the normal "
+        "text JSON in the first model turn."
+    ),
+    DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
+]
+
+_PROGRAM_FIGURE_OUTPUT_KEYS = {"figure_specs", "drawing_code_specs"}
+_PROGRAM_FIGURE_RULE_MARKERS = (
+    "figure_specs",
+    "drawing_code_specs",
+    "drawing_generation_mode",
+    "custom_diagram",
+    "registered schema",
+    "schema's required_fields",
+    "schema_resolution",
+    "render_decision.strategy",
+)
+
+
+def _without_program_figure_outputs(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_program_figure_outputs(item)
+            for key, item in value.items()
+            if str(key) not in _PROGRAM_FIGURE_OUTPUT_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_program_figure_outputs(item) for item in value]
+    return value
+
+
+def _with_main_model_image_tool_contract(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make the live image tool authoritative without deciding whether it should run."""
+
+    routed = [dict(message) for message in messages]
+    for index in range(len(routed) - 1, -1, -1):
+        message = routed[index]
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        text_part_index: int | None = None
+        if isinstance(content, str):
+            user_text = content
+        elif isinstance(content, list):
+            text_part_index = next(
+                (
+                    part_index
+                    for part_index, part in enumerate(content)
+                    if isinstance(part, dict)
+                    and part.get("type") in {"text", "input_text"}
+                    and isinstance(part.get("text"), str)
+                ),
+                None,
+            )
+            if text_part_index is None:
+                continue
+            user_text = str(content[text_part_index].get("text") or "")
+        else:
+            continue
+        try:
+            payload = json.loads(user_text)
+        except (TypeError, ValueError):
+            break
+        if not isinstance(payload, dict):
+            break
+        hard_rules = [
+            str(rule)
+            for rule in payload.get("hard_rules", [])
+            if str(rule).strip()
+            and not any(marker in str(rule) for marker in _PROGRAM_FIGURE_RULE_MARKERS)
+        ]
+        payload = _without_program_figure_outputs(payload)
+        payload["hard_rules"] = [*hard_rules, *_MAIN_MODEL_IMAGE_TOOL_RULES]
+        payload["image_tool_orchestration"] = "main_model_tool_loop"
+        routed_text = json.dumps(payload, ensure_ascii=False)
+        if text_part_index is None:
+            routed[index] = {**message, "content": routed_text}
+        else:
+            routed_content = [dict(part) if isinstance(part, dict) else part for part in content]
+            routed_content[text_part_index] = {**routed_content[text_part_index], "text": routed_text}
+            routed[index] = {**message, "content": routed_content}
+        break
+    if routed and routed[0].get("role") == "system" and isinstance(routed[0].get("content"), str):
+        routed[0] = {
+            **routed[0],
+            "content": routed[0]["content"]
+            + " When generate_image is available, its tool-routing rules in the task payload override any earlier "
+            "program-rendering preference; the main model still decides whether an image is needed.",
+        }
+    return routed
+
+
 def generate_one_fragment(
     client: OpenAICompatibleClient,
     provider: ProviderConfig,
@@ -2673,8 +2863,16 @@ def generate_one_fragment(
     attempt_callback: Any | None = None,
     retries: int = 1,
     deadline_monotonic: float | None = None,
+    tool_loop: ModelToolLoop | None = None,
+    include_textbook_evidence: bool = True,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    messages = build_answer_draft_prompt(question, prompt_evidence if prompt_evidence is not None else evidence)
+    messages = build_answer_draft_prompt(
+        question,
+        prompt_evidence if prompt_evidence is not None else evidence,
+        include_textbook_evidence=include_textbook_evidence,
+    )
+    if tool_loop is not None:
+        messages = _with_main_model_image_tool_contract(messages)
     understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
     direct_visual_input = bool(
         needs_vision_model(question)
@@ -2698,21 +2896,32 @@ def generate_one_fragment(
                 raise LLMError("question model-call budget exhausted")
             timeout_seconds = min(timeout_seconds, max(1, math.ceil(remaining_seconds)))
         try:
-            data = client.chat_json_object(
-                messages,
-                model=model,
-                max_tokens=max_tokens,
-                fallback_model=fallback_model,
-                attempt_callback=attempt_callback,
-                attempts=1,
-                thinking=thinking_mode,
-                timeout=timeout_seconds,
-                task_stage="answer_generation",
-                required_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
-                delivered_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
-                item_ids=[str(question.get("question_id") or question.get("number") or "")],
-                enforce_context_budget=True,
-            )
+            agent_result = None
+            if tool_loop is not None:
+                agent_result = tool_loop.run_json(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    thinking=thinking_mode,
+                    timeout=timeout_seconds,
+                )
+                data = agent_result.value
+            else:
+                data = client.chat_json_object(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    fallback_model=fallback_model,
+                    attempt_callback=attempt_callback,
+                    attempts=1,
+                    thinking=thinking_mode,
+                    timeout=timeout_seconds,
+                    task_stage="answer_generation",
+                    required_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
+                    delivered_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
+                    item_ids=[str(question.get("question_id") or question.get("number") or "")],
+                    enforce_context_budget=True,
+                )
             assistant_content = json.dumps(data, ensure_ascii=False)
         except LLMError as exc:
             last_issues = [str(exc)]
@@ -2740,6 +2949,12 @@ def generate_one_fragment(
         data = fragment_from_analysis_draft(data, question, evidence, evidence_selection)
         data = promote_inline_reactions(data)
         data = promote_inline_mathematical_expressions(data)
+        if agent_result is not None:
+            data.setdefault("_meta", {})["image_tool_loop"] = {
+                "steps": agent_result.steps,
+                "tool_calls": agent_result.tool_calls,
+                "generated_artifacts": agent_result.generated_artifacts,
+            }
         if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
             data["answer"] = "见解析"
         syntax_issues = validate_v4_answer_fragment(data)
@@ -2756,13 +2971,17 @@ def generate_one_fragment(
             retry_report = getattr(client, "last_json_retry_report", {})
             success_attempts = [item for item in retry_report.get("attempts", []) if not item.get("error")]
             actual_model = str((success_attempts[-1].get("model") if success_attempts else model) or model)
-            data["_meta"] = {
-                "provider": provider.name,
-                "model": actual_model,
-                "attempt": attempt + 1,
-                "direct_visual_input": direct_visual_input,
-                "llm_retry": retry_report,
-            }
+            meta = dict(data.get("_meta") or {})
+            meta.update(
+                {
+                    "provider": provider.name,
+                    "model": actual_model,
+                    "attempt": attempt + 1,
+                    "direct_visual_input": direct_visual_input,
+                    "llm_retry": retry_report,
+                }
+            )
+            data["_meta"] = meta
             return data, []
         if semantic_issues == ["calculation_missing_formula"] and not formula_repair_requested:
             last_issues = semantic_issues
@@ -2855,8 +3074,8 @@ def generate_one_fragment(
     return data, last_issues
 
 
-def _single_prompt_payload(question: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    messages = build_answer_draft_prompt(question, evidence)
+def _single_prompt_payload(question: dict[str, Any], evidence: list[dict[str, Any]], *, include_textbook_evidence: bool = True) -> dict[str, Any]:
+    messages = build_answer_draft_prompt(question, evidence, include_textbook_evidence=include_textbook_evidence)
     user_content = messages[-1].get("content") if messages else ""
     if isinstance(user_content, list):
         user_content = next((part.get("text", "") for part in user_content if isinstance(part, dict) and part.get("type") == "text"), "")
@@ -2864,10 +3083,18 @@ def _single_prompt_payload(question: dict[str, Any], evidence: list[dict[str, An
 
 
 def build_answer_batch_prompt(batch_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    payloads = [_single_prompt_payload(item["question"], item.get("prompt_evidence") or item["evidence"]) for item in batch_items]
+    payloads = [
+        _single_prompt_payload(
+            item["question"],
+            item.get("prompt_evidence") or item["evidence"],
+            include_textbook_evidence=bool(item.get("include_textbook_evidence", True)),
+        )
+        for item in batch_items
+    ]
     first = payloads[0] if payloads else {}
     batch_payload = {
         "task": "generate_question_analysis_draft_batch",
+        "analysis_profile": first.get("analysis_profile", "evidence_backed"),
         "answer_content_quality_requirements": first.get("answer_content_quality_requirements", {}),
         "hard_rules": [
             *(first.get("hard_rules") or []),
@@ -2884,7 +3111,7 @@ def build_answer_batch_prompt(batch_items: list[dict[str, Any]]) -> list[dict[st
                 "question_id": payload.get("question", {}).get("question_id", ""),
                 "question": payload.get("question", {}),
                 "answer_depth_profile": payload.get("answer_depth_profile", {}),
-                "textbook_content": payload.get("textbook_content", []),
+                **({"textbook_content": payload.get("textbook_content", [])} if "textbook_content" in payload else {}),
             }
             for payload in payloads
         ],
@@ -2892,7 +3119,11 @@ def build_answer_batch_prompt(batch_items: list[dict[str, Any]]) -> list[dict[st
     return [
         {
             "role": "system",
-            "content": "你是专业考研真题解析教师。你要批量生成多个短题解析草稿，只输出一个合法 JSON object，不要输出 Markdown 或 JSON 之外的任何文字。",
+            "content": (
+                "你是专业考研题目解析教师。你要批量生成多个短题解析草稿，不得使用或输出教材依据，只输出一个合法 JSON object。"
+                if first.get("analysis_profile") == "question_only"
+                else "你是专业考研真题解析教师。你要批量生成多个短题解析草稿，只输出一个合法 JSON object，不要输出 Markdown 或 JSON 之外的任何文字。"
+            ),
         },
         {"role": "user", "content": json.dumps(batch_payload, ensure_ascii=False)},
     ]
@@ -2954,26 +3185,41 @@ def generate_batch_fragments(
     batch_items: list[dict[str, Any]],
     model: str,
     attempt_callback: Any | None = None,
+    tool_loop: ModelToolLoop | None = None,
 ) -> list[dict[str, Any]]:
     messages = build_answer_batch_prompt(batch_items)
+    if tool_loop is not None:
+        messages = _with_main_model_image_tool_contract(messages)
     fallback_model = next((item for item in provider.model_options if item != model), None)
     thinking_mode = answer_generation_thinking_mode(provider)
-    raw = client.chat_json_object(
-        messages,
-        model=model,
-        max_tokens=min(
-            STRUCTURED_ANSWER_MAX_TOKENS,
-            sum(structured_answer_max_tokens(provider, item["question"]) for item in batch_items),
-        ),
-        fallback_model=fallback_model,
-        attempt_callback=attempt_callback,
-        attempts=1,
-        timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
-        thinking=thinking_mode,
-        task_stage="answer_generation",
-        item_ids=[str(item["question"].get("question_id") or "") for item in batch_items],
-        enforce_context_budget=True,
+    max_tokens = min(
+        STRUCTURED_ANSWER_MAX_TOKENS,
+        sum(structured_answer_max_tokens(provider, item["question"]) for item in batch_items),
     )
+    agent_result = None
+    if tool_loop is not None:
+        agent_result = tool_loop.run_json(
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            thinking=thinking_mode,
+            timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
+        )
+        raw = agent_result.value
+    else:
+        raw = client.chat_json_object(
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            fallback_model=fallback_model,
+            attempt_callback=attempt_callback,
+            attempts=1,
+            timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
+            thinking=thinking_mode,
+            task_stage="answer_generation",
+            item_ids=[str(item["question"].get("question_id") or "") for item in batch_items],
+            enforce_context_budget=True,
+        )
     drafts = _extract_batch_drafts(raw)
     drafts_by_qid = {str(item.get("question_id") or "").strip(): item for item in drafts if str(item.get("question_id") or "").strip()}
     batch_qids = [str(item["question"].get("question_id") or "").strip() for item in batch_items]
@@ -2996,6 +3242,12 @@ def generate_batch_fragments(
             retry_report=retry_report,
             batch_question_ids=batch_qids,
         )
+        if fragment is not None and agent_result is not None:
+            fragment.setdefault("_meta", {})["image_tool_loop"] = {
+                "steps": agent_result.steps,
+                "tool_calls": agent_result.tool_calls,
+                "generated_artifacts": agent_result.generated_artifacts,
+            }
         results.append({"question_id": qid, "fragment": fragment, "issues": issues})
     return results
 
@@ -3010,6 +3262,9 @@ def generate_answer_fragments(
     progress_json: Path | None = None,
     evidence_selections: dict[str, dict[str, Any]] | None = None,
     reusable_fragments: dict[str, dict[str, Any]] | None = None,
+    image_provider: ProviderConfig | None = None,
+    image_model: str = "",
+    include_textbook_evidence: bool = True,
 ) -> GenerationResult:
     fragments: list[dict[str, Any]] = []
     answer_drafts: list[dict[str, Any]] = []
@@ -3045,6 +3300,19 @@ def generate_answer_fragments(
     reused_fragment_count = len(reusable_fragments)
     max_workers = answer_generation_worker_count()
     parallel_enabled = max_workers > 1 and len(questions) > 1
+    image_tool_enabled = bool(
+        image_provider is not None
+        and getattr(image_provider, "api_key", "")
+        and str(image_model or getattr(image_provider, "image_model", "") or "").strip()
+        and provider_supports_image_generation(image_provider)
+        and tool_loop_supported(OpenAICompatibleClient(provider), provider, model)
+    )
+    image_tool_route_requested = bool(image_provider is not None and str(image_model or "").strip())
+    if image_tool_route_requested and not image_tool_enabled:
+        raise ValueError(
+            "main-model image tool route was requested but could not be initialized; "
+            "the answer generator will not fall back to the legacy figure pipeline"
+        )
     batch_enabled = answer_generation_batch_enabled()
     batch_size = answer_generation_batch_size()
     batch_token_budget = answer_generation_batch_token_budget()
@@ -3124,6 +3392,15 @@ def generate_answer_fragments(
             : answer_generation_max_model_candidates()
         ]
         local_client = OpenAICompatibleClient(provider)
+        if image_tool_enabled:
+            # A model retry is only equivalent when the candidate can execute
+            # the same native image-tool loop. Never turn a user-selected
+            # main-model route into a silent text-only fallback.
+            model_candidates = _equivalent_tool_loop_model_candidates(
+                local_client,
+                provider,
+                model_candidates,
+            )
         fragment = None
         issues: list[str] = []
         used_model = model_candidates[0] if model_candidates else model
@@ -3131,12 +3408,29 @@ def generate_answer_fragments(
         local_token_feedback: list[dict[str, Any]] = []
         local_fallback_count = 0
         if not model_candidates:
-            issues = [f"question requires vision model, but provider {provider.name} does not declare supports_vision and vision_model"]
+            issues = [
+                (
+                    f"no equivalent native image-tool model is registered for provider {provider.name}"
+                    if image_tool_enabled
+                    else f"question requires vision model, but provider {provider.name} does not declare supports_vision and vision_model"
+                )
+            ]
         for candidate_model in model_candidates:
             if time.monotonic() >= question_deadline:
                 issues = ["question model-call budget exhausted before another model fallback"]
                 break
             try:
+                tool_loop = None
+                if image_tool_enabled and image_provider is not None:
+                    artifact_store = ImageArtifactStore(output_json.parent / "agent_images" / qid)
+                    image_tool = ImageGenerationTool(
+                        image_provider,
+                        image_model,
+                        artifact_store,
+                        reference_images=question.get("image_refs") or [],
+                    )
+                    tool_loop = ModelToolLoop(local_client, [image_tool], artifact_store)
+
                 def attempt_callback(status: str, report: dict[str, Any]) -> None:
                     record_progress_event(question, status, report)
 
@@ -3151,11 +3445,21 @@ def generate_answer_fragments(
                         prompt_evidence=prompt_evidence,
                         attempt_callback=attempt_callback,
                         deadline_monotonic=question_deadline,
+                        tool_loop=tool_loop,
+                        include_textbook_evidence=include_textbook_evidence,
                     )
                 except TypeError as exc:
                     if "prompt_evidence" not in str(exc) and "attempt_callback" not in str(exc):
                         raise
-                    fragment, issues = generate_one_fragment(local_client, provider, question, evidence, candidate_model, evidence_selection=evidence_selection)
+                    fragment, issues = generate_one_fragment(
+                        local_client,
+                        provider,
+                        question,
+                        evidence,
+                        candidate_model,
+                        evidence_selection=evidence_selection,
+                        include_textbook_evidence=include_textbook_evidence,
+                    )
             except LLMError as exc:
                 fragment = None
                 issues = [str(exc)]
@@ -3232,6 +3536,7 @@ def generate_answer_fragments(
             "evidence": evidence,
             "prompt_evidence": prompt_evidence,
             "evidence_selection": evidence_selection,
+            "include_textbook_evidence": include_textbook_evidence,
         }
 
     def generate_batch_question_results(items: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -3241,6 +3546,22 @@ def generate_answer_fragments(
             return [generate_question(item) for item in items]
         batch_qids = [str(item["question"].get("question_id") or "") for item in batch_items]
         local_client = OpenAICompatibleClient(provider)
+        batch_tool_loop = None
+        if image_tool_enabled and image_provider is not None:
+            batch_scope = hashlib.sha256("|".join(batch_qids).encode("utf-8")).hexdigest()[:16]
+            artifact_store = ImageArtifactStore(output_json.parent / "agent_images" / f"batch_{batch_scope}")
+            batch_reference_images = [
+                image_ref
+                for item in batch_items
+                for image_ref in (item["question"].get("image_refs") or [])
+            ]
+            image_tool = ImageGenerationTool(
+                image_provider,
+                image_model,
+                artifact_store,
+                reference_images=batch_reference_images,
+            )
+            batch_tool_loop = ModelToolLoop(local_client, [image_tool], artifact_store)
         try:
             def attempt_callback(status: str, report: dict[str, Any]) -> None:
                 question = batch_items[0]["question"] if batch_items else {}
@@ -3253,6 +3574,7 @@ def generate_answer_fragments(
                     batch_items,
                     model,
                     attempt_callback=attempt_callback,
+                    tool_loop=batch_tool_loop,
                 )
             by_qid = {str(item.get("question_id") or ""): item for item in batch_results}
             if set(by_qid) != set(batch_qids):
@@ -3382,6 +3704,7 @@ def generate_answer_fragments(
         "source_contract": answer_source_contract(structured_exam),
         "provider": provider.name,
         "model": model,
+        "image_generation_orchestration": "main_model_tool_loop" if image_tool_enabled else "legacy_figure_pipeline",
         "fragments": fragments,
         "issues": all_issues,
         "recovery_events": recovery_events,

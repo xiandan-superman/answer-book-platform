@@ -43,7 +43,9 @@ from .drawing_code import (
     run_drawing_code,
     validate_drawing_code,
 )
+from .image_artifacts import ImageArtifactStore
 from .llm_client import OpenAICompatibleClient
+from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .question_requirements import answer_figure_required
 from .settings import FIGURE_AUXILIARY_MAX_TOKENS, provider_supports_image_generation
 
@@ -2848,6 +2850,45 @@ def _explicit_drawing_code_specs(fragment: dict[str, Any], qid: str) -> list[dic
     return specs
 
 
+def _main_model_generated_image_specs(fragment: dict[str, Any], qid: str) -> list[dict[str, Any]]:
+    """Translate only assets explicitly accepted by the main model into figure specs."""
+
+    rows = fragment.get("generated_images")
+    if not isinstance(rows, list):
+        return []
+    specs: list[dict[str, Any]] = []
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            continue
+        asset_id = str(item.get("asset_id") or "").strip()
+        meta = fragment.get("_meta") if isinstance(fragment.get("_meta"), dict) else {}
+        loop_meta = meta.get("image_tool_loop") if isinstance(meta.get("image_tool_loop"), dict) else {}
+        artifacts = loop_meta.get("generated_artifacts") if isinstance(loop_meta.get("generated_artifacts"), list) else []
+        artifact = next(
+            (row for row in artifacts if isinstance(row, dict) and str(row.get("asset_id") or "") == asset_id),
+            None,
+        )
+        path = Path(str((artifact or {}).get("path") or ""))
+        if not asset_id or not path.exists() or not path.is_file():
+            continue
+        specs.append(
+            {
+                "figure_id": f"{qid}_agent_img_{index:02d}",
+                "question_id": qid,
+                "kind": "model_generated_image",
+                "caption": str(item.get("caption") or "答案图示").strip() or "答案图示",
+                "answer_unit_number": str(item.get("answer_unit_number") or "").strip(),
+                "placement": str(item.get("placement") or "analysis").strip() or "analysis",
+                "asset_id": asset_id,
+                "path": str(path.resolve()),
+                "provider": str((artifact or {}).get("provider") or ""),
+                "model": str((artifact or {}).get("model") or ""),
+                "source": "main_model_tool_loop",
+            }
+        )
+    return specs
+
+
 def _figure_spec_for_question(question: dict[str, Any]) -> dict[str, Any] | None:
     """Ask the selected capability pack for a machine-verifiable proposal."""
 
@@ -2943,6 +2984,19 @@ def _insert_figure_block(fragment: dict[str, Any], spec: dict[str, Any]) -> None
     for block in blocks:
         if str(block.get("label", "")).strip() == "图示":
             segments = block.get("segments", []) if isinstance(block.get("segments"), list) else []
+            image_ids = [
+                str(segment.get("image_id") or "")
+                for segment in segments
+                if isinstance(segment, dict) and segment.get("type") == "image_ref"
+            ]
+            # A single-image figure block is owned entirely by that image and
+            # its caption. Formula promotion can split a caption into several
+            # segments; replacing only the adjacent segment leaves orphaned
+            # caption pieces that accumulate on every resumed run.
+            if image_ids == [figure_id]:
+                block["segments"] = new_segments
+                fragment["blocks"] = blocks
+                return
             filtered: list[dict[str, Any]] = []
             idx = 0
             while idx < len(segments):
@@ -3051,6 +3105,10 @@ def prepare_figures_for_fragments(
         if isinstance(item, dict)
     ]
     fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
+    main_model_owns_image_generation = (
+        str(fragments_data.get("image_generation_orchestration") or "").strip()
+        == "main_model_tool_loop"
+    )
     fragments_by_id = {
         str(fragment.get("question_id", "")).strip(): fragment
         for fragment in fragments_data.get("fragments", [])
@@ -3059,7 +3117,12 @@ def prepare_figures_for_fragments(
     specs: list[dict[str, Any]] = []
     fragments_by_figure_id: dict[str, dict[str, Any]] = {}
     direct_report: dict[str, Any] = {
-        "enabled": bool(provider is not None and getattr(provider, "api_key", "") and provider_supports_image_generation(provider)),
+        "enabled": bool(
+            not main_model_owns_image_generation
+            and provider is not None
+            and getattr(provider, "api_key", "")
+            and provider_supports_image_generation(provider)
+        ),
         "provider": getattr(provider, "name", "") if provider is not None else "",
         "image_model": getattr(provider, "image_model", "") if provider is not None else "",
         "image_size": getattr(provider, "image_size", "") if provider is not None else "",
@@ -3068,8 +3131,18 @@ def prepare_figures_for_fragments(
         "failed": [],
         "skipped": [],
     }
+    if main_model_owns_image_generation:
+        direct_report["skipped"].append(
+            {
+                "reason": "legacy image-model fallback disabled because the main model owns image tool decisions"
+            }
+        )
     code_report: dict[str, Any] = {
-        "enabled": bool(code_provider is not None and getattr(code_provider, "api_key", "")),
+        "enabled": bool(
+            not main_model_owns_image_generation
+            and code_provider is not None
+            and getattr(code_provider, "api_key", "")
+        ),
         "provider": getattr(code_provider, "name", "") if code_provider is not None else "",
         "model": str(code_model or getattr(code_provider, "default_model", "") or "") if code_provider is not None else "",
         "generated": [],
@@ -3078,6 +3151,10 @@ def prepare_figures_for_fragments(
     }
     direct_client = OpenAICompatibleClient(provider) if direct_report["enabled"] else None
     code_client = OpenAICompatibleClient(code_provider) if code_report["enabled"] else None
+    if main_model_owns_image_generation:
+        code_report["skipped"].append(
+            {"reason": "legacy program/code rendering disabled because the main model owns image tool decisions"}
+        )
     questions_by_id = {
         str(question.get("question_id", "")).strip(): question
         for question in structured_exam.get("items", [])
@@ -3126,7 +3203,13 @@ def prepare_figures_for_fragments(
         planned_strategy = _planned_render_strategy(question)
         mode = question_drawing_mode(question)
         question_specs: list[dict[str, Any]] = []
-        if needs_figure and planned_strategy == "unavailable":
+        accepted_agent_specs = _main_model_generated_image_specs(fragment, qid)
+        if main_model_owns_image_generation:
+            # Isolation boundary: this route can consume only images that the
+            # main model actually generated, inspected and accepted.  Legacy
+            # figure_specs/drawing_code_specs are intentionally ignored.
+            question_specs = accepted_agent_specs
+        elif needs_figure and planned_strategy == "unavailable":
             code_report["skipped"].append(
                 {
                     "question_id": qid,
@@ -3135,7 +3218,7 @@ def prepare_figures_for_fragments(
             )
             needed_question_ids.add(qid)
             continue
-        if needs_figure and mode == "code":
+        elif needs_figure and mode == "code":
             if code_client is not None:
                 try:
                     report("drawing_code_request_started", question_id=qid, model=code_report["model"], phase="initial")
@@ -3200,10 +3283,19 @@ def prepare_figures_for_fragments(
                 question_specs = filtered_specs
         if needs_figure:
             needed_question_ids.add(qid)
+        # A real image inspected and explicitly accepted by the main model is
+        # authoritative for this question.  Do not also run the older
+        # program/code rendering path and create a second, uninspected visual.
+        if not main_model_owns_image_generation and accepted_agent_specs:
+            question_specs = accepted_agent_specs
         for spec in question_specs:
             if not spec:
                 continue
-            spec = spec if str(spec.get("kind") or "") == "model_drawing_code" else normalize_figure_spec(spec)
+            spec = (
+                spec
+                if str(spec.get("kind") or "") in {"model_drawing_code", "model_generated_image"}
+                else normalize_figure_spec(spec)
+            )
             figure_question = _question_context_for_figure_spec(question, spec)
             spec["drawing_generation_mode"] = mode
             spec.update({key: value for key, value in _planned_figure_metadata(figure_question).items() if value})
@@ -3227,7 +3319,7 @@ def prepare_figures_for_fragments(
         if str(spec.get("figure_id") or "").strip() in generated_ids
     }
     retry_code_targets: list[tuple[str, dict[str, Any], dict[str, Any], list[str]]] = []
-    for qid in sorted(needed_question_ids - covered_qids):
+    for qid in (sorted(needed_question_ids - covered_qids) if not main_model_owns_image_generation else []):
         question = questions_by_id.get(qid)
         fragment = fragments_by_id.get(qid)
         if not question or not fragment or question_drawing_mode(question) != "code":
@@ -3664,6 +3756,26 @@ def generate_figures(specs_json: Path, output_dir: Path, progress_callback: Any 
             continue
         output = output_dir / f"{figure_id}.png"
         kind = str(spec.get("kind", "")).strip()
+        if kind == "model_generated_image":
+            source = Path(str(spec.get("path") or ""))
+            try:
+                if not source.exists() or not source.is_file():
+                    raise RuntimeError("accepted main-model image asset is missing")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                if source.resolve() != output.resolve():
+                    shutil.copyfile(source, output)
+                integrity_issues = audit_figure_image_integrity(output)
+                if integrity_issues:
+                    raise RuntimeError("; ".join(integrity_issues))
+                spec["path"] = str(output)
+                generated.append(output)
+                if callable(progress_callback):
+                    progress_callback("figure_rendered", {"figure_id": figure_id, "question_id": spec.get("question_id", ""), "kind": kind})
+            except (OSError, RuntimeError) as exc:
+                spec["validation_issues"] = [str(exc)]
+                if callable(progress_callback):
+                    progress_callback("figure_render_failed", {"figure_id": figure_id, "question_id": spec.get("question_id", ""), "error": str(exc)})
+            continue
         validation_issues = program_check_figure_spec(spec)
         if validation_issues:
             spec["validation_issues"] = validation_issues
@@ -4340,7 +4452,7 @@ def _figure_visual_repair_fingerprint(
         if figure_id and image.is_file():
             image_hashes[figure_id] = hashlib.sha256(image.read_bytes()).hexdigest()
     payload = {
-        "version": "answer_book.figure_visual_qa_repair.v3",
+        "version": "answer_book.figure_visual_qa_repair.v5",
         "structured_exam": structured_exam,
         "specs": specs_data,
         "qa_report": qa_report,
@@ -4558,6 +4670,8 @@ def repair_figures_with_model_for_visual_qa(
     model: str = "",
     vision_provider: Any | None = None,
     vision_model: str = "",
+    image_provider: Any | None = None,
+    image_model: str = "",
     max_rounds: int = 1,
     max_candidates_per_target: int = 2,
     progress_callback: Any | None = None,
@@ -4570,7 +4684,7 @@ def repair_figures_with_model_for_visual_qa(
     figure merely because its code passed the static validator.
     """
     report: dict[str, Any] = {
-        "schema_version": "answer_book.figure_visual_qa_repair.v3",
+        "schema_version": "answer_book.figure_visual_qa_repair.v5",
         "enabled": bool(
             provider is not None
             and getattr(provider, "api_key", "")
@@ -4630,6 +4744,22 @@ def repair_figures_with_model_for_visual_qa(
     repair_model = str(report["repair_model"]["model"])
     reviewer_model = str(report["vision_model"]["model"])
     candidate_root = output_dir.parent / "figure_visual_qa_candidates"
+    questions_by_id = {
+        str(item.get("question_id") or "").strip(): item
+        for item in structured_exam.get("items", []) or []
+        if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+    }
+    fragments_by_id: dict[str, dict[str, Any]] = {}
+    if fragments_json is not None and fragments_json.exists():
+        try:
+            fragment_payload = json.loads(fragments_json.read_text(encoding="utf-8"))
+            fragments_by_id = {
+                str(item.get("question_id") or "").strip(): item
+                for item in fragment_payload.get("fragments", []) or []
+                if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+            }
+        except (OSError, ValueError, TypeError):
+            fragments_by_id = {}
 
     def emit(event: str, detail: dict[str, Any]) -> None:
         if callable(progress_callback):
@@ -4647,6 +4777,117 @@ def repair_figures_with_model_for_visual_qa(
         source_image: Path,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         kind = str(current_spec.get("kind") or "").strip()
+        if kind == "model_generated_image":
+            qid = str(current_spec.get("question_id") or "").strip()
+            if image_provider is None or not str(image_model or "").strip():
+                raise ValueError("main-model image repair requires an image provider and model")
+            if not tool_loop_supported(candidate_client, candidate_provider, candidate_model):
+                raise ValueError(
+                    "main-model image repair requires a provider/model/protocol route "
+                    "explicitly registered for native tools and image review"
+                )
+            question = questions_by_id.get(qid, {})
+            artifact_root = (fragments_json.parent if fragments_json is not None else output_dir.parent) / "agent_images" / qid
+            artifact_store = ImageArtifactStore(artifact_root)
+            image_tool = ImageGenerationTool(
+                image_provider,
+                image_model,
+                artifact_store,
+                reference_images=[
+                    source_image,
+                    *(question.get("image_refs") or []),
+                ],
+            )
+            tool_loop = ModelToolLoop(candidate_client, [image_tool], artifact_store)
+            fragment = fragments_by_id.get(qid, {})
+            payload = {
+                "task": "Replace exactly one failed answer image while preserving the accepted written answer.",
+                "question": question,
+                "current_answer": {
+                    "answer": fragment.get("answer") or "",
+                    "answer_summary": fragment.get("answer_summary") or "",
+                    "formulas": fragment.get("formulas") or [],
+                },
+                "current_figure": current_spec,
+                "visual_qa_failure": qa_item.get("qa") if isinstance(qa_item.get("qa"), dict) else qa_item,
+                "required_output": {
+                    "generated_images": [
+                        {
+                            "asset_id": "asset id returned by generate_image",
+                            "caption": str(current_spec.get("caption") or "答案图示"),
+                            "answer_unit_number": str(current_spec.get("answer_unit_number") or ""),
+                        }
+                    ],
+                    "repair_notes": ["brief verification notes"],
+                },
+                "rules": [
+                    "You are the main multimodal model and own the repair decision and image-generation prompt.",
+                    "Because this is a failed-image repair transaction, call generate_image to create a genuinely corrected replacement.",
+                    "Inspect the returned raster yourself. If it still has the reported defect, call generate_image again with a corrected prompt.",
+                    "Return exactly one accepted replacement asset in generated_images; never reuse the failed asset_id.",
+                    "Keep all technical labels, phase relations, percentages, and arrows consistent with the accepted written answer.",
+                    "Use a compact publication layout: keep any title to one short line in ordinary label-sized type, never more than 6% of canvas height, and reserve at least 80% of the canvas for the actual diagram.",
+                    "Use sparse, unambiguous leader arrows and visually distinct regions; avoid decorative textures or oversized typography that reduce technical readability.",
+                    "Return one JSON object only.",
+                ],
+            }
+            content: list[dict[str, Any]] = [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]
+            if source_image.exists():
+                current_url, _ = _vision_audit_image_data_url(source_image)
+                content.append({"type": "image_url", "image_url": {"url": current_url}})
+            for raw_source in question.get("image_refs", []) or []:
+                source_path = Path(str(raw_source))
+                if not source_path.exists() or not source_path.is_file():
+                    continue
+                source_url, _ = _vision_audit_image_data_url(source_path)
+                content.append({"type": "image_url", "image_url": {"url": source_url}})
+            agent_result = tool_loop.run_json(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You repair educational answer figures. You may use generate_image, must visually inspect its output, "
+                            "and may accept only an asset you actually inspected in this transaction."
+                        ),
+                    },
+                    {"role": "user", "content": content},
+                ],
+                model=candidate_model,
+                max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
+                thinking="high",
+                timeout=180,
+            )
+            bindings = agent_result.value.get("generated_images") if isinstance(agent_result.value, dict) else None
+            if not isinstance(bindings, list) or len(bindings) != 1 or not isinstance(bindings[0], dict):
+                raise ValueError("main model did not return exactly one replacement image binding")
+            asset_id = str(bindings[0].get("asset_id") or "").strip()
+            old_asset_id = str(current_spec.get("asset_id") or "").strip()
+            artifact = artifact_store.get(asset_id)
+            if artifact is None or asset_id == old_asset_id:
+                raise ValueError("main model did not accept a newly generated inspected image asset")
+            repaired = dict(current_spec)
+            repaired.update(
+                {
+                    "asset_id": asset_id,
+                    "path": artifact.path,
+                    "provider": artifact.provider,
+                    "model": artifact.model,
+                    "source": "main_model_tool_loop_visual_repair",
+                    "caption": str(bindings[0].get("caption") or current_spec.get("caption") or "答案图示"),
+                }
+            )
+            return repaired, {
+                "strategy": strategy,
+                "provider": getattr(candidate_provider, "name", ""),
+                "model": candidate_model,
+                "repair_notes": agent_result.value.get("repair_notes", []),
+                "validation_issues": [],
+                "image_tool_loop": {
+                    "steps": agent_result.steps,
+                    "tool_calls": agent_result.tool_calls,
+                    "generated_artifacts": agent_result.generated_artifacts,
+                },
+            }
         if kind == "model_drawing_code":
             payload = build_drawing_code_repair_payload(structured_exam, current_spec, qa_item, generation_item)
             system_prompt = "你是专业作图题 Python/Matplotlib 代码修复器。按 <JSON> 元数据 + <FILE> 源码块协议输出，只修复用户给定的一张图。"
@@ -4883,6 +5124,7 @@ def repair_figures_with_model_for_visual_qa(
                                 "qa": candidate_qa,
                                 "image": candidate_image,
                                 "target_report": target_report,
+                                "request_report": request_report,
                             }
                 except Exception as exc:
                     candidate_report["status"] = "error"
@@ -4933,6 +5175,46 @@ def repair_figures_with_model_for_visual_qa(
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(selected["image"], target_path)
                     latest_qa = replace_qa_item(latest_qa, selected["qa"], figure_id, target_path)
+                    if (
+                        fragments_json is not None
+                        and str(selected["spec"].get("kind") or "") == "model_generated_image"
+                        and fragments_json.exists()
+                    ):
+                        try:
+                            fragment_data = json.loads(fragments_json.read_text(encoding="utf-8"))
+                            qid = str(selected["spec"].get("question_id") or "").strip()
+                            old_spec = next(
+                                (
+                                    target["spec"]
+                                    for target in targets
+                                    if str(target.get("figure_id") or "") == figure_id
+                                ),
+                                {},
+                            )
+                            old_asset_id = str(old_spec.get("asset_id") or "").strip()
+                            new_asset_id = str(selected["spec"].get("asset_id") or "").strip()
+                            for fragment in fragment_data.get("fragments", []) or []:
+                                if not isinstance(fragment, dict) or str(fragment.get("question_id") or "").strip() != qid:
+                                    continue
+                                for binding in fragment.get("generated_images", []) or []:
+                                    if isinstance(binding, dict) and str(binding.get("asset_id") or "").strip() == old_asset_id:
+                                        binding["asset_id"] = new_asset_id
+                                        binding["caption"] = str(selected["spec"].get("caption") or binding.get("caption") or "答案图示")
+                                loop_meta = fragment.setdefault("_meta", {}).setdefault("image_tool_loop", {})
+                                request_loop = selected.get("request_report", {}).get("image_tool_loop", {})
+                                artifacts = [
+                                    item for item in loop_meta.get("generated_artifacts", []) or [] if isinstance(item, dict)
+                                ]
+                                known = {str(item.get("asset_id") or "") for item in artifacts}
+                                for artifact in request_loop.get("generated_artifacts", []) or []:
+                                    if isinstance(artifact, dict) and str(artifact.get("asset_id") or "") not in known:
+                                        artifacts.append(artifact)
+                                loop_meta["generated_artifacts"] = artifacts
+                                loop_meta["steps"] = int(loop_meta.get("steps") or 0) + int(request_loop.get("steps") or 0)
+                                loop_meta["tool_calls"] = int(loop_meta.get("tool_calls") or 0) + int(request_loop.get("tool_calls") or 0)
+                            fragments_json.write_text(json.dumps(fragment_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                        except (OSError, ValueError, TypeError):
+                            pass
                     emit("visual_qa_repair_candidate_selected", {"figure_id": figure_id, "question_id": str(selected["spec"].get("question_id") or ""), "strategy": selected["strategy"]})
             refreshed_specs_data = json.loads(specs_json.read_text(encoding="utf-8")) if specs_json.exists() else {"figures": []}
             pruned = _prune_redundant_model_fallback_specs(refreshed_specs_data, output_dir)
@@ -5192,7 +5474,15 @@ def audit_figures_with_vision(
             ).hexdigest()
             fingerprints[figure_id] = fingerprint
             existing = existing_items.get(figure_id)
-            if isinstance(existing, dict) and existing.get("audit_fingerprint") == fingerprint:
+            existing_qa = existing.get("qa") if isinstance(existing, dict) and isinstance(existing.get("qa"), dict) else {}
+            reusable_review = not str(existing_qa.get("error") or "").strip() and not str(
+                (existing.get("error") or "") if isinstance(existing, dict) else ""
+            ).strip()
+            if (
+                isinstance(existing, dict)
+                and existing.get("audit_fingerprint") == fingerprint
+                and reusable_review
+            ):
                 reused_items.append({**existing, "path": str(image_path), "reused": True})
             else:
                 audit_specs.append(spec)

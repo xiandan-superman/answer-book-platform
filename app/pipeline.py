@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from .analysis_profiles import analysis_uses_textbook_evidence
 from .answer_coverage_audit import audit_answer_coverage
 from .answer_generation import (
     attach_program_evidence_block,
@@ -48,6 +49,7 @@ from .expression_promotion import promote_inline_mathematical_expressions, promo
 from .figure_schema_planning import attach_figure_schema_plans, plan_figure_schemas
 from .figures import audit_figures_with_vision, prepare_figures_for_fragments, repair_figures_with_model_for_visual_qa
 from .fragment_repair import repair_answer_fragments_for_docx
+from .image_orchestration import LEGACY_FIGURE_PIPELINE, MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
 from .knowledge_planning import generate_knowledge_plans, load_knowledge_plans
 from .model_diagnostics import pin_model_diagnostics_for_failure
 from .model_usage_report import build_model_usage_report
@@ -93,6 +95,7 @@ from .pipeline_checkpoints import (
 )
 from .pipeline_delivery import complete_pipeline_delivery
 from .pipeline_telemetry import PipelineRunTelemetry
+from .question_requirements import answer_figure_required
 from .question_types import question_has_type
 from .question_understanding import QUESTION_UNDERSTANDING_POLICY_VERSION, build_question_understandings
 from .resource_ids import bounded_resource_path
@@ -124,6 +127,34 @@ CONTENT_QUALITY_MODEL_REPAIR_CODES = {
     "xrd_figure_text_label_mismatch",
     "xrd_unsupported_peak_spacing_trend",
 }
+
+
+def _isolated_image_routes(
+    mode: str,
+    *,
+    image_provider: object,
+    image_model: str,
+    code_provider: object,
+    code_model: str,
+) -> dict[str, object]:
+    """Split dependencies once so neither image path can leak into the other."""
+
+    normalized = normalize_image_orchestration(mode)
+    main_mode = normalized == MAIN_MODEL_TOOL_LOOP
+    routes: dict[str, object] = {
+        "mode": normalized,
+        "answer_image_provider": image_provider if main_mode else None,
+        "answer_image_model": image_model if main_mode else "",
+        "legacy_image_provider": None if main_mode else image_provider,
+        "legacy_image_model": "" if main_mode else image_model,
+        "legacy_code_provider": None if main_mode else code_provider,
+        "legacy_code_model": "" if main_mode else code_model,
+    }
+    assert not (
+        routes["answer_image_provider"] is not None
+        and (routes["legacy_image_provider"] is not None or routes["legacy_code_provider"] is not None)
+    ), "image orchestration routes must be mutually exclusive"
+    return routes
 
 
 def _pin_text_provider_model(provider: object, model: str):
@@ -393,15 +424,17 @@ def _validate_required_provider_keys(
     image_provider,
     image_model: str,
     require_vision_provider: bool = True,
+    require_reasoning_provider: bool = True,
 ) -> list[str]:
     if not use_model or allow_demo_without_key:
         return []
     checks = [
         ("基础/作图规则模型", provider),
-        ("知识点与教材依据模型", reasoning_provider),
         ("答案生成模型", answer_provider),
         ("高风险正确性复核模型", correctness_provider),
     ]
+    if require_reasoning_provider:
+        checks.insert(1, ("知识点与教材依据模型", reasoning_provider))
     if require_vision_provider:
         checks.append(("读图模型", vision_provider))
     if str(image_model or "").strip():
@@ -745,7 +778,7 @@ def _content_repair_touches_drawing_question(model_repair: dict, structured_exam
         if not isinstance(question, dict):
             continue
         question_id = str(question.get("question_id") or question.get("id") or "").strip()
-        if question_id in repaired_ids and question_has_type(question, "作图题"):
+        if question_id in repaired_ids and answer_figure_required(question):
             return True
     return False
 
@@ -899,6 +932,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
     quality_budget = QualityExecutionBudget.from_environment()
     ensure_project_dirs()
     record = load_task(task_id)
+    textbook_evidence_enabled = analysis_uses_textbook_evidence(record.analysis_profile)
     sdir = stage_dir(task_id)
     odir = output_dir(task_id)
     sdir.mkdir(parents=True, exist_ok=True)
@@ -949,7 +983,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         if not options.preprocessed_input:
             if not exam_path.exists():
                 raise FileNotFoundError(f"Exam file not found: {exam_path}")
-            if not textbooks_dir.exists():
+            if textbook_evidence_enabled and not textbooks_dir.exists():
                 raise FileNotFoundError(f"Textbooks dir not found: {textbooks_dir}")
         thinking_mode = getattr(record, "model_thinking", "auto") or "auto"
         provider = replace(get_provider(record.provider), thinking_mode=thinking_mode)
@@ -984,6 +1018,24 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 image_model=image_model,
                 image_model_options=(image_model,),
             )
+        image_orchestration = normalize_image_orchestration(
+            getattr(record, "image_orchestration", LEGACY_FIGURE_PIPELINE)
+        )
+        if image_orchestration == MAIN_MODEL_TOOL_LOOP and not image_model:
+            raise RuntimeError("主模型自主生图模式缺少可用的生图模型；任务未降级到传统绘图链路。")
+        image_routes = _isolated_image_routes(
+            image_orchestration,
+            image_provider=image_provider,
+            image_model=image_model,
+            code_provider=answer_provider,
+            code_model=answer_model,
+        )
+        answer_image_provider = image_routes["answer_image_provider"]
+        answer_image_model = str(image_routes["answer_image_model"])
+        legacy_image_provider = image_routes["legacy_image_provider"]
+        legacy_image_model = str(image_routes["legacy_image_model"])
+        legacy_code_provider = image_routes["legacy_code_provider"]
+        legacy_code_model = str(image_routes["legacy_code_model"])
         key_issues = _validate_required_provider_keys(
             use_model=options.use_model,
             allow_demo_without_key=options.allow_demo_without_key,
@@ -995,6 +1047,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             image_provider=image_provider,
             image_model=image_model,
             require_vision_provider=not direct_answer_multimodal,
+            require_reasoning_provider=textbook_evidence_enabled,
         )
         if key_issues:
             mark("provider_config", "failed", {"issues": key_issues})
@@ -1028,6 +1081,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 textbook_manifest=textbook_manifest,
                 strategy={
                     "question_understanding_policy_version": QUESTION_UNDERSTANDING_POLICY_VERSION,
+                    "analysis_profile": record.analysis_profile,
                     "use_model": bool(options.use_model),
                     "allow_demo_without_key": bool(options.allow_demo_without_key),
                     "thinking_mode": thinking_mode,
@@ -1044,7 +1098,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             requested=options.reuse_fragments,
             contract=checkpoint_contract,
         )
-        reusable_upstream = _upstream_checkpoint_reusable(
+        reusable_upstream = textbook_evidence_enabled and _upstream_checkpoint_reusable(
             sdir,
             requested=options.reuse_fragments,
             contract=checkpoint_contract,
@@ -1244,36 +1298,43 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             )
 
         checkpoint(task_id)
-        update_task(task_id, current_stage="textbook_index")
-        if options.preprocessed_input:
-            required_index_files = (
-                sdir / "textbook_blocks.csv",
-                sdir / "textbook_page_map.csv",
-                sdir / "textbook_index_status.json",
-            )
-            missing_index_files = [path.name for path in required_index_files if not path.is_file()]
-            if missing_index_files:
-                raise RuntimeError("Hybrid input is missing textbook index files: " + ", ".join(missing_index_files))
-            index_detail = json.loads((sdir / "textbook_index_status.json").read_text(encoding="utf-8"))
-            index_detail = {**index_detail, "preprocessed_input": True, "installed": True}
+        if not textbook_evidence_enabled:
+            index_detail = {"ok": True, "analysis_profile": record.analysis_profile, "reason": "题目解析不处理教材。"}
+            mark("textbook_index", "skipped", index_detail)
         else:
-            if not record.selected_textbooks:
-                raise RuntimeError("当前任务没有绑定已索引教材。请先在教材管理页选择教材并建立索引，再创建解析任务。")
-            index_detail = install_textbook_index_cache(
-                record.selected_textbooks,
-                sdir,
-                record.textbook_display_names or {},
-            )
-        mark("textbook_index", "passed" if index_detail.get("page_map_ok", True) else "failed", index_detail)
-        if not index_detail.get("page_map_ok", True):
-            issues = index_detail.get("page_map_issues") or []
-            messages = [str(issue.get("message", issue)) for issue in issues if isinstance(issue, dict)]
-            raise RuntimeError("教材页码读取失败：" + "；".join(messages[:5]))
+            update_task(task_id, current_stage="textbook_index")
+            if options.preprocessed_input:
+                required_index_files = (
+                    sdir / "textbook_blocks.csv",
+                    sdir / "textbook_page_map.csv",
+                    sdir / "textbook_index_status.json",
+                )
+                missing_index_files = [path.name for path in required_index_files if not path.is_file()]
+                if missing_index_files:
+                    raise RuntimeError("Hybrid input is missing textbook index files: " + ", ".join(missing_index_files))
+                index_detail = json.loads((sdir / "textbook_index_status.json").read_text(encoding="utf-8"))
+                index_detail = {**index_detail, "preprocessed_input": True, "installed": True}
+            else:
+                if not record.selected_textbooks:
+                    raise RuntimeError("当前任务没有绑定已索引教材。请先在教材管理页选择教材并建立索引，再创建解析任务。")
+                index_detail = install_textbook_index_cache(
+                    record.selected_textbooks,
+                    sdir,
+                    record.textbook_display_names or {},
+                )
+            mark("textbook_index", "passed" if index_detail.get("page_map_ok", True) else "failed", index_detail)
+            if not index_detail.get("page_map_ok", True):
+                issues = index_detail.get("page_map_issues") or []
+                messages = [str(issue.get("message", issue)) for issue in issues if isinstance(issue, dict)]
+                raise RuntimeError("教材页码读取失败：" + "；".join(messages[:5]))
 
         checkpoint(task_id)
-        update_task(task_id, current_stage="knowledge_planning")
         plans_json = sdir / "knowledge_plans.json"
-        if reusable_early_upstream:
+        if not textbook_evidence_enabled:
+            knowledge_plans = []
+            mark("knowledge_planning", "skipped", {"analysis_profile": record.analysis_profile, "reason": "未启用教材知识点规划。"})
+        elif reusable_early_upstream:
+            update_task(task_id, current_stage="knowledge_planning")
             knowledge_plans = load_knowledge_plans(plans_json)
             plan_detail = {
                 "ok": True,
@@ -1283,6 +1344,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             }
             mark("knowledge_planning", "reused", plan_detail)
         elif options.use_model and reasoning_provider.api_key:
+            update_task(task_id, current_stage="knowledge_planning")
             plan_result = generate_knowledge_plans(
                 structured_exam,
                 reasoning_provider,
@@ -1294,6 +1356,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 visual_model=answer_model if direct_answer_multimodal else "",
             )
         elif options.allow_demo_without_key:
+            update_task(task_id, current_stage="knowledge_planning")
             plan_result = generate_knowledge_plans(
                 structured_exam,
                 reasoning_provider,
@@ -1304,7 +1367,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             )
         else:
             raise RuntimeError(f"API key not configured for reasoning provider: {reasoning_provider.name}")
-        if not reusable_early_upstream:
+        if textbook_evidence_enabled and not reusable_early_upstream:
             plan_detail = asdict(plan_result)
             mark("knowledge_planning", "passed" if plan_result.ok else "failed", plan_detail)
             if not plan_result.ok:
@@ -1313,23 +1376,31 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             _write_upstream_checkpoint_contract(sdir, checkpoint_contract)
 
         checkpoint(task_id)
-        update_task(task_id, current_stage="retrieval")
-        candidates = build_candidates(
-            structured_exam,
-            sdir / "textbook_blocks.csv",
-            sdir / "textbook_page_map.csv",
-            sdir / "retrieval_candidates.csv",
-            knowledge_plans=knowledge_plans,
-        )
-        retrieval_issues = audit_retrieval_candidates(structured_exam, sdir / "retrieval_candidates.csv", sdir / "retrieval_audit.json")
-        if retrieval_issues:
-            mark("retrieval", "failed", {"issues": retrieval_issues[:30]})
-            raise RuntimeError("Retrieval audit failed")
-        mark("retrieval", "passed", {"candidate_count": len(candidates)})
+        if not textbook_evidence_enabled:
+            candidates = []
+            mark("retrieval", "skipped", {"analysis_profile": record.analysis_profile, "reason": "未启用教材检索。"})
+        else:
+            update_task(task_id, current_stage="retrieval")
+            candidates = build_candidates(
+                structured_exam,
+                sdir / "textbook_blocks.csv",
+                sdir / "textbook_page_map.csv",
+                sdir / "retrieval_candidates.csv",
+                knowledge_plans=knowledge_plans,
+            )
+            retrieval_issues = audit_retrieval_candidates(structured_exam, sdir / "retrieval_candidates.csv", sdir / "retrieval_audit.json")
+            if retrieval_issues:
+                mark("retrieval", "failed", {"issues": retrieval_issues[:30]})
+                raise RuntimeError("Retrieval audit failed")
+            mark("retrieval", "passed", {"candidate_count": len(candidates)})
 
         checkpoint(task_id)
-        update_task(task_id, current_stage="evidence_selection")
-        if reusable_upstream:
+        if not textbook_evidence_enabled:
+            selection_data = {"analysis_profile": record.analysis_profile, "selections": []}
+            evidence_selections = {}
+            mark("evidence_selection", "skipped", {"analysis_profile": record.analysis_profile, "reason": "题目解析不绑定教材依据。"})
+        elif reusable_upstream:
+            update_task(task_id, current_stage="evidence_selection")
             selection_data_preview = json.loads((sdir / "evidence_selection.json").read_text(encoding="utf-8"))
             selections_by_qid = {
                 str(selection.get("question_id") or ""): selection
@@ -1346,6 +1417,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 "selected_evidence_count": len(confirmed_candidates),
             }
         else:
+            update_task(task_id, current_stage="evidence_selection")
             selection_result, confirmed_candidates = confirm_evidence_selection(
                 structured_exam,
                 knowledge_plans,
@@ -1361,24 +1433,25 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 visual_model=answer_model if direct_answer_multimodal else "",
             )
             selection_detail = asdict(selection_result)
-        selection_data_preview = {}
-        try:
-            selection_data_preview = json.loads((sdir / "evidence_selection.json").read_text(encoding="utf-8"))
-        except Exception:
+        if textbook_evidence_enabled:
             selection_data_preview = {}
-        unresolved_evidence = selection_data_preview.get("unresolved_evidence") if isinstance(selection_data_preview, dict) else []
-        selection_detail["unresolved_evidence_count"] = len(unresolved_evidence or [])
-        selection_detail["unresolved_evidence_policy"] = "auto_label_no_user_review"
-        mark("evidence_selection", "reused" if reusable_upstream else ("passed" if selection_result.ok else "failed"), selection_detail)
-        if not selection_detail.get("ok"):
-            raise RuntimeError("Evidence selection failed")
-        selection_data = json.loads((sdir / "evidence_selection.json").read_text(encoding="utf-8"))
-        evidence_selections = {
-            str(selection.get("question_id", "")).strip(): selection
-            for selection in selection_data.get("selections", [])
-            if str(selection.get("question_id", "")).strip()
-        }
-        candidates = confirmed_candidates
+            try:
+                selection_data_preview = json.loads((sdir / "evidence_selection.json").read_text(encoding="utf-8"))
+            except Exception:
+                selection_data_preview = {}
+            unresolved_evidence = selection_data_preview.get("unresolved_evidence") if isinstance(selection_data_preview, dict) else []
+            selection_detail["unresolved_evidence_count"] = len(unresolved_evidence or [])
+            selection_detail["unresolved_evidence_policy"] = "auto_label_no_user_review"
+            mark("evidence_selection", "reused" if reusable_upstream else ("passed" if selection_result.ok else "failed"), selection_detail)
+            if not selection_detail.get("ok"):
+                raise RuntimeError("Evidence selection failed")
+            selection_data = json.loads((sdir / "evidence_selection.json").read_text(encoding="utf-8"))
+            evidence_selections = {
+                str(selection.get("question_id", "")).strip(): selection
+                for selection in selection_data.get("selections", [])
+                if str(selection.get("question_id", "")).strip()
+            }
+            candidates = confirmed_candidates
 
         checkpoint(task_id)
         # Answer generation needs the per-answer-unit drawing contract.  Schema
@@ -1566,6 +1639,9 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 progress_json=sdir / "answer_generation_progress.json",
                 evidence_selections=evidence_selections,
                 reusable_fragments=reusable_fragment_map,
+                image_provider=answer_image_provider,
+                image_model=answer_image_model,
+                include_textbook_evidence=textbook_evidence_enabled,
             )
             generation_detail = asdict(generation)
         elif options.allow_demo_without_key:
@@ -1574,6 +1650,9 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         else:
             raise RuntimeError(f"API key not configured for answer provider: {answer_provider.name}")
         fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
+        fragments_data["analysis_profile"] = record.analysis_profile
+        fragments_data["document_title"] = "题目解析" if not textbook_evidence_enabled else "真题答案解析"
+        write_json(fragments_json, fragments_data)
         reconciled_evidence_bindings: list[str] = []
         for fragment in fragments_data.get("fragments", []) or []:
             if not isinstance(fragment, dict):
@@ -1661,6 +1740,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 model=correctness_model,
                 audit_stage="answer_generation",
                 audit_report={"issues": generation_audit_issues, "warnings": []},
+                image_provider=answer_image_provider,
+                image_model=answer_image_model,
                 backup_path=sdir / "answer_fragments.before_answer_generation_model_repair.json",
                 max_repairs=quality_budget.max_content_repair_questions,
             )
@@ -1733,6 +1814,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                         model=correctness_model,
                         audit_stage="answer_generation_round_2",
                         audit_report={"issues": second_round_issues, "warnings": []},
+                        image_provider=answer_image_provider,
+                        image_model=answer_image_model,
                         backup_path=sdir / "answer_fragments.before_answer_generation_model_repair_round_2.json",
                         max_repairs=min(
                             quality_budget.max_content_repair_questions,
@@ -1805,7 +1888,12 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         update_task(task_id, current_stage="answer_coverage")
         fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
         review_notes = build_answer_review_notes(fragments_data, sdir / "answer_review_notes.json")
-        coverage = audit_answer_coverage(structured_exam, fragments_data, sdir / "answer_coverage_audit.json")
+        coverage = audit_answer_coverage(
+            structured_exam,
+            fragments_data,
+            sdir / "answer_coverage_audit.json",
+            require_evidence=textbook_evidence_enabled,
+        )
         if not coverage["ok"] and options.use_model and answer_provider.api_key:
             mark("answer_coverage_model_repair", "started", {"issues": coverage["issues"][:30], "warnings": coverage["warnings"][:30]})
             model_repair = repair_fragments_with_model_for_audit(
@@ -1817,12 +1905,19 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 model=answer_model,
                 audit_stage="answer_coverage",
                 audit_report=coverage,
+                image_provider=answer_image_provider,
+                image_model=answer_image_model,
                 backup_path=sdir / "answer_fragments.before_answer_coverage_model_repair.json",
             )
             mark("answer_coverage_model_repair", "applied" if model_repair.get("changed") else "skipped", model_repair)
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
             review_notes = build_answer_review_notes(fragments_data, sdir / "answer_review_notes.json")
-            coverage = audit_answer_coverage(structured_exam, fragments_data, sdir / "answer_coverage_audit.json")
+            coverage = audit_answer_coverage(
+                structured_exam,
+                fragments_data,
+                sdir / "answer_coverage_audit.json",
+                require_evidence=textbook_evidence_enabled,
+            )
         if not coverage["ok"]:
             mark("answer_coverage_local_repair", "started", {"issues": coverage["issues"][:30]})
             local_repair = fill_missing_fragments_locally(
@@ -1834,7 +1929,12 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             mark("answer_coverage_local_repair", "applied" if local_repair.get("changed") else "skipped", local_repair)
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
             review_notes = build_answer_review_notes(fragments_data, sdir / "answer_review_notes.json")
-            coverage = audit_answer_coverage(structured_exam, fragments_data, sdir / "answer_coverage_audit.json")
+            coverage = audit_answer_coverage(
+                structured_exam,
+                fragments_data,
+                sdir / "answer_coverage_audit.json",
+                require_evidence=textbook_evidence_enabled,
+            )
         if not coverage["ok"]:
             mark(
                 "answer_coverage_unattended_gate",
@@ -2004,6 +2104,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     model=correctness_model,
                     audit_stage="prefigure_correctness",
                     audit_report={"issues": repair_issues, "warnings": []},
+                    image_provider=answer_image_provider,
+                    image_model=answer_image_model,
                     backup_path=sdir / "answer_fragments.before_prefigure_correctness_repair.json",
                     max_repairs=quality_budget.max_content_repair_questions,
                 )
@@ -2167,6 +2269,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     model=correctness_model,
                     audit_stage="prefigure_correctness_residual",
                     audit_report={"issues": residual_issues, "warnings": []},
+                    image_provider=answer_image_provider,
+                    image_model=answer_image_model,
                     backup_path=sdir / "answer_fragments.before_prefigure_correctness_residual_repair.json",
                     max_repairs=quality_budget.max_content_repair_questions,
                 )
@@ -2349,10 +2453,10 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 fragments_json,
                 figure_specs,
                 sdir / "figures",
-                provider=image_provider,
-                model=image_model or record.model,
-                code_provider=answer_provider,
-                code_model=answer_model,
+                provider=legacy_image_provider,
+                model=legacy_image_model or record.model,
+                code_provider=legacy_code_provider,
+                code_model=legacy_code_model,
                 progress_callback=figure_progress.emit,
             )
         with figure_progress.operation("visual_qa", figure_count=len(generated_figures), model=vision_model):
@@ -2380,6 +2484,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     model=vision_model,
                     vision_provider=vision_provider,
                     vision_model=vision_model,
+                    image_provider=answer_image_provider,
+                    image_model=answer_image_model,
                     max_rounds=quality_budget.max_figure_repair_rounds,
                     max_candidates_per_target=quality_budget.max_figure_repair_candidates_per_target,
                     progress_callback=figure_progress.emit,
@@ -2442,7 +2548,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         drafts_path = sdir / "answer_drafts.json"
         selection_path = sdir / "evidence_selection.json"
         drafts_data = json.loads(drafts_path.read_text(encoding="utf-8")) if drafts_path.exists() else {"drafts": []}
-        selection_data = json.loads(selection_path.read_text(encoding="utf-8")) if selection_path.exists() else {"selections": []}
+        selection_data = (
+            json.loads(selection_path.read_text(encoding="utf-8"))
+            if selection_path.exists()
+            else {"analysis_profile": record.analysis_profile, "selections": []}
+        )
         content_quality = audit_content_quality(
             structured_exam,
             fragments_data,
@@ -2498,6 +2608,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 model=content_repair_model,
                 audit_stage="content_quality",
                 audit_report=model_repair_quality,
+                image_provider=answer_image_provider,
+                image_model=answer_image_model,
                 backup_path=sdir / "answer_fragments.before_content_quality_model_repair.json",
                 max_repairs=quality_budget.max_content_repair_questions,
             )
@@ -2508,10 +2620,10 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     fragments_json,
                     figure_specs,
                     sdir / "figures",
-                    provider=image_provider,
-                    model=image_model or record.model,
-                    code_provider=answer_provider,
-                    code_model=answer_model,
+                    provider=legacy_image_provider,
+                    model=legacy_image_model or record.model,
+                    code_provider=legacy_code_provider,
+                    code_model=legacy_code_model,
                 )
                 repaired_figure_qa = audit_figures_with_vision(
                     structured_exam,
@@ -2535,6 +2647,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                         model=vision_model,
                         vision_provider=vision_provider,
                         vision_model=vision_model,
+                        image_provider=answer_image_provider,
+                        image_model=answer_image_model,
                         max_rounds=quality_budget.max_figure_repair_rounds,
                         max_candidates_per_target=quality_budget.max_figure_repair_candidates_per_target,
                         progress_callback=figure_progress.emit,

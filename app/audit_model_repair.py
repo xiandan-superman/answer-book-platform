@@ -9,24 +9,28 @@ from pathlib import Path
 from typing import Any
 
 from .answer_generation import (
+    _with_main_model_image_tool_contract,
+    answer_generation_thinking_mode,
     attach_program_evidence_block,
     evidence_for_answer_generation,
     fallback_fragment,
     fragment_from_analysis_draft,
     semantic_generation_issues,
+    structured_answer_max_tokens,
 )
 from .concurrency import model_request_slot, run_limited_concurrent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import audit_text_segments_no_formula
+from .image_artifacts import ImageArtifactStore
 from .llm_client import OpenAICompatibleClient
+from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .prompts import question_image_parts
 from .question_requirements import answer_figure_required
 from .question_types import question_has_type
 from .retrieval import EvidenceCandidate
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .v4_schema import validate_v4_answer_fragment
-
 
 AUDIT_MODEL_REPAIR_TIMEOUT_SECONDS = 180
 AUDIT_MODEL_REPAIR_COMPLEX_TIMEOUT_SECONDS = 300
@@ -295,6 +299,7 @@ def _repair_prompt(
     fragment: dict[str, Any] | None,
     issues: list[dict[str, Any]],
     include_images: bool = False,
+    include_textbook_evidence: bool = True,
 ) -> list[dict[str, Any]]:
     image_parts = question_image_parts(question) if include_images else []
     needs_answer_figure = answer_figure_required(question)
@@ -377,6 +382,20 @@ def _repair_prompt(
             "Return exactly one valid JSON object.",
         ],
     }
+    if not include_textbook_evidence:
+        user_payload["analysis_profile"] = "question_only"
+        user_payload["confirmed_evidence"] = []
+        replacements = {
+            "不要改变题号、题型和教材依据含义": "不要改变题号、题型和原题含义",
+            "不要输出教材依据、页码、课本-p、evidence_id 或引用格式；教材依据由程序统一合并": "不要输出教材依据、页码、课本-p、evidence_id 或引用格式",
+            "不得把教材中出现的相关量扩展成题目要求": "不得把背景知识中的相关量扩展成题目要求",
+            "依据原题、已确认的题面视觉/数据事实和教材依据": "依据原题、已确认的题面视觉/数据事实和可靠学科原理",
+            "除非教材明确将其归入某一名称组成": "除非题干或已确认的学科事实明确将其归入某一名称组成",
+        }
+        for index, rule in enumerate(user_payload["hard_rules"]):
+            for source, target in replacements.items():
+                rule = rule.replace(source, target)
+            user_payload["hard_rules"][index] = rule
     user_text = json.dumps(user_payload, ensure_ascii=False)
     user_content: str | list[dict[str, Any]]
     if image_parts:
@@ -496,10 +515,58 @@ def _repair_regressions(
     # A missing-figure repair must actually add a renderable drawing request.  A
     # prose promise such as "见图" is not an acceptable postcondition.
     if "missing_required_figure" in target_codes and not (
-        repaired.get("figure_specs") or repaired.get("drawing_code_specs")
+        repaired.get("generated_images") or repaired.get("figure_specs") or repaired.get("drawing_code_specs")
     ):
         regressions.append("repair_did_not_add_required_figure_spec")
     return list(dict.fromkeys(regressions))
+
+
+def _preserve_accepted_generated_images(
+    original: dict[str, Any] | None,
+    repaired: dict[str, Any],
+) -> None:
+    """Keep only previously proven main-model image bindings through text repair.
+
+    A later audit call replaces the answer draft as a whole.  Images are an
+    independent accepted artifact, so a text-only repair must not erase them.
+    The binding is preserved only when the original fragment also contains the
+    tool-loop artifact record proving that the main model received that asset.
+    """
+
+    if not isinstance(original, dict) or repaired.get("generated_images"):
+        return
+    original_images = [
+        copy.deepcopy(item)
+        for item in original.get("generated_images", []) or []
+        if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
+    ]
+    original_meta = original.get("_meta") if isinstance(original.get("_meta"), dict) else {}
+    original_loop = original_meta.get("image_tool_loop") if isinstance(original_meta.get("image_tool_loop"), dict) else {}
+    artifacts = [
+        copy.deepcopy(item)
+        for item in original_loop.get("generated_artifacts", []) or []
+        if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
+    ]
+    proven_ids = {str(item.get("asset_id") or "").strip() for item in artifacts}
+    preserved_images = [item for item in original_images if str(item.get("asset_id") or "").strip() in proven_ids]
+    if not preserved_images:
+        return
+    repaired["generated_images"] = preserved_images
+    if isinstance(repaired.get("_draft"), dict):
+        repaired["_draft"]["generated_images"] = copy.deepcopy(preserved_images)
+    repaired_meta = dict(repaired.get("_meta") or {})
+    repaired_meta["image_tool_loop"] = copy.deepcopy(original_loop)
+    repaired["_meta"] = repaired_meta
+
+
+def _attach_image_tool_loop_result(repaired: dict[str, Any], result: Any) -> None:
+    if result is None:
+        return
+    repaired.setdefault("_meta", {})["image_tool_loop"] = {
+        "steps": result.steps,
+        "tool_calls": result.tool_calls,
+        "generated_artifacts": result.generated_artifacts,
+    }
 
 
 def _drafts_by_question_id(fragments_json: Path) -> dict[str, dict[str, Any]]:
@@ -619,6 +686,8 @@ def repair_fragments_with_model_for_audit(
     audit_stage: str,
     audit_report: dict[str, Any],
     client: Any | None = None,
+    image_provider: ProviderConfig | None = None,
+    image_model: str = "",
     backup_path: Path | None = None,
     max_repairs: int = 5,
 ) -> dict[str, Any]:
@@ -645,6 +714,7 @@ def repair_fragments_with_model_for_audit(
         }
 
     selections = _selection_map(selection_data)
+    include_textbook_evidence = str((selection_data or {}).get("analysis_profile") or "") != "question_only"
     fragments_by_qid = {_qid(fragment): fragment for fragment in fragments if _qid(fragment)}
     fallback_model = next((item for item in provider.model_options if item != model), None)
     repaired_qids: list[str] = []
@@ -665,6 +735,26 @@ def repair_fragments_with_model_for_audit(
             fragment = {**fragment, "_draft": copy.deepcopy(stored_drafts[qid])}
         try:
             repair_client = client or OpenAICompatibleClient(provider)
+            artifact_store = ImageArtifactStore(fragments_json.parent / "agent_images" / qid)
+            tool_loop = None
+            image_tool_route_requested = bool(
+                image_provider is not None and str(image_model or "").strip()
+            )
+            if image_tool_route_requested and not tool_loop_supported(
+                repair_client, provider, model
+            ):
+                raise ValueError(
+                    "当前内容修复模型未登记等价的原生图片工具回路；"
+                    "已停止修复，未静默改为纯文本或传统绘图。"
+                )
+            if image_tool_route_requested:
+                image_tool = ImageGenerationTool(
+                    image_provider,
+                    image_model,
+                    artifact_store,
+                    reference_images=question.get("image_refs") or [],
+                )
+                tool_loop = ModelToolLoop(repair_client, [image_tool], artifact_store)
             base_messages = _repair_prompt(
                 audit_stage=audit_stage,
                 question=question,
@@ -672,27 +762,43 @@ def repair_fragments_with_model_for_audit(
                 fragment=fragment,
                 issues=issues,
                 include_images=provider_model_supports_vision(provider, model),
+                include_textbook_evidence=include_textbook_evidence,
             )
+            if tool_loop is not None:
+                base_messages = _with_main_model_image_tool_contract(base_messages)
             draft: dict[str, Any] = {}
             repaired: dict[str, Any] | None = None
             candidate_issues: list[str] = []
             for attempt in range(2):
                 messages = base_messages if attempt == 0 else _repair_retry_prompt(base_messages, draft, candidate_issues)
-                with model_request_slot(provider):
-                    draft = repair_client.chat_json_object(
+                agent_result = None
+                if tool_loop is not None:
+                    agent_result = tool_loop.run_json(
                         messages,
                         model=model,
-                        max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                        fallback_model=fallback_model,
-                        thinking="disabled",
+                        max_tokens=max(structured_answer_max_tokens(provider, question), DEFAULT_MODEL_MAX_TOKENS),
+                        thinking=answer_generation_thinking_mode(provider),
                         timeout=audit_model_repair_timeout_seconds(question),
-                        task_stage="review",
-                        item_ids=[qid],
-                        enforce_context_budget=True,
                     )
+                    draft = agent_result.value
+                else:
+                    with model_request_slot(provider):
+                        draft = repair_client.chat_json_object(
+                            messages,
+                            model=model,
+                            max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
+                            fallback_model=fallback_model,
+                            thinking="disabled",
+                            timeout=audit_model_repair_timeout_seconds(question),
+                            task_stage="review",
+                            item_ids=[qid],
+                            enforce_context_budget=True,
+                        )
                 candidate = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
                 candidate = promote_inline_reactions(candidate)
                 candidate = promote_inline_mathematical_expressions(candidate)
+                _attach_image_tool_loop_result(candidate, agent_result)
+                _preserve_accepted_generated_images(fragment, candidate)
                 attach_program_evidence_block(candidate, evidence, evidence_selection)
                 _drop_formula_like_repair_advisories(candidate)
                 _merge_safe_preserved_blocks(fragment, candidate)
@@ -792,6 +898,35 @@ def repair_fragments_with_model_for_audit(
     )
     data["recovered_count"] = int(data.get("recovered_count", 0)) + len(repaired_qids)
     fragments_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    drafts_path = fragments_json.parent / "answer_drafts.json"
+    try:
+        drafts_payload = json.loads(drafts_path.read_text(encoding="utf-8")) if drafts_path.exists() else {"drafts": []}
+    except (OSError, ValueError, TypeError):
+        drafts_payload = {"drafts": []}
+    existing_drafts = [item for item in drafts_payload.get("drafts", []) or [] if isinstance(item, dict)]
+    repaired_by_qid = {_qid(fragment): fragment for fragment in fragments if _qid(fragment) in repaired_qids}
+    updated_drafts: list[dict[str, Any]] = []
+    written_qids: set[str] = set()
+    for stored in existing_drafts:
+        qid = _qid(stored)
+        repaired_fragment = repaired_by_qid.get(qid)
+        if repaired_fragment is None:
+            updated_drafts.append(stored)
+            continue
+        repaired_draft = repaired_fragment.get("_draft")
+        if isinstance(repaired_draft, dict):
+            updated_drafts.append({**copy.deepcopy(repaired_draft), "question_id": qid})
+            written_qids.add(qid)
+    for qid in repaired_qids:
+        if qid in written_qids:
+            continue
+        repaired_draft = (repaired_by_qid.get(qid) or {}).get("_draft")
+        if isinstance(repaired_draft, dict):
+            updated_drafts.append({**copy.deepcopy(repaired_draft), "question_id": qid})
+            written_qids.add(qid)
+    drafts_payload["drafts"] = updated_drafts
+    drafts_path.write_text(json.dumps(drafts_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    report["updated_answer_draft_question_ids"] = sorted(written_qids)
     report["original_preserved"] = original != data
     return report
 

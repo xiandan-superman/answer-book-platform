@@ -31,7 +31,7 @@ def test_nested_requirement_can_trigger_answer_figure() -> None:
     assert answer_figure_required(question) is True
 
 
-def test_source_figure_noun_does_not_trigger_answer_redrawing() -> None:
+def test_model_answer_figure_intent_wins_over_source_figure_noun() -> None:
     question = {
         "stem": "碳的相图（示意图）如题四图所示，请根据图中信息回答。",
         "image_refs": ["carbon_phase_diagram.png"],
@@ -41,11 +41,35 @@ def test_source_figure_noun_does_not_trigger_answer_redrawing() -> None:
         "figure_schema_plan": {"diagram_intent": {"needs_figure": True}},
     }
     assert source_image_required(question) is True
-    assert answer_figure_required(question) is False
+    assert answer_figure_required(question) is True
 
 
 def test_explicit_request_to_draw_schematic_still_triggers_answer_figure() -> None:
     assert answer_figure_required({"stem": "请画出对应的相图示意图并标出相区。"}) is True
+
+
+def test_model_answer_figure_intent_wins_over_optional_drawing_wording() -> None:
+    question = {
+        "stem": "写出下列反应式（可按画图格式）",
+        "question_type": "简答题",
+        "image_refs": ["source.png"],
+        "answer_figure_required": True,
+        "needs_figure": True,
+        "question_understanding": {"needs_figure": True},
+        "figure_schema_plan": {"diagram_intent": {"needs_figure": True}},
+    }
+    assert source_image_required(question) is True
+    assert answer_figure_required(question) is True
+
+
+def test_optional_drawing_wording_remains_non_mandatory_without_model_intent() -> None:
+    question = {
+        "stem": "写出下列反应式（可按画图格式）",
+        "question_type": "简答题",
+        "image_refs": ["source.png"],
+        "needs_figure": True,
+    }
+    assert answer_figure_required(question) is False
 
 
 def test_cross_subject_source_images_remain_reference_only() -> None:

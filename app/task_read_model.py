@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
+from .analysis_profiles import QUESTION_ONLY_ANALYSIS
 from .runtime_monitor import task_health_summary
 from .task_contracts import (
     QualityStatus,
@@ -196,10 +197,12 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
         status = practice_run_status("completed", quality=quality)
     exam_name = _display_basename(row.get("exam_display_name") or row.get("exam_path"), fallback="未命名真题")
     textbook_names = _textbook_display_names(row)
+    question_only = str(row.get("analysis_profile") or "") == QUESTION_ONLY_ANALYSIS
+    task_label = "题目解析" if question_only else "真题解析"
     public_row = {
         **row,
         "display_title": build_display_task_title(
-            "真题解析",
+            task_label,
             friendly_material_title(exam_name) or exam_name,
             model=row.get("model"),
             provider=row.get("provider"),
@@ -219,6 +222,7 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
         final_acceptance=final_acceptance,
     )
     enriched["task_kind"] = "exam"
+    enriched["analysis_profile"] = row.get("analysis_profile") or "evidence_backed"
     enriched["quality_summary"] = quality_summary
     enriched["steps"] = []
     return enriched

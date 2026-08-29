@@ -207,6 +207,46 @@ class SelectiveQualityReviewTests(unittest.TestCase):
         self.assertTrue(answer["coverage_manifest"][1]["has_figure_spec"])
         self.assertIn("defects", client.payloads[0]["output_schema"]["decisions"][0])
 
+    def test_reviewer_manifest_counts_main_model_generated_image_as_figure(self) -> None:
+        from app.capabilities.selective_review import review_selective_quality
+
+        exam, fragments = _exam_and_fragments(1)
+        fragment = fragments["fragments"][0]
+        fragment["generated_images"] = [
+            {"asset_id": "img_sha256_example", "answer_unit_number": "1"}
+        ]
+        fragment["answer_units"] = [{"number": "1", "answer": "见图", "steps": []}]
+        fragment["blocks"] = [
+            {
+                "label": "图示",
+                "segments": [
+                    {
+                        "type": "image_ref",
+                        "role": "answer_generated_figure",
+                        "answer_unit_number": "1",
+                        "path": "figures/q1.png",
+                    }
+                ],
+            }
+        ]
+        client = FakeReviewClient(
+            {"decisions": [{"candidate_id": "expr_1", "decision": "pass", "confidence": 1, "reason": "ok"}]}
+        )
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            review_selective_quality(
+                academic_report=_academic_candidates(1),
+                content_quality_report={},
+                structured_exam=exam,
+                fragments_data=fragments,
+                report_json=Path(raw_tmp) / "review.json",
+                provider=SimpleNamespace(name="test", api_key="key", default_model="model"),
+                model="model",
+                client=client,
+            )
+
+        answer = client.payloads[0]["current_answers"][0]
+        self.assertTrue(answer["coverage_manifest"][0]["has_figure_spec"])
+
     def test_reviewer_receives_single_part_visible_reasoning_blocks(self) -> None:
         from app.capabilities.selective_review import review_selective_quality
 

@@ -17,6 +17,25 @@
 4. 输出合同、错误翻译、限流和降级策略已验证；
 5. 任务开始前能判断该模型是否兼容当前输入和任务阶段。
 
+### 1.1 主模型自主生图的 Harness 基线
+
+这条链路不得由平台自行发明内容决策协议。实现、排障和后续修改都必须先对照以下官方源码（查阅日期：2026-08-29）：
+
+- OpenAI Codex Harness 的 [`spec_plan.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs) 先按功能开关、账户/服务商能力和主模型图片输入能力决定是否向模型暴露图片工具；[`image-generation/src/tool.rs`](https://github.com/openai/codex/blob/main/codex-rs/ext/image-generation/src/tool.rs) 暴露 `referenced_image_paths` 与 `num_last_images_to_include`：两者均未提供时执行 `Generate`，任一参考选择器存在时执行 `ImageEditRequest`，两者不得并用、单次最多 5 张，本地参考图按原始画质读取；生成的真实图片字节再作为 `InputImage` 放入同一工具调用结果，供原主模型下一步检查。它是本平台“能力门 + 原图编辑/从零生成分流 + 图片真实回灌”的直接实现参考。
+- DeepSeek Harness 的 [`tools/README.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/tools/README.md)、[`tool-calls.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/src/tool-calls.ts) 和 [`core.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/core.md) 定义通用工具注册、前后置门禁、模型可见 `ContentBlock[]`、追加上下文、按模型顺序提交结果及耐久会话事件。DeepSeek Harness 核心没有内置图片生成工具，因此只作为跨模型/协议工具循环的抽象参考，不得把不存在的专用生图实现写成本项目依据。
+
+本平台只允许在两者共同闭环上增加教学业务约束：
+
+1. 能力登记和任务级用户开关决定工具是否可以暴露，不决定内容是否需要图片；
+2. 负责当前答案或题目的主模型看到完整任务后，自主选择零次或多次调用图片工具；
+3. 图片工具返回真实像素及内容寻址资产标识，实际像素必须进入同一主模型后续上下文；
+4. 主模型选择来源原图时，平台只允许任务内已登记路径并把原始图片字节送入图片编辑接口；未选参考图才从零生成。单次最多 5 张，编辑失败不得静默改成从零生成；
+5. 只有主模型已经看过并在结构化结果中明确采用的资产标识可以进入题目、答案和 Word；
+6. 重试、审核修复、任务恢复及模型切换必须保留上述闭环；没有已验证的同能力模型时明示失败，不得静默改走纯文本或传统绘图；
+7. 传统程序绘图是用户选择的另一条隔离链路，不得作为主模型工具失败后的隐式降级。
+
+遇到新问题时必须先形成“Codex 直接实现、DeepSeek 通用合同、本项目教学约束”三列对照，再决定最小完整修改。若上游源码已经变化，以当前官方实现为准并更新本节查阅日期、能力登记、回归和变更账本；禁止用关键词、题型规则、第三方分类器或代理主观判断取代主模型调用决策。
+
 ## 2. 强制登记字段
 
 每个模型必须补充以下内容，缺失字段写 `unknown`，不得留空或根据名称猜测：

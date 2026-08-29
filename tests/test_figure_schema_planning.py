@@ -1029,6 +1029,31 @@ def draw(output_path: str) -> None:
         self.assertEqual(["fig_02", "fig_01"], image_ids)
         self.assertEqual(["图二", "图一修正"], captions)
 
+    def test_single_figure_replacement_removes_split_orphan_caption_segments(self) -> None:
+        from app.figures import _insert_figure_block
+
+        fragment = {
+            "question_id": "q2",
+            "blocks": [
+                {
+                    "label": "图示",
+                    "segments": [
+                        {"type": "formula_ref", "formula_id": "f1"},
+                        {"type": "text", "text": "旧标题"},
+                        {"type": "image_ref", "image_id": "fig_01", "path": "figures/fig_01.png"},
+                        {"type": "text", "text": "旧标题"},
+                    ],
+                }
+            ],
+        }
+        _insert_figure_block(fragment, {"figure_id": "fig_01", "caption": "新标题"})
+
+        self.assertEqual(
+            ["image_ref", "text"],
+            [segment["type"] for segment in fragment["blocks"][0]["segments"]],
+        )
+        self.assertEqual("新标题", fragment["blocks"][0]["segments"][1]["text"])
+
     def test_final_acceptance_warns_for_model_judgment_after_bounded_repair(self) -> None:
         from app.final_acceptance import build_final_acceptance_report
 

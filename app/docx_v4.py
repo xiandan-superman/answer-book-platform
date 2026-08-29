@@ -718,7 +718,11 @@ def add_mixed_paragraph(
                 raise ValueError(f"Missing formula for formula_ref: {fid}")
             latex = str(formula.get("latex", ""))
             if render_inline_formula(seg, formula):
-                ensure_text_paragraph()._p.append(render_expression_omml(latex, display=False, location="formula_ref"))
+                if len(_display_formula_lines(latex)) > 1:
+                    break_text_paragraph()
+                    add_formula_paragraph(doc, latex)
+                else:
+                    ensure_text_paragraph()._p.append(render_expression_omml(latex, display=False, location="formula_ref"))
             elif bool(formula.get("display", True)) and not skip_formula_text_audit:
                 break_text_paragraph()
                 add_formula_paragraph(doc, latex)
@@ -805,11 +809,49 @@ def add_split_block(doc: Document, segments: list[dict], formulas: dict[str, dic
             raise ValueError(f"Unsupported segment type: {typ}")
 
 
+LONG_DISPLAY_FORMULA_SPLIT_THRESHOLD = 64
+DISPLAY_REACTION_ARROW_RE = re.compile(
+    r"(\\xrightarrow(?:\[[^\]]*\])?\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\\(?:long)?rightarrow)"
+)
+
+
+def _display_formula_lines(latex: str) -> list[str]:
+    """Split an oversized reaction at its arrow so Word never clips it.
+
+    OMML display equations do not line-wrap.  Chemical polymerization
+    equations can therefore extend beyond the printable width even though
+    ordinary prose is laid out correctly.  Keeping the reactants on the first
+    centered line and the arrow with the products on the second preserves the
+    equation and remains portable between Microsoft Word and LibreOffice.
+    """
+
+    value = str(latex or "").strip()
+    visible_length = len(re.sub(r"\\[A-Za-z]+|[{}\\,]", "", value))
+    if visible_length <= LONG_DISPLAY_FORMULA_SPLIT_THRESHOLD:
+        return [value]
+    outer_upright = value.startswith(r"\mathrm{") and value.endswith("}")
+    search_value = value[len(r"\mathrm{") : -1] if outer_upright else value
+    match = DISPLAY_REACTION_ARROW_RE.search(search_value)
+    if not match:
+        return [value]
+    left = search_value[: match.start()].strip()
+    right = search_value[match.end() :].strip()
+    if not left or not right:
+        return [value]
+    arrow = r"\rightarrow" if match.group(1).startswith(r"\xrightarrow") else match.group(1)
+    if outer_upright:
+        return [rf"\mathrm{{{left}}}", rf"{{}}{arrow}\mathrm{{{right}}}"]
+    return [left, rf"{{}}{arrow}{right}"]
+
+
 def add_formula_paragraph(doc: Document, latex: str):
-    p = doc.add_paragraph()
-    set_para(p, WD_ALIGN_PARAGRAPH.CENTER)
-    p._p.append(render_expression_omml(latex, display=True, location="formula_paragraph"))
-    return p
+    paragraphs = []
+    for line in _display_formula_lines(latex):
+        p = doc.add_paragraph()
+        set_para(p, WD_ALIGN_PARAGRAPH.CENTER)
+        p._p.append(render_expression_omml(line, display=True, location="formula_paragraph"))
+        paragraphs.append(p)
+    return paragraphs[-1]
 
 
 def safe_warning_text(warnings: list) -> str:
@@ -873,6 +915,13 @@ def configure_compatible_font_table(doc: Document) -> None:
 
 def setup_document() -> Document:
     doc = Document()
+    # python-docx's default template enables ``w:useFELayout``. LibreOffice
+    # interprets that compatibility flag by moving body/header content outside
+    # the page box on alternating pages. It is unnecessary for our explicit
+    # CJK font and page contracts, so remove it for stable Word/PDF pagination.
+    settings = doc.settings._element
+    for node in settings.findall(".//" + qn("w:useFELayout")):
+        node.getparent().remove(node)
     enable_field_updates(doc)
     configure_compatible_font_table(doc)
     section = doc.sections[0]
@@ -1171,7 +1220,7 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
     doc = setup_document()
     add_text_paragraph(
         doc,
-        "真题答案解析",
+        str(data.get("document_title") or "真题答案解析"),
         bold=True,
         size=TEXT_CONTRACT.title_size_pt,
         align=WD_ALIGN_PARAGRAPH.CENTER,

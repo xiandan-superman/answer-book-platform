@@ -16,7 +16,20 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .concurrency import ModelRequestAborted, model_request_slot
+from .image_artifacts import ImageArtifactStore
+from .image_orchestration import (
+    DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
+    LEGACY_FIGURE_PIPELINE,
+    MAIN_MODEL_TOOL_LOOP,
+    image_orchestration_from_payload,
+)
 from .llm_client import LLMError, OpenAICompatibleClient
+from .model_tool_loop import (
+    ImageGenerationTool,
+    ModelToolLoop,
+    ModelToolLoopUnavailableError,
+    tool_loop_supported,
+)
 from .paths import OUTPUTS_DIR
 from .practice_batch_contracts import complete_practice_slots, partition_practice_batch_rows
 from .practice_context_planner import (
@@ -50,7 +63,13 @@ from .practice_runtime import (
 from .provider_errors import classify_provider_error
 from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
-from .settings import DEFAULT_MODEL_MAX_TOKENS, get_provider, provider_model_supports_vision, resolve_provider_model
+from .settings import (
+    DEFAULT_MODEL_MAX_TOKENS,
+    get_provider,
+    provider_model_supports_vision,
+    provider_supports_image_generation,
+    resolve_provider_model,
+)
 
 SCHEMA_VERSION = "answer_book.practice_set.v1"
 DIFFICULTY_LEVELS = ("基础", "进阶", "挑战")
@@ -3097,6 +3116,16 @@ def _exercise_figure_issues(exercise: dict[str, Any], planned_item: dict[str, An
         issues.append({**prefix, "code": "unrenderable_stem_figure", "message": "题图只有文字说明，没有可渲染的数据点或节点关系。"})
     if not re.search(r"图|曲线|坐标|示意", _clean(exercise.get("stem"), 6000)):
         issues.append({**prefix, "code": "stem_does_not_reference_figure", "message": "题干没有明确引用所附题图。"})
+    # A real image accepted after pixel inspection by the responsible main
+    # model must not be reinterpreted as a legacy structured figure.  Only the
+    # deterministic binding/file/stem checks above apply here; semantic visual
+    # repair, when necessary, goes back through the same main-model tool loop.
+    if any(
+        figure.get("figure_purpose") == "main_model_accepted"
+        and Path(str(figure.get("image_path") or "")).is_file()
+        for figure in figures
+    ):
+        return issues
     design = _figure_design(planned_item.get("figure_design"), required=True)
     dependency = _clean(design.get("question_dependency"), 500)
     # A stem chart is evidence for the student, not an answer key.  If the
@@ -3558,8 +3587,18 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
         transport_phase=transport_phase,
         retry_after_seconds=retry_after if isinstance(retry_after, (int, float)) else None,
     )
-    requires_configuration = provider_info.requires_configuration
-    if transport_phase == "connect":
+    requires_configuration = bool(
+        provider_info.requires_configuration
+        or getattr(exc, "requires_configuration", False)
+    )
+    explicit_error_code = str(getattr(exc, "error_code", "") or "").strip()
+    if explicit_error_code == "image_tool_configuration_missing":
+        code = explicit_error_code
+        message = raw or "主模型自主生图模式缺少生图服务配置。"
+    elif explicit_error_code == "model_tool_loop_unsupported":
+        code = explicit_error_code
+        message = raw or "所选主模型不支持自主生图工具回路。"
+    elif transport_phase == "connect":
         code = "provider_connect_timeout"
         message = provider_info.message
     elif transport_phase == "first_byte":
@@ -3608,10 +3647,28 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     signature = code
     detail = {
         "code": code,
-        "title": provider_info.title if code.startswith("provider_") else "模型返回内容不可用",
+        "title": (
+            "自主生图配置不可用"
+            if code == "image_tool_configuration_missing"
+            else "主模型不支持自主生图"
+            if code == "model_tool_loop_unsupported"
+            else provider_info.title
+            if code.startswith("provider_")
+            else "模型返回内容不可用"
+        ),
         "message": message,
-        "suggested_action": provider_info.suggested_action if code.startswith("provider_") else "请重新生成本题；其他已完成题目不会受到影响。",
-        "retryable": bool(transient or isinstance(exc, ValueError)) and not requires_configuration,
+        "suggested_action": (
+            "请配置可用的生图服务商和模型后继续未完成项。"
+            if code == "image_tool_configuration_missing"
+            else "请选择已登记工具调用与视觉能力的主模型，或由用户切换到传统绘图链路。"
+            if code == "model_tool_loop_unsupported"
+            else provider_info.suggested_action
+            if code.startswith("provider_")
+            else "请重新生成本题；其他已完成题目不会受到影响。"
+        ),
+        "retryable": bool(
+            getattr(exc, "retryable", transient or isinstance(exc, ValueError))
+        ) and not requires_configuration,
         "requires_configuration": requires_configuration,
         "signature": signature,
         "retry_after_seconds": retry_after if isinstance(retry_after, (int, float)) else None,
@@ -4458,7 +4515,11 @@ def _plan_item_content_flags(item: dict[str, Any]) -> dict[str, bool]:
     }
 
 
-def _question_type_generation_requirements(item: dict[str, Any]) -> list[str]:
+def _question_type_generation_requirements(
+    item: dict[str, Any],
+    *,
+    main_model_image_tools: bool = False,
+) -> list[str]:
     question_type = _clean(item.get("question_type"), 20)
     requirements = {
         "单选题": ["提供可判定的选项，只有一个最佳答案；options 仅包含本题选项。"],
@@ -4467,7 +4528,14 @@ def _question_type_generation_requirements(item: dict[str, Any]) -> list[str]:
         "填空题": ["题干设置明确空位和可判定填答，不生成选择题选项。"],
         "简答题": ["题干明确说明需要解释、论证或推导的对象，不生成选择题选项。"],
         "计算题": ["给出完成计算所需条件、单位和边界；公式仅在题干确实使用时写入 formulas。"],
-        "作图题": ["明确学生需要绘制的目标、坐标/标注要求和判定条件；学生作图本身不等于题干需要配图，只有 stem_figure_required=true 时才返回 figures。"],
+        "作图题": [
+            "明确学生需要绘制的目标、坐标/标注要求和判定条件；学生作图本身不等于题干需要配图，"
+            + (
+                "题干确需配图时由你调用 generate_image、回看并绑定图片，不返回 figures。"
+                if main_model_image_tools
+                else "只有 stem_figure_required=true 时才返回 figures。"
+            )
+        ],
         "综合题": ["组织必要子问或任务关系，避免把无关题型结构混入同一题。"],
     }
     resolved = list(requirements.get(question_type, ["题干必须与本题型一致、条件充分且可作答。"]))
@@ -4529,10 +4597,17 @@ def _batch_output_contract(batch_plan: list[dict[str, Any]]) -> dict[str, Any]:
     return {"exercises": exercises}
 
 
-def _batch_prompt_contract(batch_plan: list[dict[str, Any]]) -> dict[str, Any]:
+def _batch_prompt_contract(
+    batch_plan: list[dict[str, Any]],
+    *,
+    main_model_image_tools: bool = False,
+) -> dict[str, Any]:
     """Use one shared schema per batch instead of repeating verbose field help per item."""
     conditional_fields: dict[str, dict[str, Any]] = {}
-    for field in ("options", "formulas", "tables", "figures"):
+    conditional_field_names = ["options", "formulas", "tables"]
+    if not main_model_image_tools:
+        conditional_field_names.append("figures")
+    for field in conditional_field_names:
         indexes = [
             index for index, item in enumerate(batch_plan, start=1)
             if _plan_item_content_flags(item).get(field)
@@ -4542,29 +4617,109 @@ def _batch_prompt_contract(batch_plan: list[dict[str, Any]]) -> dict[str, Any]:
                 "batch_indexes": indexes,
                 "schema": _public_exercise_contract()[field],
             }
+    item_schema = {
+        "batch_index": "整数；对应本批蓝图临时序号",
+        "question_type": "逐字复制对应蓝图题型",
+        "difficulty": "逐字复制对应蓝图难度",
+        "target_skill": "对应蓝图目标能力",
+        "variation_type": "复制 change_contract.kind",
+        "stem": "完整独立题干；不含题号、标题、答案、解析或提示；公式使用 LaTeX 定界符",
+        "knowledge_points": "与 required_knowledge_points 完整一致的字符串数组",
+        "verification_note": "只写条件充分性检查，不含答案或推导",
+        "diversity_signature": _public_exercise_contract()["diversity_signature"],
+        "difficulty_evidence": _public_exercise_contract()["difficulty_evidence"],
+    }
+    if main_model_image_tools:
+        item_schema["generated_images"] = (
+            "可选数组。仅当你自主调用 generate_image、检查返回图片并决定把它用于本题时填写；"
+            "每项包含 asset_id、title、description、location=stem。未调用或不采用时省略。"
+        )
     return {
         "exercises": f"数组，恰好 {len(batch_plan)} 项；batch_index 依次为 1 到 {len(batch_plan)}",
-        "item_schema": {
-            "batch_index": "整数；对应本批蓝图临时序号",
-            "question_type": "逐字复制对应蓝图题型",
-            "difficulty": "逐字复制对应蓝图难度",
-            "target_skill": "对应蓝图目标能力",
-            "variation_type": "复制 change_contract.kind",
-            "stem": "完整独立题干；不含题号、标题、答案、解析或提示；公式使用 LaTeX 定界符",
-            "knowledge_points": "与 required_knowledge_points 完整一致的字符串数组",
-            "verification_note": "只写条件充分性检查，不含答案或推导",
-            "diversity_signature": _public_exercise_contract()["diversity_signature"],
-            "difficulty_evidence": _public_exercise_contract()["difficulty_evidence"],
-        },
+        "item_schema": item_schema,
         "conditional_fields": conditional_fields,
     }
 
 
-def _exercise_output_contract_for_plan_item(item: dict[str, Any]) -> dict[str, Any]:
+def _bind_practice_generated_images(raw: dict[str, Any]) -> dict[str, Any]:
+    """Bind accepted tool assets without deciding whether an exercise needs an image."""
+
+    artifacts = {
+        str(item.get("asset_id") or "").strip(): item
+        for item in (raw.get("_image_tool_artifacts") or [])
+        if isinstance(item, dict) and str(item.get("asset_id") or "").strip()
+    }
+    exercises = raw.get("exercises") if isinstance(raw.get("exercises"), list) else []
+    for exercise in exercises:
+        if not isinstance(exercise, dict):
+            continue
+        figures = [dict(item) for item in (exercise.get("figures") or []) if isinstance(item, dict)]
+        accepted_images = exercise.get("generated_images") if isinstance(exercise.get("generated_images"), list) else []
+        for index, accepted in enumerate(accepted_images, start=1):
+            if not isinstance(accepted, dict):
+                continue
+            asset_id = str(accepted.get("asset_id") or "").strip()
+            artifact = artifacts.get(asset_id)
+            path = Path(str((artifact or {}).get("path") or ""))
+            if not asset_id or not path.is_file():
+                continue
+            figures.append(
+                {
+                    "figure_id": f"agent_img_{index:02d}",
+                    "location": str(accepted.get("location") or "stem"),
+                    "figure_type": "diagram",
+                    "title": str(accepted.get("title") or "题图"),
+                    "description": str(accepted.get("description") or "主模型检查并采用的题图"),
+                    "image_path": str(path.resolve()),
+                    "image_provider": str(artifact.get("provider") or ""),
+                    "image_model": str(artifact.get("model") or ""),
+                    "figure_purpose": "main_model_accepted",
+                }
+            )
+        if figures:
+            exercise["figures"] = figures
+    return raw
+
+
+def _exercise_output_contract_for_plan_item(
+    item: dict[str, Any],
+    *,
+    main_model_image_tools: bool = False,
+) -> dict[str, Any]:
     """Return the minimal formal-output schema for one confirmed plan item."""
     contract = dict(_batch_output_contract([item])["exercises"][0])
     contract.pop("batch_index", None)
+    if main_model_image_tools:
+        contract.pop("figures", None)
+        contract["generated_images"] = (
+            "可选数组。仅当你自主调用 generate_image、检查返回图片并决定用于本题时填写；"
+            "每项包含 asset_id、title、description、location=stem。未调用或不采用时省略。"
+        )
     return contract
+
+
+def _main_model_practice_image_rules(batch_plan: list[dict[str, Any]]) -> list[str]:
+    """Model-visible policy; it constrains execution but never classifies need."""
+
+    rules = [
+        "生图工具是当前模式唯一的图片执行路径；你是负责本题内容的主模型，必须根据完整题意自行判断是否需要题图。",
+        "决定需要图片时，必须调用 generate_image，查看真实像素并确认正确后，才能在 generated_images 中绑定其 asset_id；图片有误就修正提示后重新调用。",
+        "如果来源原图实质决定目标图的结构、标注或内容，必须把工具公布的精确本地路径放入 referenced_image_paths，让生图模型按原始像素执行图片编辑；从零生图时省略两个图片选择参数；修改刚生成并检查过的图时使用 num_last_images_to_include。两种选择参数不得同时使用，每次最多 5 张。",
+        "不得返回传统 figures 图规或绘图代码来代替真实生图工具；决定不需要图片时不调用工具，正常返回文字题。",
+        DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
+    ]
+    required_indexes = [
+        index
+        for index, item in enumerate(batch_plan, start=1)
+        if _plan_requires_stem_figure(item)
+    ]
+    if required_indexes:
+        rules.append(
+            "已确认蓝图中下列 batch_index 已形成必须配题图的主模型意图："
+            + json.dumps(required_indexes, ensure_ascii=False)
+            + "。不得在后续生成、重试或修复中撤销；每题必须调用 generate_image 并绑定已检查资产。"
+        )
+    return rules
 
 
 def _without_internal_ids(value: Any) -> Any:
@@ -4774,6 +4929,8 @@ def _hydrate_single_source_content(plan: dict[str, Any], source_text: str) -> No
 def _semantic_batch_plan(
     batch_plan: list[dict[str, Any]],
     exercise_plan: list[dict[str, Any]] | None = None,
+    *,
+    main_model_image_tools: bool = False,
 ) -> list[dict[str, Any]]:
     """Expose semantic design constraints while keeping storage identifiers server-side."""
     set_positions = {
@@ -4799,7 +4956,13 @@ def _semantic_batch_plan(
             "change_contract": _plan_change_contract(item),
             "coverage_role": _clean(item.get("coverage_role"), 20),
             "required_knowledge_points": _string_list(item.get("required_knowledge_points"), limit=60),
-            "type_rule": (_question_type_generation_requirements(item) or [""])[0],
+            "type_rule": (
+                _question_type_generation_requirements(
+                    item,
+                    main_model_image_tools=main_model_image_tools,
+                )
+                or [""]
+            )[0],
             "stem_figure_required": _plan_requires_stem_figure(item),
             "required_evidence_refs": _unique_strings(item.get("required_evidence_refs"), limit=320, item_limit=80),
             "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
@@ -4946,6 +5109,67 @@ def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:
     return OpenAICompatibleClient(provider)
 
 
+def _practice_model_tool_loop(
+    payload: dict[str, Any],
+    provider: Any,
+    model: str,
+    *,
+    scope_key: str,
+    reference_images: Iterable[str | Path] = (),
+) -> ModelToolLoop | None:
+    """Build the isolated image agent route selected by the user.
+
+    Returning ``None`` is only valid for the legacy route.  The main-model
+    route fails closed so it can never drift onto deterministic drawing or a
+    different model after the user selected it.
+    """
+
+    image_orchestration = image_orchestration_from_payload(payload)
+    if image_orchestration != MAIN_MODEL_TOOL_LOOP:
+        return None
+    image_provider_name = _clean(payload.get("image_provider"), 100)
+    image_model_name = _clean(payload.get("image_model"), 200)
+    if not image_provider_name or not image_model_name:
+        raise ModelToolLoopUnavailableError(
+            "主模型自主生图模式缺少生图服务商或模型；已停止执行，未降级到传统绘图链路。",
+            requires_configuration=True,
+        )
+    try:
+        configured_image_provider = get_provider(image_provider_name)
+    except (ValueError, OSError) as exc:
+        raise ModelToolLoopUnavailableError(
+            f"主模型自主生图链路配置不可用：{redact_credentials(str(exc))}",
+            requires_configuration=True,
+        ) from exc
+    if not provider_supports_image_generation(configured_image_provider):
+        raise ModelToolLoopUnavailableError(
+            "所选生图服务商没有可用的图片生成能力；已停止执行，未降级到传统绘图链路。",
+            requires_configuration=True,
+        )
+    main_client = _practice_generation_client(provider, model)
+    if not tool_loop_supported(main_client, provider, model):
+        raise ModelToolLoopUnavailableError(
+            "所选主模型或接口未登记原生工具调用与视觉回看能力；已停止执行，未降级到传统绘图链路。"
+        )
+    run_scope = _clean(payload.get("generation_run_id") or payload.get("_job_id"), 100) or "adhoc"
+    scope_digest = hashlib.sha256(str(scope_key or "single").encode("utf-8")).hexdigest()[:16]
+    artifact_store = ImageArtifactStore(
+        OUTPUTS_DIR / "practice_images" / "agent" / run_scope / scope_digest
+    )
+    return ModelToolLoop(
+        main_client,
+        [
+            ImageGenerationTool(
+                configured_image_provider,
+                image_model_name,
+                artifact_store,
+                reference_images=reference_images,
+            )
+        ],
+        artifact_store,
+    )
+
+
 def _chat_fallback_client(client: OpenAICompatibleClient) -> OpenAICompatibleClient:
     """Use Chat only when the selected provider explicitly permits that fallback."""
     config = getattr(client, "config", None)
@@ -4990,12 +5214,30 @@ def _call_practice_json(
     delivered_evidence_refs: Iterable[Any] = (),
     item_ids: Iterable[Any] = (),
     enforce_context_budget: bool = False,
+    tool_loop: ModelToolLoop | None = None,
 ) -> dict[str, Any]:
     if timeout_seconds is None:
         timeout_seconds = _practice_stage_timeout("general", 300)
     if ensure_active is not None:
         ensure_active()
     output_token_budget = max(2000, min(DEFAULT_MODEL_MAX_TOKENS, int(max_tokens or DEFAULT_MODEL_MAX_TOKENS)))
+    if tool_loop is not None:
+        agent_result = tool_loop.run_json(
+            messages,
+            model=model,
+            max_tokens=output_token_budget,
+            thinking=thinking or "auto",
+            timeout=timeout_seconds,
+        )
+        raw = agent_result.value
+        raw["_image_tool_artifacts"] = agent_result.generated_artifacts
+        raw["_image_tool_loop"] = {
+            "steps": agent_result.steps,
+            "tool_calls": agent_result.tool_calls,
+        }
+        if ensure_active is not None:
+            ensure_active()
+        return raw
     with model_request_slot(getattr(client, "config", None)):
         result = client.chat_json(
             messages,
@@ -5643,9 +5885,14 @@ def _call_practice_json_with_transport_retry(
     delivered_evidence_refs: Iterable[Any] = (),
     item_ids: Iterable[Any] = (),
     enforce_context_budget: bool = False,
+    tool_loop: ModelToolLoop | None = None,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     retrying_invalid_json = initial_json_error
+    # A user-selected main-model tool transaction cannot cross to a protocol
+    # fallback that lacks the same conversation and image bindings. Keep every
+    # retry on the registered route; otherwise fail instead of becoming text-only.
+    allow_equivalent_chat_fallback = allow_chat_fallback and tool_loop is None
     for attempt in range(1, max(1, attempts) + 1):
         overall_attempt = attempt + max(0, int(attempt_offset))
         if ensure_active is not None:
@@ -5653,9 +5900,9 @@ def _call_practice_json_with_transport_retry(
         if before_attempt is not None:
             before_attempt(attempt)
         use_primary_protocol = (
-            overall_attempt < 4 or not allow_chat_fallback
+            overall_attempt < 4 or not allow_equivalent_chat_fallback
             if retrying_invalid_json
-            else attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_chat_fallback
+            else attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_equivalent_chat_fallback
         )
         attempt_client = client if use_primary_protocol else _chat_fallback_client(client)
         attempt_thinking = (
@@ -5684,6 +5931,7 @@ def _call_practice_json_with_transport_retry(
                 delivered_evidence_refs=delivered_evidence_refs,
                 item_ids=item_ids,
                 enforce_context_budget=enforce_context_budget,
+                tool_loop=tool_loop,
             )
             if attempt_log is not None:
                 attempt_log.append({
@@ -8383,6 +8631,15 @@ def _selectively_repair_practice_format(
 
 
 def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    image_orchestration = image_orchestration_from_payload(payload)
+    payload = {**payload, "image_orchestration": image_orchestration}
+    if image_orchestration == MAIN_MODEL_TOOL_LOOP and not (
+        _clean(payload.get("image_provider"), 100) and _clean(payload.get("image_model"), 200)
+    ):
+        raise ModelToolLoopUnavailableError(
+            "主模型自主生图模式必须配置可用的生图服务商和模型。",
+            requires_configuration=True,
+        )
     plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
     _validate_practice_source_snapshot(payload, plan.get("source_snapshot") or payload.get("source_snapshot"))
     plan = ensure_practice_blueprint_defaults(plan)
@@ -8609,6 +8866,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             for index, item in enumerate(parent_batch_plan)
             if isinstance(item, dict)
         )
+        generation_tool_loop = None
         retry_limit = 4
         configuration_error = retry_coordinator.configuration_error()
         if configuration_error:
@@ -8637,7 +8895,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "model_call_count": 0,
                 "failed_plan_item_ids": sorted(failures),
             }
-        semantic_plan = _semantic_batch_plan(batch_plan, exercise_plan)
+        semantic_plan = _semantic_batch_plan(
+            batch_plan,
+            exercise_plan,
+            main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+        )
         semantic_sources = _semantic_batch_context(
             plan,
             batch_plan,
@@ -8657,6 +8919,13 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         batch_reference_images, batch_reference_numbers = _batch_reference_images(
             generation_reference_images,
             semantic_sources,
+        )
+        generation_tool_loop = _practice_model_tool_loop(
+            payload,
+            provider,
+            model,
+            scope_key=root_key,
+            reference_images=batch_reference_images,
         )
         if batch_reference_numbers:
             semantic_sources["attached_image_map"] = [
@@ -8680,8 +8949,12 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         diversity_context = _semantic_diversity_context(exercise_plan, batch_plan)
         subject_requirements = _subject_format_requirements(plan, batch_plan)
         output_format_requirements = _practice_output_format_requirements()
-        figure_requirements = []
-        if any(_plan_requires_stem_figure(item) for item in batch_plan):
+        figure_requirements = (
+            _main_model_practice_image_rules(batch_plan)
+            if image_orchestration == MAIN_MODEL_TOOL_LOOP
+            else []
+        )
+        if image_orchestration == LEGACY_FIGURE_PIPELINE and any(_plan_requires_stem_figure(item) for item in batch_plan):
             figure_requirements = [
                 "仅 stem_figure_required=true 的题返回 figures；它是题干供学生读取的内容，不是学生应绘制的答案图。",
                 "真实曲线至少提供 5 个有序数据点；水平/垂直辅助线至少提供 2 个点；结构示意图必须提供至少两个 nodes 及必要 edges，只有 description 的假图无效。",
@@ -8736,7 +9009,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
 ## 输出结构
 
-{json.dumps(_batch_prompt_contract(batch_plan), ensure_ascii=False, indent=2)}
+{json.dumps(_batch_prompt_contract(batch_plan, main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP), ensure_ascii=False, indent=2)}
 """
         attach_batch_visuals = (
             include_source_content
@@ -8803,7 +9076,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "control_contract_char_count": sum(len(json.dumps(value, ensure_ascii=False)) for value in (
                 semantic_plan,
                 diversity_context,
-                _batch_prompt_contract(batch_plan),
+                _batch_prompt_contract(batch_plan, main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP),
             )),
             "response_attempts": [],
             "recovery_attempt_count": 0,
@@ -8842,7 +9115,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             prior_raw: dict[str, Any],
             phase: str,
         ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-            item_contract = _exercise_output_contract_for_plan_item(batch_plan[target_index - 1])
+            item_contract = _exercise_output_contract_for_plan_item(
+                batch_plan[target_index - 1],
+                main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+            )
             recovery_prompt = f"""上一批响应缺少或重复了 batch_index={target_index}。
 
 只补生成这一项，不要返回其它 batch_index，不要修改已成功返回的题目。
@@ -8898,7 +9174,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         required_evidence_refs=batch_required_evidence_refs,
                         delivered_evidence_refs=batch_delivered_evidence_refs,
                         item_ids=[target_item_id],
+                        tool_loop=generation_tool_loop,
                     )
+                    if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+                        recovered_raw = _bind_practice_generated_images(recovered_raw)
                     recovered_rows, recovered_shape = _partition_batch_rows(recovered_raw)
                     attempt_report["attempts"].append({
                         "attempt": recovery_attempt,
@@ -9005,7 +9284,12 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 required_evidence_refs=batch_required_evidence_refs,
                 delivered_evidence_refs=batch_delivered_evidence_refs,
                 item_ids=[item.get("plan_item_id") for item in batch_plan],
+                tool_loop=generation_tool_loop,
             )
+            if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+                raw_batch = _bind_practice_generated_images(raw_batch)
+            batch_diagnostic["image_tool_loop"] = dict(raw_batch.get("_image_tool_loop") or {})
+            batch_diagnostic["image_tool_artifact_count"] = len(raw_batch.get("_image_tool_artifacts") or [])
         except Exception as exc:
             error_detail = _generation_error_detail(exc)
             if error_detail.get("requires_configuration"):
@@ -9174,7 +9458,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     issue for issue in initial_issues
                     if has_unscoped_issue or str(issue.get("batch_index")) == str(target_index)
                 ]
-                item_contract = _exercise_output_contract_for_plan_item(batch_plan[target_index - 1])
+                item_contract = _exercise_output_contract_for_plan_item(
+                    batch_plan[target_index - 1],
+                    main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+                )
                 transport_attempts: list[dict[str, Any]] = []
                 retry_report: dict[str, Any] = {
                     "batch_index": target_index,
@@ -9194,11 +9481,16 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     current_issues = target_issues
                     while retry_coordinator.remaining(item_retry_key, limit=retry_limit):
                         remaining_attempts = retry_coordinator.remaining(item_retry_key, limit=retry_limit)
+                        figure_repair_instruction = (
+                            "若题干需要配图，必须使用 generate_image、回看并在 generated_images 中绑定已检查资产；不得返回 figures。"
+                            if image_orchestration == MAIN_MODEL_TOOL_LOOP
+                            else "若题干需要配图，必须返回可渲染的数据点或节点关系，并让题干明确引用该图。"
+                        )
                         repair_prompt = f"""上一版的 batch_index={target_index} 未通过生成门禁。
 
 只修复这一题，不要返回其它 batch_index，不要修改任何已通过的题目。
 严格保留该题的 required_knowledge_points、题型、难度和既定输出结构；不得输出答案、解析或内部 ID。
-若有结构变化问题，重写题干结构；若题干需要配图，必须返回可渲染的数据点或节点关系，并让题干明确引用该图。
+若有结构变化问题，重写题干结构。{figure_repair_instruction}
 
 本题当前问题：
 {json.dumps(current_issues, ensure_ascii=False, indent=2)}
@@ -9240,7 +9532,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                             required_evidence_refs=batch_required_evidence_refs,
                             delivered_evidence_refs=batch_delivered_evidence_refs,
                             item_ids=[target_item_id],
+                            tool_loop=generation_tool_loop,
                         )
+                        if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+                            repaired_raw = _bind_practice_generated_images(repaired_raw)
                         repaired_rows, repaired_shape = _partition_batch_rows(repaired_raw)
                         repaired_item = repaired_rows.get(target_index)
                         retry_report["actual_indexes"] = repaired_shape["actual_indexes"]
@@ -9341,19 +9636,71 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             try:
                 ensure_practice_generation_active(payload)
-                repaired_figures = _repair_exercise_figures(
-                    raw_item,
-                    batch_plan[local_index],
-                    item_issues,
-                    provider=provider,
-                    model=model,
-                    payload=payload,
-                    ensure_active=lambda: ensure_practice_generation_active(payload),
-                )
-                if repaired_figures:
-                    ensure_practice_generation_active(payload)
-                    raw_item["figures"] = repaired_figures
-                    _complete_generated_figure(raw_item, batch_plan[local_index])
+                if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+                    repair_contract = {
+                        "exercises": [
+                            {
+                                "batch_index": 1,
+                                "stem": "保留原题意；仅在未明确引用题图时修正该表述",
+                                "generated_images": (
+                                    "恰好一个经 generate_image 生成、像素回看并确认的题图资产；"
+                                    "包含 asset_id、title、description、location=stem"
+                                ),
+                            }
+                        ]
+                    }
+                    repair_task = {
+                        "task": "仅修复这一题的题图，不改变题型、知识点、难度、数值关系或作答目标。",
+                        "current_exercise": _without_internal_ids(raw_item),
+                        "confirmed_blueprint_item": _without_internal_ids(batch_plan[local_index]),
+                        "current_issues": item_issues,
+                        "rules": _main_model_practice_image_rules([batch_plan[local_index]]),
+                        "output": repair_contract,
+                    }
+                    repaired_raw = _call_practice_json(
+                        _practice_generation_client(provider, model),
+                        [
+                            {
+                                "role": "system",
+                                "content": "你是负责当前生题任务的主多模态模型，只修复本题题图并只输出合法 JSON。",
+                            },
+                            {"role": "user", "content": json.dumps(repair_task, ensure_ascii=False)},
+                        ],
+                        model=model,
+                        temperature=0.2,
+                        thinking=_clean(payload.get("thinking"), 20) or None,
+                        timeout_seconds=_practice_stage_timeout("generation", 480),
+                        ensure_active=lambda: ensure_practice_generation_active(payload),
+                        tool_loop=generation_tool_loop,
+                    )
+                    repaired_raw = _bind_practice_generated_images(repaired_raw)
+                    repaired_item = next(
+                        (item for item in (repaired_raw.get("exercises") or []) if isinstance(item, dict)),
+                        {},
+                    )
+                    repaired_figures = [
+                        figure
+                        for figure in (repaired_item.get("figures") or [])
+                        if isinstance(figure, dict) and figure.get("figure_purpose") == "main_model_accepted"
+                    ]
+                    if repaired_figures:
+                        raw_item["figures"] = repaired_figures
+                        if _clean(repaired_item.get("stem"), 6000):
+                            raw_item["stem"] = repaired_item["stem"]
+                else:
+                    repaired_figures = _repair_exercise_figures(
+                        raw_item,
+                        batch_plan[local_index],
+                        item_issues,
+                        provider=provider,
+                        model=model,
+                        payload=payload,
+                        ensure_active=lambda: ensure_practice_generation_active(payload),
+                    )
+                    if repaired_figures:
+                        ensure_practice_generation_active(payload)
+                        raw_item["figures"] = repaired_figures
+                        _complete_generated_figure(raw_item, batch_plan[local_index])
             except PracticeGenerationStopped:
                 raise
             except Exception:
@@ -9376,7 +9723,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             planned_item = batch_plan[local_index]
             if _exercise_figure_issues(raw_item, planned_item, batch_index=local_index + 1):
                 continue
-            _attach_model_generated_blank_template(raw_item, planned_item, payload)
+            if image_orchestration == LEGACY_FIGURE_PIPELINE:
+                _attach_model_generated_blank_template(raw_item, planned_item, payload)
 
         remaining_issues = [
             *batch_content_issues(batch_exercises),
@@ -9521,7 +9869,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 knowledge_mode=is_knowledge_mode,
                 include_source_content=include_source_content,
             ),
-            "blueprint": _semantic_batch_plan(rows, exercise_plan),
+            "blueprint": _semantic_batch_plan(
+                rows,
+                exercise_plan,
+                main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+            ),
         }
         estimated_required_refs = _unique_strings(
             [
@@ -9728,6 +10080,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     )
     retry_summary = retry_coordinator.summary()
     result["generation"].update({
+        "image_orchestration": image_orchestration,
         "retry_budget": retry_summary,
         "configuration_blocked": retry_summary["configuration_blocked"],
         "requires_configuration": retry_summary["configuration_blocked"],
@@ -9821,6 +10174,8 @@ def generate_practice_from_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
+    image_orchestration = image_orchestration_from_payload(payload)
+    payload = {**payload, "image_orchestration": image_orchestration}
     ensure_practice_generation_active(payload)
     practice = payload.get("practice") if isinstance(payload.get("practice"), dict) else {}
     exercises = practice.get("exercises") if isinstance(practice.get("exercises"), list) else []
@@ -10018,6 +10373,13 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         generation_reference_images,
         semantic_sources,
     )
+    regeneration_tool_loop = _practice_model_tool_loop(
+        payload,
+        provider,
+        model,
+        scope_key=f"regenerate:{current_plan_item_id or index}",
+        reference_images=generation_reference_images,
+    )
     if regeneration_reference_numbers:
         semantic_sources["attached_image_map"] = [
             {"attachment_index": attachment_index, "image_ref": reference_number}
@@ -10034,7 +10396,10 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         "required_constraints": required_constraints,
         "difficulty": item_for_generation.get("difficulty"),
         "difficulty_intent": _difficulty_intent(item_for_generation, set_position=index),
-        "question_type_requirements": _question_type_generation_requirements(item_for_generation),
+        "question_type_requirements": _question_type_generation_requirements(
+            item_for_generation,
+            main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+        ),
         "change_contract": _plan_change_contract(item_for_generation),
         "forbidden_peer_patterns": peer_patterns,
         "stem_figure_required": _plan_requires_stem_figure(item_for_generation),
@@ -10042,6 +10407,15 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     }
     subject_requirements = _subject_format_requirements(context_plan, [item_for_generation])
     output_format_requirements = _practice_output_format_requirements()
+    single_output_contract = _exercise_output_contract_for_plan_item(
+        item_for_generation,
+        main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+    )
+    single_image_rules = (
+        _main_model_practice_image_rules([item_for_generation])
+        if image_orchestration == MAIN_MODEL_TOOL_LOOP
+        else []
+    )
     task = f"""# 任务
 
 只重新生成{"知识点模拟题" if is_knowledge_mode else "专项练习"}中的第 {index + 1} 题，其他题目不会传给你修改。
@@ -10073,14 +10447,15 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
 - 当前题目和 forbidden_peer_patterns 都是反例；新题必须执行 change_contract，并改变情境、主要未知量、认知操作或核心公式链中的至少两项
 - 必须返回忠实的 diversity_signature 供系统去重；不得把同一道题换数字、单位、题型外壳或同义措辞
 - {"仅参考 batch_index 1 绑定来源的 source_content、图片和约束。" if include_source_content else "不得复述、引用或假设原题题面、教材原文、图片和表格。"}
-{('- stem_figure_required=true：必须返回可渲染的题干图；图表至少两个数据点，示意图至少两个节点及必要关系，不能只写 description。' if _plan_requires_stem_figure(item_for_generation) else '- stem_figure_required=false：不要返回 figures；作图题要求学生绘图不等于题干需要配图。')}
+{chr(10).join(f'- {rule}' for rule in single_image_rules)}
+{('' if image_orchestration == MAIN_MODEL_TOOL_LOOP else ('- stem_figure_required=true：必须返回可渲染的题干图；图表至少两个数据点，示意图至少两个节点及必要关系，不能只写 description。' if _plan_requires_stem_figure(item_for_generation) else '- stem_figure_required=false：不要返回 figures；作图题要求学生绘图不等于题干需要配图。'))}
 {chr(10).join(f'- {requirement}' for requirement in subject_requirements)}
 {chr(10).join(f'- {requirement}' for requirement in output_format_requirements)}
 - 只输出包含 exercises 数组的合法 JSON，数组中恰好一题
 
 ## 输出结构
 
-{json.dumps({"exercises": [_exercise_output_contract_for_plan_item(item_for_generation)]}, ensure_ascii=False, indent=2)}
+{json.dumps({"exercises": [single_output_contract]}, ensure_ascii=False, indent=2)}
 """
     messages = [
         {"role": "system", "content": "你是研究生教研专家，只重写指定的一道练习题。只输出合法 JSON。"},
@@ -10093,7 +10468,10 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         temperature=0.45,
         thinking=_clean(payload.get("thinking"), 20) or None,
         ensure_active=lambda: ensure_practice_generation_active(payload),
+        tool_loop=regeneration_tool_loop,
     )
+    if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+        raw = _bind_practice_generated_images(raw)
     first_candidate = next((item for item in (raw.get("exercises") or []) if isinstance(item, dict)), {})
     if first_candidate and not _regenerated_exercise_substantively_changed(current, first_candidate):
         retry_messages = [
@@ -10115,7 +10493,10 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             temperature=0.5,
             thinking=_clean(payload.get("thinking"), 20) or None,
             ensure_active=lambda: ensure_practice_generation_active(payload),
+            tool_loop=regeneration_tool_loop,
         )
+        if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+            raw = _bind_practice_generated_images(raw)
         first_candidate = next((item for item in (raw.get("exercises") or []) if isinstance(item, dict)), {})
         if not first_candidate or not _regenerated_exercise_substantively_changed(current, first_candidate):
             raise ValueError("模型未生成与当前题目有实质差异的新题；原题已安全保留，请调整要求后重试本题。")
@@ -10478,6 +10859,8 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
 
     保留 plan_item_id / 题型 / 难度 / 来源；返回的草案挂在该计划项下，不污染正式结果。
     """
+    image_orchestration = image_orchestration_from_payload(payload)
+    payload = {**payload, "image_orchestration": image_orchestration}
     plan = ensure_practice_blueprint_defaults(
         payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
     )
@@ -10530,6 +10913,13 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
         generation_images,
         semantic_sources,
     )
+    draft_tool_loop = _practice_model_tool_loop(
+        payload,
+        provider,
+        model,
+        scope_key=f"plan_draft:{_clean(item.get('plan_item_id'), 100) or index}",
+        reference_images=generation_images,
+    )
     if draft_reference_numbers:
         semantic_sources["attached_image_map"] = [
             {"attachment_index": attachment_index, "image_ref": reference_number}
@@ -10542,6 +10932,15 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
     source_heading = "本项绑定来源" if include_source_content else "抽象知识与边界约束（不含来源原文、题面、图片和表格）"
     subject_requirements = _subject_format_requirements(context_plan, [item])
     output_format_requirements = _practice_output_format_requirements()
+    draft_image_rules = (
+        _main_model_practice_image_rules([item])
+        if image_orchestration == MAIN_MODEL_TOOL_LOOP
+        else []
+    )
+    draft_output_contract = _exercise_output_contract_for_plan_item(
+        item,
+        main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
+    )
     task = f"""# 任务
 
 只生成蓝图中的一个计划项对应的题目**草案**（第 {index + 1} 项）。不要生成整套，不要改动其他计划项。
@@ -10575,12 +10974,13 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
 - {"只参考 batch_index 1 绑定来源的 source_content、图片和约束。" if include_source_content else "不得复述、引用或假设原题题面、教材原文、图片和表格；仅按本计划项的必考知识点与必要约束独立设计。"}
 {chr(10).join(f'- {requirement}' for requirement in subject_requirements)}
 {chr(10).join(f'- {requirement}' for requirement in output_format_requirements)}
+{chr(10).join(f'- {rule}' for rule in draft_image_rules)}
 - 只输出包含 exercises 数组的合法 JSON，数组中恰好一题；不要输出任何内部 ID
 - 这是草案预览：允许返回待人工确认的题目
 
 ## 输出结构
 
-{json.dumps({"exercises": [_exercise_output_contract_for_plan_item(item)]}, ensure_ascii=False, indent=2)}
+{json.dumps({"exercises": [draft_output_contract]}, ensure_ascii=False, indent=2)}
 """
     messages = [
         {"role": "system", "content": "你是研究生教研专家，只生成蓝图某一计划项的题目草案。只输出合法 JSON。"},
@@ -10592,7 +10992,10 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
         model=model,
         temperature=0.45,
         thinking=_clean(payload.get("thinking"), 20) or None,
+        tool_loop=draft_tool_loop,
     )
+    if image_orchestration == MAIN_MODEL_TOOL_LOOP:
+        raw = _bind_practice_generated_images(raw)
     raw_exercises = []
     for raw_item in raw.get("exercises") or []:
         if isinstance(raw_item, dict):

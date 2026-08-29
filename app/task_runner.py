@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
+from .analysis_profiles import analysis_uses_textbook_evidence
 from .pipeline import PipelineOptions, run_pipeline
 from .runtime_monitor import append_runtime_log, model_call_context
 from .task_control import clear_task_control, control_task
@@ -107,7 +108,7 @@ def run_exam_task(
         with model_call_context(task_id=task_id, operation="解析任务"):
             from .hybrid_client import hybrid_enabled, run_hybrid_task
 
-            if use_model and hybrid_enabled():
+            if use_model and hybrid_enabled() and analysis_uses_textbook_evidence(current.analysis_profile):
                 if document_diagnostics:
                     run_hybrid_task(
                         task_id,

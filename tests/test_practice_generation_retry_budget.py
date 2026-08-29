@@ -477,6 +477,41 @@ def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monk
     assert attempts[-1]["protocol_fallback"] is True
 
 
+def test_transport_retry_with_model_tool_loop_never_drops_to_text_only_fallback(monkeypatch) -> None:
+    primary = object()
+    fallback = object()
+    tool_loop = object()
+    clients = []
+    delivered_loops = []
+
+    def fake_call(client, *_args, **kwargs):
+        clients.append(client)
+        delivered_loops.append(kwargs.get("tool_loop"))
+        if len(clients) == 1:
+            raise LLMError("Responses stream exceeded total wall-clock deadline", status_code=524)
+        return {"ok": True}
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+
+    result = exercise_generation._call_practice_json_with_transport_retry(
+        primary,
+        [],
+        model="fake",
+        temperature=0,
+        thinking="low",
+        timeout_seconds=30,
+        attempts=2,
+        backoff_seconds=0,
+        tool_loop=tool_loop,
+    )
+
+    assert result == {"ok": True}
+    assert clients == [primary, primary]
+    assert delivered_loops == [tool_loop, tool_loop]
+
+
 def test_transport_retry_respects_provider_protocol_fallback_policy(monkeypatch) -> None:
     provider = SimpleNamespace(
         name="lingsuan_openai",

@@ -4,7 +4,6 @@ import copy
 import json
 import os
 import shutil
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -98,8 +97,10 @@ def _repair_prompt(
     fragment: dict[str, Any],
     findings: list[dict[str, Any]],
     docx_issues: list[str],
+    *,
+    include_textbook_evidence: bool = True,
 ) -> list[dict[str, str]]:
-    return [
+    messages = [
         {
             "role": "system",
             "content": "你是真题解析平台的单题结构化修复器。只能返回 JSON，不要返回 Markdown。",
@@ -146,6 +147,19 @@ def _repair_prompt(
             ),
         },
     ]
+    if not include_textbook_evidence:
+        messages[0]["content"] = "你是题目解析平台的单题结构化修复器。不得使用教材依据；只能返回 JSON，不要返回 Markdown。"
+        payload = json.loads(messages[1]["content"])
+        payload["analysis_profile"] = "question_only"
+        payload["confirmed_evidence"] = []
+        payload["hard_rules"] = [
+            str(rule)
+            .replace("不要改变题号、题型和教材依据含义", "不要改变题号、题型和原题含义")
+            .replace("current_fragment 已移除程序生成的教材依据块；", "")
+            for rule in payload.get("hard_rules", [])
+        ]
+        messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
+    return messages
 
 
 def repair_fragments_with_model_for_docx(
@@ -174,6 +188,7 @@ def repair_fragments_with_model_for_docx(
         if isinstance(question, dict) and _qid(question)
     }
     selections = _selection_map(selection_data)
+    include_textbook_evidence = str((selection_data or {}).get("analysis_profile") or "") != "question_only"
     grouped_findings: dict[str, list[dict[str, Any]]] = {}
     for finding in findings:
         qid = str(finding.get("question_id") or "").strip()
@@ -198,7 +213,14 @@ def repair_fragments_with_model_for_docx(
             return qid, None, ["缺少题目结构或原 fragment，无法模型修复。"]
         evidence_selection = selections.get(qid)
         evidence = evidence_for_answer_generation(candidates, qid, evidence_selection)
-        messages = _repair_prompt(question, evidence, fragment, q_findings, docx_issues)
+        messages = _repair_prompt(
+            question,
+            evidence,
+            fragment,
+            q_findings,
+            docx_issues,
+            include_textbook_evidence=include_textbook_evidence,
+        )
         try:
             repair_client = client or OpenAICompatibleClient(provider)
             with model_request_slot(provider):

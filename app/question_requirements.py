@@ -13,6 +13,9 @@ _DRAW_COMMAND_RE = re.compile(
     r"用图.{0,12}(?:表示|说明|表述))"
 )
 _SOURCE_IMAGE_CUE_RE = re.compile(r"(?:下图|上图|如图|图中|观察图|根据图|由图|所示图|附图)")
+_OPTIONAL_DRAW_FORMAT_RE = re.compile(
+    r"(?:可|可以|也可|允许)(?:按|采用|用)?(?:画图|作图|绘图|图示)(?:的)?(?:格式|形式|方式)?"
+)
 
 
 def _question_text(question: dict[str, Any]) -> str:
@@ -32,27 +35,40 @@ def answer_figure_required(question: dict[str, Any]) -> bool:
     """Whether the answer must create a figure, independent of source images."""
 
     text = _question_text(question)
-    explicit_command = bool(_DRAW_COMMAND_RE.search(text))
+    optional_format = bool(_OPTIONAL_DRAW_FORMAT_RE.search(text))
+    # Do not mistake the words inside an optional-format phrase for a command;
+    # a separate explicit draw instruction in the remaining text still wins.
+    explicit_command = bool(_DRAW_COMMAND_RE.search(_OPTIONAL_DRAW_FORMAT_RE.sub("", text)))
     typed_as_drawing = question_has_type(question, "作图题")
-    # Reconcile stale/model-authored flags against objective question facts.
-    # A referenced source image plus a noun such as "示意图" means read the
-    # supplied image, not redraw it. Explicit drawing language (including
-    # "在图中标出") or a confirmed drawing type still wins.
-    if (question.get("image_refs") or _SOURCE_IMAGE_CUE_RE.search(text)) and not explicit_command and not typed_as_drawing:
-        return False
+    understanding = question.get("question_understanding")
+    plan = question.get("figure_schema_plan")
+    intent = plan.get("diagram_intent") if isinstance(plan, dict) else None
+
+    # Explicit and model-authored positive intent is authoritative.  Objective
+    # legacy heuristics below may resolve ambiguous old records, but must never
+    # erase an image deliverable the responsible model has already formed.
     if question.get("answer_figure_required") is True:
         return True
     if typed_as_drawing:
         return True
-    understanding = question.get("question_understanding")
     if isinstance(understanding, dict) and understanding.get("needs_figure") is True:
         return True
-    plan = question.get("figure_schema_plan")
-    intent = plan.get("diagram_intent") if isinstance(plan, dict) else None
     if isinstance(intent, dict) and intent.get("needs_figure") is True:
         return True
     if explicit_command:
         return True
+
+    # Phrases such as ``可按画图格式`` describe an allowed answer notation,
+    # not a mandatory image deliverable when no responsible model has already
+    # formed a positive image intent.
+    if optional_format and not typed_as_drawing:
+        return False
+    # Reconcile ambiguous legacy flags against objective question facts.
+    # A referenced source image plus a noun such as "示意图" means read the
+    # supplied image, not redraw it, unless authoritative intent above says an
+    # answer image is required.
+    if (question.get("image_refs") or _SOURCE_IMAGE_CUE_RE.search(text)) and not explicit_command and not typed_as_drawing:
+        return False
     # Legacy data used needs_figure for two meanings. Only treat it as an
     # answer drawing requirement when it is not already explained by a source
     # image attachment.

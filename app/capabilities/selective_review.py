@@ -188,6 +188,13 @@ def _fragment_context(fragments_data: dict[str, Any], qids: set[str]) -> list[di
         if qid not in qids:
             continue
         coverage_manifest = []
+        generated_unit_numbers = {
+            str(item.get("answer_unit_number") or "").strip()
+            for item in fragment.get("generated_images", []) or []
+            if isinstance(item, dict) and str(item.get("answer_unit_number") or "").strip()
+        }
+        delivered_answer_unit_numbers: set[str] = set()
+        has_delivered_answer_figure = bool(fragment.get("generated_images"))
         formulas_by_id = {
             str(item.get("formula_id") or ""): str(item.get("latex") or "")
             for item in fragment.get("formulas", []) or []
@@ -202,6 +209,11 @@ def _fragment_context(fragments_data: dict[str, Any], qids: set[str]) -> list[di
             for segment in block.get("segments", []) or []:
                 if not isinstance(segment, dict):
                     continue
+                if segment.get("type") == "image_ref" and str(segment.get("role") or "") != "source_question_image":
+                    has_delivered_answer_figure = True
+                    answer_unit_number = str(segment.get("answer_unit_number") or "").strip()
+                    if answer_unit_number:
+                        delivered_answer_unit_numbers.add(answer_unit_number)
                 if segment.get("type") == "text":
                     pieces.append(str(segment.get("text") or ""))
                 elif segment.get("type") == "formula_ref":
@@ -210,7 +222,8 @@ def _fragment_context(fragments_data: dict[str, Any], qids: set[str]) -> list[di
             if text:
                 visible_blocks.append({"label": str(block.get("label") or ""), "text": text})
                 visible_budget -= len(text)
-        for unit in fragment.get("answer_units", []) or []:
+        answer_units = fragment.get("answer_units", []) or []
+        for unit in answer_units:
             if not isinstance(unit, dict):
                 continue
             coverage_manifest.append(
@@ -230,7 +243,10 @@ def _fragment_context(fragments_data: dict[str, Any], qids: set[str]) -> list[di
                         for item in unit.get("steps", []) or []
                         if isinstance(item, dict)
                     ],
-                    "has_figure_spec": bool(unit.get("figure_specs") or unit.get("drawing_code_specs")),
+                    "has_figure_spec": bool(unit.get("figure_specs") or unit.get("drawing_code_specs"))
+                    or str(unit.get("number") or "").strip() in generated_unit_numbers
+                    or str(unit.get("number") or "").strip() in delivered_answer_unit_numbers
+                    or (len(answer_units) == 1 and has_delivered_answer_figure),
                 }
             )
         rows.append(

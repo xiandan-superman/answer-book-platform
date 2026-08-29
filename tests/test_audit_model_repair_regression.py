@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +11,71 @@ sys.path.insert(0, str(ROOT))
 
 
 class AuditModelRepairRegressionTests(unittest.TestCase):
+    def test_image_route_repair_never_silently_calls_plain_text_model(self) -> None:
+        from app.audit_model_repair import repair_fragments_with_model_for_audit
+        from app.llm_client import OpenAICompatibleClient
+        from app.settings import ProviderConfig
+
+        provider = ProviderConfig(
+            name="custom-repair",
+            type="openai_compatible",
+            base_url="https://example.invalid",
+            api_key="key",
+            default_model="text-model",
+            model_options=("text-model",),
+            allow_custom_model=True,
+            model_hint="",
+            temperature=0.1,
+            max_tokens=1000,
+            supports_vision=False,
+            model_capabilities={"text-model": ("text",)},
+            model_profiles={"text-model": {"supports_tool_calls": False}},
+        )
+        client = OpenAICompatibleClient(provider)
+        client.chat_json_object = lambda *args, **kwargs: self.fail(
+            "plain-text repair must not run when the image tool route is required"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fragments_json = Path(tmp) / "answer_fragments.json"
+            original = {
+                "fragments": [
+                    {
+                        "question_id": "q1",
+                        "answer": "保留原答案",
+                        "blocks": [],
+                        "formulas": [],
+                    }
+                ]
+            }
+            fragments_json.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
+            report = repair_fragments_with_model_for_audit(
+                fragments_json,
+                {"items": [{"question_id": "q1", "question_type": "作图题", "stem": "作图"}]},
+                [],
+                selection_data=None,
+                provider=provider,
+                model="text-model",
+                audit_stage="answer_generation",
+                audit_report={
+                    "issues": [
+                        {
+                            "question_id": "q1",
+                            "code": "missing_required_figure",
+                            "message": "缺少必要图示",
+                        }
+                    ],
+                    "warnings": [],
+                },
+                client=client,
+                image_provider=provider,
+                image_model="image-model",
+            )
+
+            self.assertFalse(report["changed"])
+            self.assertIn("未登记等价的原生图片工具回路", report["issues"][0]["issues"][0])
+            self.assertEqual(original, json.loads(fragments_json.read_text(encoding="utf-8")))
+
     def test_partial_multipart_repair_is_rejected(self) -> None:
         from app.audit_model_repair import _repair_regressions
 
@@ -91,6 +158,58 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
         _merge_safe_preserved_blocks(original, repaired)
 
         self.assertEqual("易错点及注意事项", repaired["blocks"][0]["label"])
+
+    def test_text_repair_preserves_only_proven_main_model_image_binding(self) -> None:
+        from app.audit_model_repair import _preserve_accepted_generated_images
+
+        image = {"asset_id": "img_sha256_valid", "caption": "相图", "placement": "analysis"}
+        artifact = {"asset_id": "img_sha256_valid", "path": "/tmp/valid.png"}
+        original = {
+            "generated_images": [image],
+            "_meta": {
+                "image_tool_loop": {
+                    "steps": 2,
+                    "tool_calls": 1,
+                    "generated_artifacts": [artifact],
+                }
+            },
+        }
+        repaired = {"generated_images": [], "_draft": {"generated_images": []}}
+
+        _preserve_accepted_generated_images(original, repaired)
+
+        self.assertEqual([image], repaired["generated_images"])
+        self.assertEqual([image], repaired["_draft"]["generated_images"])
+        self.assertEqual([artifact], repaired["_meta"]["image_tool_loop"]["generated_artifacts"])
+
+    def test_unproven_image_reference_is_not_preserved(self) -> None:
+        from app.audit_model_repair import _preserve_accepted_generated_images
+
+        original = {
+            "generated_images": [{"asset_id": "img_sha256_unseen"}],
+            "_meta": {"review_candidate_issues": ["main model referenced image assets it had not inspected"]},
+        }
+        repaired = {"generated_images": [], "_draft": {"generated_images": []}}
+
+        _preserve_accepted_generated_images(original, repaired)
+
+        self.assertEqual([], repaired["generated_images"])
+
+    def test_generated_image_satisfies_missing_figure_repair_postcondition(self) -> None:
+        from app.audit_model_repair import _repair_regressions
+
+        regressions = _repair_regressions(
+            {"answer": "见图", "blocks": []},
+            {
+                "answer": "见图",
+                "blocks": [],
+                "generated_images": [{"asset_id": "img_sha256_valid"}],
+            },
+            {"question_id": "q1", "question_type": "作图题"},
+            [{"code": "missing_required_figure"}],
+        )
+
+        self.assertNotIn("repair_did_not_add_required_figure_spec", regressions)
 
     def test_mistake_note_keeps_prose_and_drops_stale_formula_reference(self) -> None:
         from app.audit_model_repair import _merge_safe_preserved_blocks

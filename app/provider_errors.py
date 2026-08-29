@@ -179,6 +179,14 @@ def classify_provider_error(
             retryable=True,
         )
 
+    if _contains(lowered, "error code: 1010", "cloudflare 1010"):
+        return result(
+            "provider_gateway_client_blocked",
+            "模型网关拒绝了当前客户端",
+            "请求已到达服务商网关，但被其客户端兼容性或安全策略拦截。",
+            "请更新平台后重新测试；若仍出现，请联系服务商确认 API 客户端接入策略。",
+        )
+
     if status == 403 or _contains(lowered, "permission denied", "forbidden", "access denied", "permission_denied"):
         return result(
             "provider_permission",

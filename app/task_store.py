@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .analysis_profiles import EVIDENCE_BACKED_ANALYSIS, normalize_analysis_profile
+from .image_orchestration import LEGACY_FIGURE_PIPELINE, normalize_image_orchestration
 from .paths import TASKS_DIR, ensure_project_dirs
 from .resource_ids import bounded_resource_path
 
@@ -40,6 +42,7 @@ class TaskRecord:
     vision_model: str = ""
     image_provider: str = ""
     image_model: str = ""
+    image_orchestration: str = LEGACY_FIGURE_PIPELINE
     health_status: str = "unknown"
     current_operation: str = ""
     completed_count: int = 0
@@ -63,6 +66,7 @@ class TaskRecord:
     cloud_status: str = ""
     cloud_last_sync_at: str = ""
     cloud_error: str = ""
+    analysis_profile: str = EVIDENCE_BACKED_ANALYSIS
 
 
 INTERRUPTED_ON_STARTUP_STATUSES = {"running", "queued"}
@@ -104,6 +108,8 @@ def create_task(
     vision_model: str = "",
     image_provider: str = "",
     image_model: str = "",
+    image_orchestration: str = LEGACY_FIGURE_PIPELINE,
+    analysis_profile: str = EVIDENCE_BACKED_ANALYSIS,
 ) -> TaskRecord:
     ensure_project_dirs()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -124,6 +130,8 @@ def create_task(
         vision_model=vision_model,
         image_provider=image_provider,
         image_model=image_model,
+        image_orchestration=normalize_image_orchestration(image_orchestration),
+        analysis_profile=normalize_analysis_profile(analysis_profile),
         status="created",
         created_at=now,
         updated_at=now,
@@ -175,6 +183,7 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("vision_model", "")
     data.setdefault("image_provider", "")
     data.setdefault("image_model", "")
+    data.setdefault("image_orchestration", LEGACY_FIGURE_PIPELINE)
     data.setdefault("health_status", "unknown")
     data.setdefault("current_operation", "")
     data.setdefault("completed_count", 0)
@@ -198,6 +207,8 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("cloud_status", "")
     data.setdefault("cloud_last_sync_at", "")
     data.setdefault("cloud_error", "")
+    data.setdefault("analysis_profile", EVIDENCE_BACKED_ANALYSIS)
+    data["analysis_profile"] = normalize_analysis_profile(data["analysis_profile"])
     return TaskRecord(**data)
 
 

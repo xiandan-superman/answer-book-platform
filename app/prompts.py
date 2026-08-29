@@ -18,7 +18,7 @@ from .drawing_code import question_drawing_mode
 from .omml_input import strip_structured_math_metadata
 from .question_requirements import answer_figure_required
 from .question_scores import confirmed_score_from_question, normalize_score
-from .question_types import has_calculation_answer_unit, question_has_type, question_kind
+from .question_types import has_calculation_answer_unit, question_kind
 
 SYSTEM_PROMPT = """你是专业考研真题解析教师，你输出的答案要倾向专业考研真题解析，要平衡学生理解和解析深度。
 你只负责根据输入的真题和教材内容完成解析，并输出一个合法 JSON object。
@@ -26,6 +26,34 @@ SYSTEM_PROMPT = """你是专业考研真题解析教师，你输出的答案要�
 不得输出页码、evidence_id、候选证据编号、平台内部字段或最终排版内容。
 解析内容必须满足输入中的《真题解析内容质量要求》。
 """
+
+QUESTION_ONLY_SYSTEM_PROMPT = """你是专业考研题目解析教师，你输出的答案要平衡学生理解和解析深度。
+你只负责根据输入题目和已确认的题面信息完成解析，并输出一个合法 JSON object。
+不得描述流程，不得生成 Markdown，不得输出 JSON 之外的任何文字，不得要求用户补教材。
+不得输出教材依据、教材引用、页码、evidence_id、候选证据编号或平台内部字段。
+解析内容必须满足输入中的《题目解析内容质量要求》；缺少题干条件时必须明确说明，不得编造。
+"""
+
+
+def _question_only_quality_requirements(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _question_only_quality_requirements(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_question_only_quality_requirements(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    replacements = {
+        "名词解释题最终只展示“教材依据”和“答案”": "名词解释题最终展示“答案”",
+        "根据教材可知": "根据相关原理可知",
+        "教材或题干": "题干或学科规范",
+        "教材结论": "学科结论",
+        "教材段落": "背景段落",
+        "教材依据": "外部依据",
+    }
+    result = value
+    for source, target in replacements.items():
+        result = result.replace(source, target)
+    return result
 
 
 def _score_from_question(question: dict[str, Any]) -> float | None:
@@ -257,7 +285,13 @@ def _textbook_content_record(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str, Any]], question_understanding: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def build_answer_draft_prompt(
+    question: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    question_understanding: dict[str, Any] | None = None,
+    *,
+    include_textbook_evidence: bool = True,
+) -> list[dict[str, Any]]:
     depth_profile = build_answer_depth_profile(question)
     capability_text = _question_capability_text(question)
     answer_policy_contributions = capability_policy_contributions(
@@ -405,12 +439,24 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
                 ]
             }
         ],
+        "generated_images": [
+            {
+                "asset_id": "仅填写 generate_image 工具返回且已由你检查过的 asset_id",
+                "caption": "面向答案册读者的中文图题",
+                "placement": "analysis",
+                "answer_unit_number": "可选；多小问时填写所属作答单元编号"
+            }
+        ],
         "mistake_notes": ["计算题或确有必要的题目填写本题专属易错点及注意事项"],
         "uncertainties": []
     }
     user_payload = {
         "task": "generate_question_analysis_draft",
-        "answer_content_quality_requirements": ANSWER_CONTENT_QUALITY_REQUIREMENTS,
+        "answer_content_quality_requirements": (
+            ANSWER_CONTENT_QUALITY_REQUIREMENTS
+            if include_textbook_evidence
+            else _question_only_quality_requirements(ANSWER_CONTENT_QUALITY_REQUIREMENTS)
+        ),
         "hard_rules": [
             "Only return a JSON object.",
             "Do not output page numbers.",
@@ -436,7 +482,7 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
             "If a subquestion has requirements, use the requirement number such as 2.1, 2.2, 2.3 as the actual answer unit. Calculation steps must use the calculation requirement number, not only the parent subquestion number.",
             "If requirements contain mixed types, answer each requirement according to its own question_type inside answer_units: 作图题 must produce drawing_code_specs when question.drawing_generation_mode is code, or figure_specs when it is figure_specs; 计算题 must produce formulas and unit steps; 名词解释 must put the complete definition in answer_units[].answer; 简答题/判断题 must use unit analysis_segments.",
             "Do not merge multiple requirements into one crowded paragraph. Use the original requirement number and stem as the answer organization.",
-            "For drawing requirements, provide the textual answer context and precise drawing requirements; do not attempt to generate or embed final image pixels.",
+            "Never embed image pixels or base64 in JSON. When an image tool is available, you alone decide whether the answer needs an image; call it only when useful, inspect the returned image, and bind an accepted asset_id through generated_images. If you do not call it, return normal text JSON without generated_images.",
             "For 作图题 with question.drawing_generation_mode=code, the dedicated drawing-code generator is the primary figure path. The answer model may output drawing_code_specs only as an optional fallback; do not spend excessive tokens on code when clear drawing requirements and analysis are enough.",
             "For 作图题 with question.drawing_generation_mode=code, if you do output drawing_code_specs, each code item must define exactly one function draw(output_path: str) -> None and save a PNG to output_path using Matplotlib. Use Chinese explanatory text, preserve the standard technical terms and notation required by the question, and make the figure black-and-white printable by using line styles, markers, hatch, direct labels, offsets, or subplots instead of color.",
             "For multi-part calculation questions, each calculation-type answer unit should have at least one calculation/judgment step unless the unit itself clearly does not require a calculation answer.",
@@ -458,7 +504,7 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
             "For non-calculation questions, do not leave useful formulas detached from the reasoning. If a formula is necessary, reference it in the relevant analysis_segments item; if it is not necessary, omit it from formulas.",
             "Do not put simple professional labels, axis labels, peak labels, or unit strings into formulas only to satisfy formula rules. Keep them in normal text, symbolic_notations, figure_specs.required_labels, or drawing-code labels unless they are part of an actual relation or criterion.",
             "For 作图题, formulas should only contain relations that explain drawing logic. Pure labels, coordinates, phase names, crystal-plane labels, and axis labels belong to figure labels or symbolic_notations, not detached formulas.",
-            "Only when the confirmed question_type or requirement question_type is 作图题, output drawing_code_specs or figure_specs according to drawing_generation_mode; do not output drawing outputs for non-作图题 even if the stem contains drawing-related words.",
+            "Only when the confirmed question_type or requirement question_type is 作图题, output drawing_code_specs or figure_specs according to drawing_generation_mode. generated_images is a separate main-model tool result and may be used for any question only when you judge that it materially improves the answer.",
             "For 作图题 with question.drawing_generation_mode=figure_specs, if question.figure_schema_plan.schema_resolution.status is schema_found, figure_specs.kind must use that planned registry kind unless render_decision.strategy is source_image_overlay; do not invent another kind.",
             "For a multipart question, each drawing answer unit must follow that unit's own figure_schema_plan and emit its own figure_specs item; never merge two independent drawing units into one crowded image.",
             "For a registered schema, populate the schema's required_fields exactly. Use generic elements only for custom_diagram; for microstructure_schematic use features, for generic_axis_curve use points, and for multi_curve_axis_plot use series.",
@@ -484,6 +530,21 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
         "question_understanding": understanding,
         "textbook_content": [_textbook_content_record(row) for row in evidence],
     }
+    if not include_textbook_evidence:
+        user_payload["analysis_profile"] = "question_only"
+        user_payload.pop("textbook_content", None)
+        evidence_markers = ("textbook", "教材", "evidence_id", "citation", "page numbers")
+        user_payload["hard_rules"] = [
+            rule for rule in user_payload["hard_rules"]
+            if not any(marker in rule.lower() for marker in evidence_markers)
+        ]
+        user_payload["hard_rules"].extend(
+            [
+                "Use only the confirmed question surface and established disciplinary knowledge; do not invent missing conditions.",
+                "Do not output textbook references, citations, page numbers, evidence IDs, or a 教材依据 block.",
+                "This profile does not run textbook indexing, retrieval, or evidence binding.",
+            ]
+        )
     if not has_calc_unit:
         user_payload["hard_rules"] = [
             rule
@@ -508,7 +569,7 @@ def build_answer_draft_prompt(question: dict[str, Any], evidence: list[dict[str,
     else:
         user_content = user_text
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT if include_textbook_evidence else QUESTION_ONLY_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 

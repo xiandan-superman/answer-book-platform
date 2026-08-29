@@ -7,7 +7,6 @@ from typing import Any
 
 from .paths import CONFIG_DIR
 
-
 MODEL_CAPABILITY_REGISTRY_PATH = CONFIG_DIR / "model_capabilities.json"
 REQUIRED_MODEL_FIELDS = {
     "kind",
@@ -22,6 +21,12 @@ REQUIRED_MODEL_FIELDS = {
 VALID_EVIDENCE_GRADES = {"A", "B", "C", "D"}
 VALID_MODEL_KINDS = {"text_generation", "image_generation"}
 VALID_TASK_SUPPORT = {"recommended", "allowed", "limited", "forbidden", "unknown"}
+SUPPORTED_NATIVE_TOOL_PROTOCOLS = {
+    "responses",
+    "responses_api",
+    "chat_completions",
+    "openai_compatible",
+}
 
 
 @lru_cache(maxsize=1)
@@ -71,7 +76,12 @@ def validate_provider_registry_sync(
     capability_registry = registry or load_model_capability_registry()
     configured_providers = provider_config.get("providers", {})
     registered_providers = capability_registry.get("providers", {})
+    native_tool_routes = capability_registry.get("native_tool_routes", {})
     errors: list[str] = []
+
+    if not isinstance(native_tool_routes, dict):
+        errors.append("模型能力注册表的 native_tool_routes 必须是对象")
+        native_tool_routes = {}
 
     for provider_name, provider in configured_providers.items():
         configured = configured_provider_models(provider)
@@ -107,6 +117,56 @@ def validate_provider_registry_sync(
             elif any(value not in VALID_TASK_SUPPORT for value in task_support.values()):
                 errors.append(f"模型 {provider_name}/{model_name} 的 task_support 含无效状态")
 
+        registered_tool_routes = native_tool_routes.get(provider_name, {})
+        if not isinstance(registered_tool_routes, dict):
+            errors.append(f"服务商 {provider_name} 的 native_tool_routes 必须是对象")
+            registered_tool_routes = {}
+        configured_profiles = provider.get("model_profiles", {})
+        declared_tool_models = {
+            str(model_name).strip()
+            for model_name, profile in configured_profiles.items()
+            if isinstance(profile, dict) and profile.get("supports_tool_calls") is True
+        }
+        registered_tool_models = {str(model_name).strip() for model_name in registered_tool_routes}
+        if declared_tool_models != registered_tool_models:
+            missing_public = sorted(registered_tool_models - declared_tool_models)
+            stale_public = sorted(declared_tool_models - registered_tool_models)
+            if missing_public:
+                errors.append(
+                    f"服务商 {provider_name} 已登记工具模型未同步公开配置：{', '.join(missing_public)}"
+                )
+            if stale_public:
+                errors.append(
+                    f"服务商 {provider_name} 公开配置误声明工具能力：{', '.join(stale_public)}"
+                )
+        for model_name, route in registered_tool_routes.items():
+            if model_name not in registered_models:
+                errors.append(f"工具能力登记引用未知模型：{provider_name}/{model_name}")
+                continue
+            if not isinstance(route, dict):
+                errors.append(f"工具能力登记必须是对象：{provider_name}/{model_name}")
+                continue
+            protocol = str(route.get("protocol") or "").strip().lower()
+            if protocol not in SUPPORTED_NATIVE_TOOL_PROTOCOLS:
+                errors.append(f"工具能力协议无效：{provider_name}/{model_name}")
+            profile = configured_profiles.get(model_name, {})
+            configured_protocol = str(
+                (profile.get("api_protocol") if isinstance(profile, dict) else "")
+                or provider.get("api_protocol")
+                or "chat_completions"
+            ).strip().lower()
+            if configured_protocol != protocol:
+                errors.append(
+                    f"工具能力协议与公开配置不一致：{provider_name}/{model_name} "
+                    f"({protocol} != {configured_protocol})"
+                )
+            native_inputs = {
+                str(item).strip().lower()
+                for item in registered_models[model_name].get("native_inputs", [])
+            }
+            if "image" not in native_inputs:
+                errors.append(f"自主生图工具模型必须能回看图片：{provider_name}/{model_name}")
+
     for provider_name in sorted(set(registered_providers) - set(configured_providers)):
         errors.append(f"已删除服务商仍留在能力表：{provider_name}")
     return errors
@@ -124,6 +184,26 @@ def get_model_capability(provider_name: str, model_name: str) -> dict[str, Any] 
     provider = registry.get("providers", {}).get(str(provider_name or "").strip(), {})
     record = provider.get("models", {}).get(str(model_name or "").strip()) if isinstance(provider, dict) else None
     return dict(record) if isinstance(record, dict) else None
+
+
+def provider_has_capability_registry(provider_name: str) -> bool:
+    registry = load_model_capability_registry()
+    return str(provider_name or "").strip() in registry.get("providers", {})
+
+
+def get_native_tool_route(provider_name: str, model_name: str) -> dict[str, Any] | None:
+    """Return an explicitly verified native-tool route for one provider/model pair."""
+
+    registry = load_model_capability_registry()
+    provider_routes = registry.get("native_tool_routes", {}).get(
+        str(provider_name or "").strip(), {}
+    )
+    route = (
+        provider_routes.get(str(model_name or "").strip())
+        if isinstance(provider_routes, dict)
+        else None
+    )
+    return dict(route) if isinstance(route, dict) else None
 
 
 def model_accepts_input(provider_name: str, model_name: str, input_type: str) -> bool | None:
@@ -171,13 +251,24 @@ def render_model_capability_markdown(registry: dict[str, Any] | None = None) -> 
         "",
         "能力等级：A＝真实任务流程已验证；B＝接口能力已验证、任务基线待补；C＝配置或通道声明；D＝未知/过期。",
         "",
-        "| 服务商 | 模型 | 类型 | 原生输入 → 输出 | 结构化输出 | 推理 | 任务质量输入预算 | 任务适配 | 证据 | 最后验证 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| 服务商 | 模型 | 类型 | 原生输入 → 输出 | 原生工具回路 | 结构化输出 | 推理 | 任务质量输入预算 | 任务适配 | 证据 | 最后验证 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     task_labels = payload.get("task_labels", {})
     for provider_name, provider in payload.get("providers", {}).items():
         display_name = str(provider.get("display_name") or provider_name)
         for model_name, record in provider.get("models", {}).items():
+            provider_tool_routes = payload.get("native_tool_routes", {}).get(provider_name, {})
+            tool_route = (
+                provider_tool_routes.get(model_name)
+                if isinstance(provider_tool_routes, dict)
+                else None
+            )
+            tool_summary = (
+                f"已验证（{tool_route.get('protocol')}，{tool_route.get('last_verified_at')}）"
+                if tool_route
+                else "未登记/禁用"
+            )
             inputs = "、".join(record.get("native_inputs", [])) or "无"
             outputs = "、".join(record.get("native_outputs", [])) or "无"
             tasks = "；".join(
@@ -198,6 +289,7 @@ def render_model_capability_markdown(registry: dict[str, Any] | None = None) -> 
                         f"`{model_name}`",
                         str(record.get("kind", "unknown")),
                         f"{inputs} → {outputs}",
+                        tool_summary,
                         str(record.get("structured_output", "unknown")),
                         str(record.get("thinking", "unknown")),
                         quality_budget,
