@@ -495,23 +495,23 @@
       "api_key": "",
       "default_model": "gemini-3.6-flash",
       "vision_model": "gemini-3.6-flash",
-      "vision_model_options": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+      "vision_model_options": ["gemini-3.7-flash-medium", "gemini-3.6-flash", "gemini-3.5-flash"],
       "supports_vision": true,
       "model_capabilities": {
-        "gemini-3.7-flash": ["text", "vision"],
+        "gemini-3.7-flash-medium": ["text", "vision"],
         "gemini-3.6-flash": ["text", "vision"],
         "gemini-3.5-flash": ["text", "vision"]
       },
       "model_profiles": {
-        "gemini-3.7-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"]},
+        "gemini-3.7-flash-medium": {"api_protocol": "chat_completions", "thinking_minimum": "medium", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
         "gemini-3.6-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
         "gemini-3.5-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true}
       },
       "supports_image_generation": false,
       "image_model": "",
-      "model_options": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+      "model_options": ["gemini-3.7-flash-medium", "gemini-3.6-flash", "gemini-3.5-flash"],
       "model_option_labels": {
-        "gemini-3.7-flash": "Gemini 3.7 Flash",
+        "gemini-3.7-flash-medium": "Gemini 3.7 Flash",
         "gemini-3.6-flash": "Gemini 3.6 Flash",
         "gemini-3.5-flash": "Gemini 3.5 Flash"
       },

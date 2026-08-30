@@ -110,6 +110,43 @@ def test_task_manager_animates_only_entries_that_are_new_or_changed() -> None:
     assert "taskItemsChanged(animatedItems)" in APP_JS
 
 
+def test_task_manager_waiting_cards_and_toolbar_avoid_redundant_visual_rows() -> None:
+    assert 'class="task-current-stage"' in APP_JS
+    assert ".task-manager-needs_input .task-current-stage" in PLATFORM_THEME_CSS
+    assert ".task-manager-needs_input .task-approval-badge" in PLATFORM_THEME_CSS
+    assert '<div class="task-filter-actions">' in INDEX_HTML
+    filter_row = INDEX_HTML.split('<div class="task-filter-row">', 1)[1].split(
+        '<div id="taskManagerList"', 1
+    )[0]
+    assert filter_row.index('id="taskSortSelect"') < filter_row.index('id="taskBulkModeBtn"')
+
+
+def test_terminal_cards_and_result_pages_do_not_repeat_the_same_status() -> None:
+    assert "const showCurrentStage" in APP_JS
+    assert "${showCurrentStage ?" in APP_JS
+    assert 'classList.add("is-result-summary")' in APP_JS
+    assert ".practice-status-banner.is-result-summary" in PLATFORM_THEME_CSS
+    assert 'completion.primary_code === "generation_incomplete"' in APP_JS
+    assert '"部分题目已生成"' in APP_JS
+    assert "Array.from(new Set(" in APP_JS
+    assert "需关注的复核风险" in APP_JS
+
+
+def test_visible_task_and_review_controls_have_effective_feedback() -> None:
+    assert 'id="taskStatPaused"' in INDEX_HTML
+    assert 'data-filter="paused"' in INDEX_HTML
+    assert 'paused: scopedTasks.filter' in APP_JS
+    assert 'paused: "已暂停"' in APP_JS
+    assert 'item.open = rowIndex === 0' in APP_JS
+    assert 'button.textContent = "正在读取…"' in APP_JS
+    assert 'button.textContent = "已更新审查映射"' in APP_JS
+    assert "审查报告映射读取失败" in APP_JS
+    assert "embeddedMessage" in APP_JS
+    assert "文档公式数量低于预期，请复核公式是否完整" in APP_JS
+    assert 'label !== phaseSteps[phaseIndex - 1]' in APP_JS
+    assert 'fas fa-chart-line' in APP_JS
+
+
 def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert 'id="checkUpdateBtn"' in INDEX_HTML
     assert "async function checkPlatformUpdate()" in APP_JS
@@ -777,6 +814,7 @@ def test_task_statistics_are_the_only_status_filter_and_secondary_actions_collap
     assert 'class="task-filter-tabs"' not in tasks
     assert 'id="taskActiveFilterSummary"' in tasks
     assert 'class="task-card-more"' in APP_JS
+    assert 'event.target.closest(".task-card-more") || event.target.closest(".task-technical-details")' in APP_JS
     assert 'bounded.slice(0, 1)' in APP_JS
     assert '#taskManagerList .task-card-more[open]' in APP_JS
     assert 'function initTaskCardMenus()' in APP_JS
@@ -923,3 +961,93 @@ def test_failed_analysis_material_is_replaced_and_scope_snapshot_is_pinned() -> 
     assert "上次失败任务的材料已自动移出" in APP_JS
     assert "latestPracticeRequest = { ...latestPracticeRequest, source_snapshot: data.source_snapshot };" in APP_JS
     assert "practiceMaterialReplacementRequired = request.source_files.length > 0;" in APP_JS
+
+
+def test_deep_task_pages_keep_user_facing_labels_and_dense_controls_coherent() -> None:
+    assert "确认训练蓝图" in INDEX_HTML
+    assert "practice-plan-source-disclosure" in APP_JS
+    assert "处理未完成" in APP_JS
+    assert "请点击“查看原因”了解详情" not in APP_JS
+    assert "第 ${questionIndex + 1} 项" in APP_JS
+    assert "原题 ${sourceNumber} · " in APP_JS
+    assert "review-technical-details" in APP_JS
+    assert "publicDiagnosticMessage(x, row.question_id)" in APP_JS
+    assert "以下提示用于交付前后核对，不影响下载" in APP_JS
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+
+def test_zero_result_and_long_task_list_controls_are_actionable() -> None:
+    assert 'id="taskSearchInput"' in INDEX_HTML
+    assert 'id="taskSearchClearBtn"' in INDEX_HTML
+    assert "function taskSearchText(task = {})" in APP_JS
+    assert "taskSearchText(task).includes(query)" in APP_JS
+    assert "const showTaskLoading = taskManagerLoading && tasks.length === 0;" in APP_JS
+    assert "#page-tasks .task-filter-actions {\n  flex: 1 1 760px;\n  flex-wrap: wrap;" in PLATFORM_THEME_CSS
+    assert 'successfulCount > 0 ? "部分题目已生成" : "题目尚未生成"' in APP_JS
+    assert 'successfulCount === 0 && item.code === "review_required"' in APP_JS
+    assert '${generationFailed ? "" : `<button type="button" class="practice-question-action" data-practice-edit=' in APP_JS
+    assert '${generationFailed ? "" : `<div class="practice-action-menu practice-action-menu--question"' in APP_JS
+
+
+def test_batch_actions_and_partial_result_warnings_have_clear_hierarchy() -> None:
+    assert "选择本页任务" in INDEX_HTML
+    assert "下载已选 Word" in INDEX_HTML
+    assert '"下载已选 Word"' in APP_JS
+    assert 'const qualityPanel = ({ icon, title, description, actions = "", details = "" })' in APP_JS
+    assert 'class="practice-quality__actions"' in APP_JS
+    assert 'class="practice-quality__details"' in APP_JS
+    assert "查看 ${secondaryReasons.length} 项复核提示" in APP_JS
+    assert "#page-tasks #taskBulkCount { border-radius: 999px;" in PLATFORM_THEME_CSS
+    assert "#page-practice .practice-quality__content strong { display: block;" in PLATFORM_THEME_CSS
+    assert "#page-practice .practice-quality__actions { display: flex;" in PLATFORM_THEME_CSS
+
+
+def test_monitor_refresh_controls_are_visible_and_report_busy_state() -> None:
+    assert 'class="monitor-panel-actions"' in INDEX_HTML
+    assert "async function refreshSystemStatusFromButton()" in APP_JS
+    assert "async function refreshStorageOverviewFromButton()" in APP_JS
+    assert 'button.setAttribute("aria-busy", "true")' in APP_JS
+    assert "正在刷新" in APP_JS
+    assert "正在统计" in APP_JS
+    assert "#page-monitor .system-monitor-header .task-card-button" in PLATFORM_THEME_CSS
+
+
+def test_continue_actions_use_standard_buttons_and_forward_semantics() -> None:
+    assert 'class="primary-button" data-practice-continue' in APP_JS
+    assert 'class="secondary-button" data-practice-config' in APP_JS
+    assert 'data-practice-continue><i class="fas fa-arrow-right"></i>继续未完成项' in APP_JS
+    assert '"history-continue", "green-action", "fas fa-arrow-right", "继续未完成项"' in APP_JS
+    assert "#page-practice .practice-quality__actions .primary-button," in PLATFORM_THEME_CSS
+    assert 'class="secondary-btn"' not in APP_JS
+
+
+def test_key_notice_and_task_kind_empty_states_do_not_show_stale_actions() -> None:
+    assert 'id="keyConfigNotice" class="result-card muted-card hidden" aria-live="polite"' in INDEX_HTML
+    assert 'const emptyKindCreation = !showTaskLoading' in APP_JS
+    assert 'format: "新建格式审查"' in APP_JS
+    assert 'action.dataset.emptyAction = emptyKindCreation ? "create"' in APP_JS
+    assert 'action.innerHTML = `<i class="${actionIcon}"></i><span>${actionLabel}</span>`;' in APP_JS
+    assert 'if (kind === "format") openWordFormatReviewer();' in APP_JS
+    assert 'eyebrow: "任务恢复"' in APP_JS
+
+
+def test_model_setting_summaries_use_readable_labels_instead_of_raw_routes() -> None:
+    assert "function readableModelLabel(value, cfg = {}, kind = \"text\")" in APP_JS
+    assert "const modelLabel = readableModelLabel(modelName, cfg);" in APP_JS
+    assert 'primaryHandlesImages ? "可直接读取图文材料"' in APP_JS
+    assert ': "生图路线已配置"' in APP_JS
+    assert "规则化绘图失败时使用" not in APP_JS
+
+
+def test_word_format_rule_page_collapses_long_categories_without_hiding_editing() -> None:
+    assert "const openRuleCategoryIndexes = {answer:new Set([0]), lecture:new Set([0])};" in WORD_FORMAT_HTML
+    assert "function rememberRuleCategory(element)" in WORD_FORMAT_HTML
+    assert 'return `<details class="rule-category"' in WORD_FORMAT_HTML
+    assert "const containsActiveEdit = category.rows.some" in WORD_FORMAT_HTML
+    assert "${ruleCount} 项规则" in WORD_FORMAT_HTML
+    assert ".rule-category[open] > .rule-category-head" in WORD_FORMAT_HTML
+
+
+def test_legacy_uploading_stage_is_presented_as_user_facing_work() -> None:
+    task_contract_ui = (ROOT / "web" / "task-contract-ui.js").read_text(encoding="utf-8")
+    assert 'uploading: "准备输入材料"' in task_contract_ui

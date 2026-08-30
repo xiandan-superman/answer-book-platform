@@ -1765,6 +1765,7 @@ body[data-active-page="result"] .step-track {
 }
 
 #page-tasks .task-stat-grid {
+  grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 0;
   overflow: hidden;
   margin-bottom: 16px;
@@ -1808,6 +1809,21 @@ body[data-active-page="result"] .step-track {
   border-radius: 13px;
 }
 
+#page-tasks .task-stat-card[data-filter="paused"] i {
+  background: #f3e8ff;
+  color: #7e22ce;
+}
+
+#page-tasks .task-stat-card[data-filter="completed"] i {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+#page-tasks .task-stat-card[data-filter="cancelled"] i {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
 #page-tasks .task-kind-filter {
   gap: 4px;
   margin: 4px 0 8px;
@@ -1839,10 +1855,19 @@ body[data-active-page="result"] .step-track {
 }
 
 #page-tasks .task-filter-row {
+  gap: 14px;
   margin-bottom: 14px;
   border-radius: 13px;
   padding: 5px 7px;
   box-shadow: none;
+}
+
+#page-tasks .task-filter-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
 }
 
 #page-tasks .task-filter-btn {
@@ -3134,9 +3159,13 @@ input[type="number"]::-webkit-outer-spin-button {
 
 #page-practice #practiceTrainingGoal {
   max-width: 760px;
-  font-size: clamp(20px, 1.5vw, 27px);
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: clamp(18px, 1.25vw, 22px);
   font-weight: 720;
-  line-height: 1.45;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 #page-practice .practice-quality {
@@ -3149,6 +3178,11 @@ input[type="number"]::-webkit-outer-spin-button {
 #page-practice .practice-quality strong {
   margin-right: 8px;
   font-weight: 720;
+}
+
+/* The result quality panel below is the actionable status; avoid announcing it twice. */
+#page-practice .practice-status-banner.is-result-summary {
+  display: none;
 }
 
 #page-practice #practiceAnalysisSummary summary {
@@ -3805,9 +3839,10 @@ body[data-active-page="practice"] .app-shell {
 
 #page-tasks .task-bulk-toolbar {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  min-height: 34px;
-  margin: -6px 0 8px;
+  min-height: 36px;
+  margin: 0;
 }
 
 #page-practice .practice-loading-technical {
@@ -3834,6 +3869,10 @@ body[data-active-page="practice"] .app-shell {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  border: 1px solid rgba(107, 132, 174, .22);
+  border-radius: 10px;
+  padding: 4px 6px;
+  background: #f6f8fc;
 }
 
 #page-tasks .task-bulk-actions.hidden { display: none; }
@@ -3841,7 +3880,7 @@ body[data-active-page="practice"] .app-shell {
 #page-tasks .task-bulk-toolbar .text-button {
   min-height: 34px;
   padding: 6px 10px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: #52627a;
@@ -3851,9 +3890,11 @@ body[data-active-page="practice"] .app-shell {
 }
 
 #page-tasks .task-bulk-toolbar .text-button:hover { background: #eef3fb; color: #1e3a8a; }
-#page-tasks .task-bulk-toolbar .task-bulk-delete { color: #b4232d; }
+#page-tasks #taskBulkSelectAllBtn,
+#page-tasks #taskBulkCancelBtn { border-color: rgba(107, 132, 174, .25); background: #fff; }
+#page-tasks .task-bulk-toolbar .task-bulk-delete { border-color: rgba(180, 35, 45, .18); background: #fff; color: #b4232d; }
 #page-tasks .task-bulk-toolbar .task-bulk-delete:disabled { opacity: .42; cursor: not-allowed; }
-#page-tasks #taskBulkCount { color: #65748b; font-size: 13px; font-weight: 700; }
+#page-tasks #taskBulkCount { border-radius: 999px; padding: 5px 9px; background: #e8eef9; color: #425a80; font-size: 13px; font-weight: 750; }
 
 #page-tasks .task-manager-item.task-selection-mode { cursor: pointer; }
 #page-tasks .task-manager-item.task-selected {
@@ -3908,9 +3949,36 @@ body[data-active-page="practice"] .app-shell {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 14px;
-  border: 1px solid var(--brand-border);
+  border: 0;
   padding: 10px 12px;
 }
+
+#page-practice .practice-plan-source-disclosure {
+  overflow: hidden;
+  border: 1px solid var(--brand-border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+#page-practice .practice-plan-source-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 9px 12px;
+  color: #45566f;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+#page-practice .practice-plan-source-disclosure > summary::-webkit-details-marker { display: none; }
+#page-practice .practice-plan-source-disclosure > summary::after { content: "展开"; color: var(--brand-primary); font-size: 11px; }
+#page-practice .practice-plan-source-disclosure[open] > summary::after { content: "收起"; }
+#page-practice .practice-plan-source-disclosure > summary small { margin-left: auto; color: #748198; font-size: 11px; font-weight: 650; }
+#page-practice .practice-plan-source-disclosure[open] > summary { border-bottom: 1px solid var(--brand-border); background: #f8faff; }
 
 .practice-plan-source-editor legend {
   padding: 0 5px;
@@ -3976,6 +4044,16 @@ body[data-active-page="practice"] .app-shell {
 #page-tasks .task-manager-needs_input .task-manager-progress > div:first-child,
 #page-tasks .task-manager-needs_input .manager-progress-track {
   display: none;
+}
+
+/* The status chip already states the pending decision; avoid repeating it as stage and side badge. */
+#page-tasks .task-manager-needs_input .task-current-stage,
+#page-tasks .task-manager-needs_input .task-approval-badge {
+  display: none;
+}
+
+#page-tasks .task-manager-needs_input .task-manager-side {
+  min-width: auto;
 }
 
 #page-tasks .task-manager-needs_input .task-manager-progress > p {
@@ -4140,7 +4218,49 @@ body[data-active-page="practice"] .app-shell {
 }
 
 #page-practice .practice-quality {
-  padding: 10px 14px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  margin: 12px 0;
+  border: 1px solid rgba(213, 162, 76, .34);
+  border-radius: 12px;
+  padding: 13px 15px;
+  background: #fff9ed;
+  color: #72501d;
+}
+
+#page-practice .practice-quality.passed {
+  border-color: rgba(64, 151, 104, .26);
+  background: #f0faf5;
+  color: #276a49;
+}
+
+#page-practice .practice-quality > i {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(210, 150, 45, .12);
+}
+
+#page-practice .practice-quality.passed > i { background: rgba(64, 151, 104, .12); }
+
+#page-practice .practice-quality__content { min-width: 0; }
+#page-practice .practice-quality__content strong { display: block; margin: 0 0 2px; color: #3d4655; }
+#page-practice .practice-quality__content p { margin: 0; color: #657086; }
+#page-practice .practice-quality__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+#page-practice .practice-quality__actions .primary-button,
+#page-practice .practice-quality__actions .secondary-button {
+  min-height: 42px;
+  border-radius: 11px;
+  padding: 9px 15px;
+  white-space: nowrap;
+}
+#page-practice .practice-quality__details { margin-top: 8px; color: #536179; }
+#page-practice .practice-quality__details > summary { width: fit-content; cursor: pointer; color: #315b9a; font-size: 12px; font-weight: 750; }
+#page-practice .practice-quality__details ul { display: grid; gap: 4px; margin: 7px 0 0; padding-left: 18px; font-size: 12px; }
 }
 
 #page-practice #practiceSelectionActions {
@@ -5757,6 +5877,50 @@ body[data-active-page="practice"] .app-shell {
   margin-inline: auto;
 }
 
+/* Monitor actions must read as controls, not as small decorative links. */
+#page-monitor .monitor-panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+#page-monitor .system-monitor-header .task-card-button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(85, 116, 166, .32);
+  border-radius: 10px;
+  padding: 0 13px;
+  background: rgba(255, 255, 255, .9) !important;
+  box-shadow: 0 2px 8px rgba(46, 72, 113, .07) !important;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#page-monitor .system-monitor-header .task-card-button.blue-action:hover {
+  border-color: rgba(38, 95, 184, .5);
+  background: #edf4ff !important;
+}
+
+#page-monitor .system-monitor-header .task-card-button.danger-action {
+  border-color: rgba(220, 38, 38, .24);
+  background: rgba(255, 250, 250, .94) !important;
+}
+
+#page-monitor .system-monitor-header .task-card-button.danger-action:hover {
+  border-color: rgba(220, 38, 38, .42);
+  background: #fef2f2 !important;
+}
+
+#page-monitor .system-monitor-header .task-card-button:disabled {
+  cursor: wait;
+  opacity: .68;
+}
+
 #page-monitor .storage-area-toggle {
   display: flex;
   width: 100%;
@@ -6126,14 +6290,62 @@ body[data-active-page="practice"] .app-shell {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   min-height: 46px;
 }
 
 #page-tasks .task-active-filter-summary {
+  min-width: 0;
+  flex: 1 1 260px;
   padding-left: 8px;
   color: #354863;
   font-size: 13px;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+#page-tasks .task-filter-actions {
+  flex: 1 1 760px;
+  flex-wrap: wrap;
+}
+
+#page-tasks .task-search-control {
+  display: flex;
+  width: min(260px, 24vw);
+  min-width: 210px;
+  flex: 1 1 220px;
+  max-width: 320px;
+  height: 36px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(126, 151, 191, .34);
+  border-radius: 9px;
+  padding: 0 8px 0 11px;
+  background: #fff;
+  color: #718097;
+}
+
+#page-tasks .task-search-control input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #293c57;
+  font: inherit;
+  font-size: 13px;
+}
+
+#page-tasks .task-search-control button {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  padding: 0;
+  background: #eef3fb;
+  color: #526783;
 }
 
 #page-tasks .task-card-more {
@@ -6359,6 +6571,30 @@ button:disabled,
   #page-result .result-page-title #resultPageSubtitle {
     grid-area: subtitle;
     font-size: 14px;
+  }
+
+  #page-result .delivery-verdict {
+    width: 100%;
+    margin: 0 0 14px;
+    padding: 14px 18px;
+  }
+
+  #page-result .result-summary-grid {
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  #page-result .result-summary-grid article {
+    padding: 16px 18px;
+  }
+
+  #page-result .result-summary-grid strong {
+    font-size: 28px;
+  }
+
+  #page-result #result-review {
+    min-height: 0;
+    align-items: start;
   }
 
   #result-analysis { overflow: visible; }

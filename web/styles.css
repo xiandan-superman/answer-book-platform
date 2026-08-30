@@ -2419,7 +2419,7 @@ textarea {
 
 .review-map-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -2433,6 +2433,27 @@ textarea {
 
 .review-map-grid span {
   color: #4b5563;
+}
+
+.review-technical-details {
+  margin: -2px 0 12px;
+  border: 1px solid #e5eaf1;
+  border-radius: 9px;
+  background: #fbfcfe;
+}
+
+.review-technical-details > summary {
+  padding: 8px 11px;
+  color: #65738a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.review-technical-details > p {
+  margin: 0 !important;
+  border-top: 1px solid #e8edf3;
+  padding: 9px 11px;
 }
 
 .review-notes p {
@@ -4834,7 +4855,7 @@ button:not(.ghost-button):not(.text-button):not(.secondary-button):not(.outline-
 
 .task-stat-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 24px;
 }

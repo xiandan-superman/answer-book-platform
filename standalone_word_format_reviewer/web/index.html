@@ -297,9 +297,16 @@
     .standard-config-body { padding: 22px 26px 28px; }
     .rule-category { margin-top: 18px; overflow: hidden; border: 1px solid #dfe6f0; border-radius: 15px; background: rgba(255,255,255,.78); }
     .rule-category:first-child { margin-top: 0; }
-    .rule-category-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 17px; border-bottom: 1px solid #e4eaf2; background: #f7f9fc; }
-    .rule-category-head h3 { color: var(--ink); font-size: 15px; }
+    .rule-category-head { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 17px; background: #f7f9fc; cursor: pointer; list-style: none; }
+    .rule-category-head::-webkit-details-marker { display: none; }
+    .rule-category-head:hover { background: #f1f6fd; }
+    .rule-category[open] > .rule-category-head { border-bottom: 1px solid #e4eaf2; }
+    .rule-category-heading { min-width: 0; }
+    .rule-category-title { display: block; color: var(--ink); font-size: 15px; font-weight: 800; }
     .rule-category-head p { color: var(--muted); font-size: 11px; }
+    .rule-category-meta { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; color: #60708a; font-size: 11px; font-weight: 700; }
+    .rule-category-meta::after { width: 8px; height: 8px; border-right: 2px solid #6f819d; border-bottom: 2px solid #6f819d; content: ""; transform: rotate(45deg); transition: transform .2s ease; }
+    .rule-category[open] .rule-category-meta::after { transform: rotate(225deg); }
     .config-rule-row { display: grid; grid-template-columns: minmax(150px,.58fr) minmax(0,2.42fr) auto; gap: 16px; align-items: start; padding: 16px 17px; border-bottom: 1px solid #edf1f6; }
     .config-rule-row:last-child { border-bottom: 0; }
     .config-rule-row.is-editing { background: linear-gradient(90deg, rgba(238,245,255,.62), rgba(255,255,255,.7)); box-shadow: inset 3px 0 0 var(--blue); }
@@ -474,7 +481,7 @@
 
     <section id="standardsView" class="hidden" aria-labelledby="standardsTitle">
       <header class="standards-hero">
-        <div><span class="eyebrow">标准说明与配置</span><h1 id="standardsTitle">格式标准</h1><p id="standardsDescription">默认展示当前标准规则。需要调整时，点击单项右侧的“修改”。</p></div>
+        <div><span class="eyebrow">标准说明与配置</span><h1 id="standardsTitle">格式标准</h1><p id="standardsDescription">按分类展开查看规则；需要调整时，点击单项右侧的“修改”。</p></div>
         <button class="back-button" type="button" onclick="showTask()">返回任务配置</button>
       </header>
       <section class="panel">
@@ -530,6 +537,7 @@
     const taskSettings = {};
     const savedProfiles = {};
     const rowScopes = {answer:{}, lecture:{}};
+    const openRuleCategoryIndexes = {answer:new Set([0]), lecture:new Set([0])};
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     const clone = (value) => JSON.parse(JSON.stringify(value));
     const FONT_OPTIONS = ['宋体','仿宋','黑体','微软雅黑','华文新魏'];
@@ -668,15 +676,26 @@
     function refreshRuleIcons() {
       if (window.lucide?.createIcons) window.lucide.createIcons();
     }
+    function rememberRuleCategory(element) {
+      const index = Number(element.dataset.categoryIndex);
+      if (!Number.isInteger(index)) return;
+      if (element.open) openRuleCategoryIndexes[currentStandard].add(index);
+      else openRuleCategoryIndexes[currentStandard].delete(index);
+    }
     function renderStandardPage() {
       const meta = PROFILE_META[currentStandard];
       const settings = taskSettings[currentStandard];
+      const categories = STANDARD_RULES[currentStandard];
+      const ruleCount = categories.reduce((total, category) => total + category.rows.length, 0);
       $('#standardsTitle').textContent = meta.title;
       $('#standardPageKicker').textContent = meta.kicker;
       $('#standardPageTitle').textContent = `${meta.title} · 完整规则`;
       $('#standardPageIntro').textContent = meta.intro;
-      $('#standardSaveState').textContent = savedProfiles[currentStandard] ? '已应用自定义默认' : '当前标准规则';
-      $('#ruleCategories').innerHTML = STANDARD_RULES[currentStandard].map(category => `<section class="rule-category"><header class="rule-category-head"><h3>${esc(category.title)}</h3><p>${esc(category.description)}</p></header>${category.rows.map(row => {
+      $('#standardSaveState').textContent = `${ruleCount} 项规则 · ${savedProfiles[currentStandard] ? '已应用自定义默认' : '当前标准'}`;
+      $('#ruleCategories').innerHTML = categories.map((category, categoryIndex) => {
+        const containsActiveEdit = category.rows.some(row => activeEdit?.profile === currentStandard && activeEdit?.rowId === row.id);
+        const isOpen = containsActiveEdit || openRuleCategoryIndexes[currentStandard].has(categoryIndex);
+        return `<details class="rule-category" data-category-index="${categoryIndex}" ontoggle="rememberRuleCategory(this)"${isOpen?' open':''}><summary class="rule-category-head"><span class="rule-category-heading"><span class="rule-category-title" role="heading" aria-level="3">${esc(category.title)}</span><p>${esc(category.description)}</p></span><span class="rule-category-meta">${category.rows.length} 项</span></summary>${category.rows.map(row => {
         if (row.fixed) return `<div class="config-rule-row"><div class="rule-name"><strong>${esc(row.name)}</strong><span>${esc(row.help)}</span></div><div class="fixed-rule-value">${esc(row.fixed)}</div><span class="fixed-badge">固定规则</span></div>`;
         const editing = activeEdit?.profile === currentStandard && activeEdit?.rowId === row.id;
         const content = editing ? `<div class="rule-controls">${row.controls.map(control=>controlHtml(control,settings)).join('')}</div>` : valuesHtml(row,settings);
@@ -684,7 +703,8 @@
           ? `<div><div class="rule-actions"><button class="rule-save" type="button" onclick="openSaveModal(this)"><i data-lucide="check"></i><span>保存</span></button><button class="rule-cancel" type="button" onclick="cancelRuleEdit()"><i data-lucide="x"></i><span>取消</span></button></div><span class="rule-scope">${esc(rowScope(row))}</span></div>`
           : `<div><button class="rule-edit" type="button" onclick="beginRuleEdit(this)" aria-label="修改${esc(row.name)}"><i data-lucide="pencil-line"></i><span>修改</span></button><span class="rule-scope">${esc(rowScope(row))}</span></div>`;
         return `<div class="config-rule-row ${editing?'is-editing':''}" data-row-id="${esc(row.id)}"><div class="rule-name"><strong>${esc(row.name)}</strong><span>${esc(row.help)}</span></div>${content}${actions}</div>`;
-      }).join('')}</section>`).join('');
+      }).join('')}</details>`;
+      }).join('');
       refreshRuleIcons();
     }
     function findRule(profile, rowId) { for (const category of STANDARD_RULES[profile]) { const row=category.rows.find(item=>item.id===rowId); if(row) return row; } return null; }

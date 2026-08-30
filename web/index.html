@@ -246,7 +246,7 @@
           <strong>没有符合条件的平台</strong>
           <span>请尝试其他关键词或切换配置状态。</span>
         </div>
-        <div id="keyConfigNotice" class="result-card muted-card">请选择平台并填写 API Key。</div>
+        <div id="keyConfigNotice" class="result-card muted-card hidden" aria-live="polite"></div>
         <div class="page-actions reference-actions">
           <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
           <div class="key-model-destinations" aria-label="前往业务模型设置">
@@ -855,7 +855,7 @@
             <div id="practicePlanReview" class="practice-plan-review hidden rounded-[var(--brand-radius-lg)] border border-[var(--brand-border)] bg-[var(--brand-card)] p-5 shadow-[var(--shadow-card)]">
               <header class="practice-plan-review-head mb-4">
                 <div class="practice-plan-review-kicker"><p id="practicePlanReviewMode" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">第一阶段完成 · 蓝图审查</p><span id="practicePlanCountBadge">0 项待审查</span></div>
-                <h3 id="practicePlanGoal" class="mt-1 text-[18px] font-bold text-[var(--brand-foreground)]">训练蓝图</h3>
+                <h3 id="practicePlanGoal" class="mt-1 text-[18px] font-bold text-[var(--brand-foreground)]">确认训练蓝图</h3>
                 <label class="practice-plan-goal-editor">训练目标<textarea id="practicePlanGoalInput" rows="2" maxlength="300"></textarea></label>
                 <p class="practice-plan-edit-hint"><i class="fas fa-pen-to-square"></i>下方内容可直接修改；若整体方向不合理，可重新生成整份蓝图。</p>
               </header>
@@ -912,8 +912,8 @@
                       <span class="practice-selection-divider" aria-hidden="true"></span>
                       <button id="practiceSelectAllBtn" type="button" class="practice-selection-text" title="全选全部题目" aria-label="全选全部题目">全选</button>
                       <button id="practiceClearSelectedBtn" type="button" class="practice-selection-text" title="清除选择" aria-label="清除选择">清除选择</button>
-                      <button id="practiceDownloadSelectedBtn" type="button" class="practice-selection-action" disabled><i class="fas fa-file-word"></i><span>下载 Word</span></button>
-                      <button id="practiceRegenerateSetBtn" type="button" class="practice-selection-action" disabled title="重新生成已选题目"><i class="fas fa-rotate"></i><span>重新生成</span></button>
+                      <button id="practiceDownloadSelectedBtn" type="button" class="practice-selection-action" disabled><i class="fas fa-file-word"></i><span>下载已选 Word</span></button>
+                      <button id="practiceRegenerateSetBtn" type="button" class="practice-selection-action" disabled title="重新生成已选题目"><i class="fas fa-rotate"></i><span>重新生成已选</span></button>
                     </section>
                   </div>
                 </div>
@@ -1847,6 +1847,10 @@
             <div><strong id="taskStatFailed">0</strong><span>未完成</span></div>
             <i class="fas fa-circle-exclamation"></i>
           </button>
+          <button type="button" class="task-stat-card" data-filter="paused" onclick="filterTasks('paused')">
+            <div><strong id="taskStatPaused">0</strong><span>已暂停</span></div>
+            <i class="fas fa-pause"></i>
+          </button>
           <button type="button" class="task-stat-card" data-filter="completed" onclick="filterTasks('completed')">
             <div><strong id="taskStatCompleted">0</strong><span>已完成</span></div>
             <i class="fas fa-check"></i>
@@ -1877,25 +1881,31 @@
 
         <div class="task-filter-row">
           <span id="taskActiveFilterSummary" class="task-active-filter-summary">当前显示：全部任务</span>
-          <label class="task-sort-control" title="切换任务列表排序方式">
-            <i class="fas fa-sort-amount-down"></i>
-            <span>排序</span>
-            <select id="taskSortSelect" data-native-select aria-label="任务排序方式">
-              <option value="smart">智能排序</option>
-              <option value="updated">最近更新</option>
-              <option value="created">最新创建</option>
-              <option value="name">任务名称</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="task-bulk-toolbar" aria-label="批量管理任务">
-          <button id="taskBulkModeBtn" class="text-button task-bulk-mode" type="button"><i class="fas fa-check-square"></i>多选管理</button>
-          <div id="taskBulkActions" class="task-bulk-actions hidden">
-            <button id="taskBulkSelectAllBtn" class="text-button" type="button">选择当前列表</button>
-            <span id="taskBulkCount">已选择 0 项</span>
-            <button id="taskBulkDeleteBtn" class="text-button task-bulk-delete" type="button" disabled><i class="fas fa-trash"></i>删除所选</button>
-            <button id="taskBulkCancelBtn" class="text-button" type="button">退出多选</button>
+          <div class="task-filter-actions">
+            <div class="task-search-control" role="search">
+              <i class="fas fa-search"></i>
+              <input id="taskSearchInput" type="search" placeholder="搜索任务名称或材料" aria-label="搜索任务名称或材料">
+              <button id="taskSearchClearBtn" class="hidden" type="button" title="清除任务搜索" aria-label="清除任务搜索"><i class="fas fa-times"></i></button>
+            </div>
+            <label class="task-sort-control" title="切换任务列表排序方式">
+              <i class="fas fa-sort-amount-down"></i>
+              <span>排序</span>
+              <select id="taskSortSelect" data-native-select aria-label="任务排序方式">
+                <option value="smart">智能排序</option>
+                <option value="updated">最近更新</option>
+                <option value="created">最新创建</option>
+                <option value="name">任务名称</option>
+              </select>
+            </label>
+            <div class="task-bulk-toolbar" aria-label="批量管理任务">
+              <button id="taskBulkModeBtn" class="text-button task-bulk-mode" type="button"><i class="fas fa-check-square"></i>多选管理</button>
+              <div id="taskBulkActions" class="task-bulk-actions hidden">
+                <button id="taskBulkSelectAllBtn" class="text-button" type="button">选择本页任务</button>
+                <span id="taskBulkCount">已选择 0 项</span>
+                <button id="taskBulkDeleteBtn" class="text-button task-bulk-delete" type="button" disabled><i class="fas fa-trash"></i>删除所选</button>
+                <button id="taskBulkCancelBtn" class="text-button" type="button">退出多选</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1905,7 +1915,7 @@
           <div><i class="fas fa-inbox"></i></div>
           <h3>暂无任务</h3>
           <p>当前筛选条件下没有找到任务</p>
-          <button class="primary-button" type="button" onclick="goToPage('home')"><i class="fas fa-plus"></i>选择任务类型</button>
+          <button id="taskManagerEmptyAction" class="primary-button" type="button"><i class="fas fa-filter-circle-xmark"></i><span>清除筛选</span></button>
         </div>
       </div>
     </section>
@@ -2050,7 +2060,7 @@
               <h3><i class="fas fa-hard-drive"></i>磁盘空间管理</h3>
               <p id="storageSubtitle">管理教材缓存占用的磁盘空间。删除缓存不会丢失教材文件，需要时会自动重建。</p>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="monitor-panel-actions">
               <button id="refreshStorageBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>重新统计磁盘</button>
               <button id="cleanupStorageBtn" class="task-card-button danger-action" type="button"><i class="fas fa-broom"></i>清理可删除项</button>
             </div>

@@ -10,6 +10,37 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
+def _wait_for_platform_dialog(
+    page,
+    *,
+    title: str | None = None,
+    message_contains: str | None = None,
+    confirm_text: str | None = None,
+    timeout: int = 4000,
+) -> None:
+    """Wait for the queued dialog content, not only its opening animation shell."""
+
+    page.locator("#platformDialog:not(.hidden)").wait_for(timeout=timeout)
+    if title is not None:
+        page.wait_for_function(
+            "expected => document.getElementById('platformDialogTitle')?.textContent?.trim() === expected",
+            arg=title,
+            timeout=timeout,
+        )
+    if message_contains is not None:
+        page.wait_for_function(
+            "expected => document.getElementById('platformDialogMessage')?.textContent?.includes(expected)",
+            arg=message_contains,
+            timeout=timeout,
+        )
+    if confirm_text is not None:
+        page.wait_for_function(
+            "expected => document.getElementById('platformDialogConfirm')?.textContent?.trim() === expected",
+            arg=confirm_text,
+            timeout=timeout,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _assert_no_browser_console_exceptions(monkeypatch, request):
     """Make browser/runtime exceptions part of every E2E assertion."""
@@ -278,7 +309,7 @@ def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_dow
         with page.expect_download() as download_info:
             first.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "独立文件A.docx"
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="Word 已开始下载")
         assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
         assert "本页无法确认最终保存路径" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogConfirm").click()
@@ -415,7 +446,7 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         assert state["download_calls"] == 0
 
         completed_item.get_by_role("button", name="下载 Word").click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="Word 下载失败")
         assert page.locator("#platformDialogTitle").inner_text() == "Word 下载失败"
         assert "SECRET-123" not in page.locator("#platformDialogMessage").inner_text()
         assert "未能获取 失败后重试.docx" in page.locator("#platformDialogMessage").inner_text()
@@ -427,7 +458,7 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         with page.expect_download() as download_info:
             completed_item.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "失败后重试.docx"
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="Word 已开始下载")
         assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
         page.locator("#platformDialogConfirm").click()
         remaining_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
@@ -496,7 +527,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
         item.get_by_role("button", name="保存 Word").wait_for(timeout=4000)
 
         item.get_by_role("button", name="保存 Word").click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="已取消保存")
         assert page.locator("#platformDialogTitle").inner_text() == "已取消保存"
         page.locator("#platformDialogConfirm").click()
         assert "桌面保存.docx" in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
@@ -505,7 +536,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
         page.evaluate("window.desktopBridgeState.next = 'error'")
         item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
         item.get_by_role("button", name="保存 Word").click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="Word 保存失败")
         assert page.locator("#platformDialogTitle").inner_text() == "Word 保存失败"
         assert "没有权限" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogConfirm").click()
@@ -514,7 +545,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
         page.evaluate("window.desktopBridgeState.next = 'saved'")
         item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
         item.get_by_role("button", name="保存 Word").click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="Word 已保存")
         assert page.locator("#platformDialogTitle").inner_text() == "Word 已保存"
         assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in page.locator("#platformDialogMessage").inner_text()
         page.locator("#platformDialogConfirm").click()
@@ -1310,7 +1341,7 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
         page.keyboard.press("Escape")
 
         cancelled_card.locator('[data-action="job-retry"]').click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, confirm_text="前往 API 配置")
         assert page.locator("#platformDialogConfirm").inner_text() == "前往 API 配置"
         page.locator("#platformDialogCancel").click()
 
@@ -1319,9 +1350,9 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
         cancelled_card.click()
         assert cancelled_card.locator('[data-task-select="cancelled-mixed"]').is_checked()
         page.locator("#taskBulkDeleteBtn").click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="删除所选 1 个任务？")
         page.locator("#platformDialogConfirm").click()
-        page.locator("#platformDialog:not(.hidden)").wait_for(timeout=4000)
+        _wait_for_platform_dialog(page, title="批量删除完成")
         page.locator("#platformDialogConfirm").click()
         page.locator("#taskManagerList .task-manager-item").filter(has_text="已取消记录").wait_for(state="detached", timeout=4000)
         assert page.locator("#taskManagerList .task-manager-item").count() == 4
@@ -1343,6 +1374,8 @@ def test_practice_network_pause_resume_and_deadline_status_are_actionable() -> N
         browser = runtime.chromium.launch(headless=True, **launch_options)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         page.goto(base_url, wait_until="networkidle")
+        page.evaluate("goToPage('tasks')")
+        page.wait_for_function("() => !taskManagerLoading")
         page.evaluate(
             """() => {
               window.stage12Status = 'running';
@@ -1361,7 +1394,6 @@ def test_practice_network_pause_resume_and_deadline_status_are_actionable() -> N
                 deadline_remaining_seconds: 125, provider: 'ark', model: 'fixture-model',
                 capabilities: {view_detail: true, view_progress: true, pause: true, cancel: true}
               };
-              goToPage('tasks');
               stopTaskManagerPolling();
               latestTasks = [window.stage12Task];
               renderTaskManager();
@@ -1369,8 +1401,13 @@ def test_practice_network_pause_resume_and_deadline_status_are_actionable() -> N
         )
 
         card = page.locator(".task-manager-item").filter(has_text="网络故障闭环")
-        assert "已发起 2 次模型请求" in card.inner_text()
-        assert "剩余等待上限 2 分 5 秒" in card.inner_text()
+        assert "已发起 2 次模型请求" not in card.locator(":scope > .task-manager-main").inner_text()
+        technical_details = card.locator(".task-technical-details")
+        technical_details.locator(":scope > summary").click()
+        assert "已发起 2 次模型请求" in technical_details.inner_text()
+        assert "剩余等待上限 2 分 5 秒" in technical_details.inner_text()
+        technical_details.evaluate("details => { details.open = false; }")
+        card = page.locator(".task-manager-item").filter(has_text="网络故障闭环")
         card.locator(".task-card-more > summary").click()
         card.locator('[data-action="job-pause"]').click()
         page.wait_for_function("() => window.stage12Actions.includes('pause')")

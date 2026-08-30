@@ -149,7 +149,7 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 
 B.AI 使用 `https://api.b.ai/v1` 的 OpenAI 兼容 Chat Completions 接口。仅内置已完成真实请求和 JSON 结构化输出验证的 `deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`hy3` 与 `mimo-v2.5`；其中只有 `deepseek-v4-flash-vision-exp` 启用图片输入。需要充值解锁的 `gpt-5.6-luna` 不在可选模型中。B.AI 开启 Cloudflare 客户端特征检查后，程序会仅对该服务商附加浏览器兼容 `User-Agent`，避免正常 API 请求被误拦截为 `403 / 1010`。
 
-灵算 Google Gemini 使用独立的 `LINGSUAN_GOOGLE_API_KEY`。Gemini 3.7 Flash 与 3.6 Flash 一样只显示一个 `gemini-3.7-flash` 模型选项，最低思考档位为 `minimal`；旧版保存的 low/medium/high 三个别名会在加载时统一迁移到这个单一模型。该无后缀路由尚未完成灵算真实调用验证，因此不会继承旧别名的工具调用验证结论。
+灵算 Google Gemini 使用独立的 `LINGSUAN_GOOGLE_API_KEY`。灵算将 Gemini 3.7 Flash 提供为 low/medium/high 三个独立路由，且不接受无后缀模型名；平台只显示一个“Gemini 3.7 Flash”选项，底层固定使用已实测的 `gemini-3.7-flash-medium`。旧版保存的无后缀值以及 low/high 别名会在加载时统一迁移到 medium。Google AI 官方直连的 3.7 配置不受影响。
 
 OpenRouter 使用 `https://openrouter.ai/api/v1` 的 Responses API。内置 `stealth/ox-alpha`、`z-ai/glm-5.2:free` 和 `minimax/minimax-m3:free`；其中 Ox Alpha 与 MiniMax M3 Free 启用图片输入，GLM 5.2 Free 仅启用文本输入。MiniMax M3 Free 已完成文本、JSON 结构化输出和图片理解的真实请求验证；GLM 5.2 Free 在测试时持续受 OpenRouter 上游免费共享池 429 限流，使用时可能需稍后重试。API Key 通过独立的 `OPENROUTER_API_KEY` 配置项保存。
 

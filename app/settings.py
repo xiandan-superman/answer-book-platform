@@ -22,10 +22,10 @@ STRUCTURED_ANSWER_MAX_TOKENS = 24576
 DRAWING_CODE_MAX_TOKENS = 32768
 FIGURE_AUXILIARY_MAX_TOKENS = 16384
 BAILIAN_QWEN37_MAX = "qwen3.7-max"
-LINGSUAN_GEMINI37_FLASH_MODEL = "gemini-3.7-flash"
+LINGSUAN_GEMINI37_FLASH_MODEL = "gemini-3.7-flash-medium"
 LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS = frozenset({
+    "gemini-3.7-flash",
     "gemini-3.7-flash-low",
-    "gemini-3.7-flash-medium",
     "gemini-3.7-flash-high",
 })
 BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
@@ -265,9 +265,10 @@ def list_providers() -> dict[str, ProviderConfig]:
             json_mode_unsupported_models = list(
                 dict.fromkeys([*json_mode_unsupported_models, *BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED])
             )
-        # Normalize the retired low/medium/high aliases into the same single
-        # model shape used by Gemini 3.6. Older local overlays must not restore
-        # three separate choices after an application update.
+        # LingSuan exposes Gemini 3.7 as three distinct transport routes and
+        # does not accept the unsuffixed model id.  Keep one public choice,
+        # backed by the verified medium route, so the UI matches Gemini 3.6
+        # without ever sending the unavailable unsuffixed id.
         if name == "lingsuan_google":
             model_options = list(dict.fromkeys([
                 LINGSUAN_GEMINI37_FLASH_MODEL,
@@ -281,11 +282,11 @@ def list_providers() -> dict[str, ProviderConfig]:
                 model_option_labels.pop(legacy_model, None)
                 model_capabilities.pop(legacy_model, None)
                 model_profiles.pop(legacy_model, None)
-            model_option_labels.setdefault(LINGSUAN_GEMINI37_FLASH_MODEL, "Gemini 3.7 Flash")
+            model_option_labels[LINGSUAN_GEMINI37_FLASH_MODEL] = "Gemini 3.7 Flash"
             model_capabilities.setdefault(LINGSUAN_GEMINI37_FLASH_MODEL, ("text", "vision"))
             profile = model_profiles.setdefault(LINGSUAN_GEMINI37_FLASH_MODEL, {})
             profile.setdefault("api_protocol", "chat_completions")
-            profile.setdefault("thinking_minimum", "minimal")
+            profile["thinking_minimum"] = "medium"
             profile.setdefault("omit_parameters", ["temperature", "top_p", "top_k"])
             if default_model in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS:
                 default_model = LINGSUAN_GEMINI37_FLASH_MODEL

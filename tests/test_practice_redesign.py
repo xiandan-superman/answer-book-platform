@@ -231,7 +231,7 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertNotIn('id="practiceCopyWordBtn"', self.html)
         self.assertNotIn("复制整套为 Word 格式", self.html)
         self.assertIn('id="practiceDownloadSelectedBtn"', self.html)
-        self.assertIn("下载 Word", self.html)
+        self.assertIn("下载已选 Word", self.html)
         self.assertIn('data-practice-copy="${idx}"', self.js)
         self.assertNotIn('data-practice-copy-word="${idx}"', self.js)
 

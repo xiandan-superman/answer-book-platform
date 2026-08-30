@@ -37,6 +37,7 @@
     awaiting_download: "云端结果待下载",
     hybrid_download: "下载云端结果",
     local_delivery: "本机生成并检查 Word",
+    uploading: "准备输入材料",
     paused: "已暂停",
     failed: "未完成",
     completed: "已完成"

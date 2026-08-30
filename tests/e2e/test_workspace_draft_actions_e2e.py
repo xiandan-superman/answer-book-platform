@@ -8,6 +8,15 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
+def _wait_for_platform_dialog_message(page, expected: str, timeout: int = 4000) -> None:
+    page.locator("#platformDialog:not(.hidden)").wait_for(timeout=timeout)
+    page.wait_for_function(
+        "text => document.getElementById('platformDialogMessage')?.textContent?.includes(text)",
+        arg=expected,
+        timeout=timeout,
+    )
+
+
 def _draft(text: str, batch_id: str, updated_at: int) -> dict:
     return {
         "schema": "practice_workspace_draft.v1",
@@ -89,7 +98,7 @@ def test_workspace_draft_buttons_resolve_history_and_ignore_empty_archives() -> 
         assert empty_page.locator("#practiceWorkspaceDraftNotice").is_hidden()
         assert empty_page.evaluate("practiceWorkspaceRestoreCandidates.exam") is None
         empty_page.evaluate("void restorePreviousPracticeWorkspace('exam')")
-        empty_page.locator("#platformDialog:not(.hidden)").wait_for()
+        _wait_for_platform_dialog_message(empty_page, "还没有可恢复的历史草稿")
         assert "还没有可恢复的历史草稿" in empty_page.locator("#platformDialogMessage").inner_text()
 
         browser.close()

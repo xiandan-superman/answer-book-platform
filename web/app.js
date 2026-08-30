@@ -33,6 +33,7 @@ let latestTasks = [];
 let activeTaskFilter = "all";
 let activeTaskKind = "all";
 let activeTaskSort = "smart";
+let activeTaskQuery = "";
 let taskManagerPage = 1;
 let taskManagerMotionEntrancePending = true;
 let taskManagerLoading = false;
@@ -1269,7 +1270,7 @@ function renderResultDeliveryVerdict(task = {}, report = null) {
     tone = "review";
     icon = "fas fa-triangle-exclamation";
     title = "可预览，但需要复核";
-    message = "结果文件已保留，但仍有质量风险；处理复核项后再用于正式交付。";
+    message = "结果文件已保留，正式交付包仍可下载；使用前请留意下方复核提示。";
   } else if (["failed", "cancelled"].includes(task.status) || data?.delivery_ready === false || data?.ok === false) {
     tone = "blocked";
     icon = "fas fa-circle-xmark";
@@ -2007,9 +2008,13 @@ function renderFinalAcceptanceSummary(task = {}, report = null) {
   const data = report && typeof report === "object" ? report : null;
   renderResultDeliveryVerdict(task, data);
   if (data?.status === "completed_with_issues") {
-    const warnings = (data.warnings || []).slice(0, 3).map((item) => publicDiagnosticMessage(item));
+    const warnings = Array.from(new Set(
+      (data.warnings || [])
+        .map((item) => publicDiagnosticMessage(item).replace(/[；。]+$/, ""))
+        .filter(Boolean)
+    )).slice(0, 3);
     hint.className = "result-card result-warn";
-    hint.innerHTML = `<strong><i class="fas fa-triangle-exclamation"></i> 可预览，需复核</strong><p>文件可下载，但图片存在明确的科学性或语义风险，不视为最终验收通过。${warnings.length ? `风险：${warnings.map((item) => escapeHtml(item)).join("；")}` : "请查看图件复核报告。"}</p>`;
+    hint.innerHTML = `<strong><i class="fas fa-triangle-exclamation"></i> 需关注的复核风险</strong><p>正式交付包可正常下载；以下提示用于交付前后核对，不影响下载。${warnings.length ? `风险：${warnings.map((item) => escapeHtml(item)).join("；")}` : "请查看复核报告。"}</p>`;
     return;
   }
   if (dataFormalAcceptancePassed(data)) {
@@ -4354,6 +4359,7 @@ function setPracticeStatusBanner(text, mode) {
   if (!banner) return;
   banner.textContent = text;
   banner.className = "practice-status-banner";
+  banner.removeAttribute("aria-hidden");
   if (mode) banner.classList.add(`is-${mode}`);
 }
 
@@ -4626,7 +4632,13 @@ function renderPracticeResults(data) {
   requestAnimationFrame(() => scrollPracticePanelIntoView($("practiceResults")));
   setPracticeStage("results");
   markAllPracticeStagesDone();
-  setPracticeStageDescription("练习结果已保留，可继续下载、编辑或回到蓝图调整。");
+  const completion = practiceCompletionContract(data);
+  const successfulCount = completion.generated_count;
+  const resultCount = completion.total_count;
+  const unfinishedCount = completion.unfinished_count;
+  setPracticeStageDescription(successfulCount > 0
+    ? "练习结果已保留，可继续下载、编辑或回到蓝图调整。"
+    : "题目尚未生成，可查看失败原因并继续未完成项。");
   const strategyLabels = {
     single: "单题专项练习已生成",
     knowledge_targeted: "知识点模拟题已生成",
@@ -4636,7 +4648,14 @@ function renderPracticeResults(data) {
     parallel_exam: "平行试卷已生成",
     per_question: "逐题变式已生成"
   };
-  setText("practiceResultMode", strategyLabels[data.generation_strategy] || "专项练习已生成");
+  const resultModeLabel = completion.primary_code === "generation_incomplete"
+    ? (successfulCount > 0 ? "部分题目已生成" : "题目尚未生成")
+    : completion.primary_code === "configuration_blocked"
+      ? (successfulCount > 0 ? "已有结果已保留，等待配置" : "暂未生成题目，等待配置")
+      : completion.primary_code === "review_required"
+        ? "题目已生成，等待复核"
+        : (strategyLabels[data.generation_strategy] || "专项练习已生成");
+  setText("practiceResultMode", resultModeLabel);
   const trainingGoal = data.blueprint?.training_goal || "专项练习";
   setText("practiceTrainingGoal", trainingGoal);
   if ($("practiceTrainingGoal")) $("practiceTrainingGoal").title = trainingGoal;
@@ -4648,30 +4667,41 @@ function renderPracticeResults(data) {
   $("practiceKnowledgeTags").innerHTML = visibleAnalysisTags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")
     + (analysisTags.length > visibleAnalysisTags.length ? `<span class="practice-tag-count">其余 ${analysisTags.length - visibleAnalysisTags.length} 项见下方筛选</span>` : "");
   $("practiceStrategy").innerHTML = (analysis.solution_strategy || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const completion = practiceCompletionContract(data);
   const primaryIssue = completion.primary;
   const issueCodes = new Set(completion.issues.map((item) => item.code));
   const configurationBlocked = issueCodes.has("configuration_blocked");
   const generationIncomplete = issueCodes.has("generation_incomplete");
-  const successfulCount = completion.generated_count;
-  const resultCount = completion.total_count;
-  const unfinishedCount = completion.unfinished_count;
   const isPassed = primaryIssue.code === "completed" && successfulCount > 0;
   $("practiceQuality").className = `practice-quality ${isPassed ? "passed" : "warning"}`;
-  const secondaryIssues = completion.issues.filter((item) => item.code !== primaryIssue.code);
+  const secondaryIssues = completion.issues.filter((item) => (
+    item.code !== primaryIssue.code && !(successfulCount === 0 && item.code === "review_required")
+  ));
   const secondarySummary = secondaryIssues.length
     ? `另有：${secondaryIssues.map((item) => item.label).join("；")}。`
     : "";
+  const secondaryReasons = secondaryIssues
+    .flatMap((item) => Array.isArray(item.reasons) ? item.reasons : [])
+    .map((reason) => String(reason || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const secondaryDetails = secondaryReasons.length
+    ? `<details class="practice-quality__details"><summary>查看 ${secondaryReasons.length} 项复核提示</summary><ul>${secondaryReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>`
+    : "";
   const primaryReasons = (primaryIssue.reasons || []).slice(0, 4).join("；");
+  const qualityPanel = ({ icon, title, description, actions = "", details = "" }) => `
+    <i class="${escapeHtml(icon)}" aria-hidden="true"></i>
+    <div class="practice-quality__content"><strong>${escapeHtml(title)}</strong><p>${description}</p>${details}</div>
+    ${actions ? `<div class="practice-quality__actions">${actions}</div>` : ""}
+  `;
   $("practiceQuality").innerHTML = primaryIssue.code === "completed"
-    ? `<i class="fas fa-circle-check"></i><span><strong>${successfulCount} / ${resultCount} 题可用</strong>可直接下载全部 Word；如只需要部分题目，请先勾选后再下载。</span>`
+    ? qualityPanel({ icon: "fas fa-circle-check", title: `${successfulCount} / ${resultCount} 题可用`, description: "可直接下载全部 Word；如只需要部分题目，请先勾选后再下载。" })
     : primaryIssue.code === "configuration_blocked"
-      ? `<i class="fas fa-key"></i><span><strong>需要检查 API 配置</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题待配置。${escapeHtml(secondarySummary)}</span><button type="button" class="secondary-btn" data-practice-config><i class="fas fa-key"></i>检查 API 配置</button>${data.history_id && generationIncomplete ? '<button type="button" class="secondary-btn" data-practice-continue><i class="fas fa-play"></i>继续未完成项</button>' : ""}`
-    : primaryIssue.code === "generation_incomplete"
-      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>存在未完成题目</strong>共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题未完成。${escapeHtml(secondarySummary)}</span>${data.history_id ? '<button type="button" class="secondary-btn" data-practice-continue><i class="fas fa-play"></i>继续未完成项</button>' : ""}`
-    : primaryIssue.code === "review_required"
-      ? `<i class="fas fa-triangle-exclamation"></i><span><strong>题目已生成 · 待复核</strong>${escapeHtml(primaryReasons || "结果已保留，请复核后使用。")} 结果可继续查看和编辑。</span>`
-    : `<i class="fas fa-circle-info"></i><span><strong>已完成 · 有提示</strong>${escapeHtml(primaryReasons || "结果含非阻断提示，请查看后使用。")} 题目已完整保留。</span>`;
+      ? qualityPanel({ icon: "fas fa-key", title: "需要检查 API 配置", description: `共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题待配置。${escapeHtml(secondarySummary)}`, details: secondaryDetails, actions: `<button type="button" class="secondary-button" data-practice-config><i class="fas fa-key"></i>检查 API 配置</button>${data.history_id && generationIncomplete ? '<button type="button" class="primary-button" data-practice-continue><i class="fas fa-arrow-right"></i>继续未完成项</button>' : ""}` })
+      : primaryIssue.code === "generation_incomplete"
+      ? qualityPanel({ icon: "fas fa-triangle-exclamation", title: "存在未完成题目", description: `共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题未完成。${escapeHtml(secondarySummary)}`, details: secondaryDetails, actions: data.history_id ? '<button type="button" class="primary-button" data-practice-continue><i class="fas fa-arrow-right"></i>继续未完成项</button>' : "" })
+      : primaryIssue.code === "review_required"
+      ? qualityPanel({ icon: "fas fa-triangle-exclamation", title: "题目已生成 · 待复核", description: `${escapeHtml(primaryReasons || "结果已保留，请复核后使用。")} 结果可继续查看和编辑。` })
+      : qualityPanel({ icon: "fas fa-circle-info", title: "已完成 · 有提示", description: `${escapeHtml(primaryReasons || "结果含非阻断提示，请查看后使用。")} 题目已完整保留。` });
   const badge = $("practiceQualityBadge");
   if (badge) {
     badge.className = `practice-quality-badge ${isPassed ? "passed" : "warning"}`;
@@ -4681,6 +4711,8 @@ function renderPracticeResults(data) {
     ? `共 ${resultCount} 题：已生成 ${successfulCount} 题，${unfinishedCount} 题${configurationBlocked ? "待配置" : "未完成"}`
     : `共 ${resultCount} 题：已生成 ${successfulCount} 题`;
   setPracticeStatusBanner(`${primaryIssue.label} · ${statusCountText}`, isPassed ? "done" : (successfulCount > 0 ? "warning" : "error"));
+  $("practiceStatusBanner")?.classList.add("is-result-summary");
+  $("practiceStatusBanner")?.setAttribute("aria-hidden", "true");
   renderPracticeBlueprintSummary(data);
   renderPracticeFilters(data);
   const practiceSourceLookup = new Map((data.selected_source_questions || []).map((item) => [String(item.source_question_id), item]));
@@ -4756,15 +4788,15 @@ function renderPracticeResults(data) {
           <div class="practice-exercise__actions">
             <label title="选择本题" class="practice-exercise__select"><input type="checkbox" data-practice-select="${idx}" ${selectedPracticeExerciseIndexes.has(idx) ? "checked" : ""}><span class="visually-hidden">选择本题</span></label>
             <button type="button" class="practice-question-action" data-practice-feedback="${idx}" title="反馈此题"><i class="fas fa-bug"></i><span>反馈</span></button>
-            <button type="button" class="practice-question-action" data-practice-edit="${idx}" title="编辑本题"><i class="fas fa-pen"></i><span>编辑</span></button>
+            ${generationFailed ? "" : `<button type="button" class="practice-question-action" data-practice-edit="${idx}" title="编辑本题"><i class="fas fa-pen"></i><span>编辑</span></button>`}
             <button type="button" class="practice-question-action practice-question-action--primary" ${configurationNeedsReview ? "data-practice-config" : `data-practice-regenerate="${idx}"`} title="${configurationNeedsReview ? "检查 API 配置" : auditNeedsReview ? "复审并生成本题" : "重新生成本题"}"><i class="fas ${configurationNeedsReview ? "fa-key" : "fa-rotate"}"></i><span>${configurationNeedsReview ? "检查配置" : auditNeedsReview ? "复审生成" : "重新生成"}</span></button>
-            <div class="practice-action-menu practice-action-menu--question" data-practice-action-menu>
+            ${generationFailed ? "" : `<div class="practice-action-menu practice-action-menu--question" data-practice-action-menu>
               <button type="button" class="practice-question-more-trigger" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" data-practice-menu-trigger><i class="fas fa-ellipsis"></i></button>
               <div class="practice-action-menu__panel hidden" role="menu" data-practice-menu-panel>
-                <button type="button" class="practice-action-menu__item" role="menuitem" data-practice-copy="${idx}" ${generationFailed ? "disabled" : ""}><i class="far fa-copy"></i><span>复制本题</span></button>
-                <button type="button" class="practice-action-menu__item" role="menuitem" data-practice-download="${idx}" data-practice-word-export-key="${escapeHtml(wordExportKey)}" data-practice-word-export-label="下载本题 Word" data-practice-word-export-available="${generationFailed ? "false" : "true"}" ${generationFailed ? "disabled" : ""}><i class="fas fa-file-word"></i><span>下载本题 Word</span></button>
+                <button type="button" class="practice-action-menu__item" role="menuitem" data-practice-copy="${idx}"><i class="far fa-copy"></i><span>复制本题</span></button>
+                <button type="button" class="practice-action-menu__item" role="menuitem" data-practice-download="${idx}" data-practice-word-export-key="${escapeHtml(wordExportKey)}" data-practice-word-export-label="下载本题 Word" data-practice-word-export-available="true"><i class="fas fa-file-word"></i><span>下载本题 Word</span></button>
               </div>
-            </div>
+            </div>`}
           </div>
         </div>
       </header>
@@ -4779,7 +4811,7 @@ function renderPracticeResults(data) {
         ${item.question_type === "作图题" && !(item.figures || []).length ? `<div class="practice-source-link"><i class="fas fa-pencil-ruler"></i>本题要求学生作图，因此未附完整答案曲线，也不会调用 gpt-image-2 生成答案图。</div>` : ""}
         ${item.options?.length ? `<div class="practice-options">${item.options.map((option) => `<p><b>${escapeHtml(option.label)}</b>${practiceMarkdown(option.text)}</p>`).join("")}</div>` : ""}
         ${tagsArr.length ? `<div class="practice-exercise-tags">${visibleTags.map((t) => `<span>${escapeHtml(t)}</span>`).join("")}${tagsArr.length > visibleTags.length ? `<span class="practice-tag-count">+${tagsArr.length - visibleTags.length}</span>` : ""}</div>` : ""}
-        ${semanticRisks.length ? `<div class="practice-generation-error" role="alert"><i class="fas fa-shield-halved"></i><div><strong>语义复核发现 ${semanticRisks.length} 项需修复</strong><p>${escapeHtml(semanticRisks.slice(0, 2).map((risk) => risk.message || risk.suggested_action || "语义风险").join("；"))}</p><button type="button" class="secondary-btn" data-practice-semantic-fix="${idx}" data-practice-semantic-instruction="${escapeHtml(semanticFixInstruction)}"><i class="fas fa-wand-magic-sparkles"></i>按复核建议修复本题</button></div></div>` : ""}
+        ${semanticRisks.length ? `<div class="practice-generation-error" role="alert"><i class="fas fa-shield-halved"></i><div><strong>语义复核发现 ${semanticRisks.length} 项需修复</strong><p>${escapeHtml(semanticRisks.slice(0, 2).map((risk) => risk.message || risk.suggested_action || "语义风险").join("；"))}</p><button type="button" class="secondary-button" data-practice-semantic-fix="${idx}" data-practice-semantic-instruction="${escapeHtml(semanticFixInstruction)}"><i class="fas fa-wand-magic-sparkles"></i>按复核建议修复本题</button></div></div>` : ""}
       `}
     </article>
   `;
@@ -5629,7 +5661,7 @@ function renderPracticePlan(plan) {
   $("practiceSourceSelection")?.classList.add("hidden");
   $("practicePlanReview")?.classList.remove("hidden");
   requestAnimationFrame(() => scrollPracticePanelIntoView($("practicePlanReview")));
-  setText("practicePlanGoal", plan.blueprint?.training_goal || "训练蓝图");
+  setText("practicePlanGoal", "确认训练蓝图");
   const planItems = plan.blueprint?.exercise_plan || [];
   // Visible fallbacks must be written into the plan object before submit.
   planItems.forEach((item, index) => {
@@ -5686,11 +5718,11 @@ function renderPracticePlan(plan) {
         <label class="practice-plan-wide">难度实现<textarea class="practice-plan-compact-textarea" rows="2" data-plan-difficulty-levers readonly aria-label="第 ${index + 1} 项难度调节方式">${escapeHtml((item.difficulty_levers || []).join("、") || "待补充难度调节方式")}</textarea></label>
         <label class="practice-plan-wide">难度依据<textarea data-plan-difficulty-rationale rows="2" readonly aria-label="第 ${index + 1} 项难度依据">${escapeHtml(item.difficulty_rationale || "待补充难度依据")}</textarea></label>
         <label class="practice-plan-wide">必考知识点<textarea class="practice-plan-compact-textarea" rows="2" readonly aria-label="第 ${index + 1} 项必考知识点">${escapeHtml((item.required_knowledge_points || []).join("、") || "待从绑定来源补齐")}</textarea></label>
-        <fieldset class="practice-plan-wide practice-plan-source-editor"><legend>来源绑定</legend>${sourceCatalog.map((source) => {
+        <details class="practice-plan-wide practice-plan-source-disclosure"><summary><span>来源绑定</span><small>已选 ${(item.source_refs || [item.source_question_id]).filter(Boolean).length} 项 · 点击展开修改</small></summary><fieldset class="practice-plan-source-editor"><legend class="sr-only">来源绑定</legend>${sourceCatalog.map((source) => {
           const sourceId = String(source.source_question_id || "");
           const refs = item.source_refs || [item.source_question_id];
           return `<label><input type="${comprehensiveMode ? "checkbox" : "radio"}" name="plan-source-${escapeHtml(item.plan_item_id)}" data-plan-source="${escapeHtml(sourceId)}"${refs.includes(sourceId) ? " checked" : ""}><span>${escapeHtml(source.number || source.title || sourceId)}</span></label>`;
-        }).join("") || "<span>当前流程无需来源绑定</span>"}</fieldset>
+        }).join("") || "<span>当前流程无需来源绑定</span>"}</fieldset></details>
       </div>
       <div class="practice-plan-draft">
         <div class="practice-plan-draft__actions">
@@ -5707,7 +5739,6 @@ function renderPracticePlan(plan) {
   `).join("");
   $("practicePlanGoalInput")?.addEventListener("input", (event) => {
     latestPracticePlan.blueprint.training_goal = event.target.value;
-    setText("practicePlanGoal", event.target.value || "训练蓝图");
   });
   $("practicePlanList")?.querySelectorAll("[data-plan-field]").forEach((control) => {
     const syncPlanField = () => {
@@ -7569,7 +7600,7 @@ function updatePracticeSelectionActions() {
     $("practiceDownloadSelectedBtn"),
     data ? practiceWordExportKey(data, practiceWordFilename(data, `已选${exportableCount}题`)) : "",
     exportableCount > 0,
-    "下载 Word"
+    "下载已选 Word"
   );
   if ($("practiceClearSelectedBtn")) $("practiceClearSelectedBtn").disabled = selectedCount === 0;
   const regenerateButton = $("practiceRegenerateSetBtn");
@@ -8765,7 +8796,10 @@ function updateTextRoleHint(roleKey) {
   const hint = $(role.hintId);
   if (!hint) return;
   const providerName = displayProviderName(cfg.name || $(role.providerId)?.value || "当前服务商");
-  hint.innerHTML = `<i class="fas ${role.icon}"></i><span title="${escapeHtml(role.label)}使用 ${escapeHtml(providerName)} / ${escapeHtml(selectedTextRoleModel(roleKey) || cfg.default_model || "默认模型")}">${escapeHtml(providerName)} / ${escapeHtml(selectedTextRoleModel(roleKey) || cfg.default_model || "默认模型")}</span>`;
+  const modelName = selectedTextRoleModel(roleKey) || cfg.default_model || "";
+  const modelLabel = readableModelLabel(modelName, cfg);
+  const summary = `${providerName} · ${modelLabel}`;
+  hint.innerHTML = `<i class="fas ${role.icon}"></i><span title="${escapeHtml(role.label)}：${escapeHtml(summary)}">${escapeHtml(summary)}</span>`;
   updateModelRoleCards();
 }
 
@@ -9242,14 +9276,18 @@ function updateCapabilityModelHints() {
   const imageCfg = selectedImageProviderConfig();
   const visionHint = $("visionModelHint");
   if (visionHint) {
+    const visionProviderName = displayProviderName(visionCfg.name || $("visionProviderSelect")?.value);
+    const visionModelLabel = readableModelLabel(selectedVisionModel() || visionCfg.vision_model, visionCfg);
     visionHint.innerHTML = providerHasVision(visionCfg)
-      ? `<i class="fas fa-eye"></i><span title="有图片或复杂表格时使用 ${escapeHtml(displayProviderName(visionCfg.name || $("visionProviderSelect")?.value))} / ${escapeHtml(selectedVisionModel() || visionCfg.vision_model)}">${escapeHtml(displayProviderName(visionCfg.name || $("visionProviderSelect")?.value))} / ${escapeHtml(selectedVisionModel() || visionCfg.vision_model)}</span>`
+      ? `<i class="fas fa-eye"></i><span title="有图题读图：${escapeHtml(visionProviderName)} · ${escapeHtml(visionModelLabel)}">${escapeHtml(visionProviderName)} · ${escapeHtml(visionModelLabel)}</span>`
       : '<i class="fas fa-triangle-exclamation"></i>当前服务商未配置多模态识图模型。';
   }
   const imageHint = $("imageModelHint");
   if (imageHint) {
+    const imageProviderName = displayProviderName(imageCfg.name || $("imageProviderSelect")?.value);
+    const imageModelLabel = readableModelLabel(selectedImageModel() || imageCfg.image_model, imageCfg, "image");
     imageHint.innerHTML = providerHasImageModel(imageCfg)
-      ? `<i class="fas fa-image"></i><span title="规则化绘图失败时使用 ${escapeHtml(displayProviderName(imageCfg.name || $("imageProviderSelect")?.value))} / ${escapeHtml(selectedImageModel() || imageCfg.image_model)}">${escapeHtml(displayProviderName(imageCfg.name || $("imageProviderSelect")?.value))} / ${escapeHtml(selectedImageModel() || imageCfg.image_model)}</span>`
+      ? `<i class="fas fa-image"></i><span title="生图路线：${escapeHtml(imageProviderName)} · ${escapeHtml(imageModelLabel)}">${escapeHtml(imageProviderName)} · ${escapeHtml(imageModelLabel)}</span>`
       : '<i class="fas fa-triangle-exclamation"></i>当前服务商未配置生图模型。';
   }
   updateModelRoleCards();
@@ -9844,19 +9882,29 @@ function updateTaskModelSummary(profile) {
   const visionModel = selectedTaskModel(profile, "vision");
   const imageProviderName = taskProviderName(profile, "image");
   const imageProvider = providerConfigs[imageProviderName] || {};
-  const imageModel = selectedTaskModel(profile, "image");
   const textKeyState = textProvider.api_key_set ? "" : " · 缺少 Key";
   const visionKeyState = visionProvider.api_key_set ? "" : " · 缺少 Key";
   const imageKeyState = imageProvider.api_key_set ? "" : " · 缺少 Key";
   const primaryHandlesImages = modelLooksVisionCapable(textModel, textProvider);
-  setText(taskModelControlIds(profile, "text").summary, `${displayProviderName(textProviderName || "未选择")} / ${textModel || "未选择模型"}${textKeyState}`);
+  const visionModelLabel = readableModelLabel(visionModel, visionProvider);
+  setText(
+    taskModelControlIds(profile, "text").summary,
+    textKeyState
+      ? `当前主模型缺少 API Key：${displayProviderName(textProviderName || "未选择")}`
+      : primaryHandlesImages ? "可直接读取图文材料" : "有图材料将使用备用读图模型"
+  );
   setText(
     taskModelControlIds(profile, "vision").summary,
     primaryHandlesImages
-      ? `备用：${displayProviderName(visionProviderName || "未选择")} / ${visionModel || "未选择模型"}（主模型已支持图文，默认不启用）`
-      : `${displayProviderName(visionProviderName || "未选择")} / ${visionModel || "未选择模型"}${visionKeyState}（主模型遇图时启用）`
+      ? `主模型已能读图；备用：${displayProviderName(visionProviderName || "未选择")} · ${visionModelLabel}（通常不调用）`
+      : `有图材料启用：${displayProviderName(visionProviderName || "未选择")} · ${visionModelLabel}${visionKeyState}`
   );
-  setText(taskModelControlIds(profile, "image").summary, `${displayProviderName(imageProviderName || "未选择")} / ${imageModel || "未选择模型"}${imageKeyState}`);
+  setText(
+    taskModelControlIds(profile, "image").summary,
+    imageKeyState
+      ? `当前生图服务缺少 API Key：${displayProviderName(imageProviderName || "未选择")}`
+      : "生图路线已配置"
+  );
   if (profile === "practice" || (profile === "knowledge" && currentPracticeSourceMode === "knowledge")) {
     setText("practiceCurrentModelBadge", `${shortTaskModelName(textModel, textProviderName)}${textKeyState}`);
   }
@@ -10396,6 +10444,7 @@ function updateTaskManagerStats(tasks) {
     needsInput: scopedTasks.filter((task) => taskDisplayStatus(task) === "needs_input").length,
     issues: scopedTasks.filter((task) => taskDisplayStatus(task) === "completed_with_issues").length,
     failed: failedTasks.length,
+    paused: scopedTasks.filter((task) => taskDisplayStatus(task) === "paused").length,
     cancelled: scopedTasks.filter((task) => taskDisplayStatus(task) === "cancelled").length,
     completed: scopedTasks.filter((task) => taskDisplayStatus(task) === "completed").length
   };
@@ -10405,6 +10454,7 @@ function updateTaskManagerStats(tasks) {
   setText("taskStatNeedsInput", counts.needsInput);
   setText("taskStatIssues", counts.issues);
   setText("taskStatFailed", counts.failed);
+  setText("taskStatPaused", counts.paused);
   setText("taskStatCancelled", counts.cancelled);
   setText("taskStatCompleted", counts.completed);
   let dismissedSignature = "";
@@ -10456,6 +10506,13 @@ function shortTaskModelName(value, provider = "") {
   return shortTaskMaterialName(displayProviderName(provider) || "默认模型", 22);
 }
 
+function readableModelLabel(value, cfg = {}, kind = "text") {
+  const model = String(value || "").trim();
+  if (!model) return "未选择模型";
+  const labels = kind === "image" ? (cfg.image_model_option_labels || {}) : (cfg.model_option_labels || {});
+  return String(labels[model] || shortTaskModelName(model, cfg.name || ""));
+}
+
 function taskManagerTitle(task, kindMeta) {
   if (task.display_title) return shortTaskMaterialName(task.display_title, 56);
   const materialName = shortName(task.description || task.exam_display_name || task.exam_path || "未命名材料");
@@ -10485,6 +10542,17 @@ function renderTaskManagerPagination(total) {
       $("taskManagerList")?.scrollIntoView({ block: "start" });
     });
   });
+}
+
+function taskSearchText(task = {}) {
+  return [
+    task.display_title,
+    task.description,
+    task.exam_display_name,
+    task.exam_path,
+    ...(Array.isArray(task.textbook_material_names) ? task.textbook_material_names : []),
+    shortTaskModelName(task.model || task.answer_model || "", task.provider || task.answer_provider || "")
+  ].filter(Boolean).map((value) => String(value).toLocaleLowerCase()).join(" ");
 }
 
 function completedGenerationTaskMessage(task = {}) {
@@ -10535,7 +10603,9 @@ function renderTaskManager(tasks = latestTasks) {
   const filteredVisible = sortedTasks(tasks.filter((task) => {
     const statusMatch = activeTaskFilter === "all" || taskDisplayStatus(task) === activeTaskFilter;
     const kind = task.task_kind || "exam";
-    return statusMatch && (activeTaskKind === "all" || kind === activeTaskKind);
+    const query = activeTaskQuery.trim().toLocaleLowerCase();
+    const queryMatch = !query || taskSearchText(task).includes(query);
+    return statusMatch && (activeTaskKind === "all" || kind === activeTaskKind) && queryMatch;
   }));
   const pageCount = Math.max(1, Math.ceil(filteredVisible.length / TASK_MANAGER_PAGE_SIZE));
   taskManagerPage = Math.min(Math.max(1, taskManagerPage), pageCount);
@@ -10544,23 +10614,42 @@ function renderTaskManager(tasks = latestTasks) {
   const animateAllVisible = currentPage === "tasks" && taskManagerMotionEntrancePending;
   const animatedItems = [];
   const shell = list.closest(".task-manager-shell");
-  const hasNoTasks = !taskManagerLoading && tasks.length === 0;
+  const showTaskLoading = taskManagerLoading && tasks.length === 0;
+  const hasNoTasks = !showTaskLoading && tasks.length === 0;
+  const emptyKindCreation = !showTaskLoading
+    && filteredVisible.length === 0
+    && !activeTaskQuery.trim()
+    && activeTaskFilter === "all"
+    && activeTaskKind !== "all"
+      ? activeTaskKind
+      : "";
   shell?.classList.toggle("task-manager-empty-view", hasNoTasks);
   list.innerHTML = "";
   if (empty) {
     const title = empty.querySelector("h3");
     const detail = empty.querySelector("p");
     const action = empty.querySelector("button");
-    if (title) title.textContent = taskManagerLoading ? "正在读取任务" : "暂无任务";
-    if (detail) detail.textContent = taskManagerLoading
+    if (title) title.textContent = showTaskLoading ? "正在读取任务" : "暂无任务";
+    const emptyKindLabels = { exam: "真题解析", practice: "按题出题", knowledge: "知识点出题", format: "格式审查" };
+    if (detail) detail.textContent = showTaskLoading
       ? "正在同步任务状态，请稍候…"
       : hasNoTasks
         ? "还没有创建过任务，请从上方选择一种任务类型开始。"
-        : "当前筛选条件下没有找到任务";
-    action?.classList.toggle("hidden", taskManagerLoading);
+        : emptyKindCreation
+          ? `当前还没有${emptyKindLabels[emptyKindCreation]}任务，可以直接新建。`
+          : "当前筛选条件下没有找到任务";
+    action?.classList.toggle("hidden", showTaskLoading);
+    if (action && !showTaskLoading) {
+      const creationLabels = { exam: "新建真题解析", practice: "新建按题出题", knowledge: "新建知识点出题", format: "新建格式审查" };
+      action.dataset.emptyAction = emptyKindCreation ? "create" : hasNoTasks ? "home" : "clear";
+      action.dataset.emptyKind = emptyKindCreation;
+      const actionLabel = emptyKindCreation ? creationLabels[emptyKindCreation] : hasNoTasks ? "选择任务类型" : "清除筛选与搜索";
+      const actionIcon = emptyKindCreation || hasNoTasks ? "fas fa-plus" : "fas fa-filter";
+      action.innerHTML = `<i class="${actionIcon}"></i><span>${actionLabel}</span>`;
+    }
     empty.classList.toggle("hidden", visible.length > 0);
   }
-  if (currentPage === "tasks" && taskManagerLoading && visible.length === 0) {
+  if (currentPage === "tasks" && showTaskLoading && visible.length === 0) {
     // A loading placeholder is already the page entrance. Do not hide the
     // first real task cards behind a second entrance animation.
     taskManagerMotionEntrancePending = false;
@@ -10595,8 +10684,11 @@ function renderTaskManager(tasks = latestTasks) {
     }[kind] || { label: "其他任务", icon: "fas fa-file-alt" };
     const title = taskManagerTitle(task, kindMeta);
     const phaseLabels = { analyze: "范围解析", plan: "蓝图设计", generate_from_plan: "题目生成" };
-    const phaseText = Array.isArray(task.steps) && task.steps.length
-      ? task.steps.map((phase) => phase.label || phaseLabels[phase.operation] || phase.operation).filter(Boolean).join(" → ")
+    const phaseSteps = Array.isArray(task.steps)
+      ? task.steps.map((phase) => phase.label || phaseLabels[phase.operation] || phase.operation).filter(Boolean)
+      : [];
+    const phaseText = phaseSteps.length
+      ? phaseSteps.filter((label, phaseIndex) => phaseIndex === 0 || label !== phaseSteps[phaseIndex - 1]).join(" → ")
       : "题目生成";
     const subtitle = formatTask
       ? `${task.format_profile_label || "格式标准"} · ${task.mode_label || "格式审查与修改"}`
@@ -10627,9 +10719,9 @@ function renderTaskManager(tasks = latestTasks) {
     const networkSummary = generationNetworkSummary(task);
     const progressMessage = reviewPending
       ? "当前步骤已完成，等待你确认后继续。"
-      : `${["running", "queued"].includes(normalized) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage}${networkSummary ? ` · ${networkSummary}` : ""}`;
+      : (["running", "queued"].includes(normalized) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage);
     const displayProgressMessage = normalized === "failed" && progressMessage.length > 120
-      ? `${progressMessage.slice(0, 108).replace(/[，。；\s]+$/, "")}… 请点击“查看原因”了解详情。`
+      ? `${progressMessage.slice(0, 108).replace(/[，。；\s]+$/, "")}… 请点击“处理未完成”查看详情并选择下一步。`
       : progressMessage;
     const currentStageText = reviewPending
       ? "等待确认"
@@ -10641,6 +10733,7 @@ function renderTaskManager(tasks = latestTasks) {
     const displayCurrentStageText = formatTask
       ? (reviewPending ? "等待确认修改" : "格式处理完成")
       : currentStageText;
+    const showCurrentStage = String(displayCurrentStageText || "").trim() !== String(meta.label || "").trim();
     const item = document.createElement("article");
     item.className = `task-manager-item task-manager-${normalized}`;
     item.classList.toggle("task-manager-terminal", ["completed", "cancelled"].includes(normalized));
@@ -10661,7 +10754,7 @@ function renderTaskManager(tasks = latestTasks) {
             ${["running", "queued"].includes(normalized) && taskHealth.health_status ? `<span class="task-health-chip health-${escapeHtml(taskHealthState)}"><i class="${taskHealthMeta.icon}"></i>${escapeHtml(taskHealthMeta.label)}</span>` : ""}
             ${qualityMeta && !reviewPending && qualityMeta.label !== meta.label ? `<span class="task-quality-chip quality-${qualityMeta.className}"><i class="${qualityMeta.icon}"></i>${qualityMeta.label}</span>` : ""}
             <span title="任务开始时间"><i class="far fa-clock"></i>开始于 ${escapeHtml(formatTaskTimestamp(task.created_at))}</span>
-            <span><i class="fas fa-layer-group"></i>${escapeHtml(displayCurrentStageText)}</span>
+            ${showCurrentStage ? `<span class="task-current-stage"><i class="fas fa-layer-group"></i>${escapeHtml(displayCurrentStageText)}</span>` : ""}
           </div>
           <details class="task-technical-details">
             <summary><i class="fas fa-circle-info"></i>运行详情</summary>
@@ -10671,6 +10764,7 @@ function renderTaskManager(tasks = latestTasks) {
               <span title="包含排队、模型处理和重试"><i class="fas fa-hourglass-half"></i>总耗时 ${escapeHtml(taskDurationText(task))}</span>
               ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
               ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
+              ${networkSummary ? `<span><i class="fas fa-chart-line"></i>${escapeHtml(networkSummary)}</span>` : ""}
             </div>
           </details>
         </div>
@@ -10689,7 +10783,10 @@ function renderTaskManager(tasks = latestTasks) {
       </div>
     `;
     item.addEventListener("click", (event) => {
-      if (event.target.closest(".task-card-more") && !event.target.closest("[data-action]")) {
+      if (
+        (event.target.closest(".task-card-more") || event.target.closest(".task-technical-details"))
+        && !event.target.closest("[data-action]")
+      ) {
         return;
       }
       const selector = event.target.closest("[data-task-select]");
@@ -10948,6 +11045,21 @@ async function loadSystemStatus() {
   return data;
 }
 
+async function refreshSystemStatusFromButton() {
+  const button = $("refreshSystemBtn");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>正在刷新';
+  try {
+    await loadSystemStatus();
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.innerHTML = '<i class="fas fa-sync-alt"></i>刷新运行状态';
+  }
+}
+
 
 function formatStorageBytes(bytes) {
   const value = Number(bytes || 0);
@@ -10970,6 +11082,21 @@ async function loadStorageOverview({ silent = false } = {}) {
   } catch (err) {
     $("storageHeadline").innerHTML = '<i class="fas fa-triangle-exclamation"></i> 磁盘占用读取失败';
     $("storageDescription").textContent = String(err).replace(/^Error:\s*/, "");
+  }
+}
+
+async function refreshStorageOverviewFromButton() {
+  const button = $("refreshStorageBtn");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>正在统计';
+  try {
+    await loadStorageOverview();
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.innerHTML = '<i class="fas fa-sync-alt"></i>重新统计磁盘';
   }
 }
 
@@ -11080,7 +11207,7 @@ function confirmCleanupStorage(selectedOnly) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  $("refreshStorageBtn")?.addEventListener("click", () => loadStorageOverview());
+  $("refreshStorageBtn")?.addEventListener("click", refreshStorageOverviewFromButton);
   $("cleanupStorageBtn")?.addEventListener("click", () => confirmCleanupStorage(false));
   $("storageAreas")?.addEventListener("click", (event) => {
     const toggle = event.target.closest("[data-storage-expand-kind]");
@@ -11249,12 +11376,12 @@ function taskManagerActions(task = {}, reviewPending = false) {
     if (task.is_generation_job) {
       const configurationRequired = practiceErrorNeedsConfiguration(task.error_presentation);
       add(caps.view_result, "job-result", "blue-action", "fas fa-eye", task.operation === "plan" ? "审查蓝图" : task.operation === "analyze" ? "审查范围" : "查看题目");
-      add(caps.view_progress && !caps.view_result, "job-status", "blue-action", task.status === "running" ? "fas fa-spinner fa-spin" : "fas fa-eye", task.status === "failed" ? "查看原因" : "查看进度");
-      add(caps.view_quality && task.status === "failed", "job-status", "red-action", "fas fa-triangle-exclamation", "查看原因");
+      add(caps.view_progress && !caps.view_result, "job-status", "blue-action", task.status === "running" ? "fas fa-spinner fa-spin" : "fas fa-eye", task.status === "failed" ? "处理未完成" : "查看进度");
+      add(caps.view_quality && task.status === "failed", "job-status", "red-action", "fas fa-triangle-exclamation", "处理未完成");
       add(caps.retry && configurationRequired, "job-config", "blue-action", "fas fa-key", "检查 API 配置");
       add(caps.retry && !configurationRequired, "job-retry", "green-action", "fas fa-rotate", "从检查点重试");
       add(caps.pause, "job-pause", "yellow-action", "fas fa-pause", "暂停");
-      add(caps.resume, "job-resume", "green-action", "fas fa-play", "继续");
+      add(caps.resume, "job-resume", "green-action", "fas fa-arrow-right", "继续");
       add(caps.cancel, "job-cancel", "red-action", "fas fa-times", "取消任务");
     } else {
       const completion = practiceCompletionContract(task);
@@ -11263,7 +11390,7 @@ function taskManagerActions(task = {}, reviewPending = false) {
       const resultLabel = ["review_result", "view_warnings"].includes(completion.action) ? completion.action_label : "查看结果";
       add(caps.view_result, "result", "blue-action", "fas fa-eye", resultLabel);
       add(configurationBlocked, "history-config", "blue-action", "fas fa-key", "检查 API 配置");
-      add(generationIncomplete && caps.retry, "history-continue", "green-action", "fas fa-play", "继续未完成项");
+      add(generationIncomplete && caps.retry, "history-continue", "green-action", "fas fa-arrow-right", "继续未完成项");
       add(caps.reuse && !configurationBlocked && !generationIncomplete, "reuse", "green-action", "fas fa-rotate", "再次出题");
       add(caps.delete, "delete", "gray-action", "fas fa-trash", "删除");
     }
@@ -11274,7 +11401,7 @@ function taskManagerActions(task = {}, reviewPending = false) {
     add(caps.view_progress || caps.view_detail, "detail", "blue-action", "fas fa-eye", reviewPending && !caps.reopen_review ? "去处理" : "查看详情");
     add(caps.view_quality && !reviewPending, "log", "gray-action", "fas fa-list-check", "质量与诊断");
     add(caps.pause, "pause", "yellow-action", "fas fa-pause", "暂停");
-    add(caps.resume, "resume", "green-action", "fas fa-play", "继续");
+    add(caps.resume, "resume", "green-action", "fas fa-arrow-right", "继续");
     add(caps.cancel, "cancel", "red-action", "fas fa-times", "取消");
     add(caps.view_result && !completedNeedsReview, "result", "blue-action", "fas fa-eye", "查看结果");
     add(caps.retry && !caps.reopen_review, "retry-exam", "green-action", "fas fa-rotate", "从检查点重跑");
@@ -11316,10 +11443,10 @@ function generationTaskManagerActions(task = {}) {
       const retryAction = configurationRequired
         ? ""
         : '<button type="button" class="task-card-button green-action" data-action="job-retry"><i class="fas fa-rotate"></i>重试任务</button>';
-      return `<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>查看原因</button>${configAction}${retryAction}`;
+      return `<button type="button" class="task-card-button red-action" data-action="job-status"><i class="fas fa-triangle-exclamation"></i>处理未完成</button>${configAction}${retryAction}`;
     }
     if (task.status === "paused") {
-      return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-eye"></i>查看进度</button><button type="button" class="task-card-button green-action" data-action="job-resume"><i class="fas fa-play"></i>继续</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
+      return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-eye"></i>查看进度</button><button type="button" class="task-card-button green-action" data-action="job-resume"><i class="fas fa-arrow-right"></i>继续</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
     }
     return '<button type="button" class="task-card-button blue-action" data-action="job-status"><i class="fas fa-spinner fa-spin"></i>查看进度</button><button type="button" class="task-card-button yellow-action" data-action="job-pause"><i class="fas fa-pause"></i>暂停</button><button type="button" class="task-card-button red-action" data-action="job-cancel"><i class="fas fa-times"></i>取消任务</button>';
   }
@@ -11631,7 +11758,7 @@ async function openGenerationJob(task) {
       const presentation = job.error_presentation || task.error_presentation || {};
       const configurationRequired = practiceErrorNeedsConfiguration(presentation);
       const nextAction = await platformConfirm({
-        eyebrow: "任务未完成",
+        eyebrow: "任务恢复",
         title: presentation.title || "出题失败",
         message: practicePublicErrorText(presentation, job.error || "后台出题任务失败。"),
         tone: "danger",
@@ -11822,9 +11949,18 @@ function filterTasks(filter) {
 }
 
 function updateTaskActiveFilterSummary() {
-  const statusLabels = { all: "全部状态", running: "进行中", queued: "排队中", needs_input: "等待我确认", completed_with_issues: "结果需复核", completed: "已完成", failed: "未完成", cancelled: "已取消" };
+  const statusLabels = { all: "全部状态", running: "进行中", queued: "排队中", needs_input: "等待我确认", completed_with_issues: "结果需复核", completed: "已完成", failed: "未完成", paused: "已暂停", cancelled: "已取消" };
   const kindLabels = { all: "全部业务", exam: "真题解析", practice: "按题出题", knowledge: "知识点出题", format: "格式审查" };
-  setText("taskActiveFilterSummary", `当前显示：${kindLabels[activeTaskKind] || "全部业务"} · ${statusLabels[activeTaskFilter] || "全部状态"}`);
+  const querySummary = activeTaskQuery.trim() ? ` · 搜索“${activeTaskQuery.trim()}”` : "";
+  setText("taskActiveFilterSummary", `当前显示：${kindLabels[activeTaskKind] || "全部业务"} · ${statusLabels[activeTaskFilter] || "全部状态"}${querySummary}`);
+}
+
+function clearTaskManagerFilters() {
+  activeTaskQuery = "";
+  if ($("taskSearchInput")) $("taskSearchInput").value = "";
+  $("taskSearchClearBtn")?.classList.add("hidden");
+  filterTasks("all");
+  filterTaskKind("all");
 }
 
 function filterTaskKind(kind) {
@@ -11840,6 +11976,9 @@ function filterTaskKind(kind) {
 
 function openTaskManager(kind = "all") {
   taskManagerLoading = true;
+  activeTaskQuery = "";
+  if ($("taskSearchInput")) $("taskSearchInput").value = "";
+  $("taskSearchClearBtn")?.classList.add("hidden");
   filterTasks("all");
   filterTaskKind(kind);
   goToPage("tasks");
@@ -11988,7 +12127,13 @@ function publicDiagnosticStage(stage = "") {
 }
 
 function publicDiagnosticMessage(message = "", questionId = "") {
+  if (message && typeof message === "object") {
+    if (!questionId) questionId = message.question_id || message.questionId || "";
+    message = message.message || message.detail || message.label || message.code || "";
+  }
   let text = String(message || "").trim();
+  const embeddedMessage = text.match(/["']message["']\s*:\s*(["'])(.*?)\1(?:\s*,|\s*})/i);
+  if (embeddedMessage?.[2]) text = embeddedMessage[2].replace(/\\(["'])/g, "$1").trim();
   if (questionId) {
     const normalizedQuestionId = String(questionId).trim();
     const prefix = [`${normalizedQuestionId}:`, `${normalizedQuestionId}：`].find((candidate) => text.startsWith(candidate));
@@ -12000,6 +12145,7 @@ function publicDiagnosticMessage(message = "", questionId = "") {
     [/answer_coverage[^；。]*evidence_ids is empty/gi, "部分题目缺少可追溯依据"],
     [/evidence_ids is empty/gi, "缺少可追溯依据"],
     [/schema type error at evidence_ids(?:\.\d+)?/gi, "教材依据数据格式不正确"],
+    [/OMML formula count \d+ below expected minimum \d+/gi, "文档公式数量低于预期，请复核公式是否完整"],
     [/qa_[a-z0-9_-]+/gi, "对应题目"],
     [/issue 级别问题/gi, "阻断问题"],
     [/warning/gi, "提示项"],
@@ -13414,16 +13560,18 @@ function renderResultQuestionList(questions) {
     list.textContent = "暂无题目";
     return;
   }
-  for (const question of questions) {
+  for (const [questionIndex, question] of questions.entries()) {
     const checkpoint = checkpointStatusMeta(question.checkpoint_status);
+    const sourceNumber = String(question.display_number || question.number || question.index || "").trim();
+    const stemPreview = `${sourceNumber ? `原题 ${sourceNumber} · ` : ""}${String(question.stem || "").slice(0, 18)}`;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "result-question-item";
     button.classList.toggle("active", question.question_id === activeResultQuestionId);
     button.innerHTML = `
       <span>
-        <strong>第 ${escapeHtml(question.display_number || question.number || question.index)} 题</strong>
-        <small>${practiceMarkdown((question.stem || "").slice(0, 18))}${(question.stem || "").length > 18 ? "..." : ""}</small>
+        <strong>第 ${questionIndex + 1} 项</strong>
+        <small>${practiceMarkdown(stemPreview)}${(question.stem || "").length > 18 ? "..." : ""}</small>
       </span>
       <div class="result-question-meta">
         <em>${escapeHtml(question.type || "题目")}</em>
@@ -13720,9 +13868,10 @@ function renderReviewRows(rows) {
     list.innerHTML = `<div class="review-empty">暂无审查报告映射。任务完成后点击“读取审查报告映射”。</div>`;
     return;
   }
-  for (const row of rows || []) {
+  for (const [rowIndex, row] of (rows || []).entries()) {
     const item = document.createElement("details");
     item.className = "review-item";
+    item.open = rowIndex === 0;
     if ((row.notes || []).length) item.classList.add("has-notes");
     if (row.evidence_binding_strategy === "program_top_evidence") item.classList.add("auto-evidence");
     const summary = document.createElement("summary");
@@ -13735,17 +13884,17 @@ function renderReviewRows(rows) {
     item.appendChild(summary);
     const body = document.createElement("div");
     body.className = "review-body";
-    const notes = (row.notes || []).map((x) => `<li>${escapeHtml(String(x))}</li>`).join("");
+    const notes = (row.notes || []).map((x) => `<li>${escapeHtml(publicDiagnosticMessage(x, row.question_id))}</li>`).join("");
     const evidenceStatus = Number(row.evidence_id_count || 0) > 0
       ? `已绑定 ${Number(row.evidence_id_count || 0)} 条教材依据`
       : "未绑定教材依据";
     body.innerHTML = `
       <div class="review-map-grid">
-        <p><strong>题目 ID</strong><span>${escapeHtml(row.question_id || "")}</span></p>
         <p><strong>题型题号</strong><span>${escapeHtml(title || "-")}</span></p>
         <p><strong>答案</strong><span>${practiceMarkdown(row.answer || "未生成答案")}</span></p>
         <p><strong>教材依据状态</strong><span>${escapeHtml(evidenceStatus)}</span></p>
       </div>
+      <details class="review-technical-details"><summary>技术信息</summary><p><strong>内部题目标识</strong><span>${escapeHtml(row.question_id || "-")}</span></p></details>
       <p><strong>原题</strong>${practiceMarkdown((row.stem || "未读取到原题内容").slice(0, 800))}</p>
       <div class="review-notes">
         <strong>审查提示</strong>
@@ -13767,6 +13916,13 @@ function escapeHtml(text) {
 }
 
 async function loadReview() {
+  const button = $("loadReviewBtn");
+  const originalLabel = button?.textContent || "读取审查报告映射";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "正在读取…";
+    button.setAttribute("aria-busy", "true");
+  }
   $("reviewResult").textContent = "读取审查报告映射中...";
   try {
     const taskId = $("taskIdInput").value.trim();
@@ -13779,8 +13935,18 @@ async function loadReview() {
       review_note_count: data.review_note_count,
       coverage: data.coverage
     });
+    if (button) button.textContent = "已更新审查映射";
   } catch (err) {
     $("reviewResult").textContent = String(err);
+    $("reviewList").innerHTML = `<div class="review-empty">审查报告映射读取失败：${escapeHtml(String(err).replace(/^Error:\s*/, ""))}</div>`;
+  } finally {
+    if (button) {
+      button.removeAttribute("aria-busy");
+      setTimeout(() => {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }, 1200);
+    }
   }
 }
 
@@ -13919,7 +14085,37 @@ $("loadTasksBtn").addEventListener("click", async () => {
 });
 $("taskSortSelect")?.addEventListener("change", (event) => {
   activeTaskSort = event.target.value || "smart";
+  taskManagerPage = 1;
   renderTaskManager();
+});
+$("taskSearchInput")?.addEventListener("input", (event) => {
+  activeTaskQuery = event.target.value || "";
+  taskManagerPage = 1;
+  $("taskSearchClearBtn")?.classList.toggle("hidden", !activeTaskQuery.trim());
+  updateTaskActiveFilterSummary();
+  renderTaskManager();
+});
+$("taskSearchClearBtn")?.addEventListener("click", () => {
+  activeTaskQuery = "";
+  if ($("taskSearchInput")) {
+    $("taskSearchInput").value = "";
+    $("taskSearchInput").focus();
+  }
+  $("taskSearchClearBtn")?.classList.add("hidden");
+  taskManagerPage = 1;
+  updateTaskActiveFilterSummary();
+  renderTaskManager();
+});
+$("taskManagerEmptyAction")?.addEventListener("click", () => {
+  const action = $("taskManagerEmptyAction");
+  if (action?.dataset.emptyAction === "create") {
+    const kind = action.dataset.emptyKind;
+    if (kind === "format") openWordFormatReviewer();
+    else if (kind === "knowledge") goToPage("knowledge-models");
+    else if (kind === "practice") goToPage("practice-models");
+    else startWizard();
+  } else if (action?.dataset.emptyAction === "home" || latestTasks.length === 0) goToPage("home");
+  else clearTaskManagerFilters();
 });
 $("taskBulkModeBtn")?.addEventListener("click", () => setTaskBulkMode(true));
 $("taskDismissFailedFeedbackBtn")?.addEventListener("click", dismissFailedTaskFeedback);
@@ -13930,7 +14126,7 @@ $("taskBulkSelectAllBtn")?.addEventListener("click", () => {
   renderTaskManager();
   updateTaskBulkControls();
 });
-$("refreshSystemBtn")?.addEventListener("click", loadSystemStatus);
+$("refreshSystemBtn")?.addEventListener("click", refreshSystemStatusFromButton);
 $("copyLanAccessBtn")?.addEventListener("click", () => copyLanAccessInfo().catch(() => {}));
 $("hybridExecutionEnabled")?.addEventListener("change", () => saveHybridExecutionSetting());
 $("pageMapBtn").addEventListener("click", pageMap);

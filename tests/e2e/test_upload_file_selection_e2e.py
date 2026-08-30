@@ -124,6 +124,14 @@ def test_atomic_selection_deduplication_restore_and_final_request_body() -> None
         context.route("**/*", route_request)
         page = context.new_page()
         page.goto(base_url, wait_until="networkidle")
+        page.evaluate(
+            """() => {
+              document.getElementById('practiceImageOrchestrationSwitch').checked = false;
+              document.getElementById('knowledgeImageOrchestrationSwitch').checked = false;
+              syncImageOrchestrationUi('practice', true);
+              syncImageOrchestrationUi('knowledge', true);
+            }"""
+        )
 
         # 按题生题：先保留一个合法文件，再验证两种顺序都不会部分加入。
         page.evaluate("openPracticeEntry('exam')")

@@ -35,6 +35,7 @@
       "gpt-5.5": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
     },
     "lingsuan_google": {
+      "gemini-3.7-flash-medium": {"protocol":"chat_completions","evidence":"live_task_tool_loop","last_verified_at":"2026-08-30"},
       "gemini-3.6-flash": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
       "gemini-3.5-flash": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
     }
@@ -151,7 +152,7 @@
     "lingsuan_google": {
       "display_name": "灵算 Google",
       "models": {
-        "gemini-3.7-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gemini-3.7-flash-medium": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_medium","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"2026-08-30"},
         "gemini-3.6-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "gemini-3.5-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"minimum_minimal","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
       }
