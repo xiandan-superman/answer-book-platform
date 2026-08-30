@@ -11,7 +11,7 @@ from app.server import _provider_test_error_payload
     ("raw", "status", "kind", "title", "retryable", "requires_configuration"),
     [
         ("Please pass a valid API key", 400, "provider_authentication", "API Key 无效", False, True),
-        ("insufficient_quota: credit balance is empty", 429, "provider_quota_exhausted", "模型服务额度不足", False, True),
+        ("insufficient_quota: credit balance is empty", 429, "provider_quota_exhausted", "模型服务额度不足", False, False),
         ("too many concurrent requests", 429, "provider_concurrency_limit", "模型并发已达上限", True, False),
         ("rate limit exceeded", 429, "provider_rate_limit", "模型请求过于频繁", True, False),
         ("Provider HTTP 403: error code: 1010", 403, "provider_gateway_client_blocked", "模型网关拒绝了当前客户端", False, False),
@@ -52,6 +52,41 @@ def test_concurrency_retry_after_is_explained_without_raw_provider_response() ->
     assert info.kind == "provider_concurrency_limit"
     assert "12 秒" in info.suggested_action
     assert "secret-request-id" not in f"{info.title}{info.message}{info.suggested_action}"
+
+
+def test_ambiguous_http_400_is_service_degraded_not_configuration_blocked() -> None:
+    info = classify_provider_error(
+        '{"error":{"message":"Invalid request","type":"invalid_request_error"}}',
+        status_code=400,
+    )
+
+    assert info.kind == "provider_ambiguous_invalid_request"
+    assert info.failure_state == "service_degraded"
+    assert info.requires_configuration is False
+    assert info.retryable is False
+
+
+def test_explicit_unsupported_parameter_remains_configuration_blocked() -> None:
+    info = classify_provider_error(
+        '{"error":{"message":"unsupported parameter: reasoning_effort","param":"reasoning_effort"}}',
+        status_code=400,
+    )
+
+    assert info.kind == "provider_invalid_request"
+    assert info.failure_state == "configuration_blocked"
+    assert info.requires_configuration is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "status", "state"),
+    [
+        ("forbidden", 403, "route_blocked"),
+        ("insufficient_quota", 429, "route_blocked"),
+        ("model not found", 404, "configuration_blocked"),
+    ],
+)
+def test_blocking_scope_is_explicit(raw: str, status: int, state: str) -> None:
+    assert classify_provider_error(raw, status_code=status).failure_state == state
 
 
 def test_provider_test_payload_never_returns_raw_provider_body() -> None:

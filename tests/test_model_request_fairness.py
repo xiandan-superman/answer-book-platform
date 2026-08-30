@@ -204,23 +204,35 @@ class ModelRequestFairnessTests(unittest.TestCase):
         )
         active = 0
         maximum_active = 0
+        first_wait_claimed = False
+        overlap_observed = threading.Event()
+        callers_ready = threading.Barrier(8)
         lock = threading.Lock()
 
         def make_call(index: int) -> str:
-            nonlocal active, maximum_active
+            nonlocal active, maximum_active, first_wait_claimed
             client = OpenAICompatibleClient(provider)
 
             def fake_urlopen(_request, timeout):
-                nonlocal active, maximum_active
+                nonlocal active, maximum_active, first_wait_claimed
+                wait_for_overlap = False
                 with lock:
                     active += 1
                     maximum_active = max(maximum_active, active)
-                time.sleep(0.025)
+                    if active >= 2:
+                        overlap_observed.set()
+                    elif not first_wait_claimed:
+                        first_wait_claimed = True
+                        wait_for_overlap = True
+                if wait_for_overlap:
+                    overlap_observed.wait(1.0)
+                time.sleep(0.005)
                 with lock:
                     active -= 1
                 return _Response()
 
             client._urlopen = fake_urlopen
+            callers_ready.wait(2.0)
             with model_call_context(task_id=f"task-{index}"):
                 return client.chat_text([{"role": "user", "content": "ping"}], timeout=1).content
 

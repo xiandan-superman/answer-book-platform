@@ -21,6 +21,7 @@ from .image_orchestration import (
     DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
     LEGACY_FIGURE_PIPELINE,
     MAIN_MODEL_TOOL_LOOP,
+    ensure_generation_image_label_language_requirement,
     image_orchestration_from_payload,
 )
 from .llm_client import LLMError, OpenAICompatibleClient
@@ -3544,6 +3545,7 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
                 "message": _clean(error.get("message"), 500) or "上游模型未返回本题。",
                 "retryable": error.get("retryable") is not False,
                 "requires_configuration": error.get("requires_configuration") is True,
+                "failure_state": _clean(error.get("failure_state"), 40) or "item_failed",
                 "pending": error.get("pending") is True,
                 "signature": _clean(error.get("signature"), 200),
                 "detail": _clean(error.get("detail"), 800),
@@ -3560,6 +3562,8 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
         "status": (
             "configuration_blocked"
             if quality["generated_count"] == 0 and any(row.get("requires_configuration") for row in current_errors)
+            else "route_blocked"
+            if quality["generated_count"] == 0 and any(row.get("failure_state") == "route_blocked" for row in current_errors)
             else ("partial_success" if quality["failed_count"] else "completed")
         ),
         "partial_success": quality["failed_count"] > 0,
@@ -3567,6 +3571,7 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
         "failed_count": quality["failed_count"],
         "total_count": quality["total_count"],
         "configuration_blocked": any(row.get("requires_configuration") for row in current_errors),
+        "route_blocked": any(row.get("failure_state") == "route_blocked" for row in current_errors),
         "batch_errors": current_errors,
     })
     data["quality"] = quality
@@ -3673,11 +3678,28 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
             getattr(exc, "retryable", transient or isinstance(exc, ValueError))
         ) and not requires_configuration,
         "requires_configuration": requires_configuration,
+        "failure_state": (
+            "configuration_blocked"
+            if requires_configuration
+            else provider_info.failure_state
+        ),
         "signature": signature,
         "retry_after_seconds": retry_after if isinstance(retry_after, (int, float)) else None,
         "partial_output_received": partial_output_received,
         "detail": "",
     }
+    provider_error = {
+        key: _clean(getattr(exc, f"provider_error_{key}", ""), 300)
+        for key in ("code", "type", "param", "message")
+        if _clean(getattr(exc, f"provider_error_{key}", ""), 300)
+    }
+    if provider_error:
+        detail["provider_error"] = provider_error
+    provider_request_id = _clean(getattr(exc, "provider_request_id", ""), 200)
+    if provider_request_id:
+        detail["provider_request_id"] = provider_request_id
+    if provider_info.kind == "provider_ambiguous_invalid_request":
+        detail["circuit_breaker_eligible"] = False
     if getattr(exc, "retry_budget_charge", None) is False:
         detail["retry_budget_charge"] = False
     if getattr(exc, "circuit_breaker_eligible", None) is False:
@@ -3860,6 +3882,9 @@ def _failed_exercise_placeholder(
             "message": message,
             "retryable": bool(error.get("retryable", True)),
             "requires_configuration": configuration_blocked,
+            "failure_state": _clean(error.get("failure_state"), 40) or (
+                "configuration_blocked" if configuration_blocked else "item_failed"
+            ),
             "pending": error.get("pending") is True,
             "signature": _clean(error.get("signature"), 200),
             "detail": _clean(error.get("detail"), 800),
@@ -4140,6 +4165,7 @@ def normalize_practice_set(
                     "message": _clean((item.get("generation_error") or {}).get("message"), 500),
                     "retryable": bool((item.get("generation_error") or {}).get("retryable", True)),
                     "requires_configuration": (item.get("generation_error") or {}).get("requires_configuration") is True,
+                    "failure_state": _clean((item.get("generation_error") or {}).get("failure_state"), 40) or "item_failed",
                     "pending": (item.get("generation_error") or {}).get("pending") is True,
                     "signature": _clean((item.get("generation_error") or {}).get("signature"), 200),
                     "cause_code": _clean((item.get("generation_error") or {}).get("cause_code"), 100),
@@ -5228,6 +5254,8 @@ def _call_practice_json(
         ensure_active()
     output_token_budget = max(2000, min(DEFAULT_MODEL_MAX_TOKENS, int(max_tokens or DEFAULT_MODEL_MAX_TOKENS)))
     contract_id = prompt_contract_id or practice_prompt_contract_id(task_stage)
+    if contract_id in {"practice.generation", "practice.figure_repair"}:
+        messages = ensure_generation_image_label_language_requirement(messages)
     if tool_loop is not None:
         with prompt_contract(contract_id):
             agent_result = tool_loop.run_json(
@@ -5855,6 +5883,19 @@ def _is_transport_generation_error(exc: Exception) -> bool:
     return isinstance(exc, LLMError) and _generation_error_detail(exc)["retryable"] is True
 
 
+def _is_ambiguous_provider_400(detail: dict[str, Any]) -> bool:
+    return (
+        detail.get("code") == "provider_http_400"
+        and detail.get("failure_state") == "service_degraded"
+        and detail.get("requires_configuration") is not True
+    )
+
+
+def _supports_ambiguous_400_compensation(client: Any) -> bool:
+    provider = str(getattr(getattr(client, "config", None), "name", "") or "").strip().lower()
+    return provider.startswith("lingsuan_")
+
+
 def _practice_retry_thinking(client: Any, model: str) -> str:
     """Choose the lowest reasoning effort the selected model actually accepts."""
 
@@ -5919,10 +5960,12 @@ def _call_practice_json_with_transport_retry(
     item_ids: Iterable[Any] = (),
     enforce_context_budget: bool = False,
     tool_loop: ModelToolLoop | None = None,
+    allow_ambiguous_400_compensation: bool = False,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     retrying_invalid_json = initial_json_error
     pending_retry_observation: dict[str, Any] | None = None
+    ambiguous_400_compensation_active = False
     # A user-selected main-model tool transaction cannot cross to a protocol
     # fallback that lacks the same conversation and image bindings. Keep every
     # retry on the registered route; otherwise fail instead of becoming text-only.
@@ -5933,7 +5976,7 @@ def _call_practice_json_with_transport_retry(
             ensure_active()
         if before_attempt is not None:
             before_attempt(attempt)
-        use_primary_protocol = (
+        use_primary_protocol = ambiguous_400_compensation_active or (
             overall_attempt < 4 or not allow_equivalent_chat_fallback
             if retrying_invalid_json
             else attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_equivalent_chat_fallback
@@ -6003,6 +6046,16 @@ def _call_practice_json_with_transport_retry(
             last_error = exc
             retryable = _is_transport_generation_error(exc)
             detail = _generation_error_detail(exc)
+            ambiguous_compensation = (
+                allow_ambiguous_400_compensation
+                and not ambiguous_400_compensation_active
+                and _supports_ambiguous_400_compensation(attempt_client)
+                and _is_ambiguous_provider_400(detail)
+                and attempt < max(1, attempts)
+            )
+            if ambiguous_compensation:
+                retryable = True
+                ambiguous_400_compensation_active = True
             if _is_bigmodel_glm_rate_limit(attempt_client, model, detail):
                 vars(exc)["retry_budget_charge"] = False
                 vars(exc)["circuit_breaker_eligible"] = False
@@ -6021,6 +6074,11 @@ def _call_practice_json_with_transport_retry(
                     "thinking": attempt_thinking,
                     "strict_json_contract": attempt_messages is not messages,
                     "retry_budget_charged": detail.get("retry_budget_charge") is not False,
+                    "recovery_action": (
+                        "same_route_ambiguous_400_compensation"
+                        if ambiguous_compensation
+                        else ""
+                    ),
                 })
             if after_attempt is not None:
                 after_attempt(attempt, detail)
@@ -6043,7 +6101,7 @@ def _call_practice_json_with_transport_retry(
             config = getattr(attempt_client, "config", None)
             current_protocol = str(getattr(config, "api_protocol", "") or attempt_client.__class__.__name__)
             next_overall_attempt = overall_attempt + 1
-            next_use_primary_protocol = (
+            next_use_primary_protocol = ambiguous_400_compensation_active or (
                 next_overall_attempt < 4 or not allow_equivalent_chat_fallback
                 if retrying_invalid_json
                 else attempt + 1 <= 1 + max(0, int(same_protocol_retries)) or not allow_equivalent_chat_fallback
@@ -6055,7 +6113,13 @@ def _call_practice_json_with_transport_retry(
             )
             pending_retry_observation = record_model_retry_scheduled(
                 exc,
-                category=("json_structure_repair" if detail.get("code") == "generation_response_invalid" else "transport_retry"),
+                category=(
+                    "ambiguous_gateway_400_compensation"
+                    if ambiguous_compensation
+                    else "json_structure_repair"
+                    if detail.get("code") == "generation_response_invalid"
+                    else "transport_retry"
+                ),
                 retry_number=attempt,
                 max_attempts=max(1, attempts),
                 delay_seconds=sleep_seconds,
@@ -6072,7 +6136,11 @@ def _call_practice_json_with_transport_retry(
                 to_strategy=("strict_json_contract" if retrying_invalid_json and next_overall_attempt >= 3 else "selected_route"),
                 budget_scope="practice_generation_retry_budget",
                 budget_charged=detail.get("retry_budget_charge") is not False,
-                decision_source="existing_practice_transport_retry",
+                decision_source=(
+                    "approved_same_route_ambiguous_400_policy"
+                    if ambiguous_compensation
+                    else "existing_practice_transport_retry"
+                ),
             )
             if delay:
                 time.sleep(sleep_seconds)
@@ -6094,16 +6162,23 @@ class _GenerationRetryCoordinator:
         except (TypeError, ValueError):
             self.expected_epoch = None
         self.lock = threading.RLock()
-        self.state: dict[str, Any] = {"schema_version": 2, "batches": {}, "configuration_block": None}
+        self.state: dict[str, Any] = {
+            "schema_version": 3,
+            "batches": {},
+            "route_block": None,
+            "configuration_block": None,
+        }
         source_job_id = self.job_id or _clean(payload.get("resume_from_job_id"), 100)
         if source_job_id and payload.get("reset_generation_retry_state") is not True:
             try:
                 from .practice_jobs import load_practice_job
                 record = load_practice_job(source_job_id)
                 stored = record.get("generation_retry_state")
-                if isinstance(stored, dict) and stored.get("schema_version") in {1, 2}:
+                if isinstance(stored, dict) and stored.get("schema_version") in {1, 2, 3}:
                     self.state = copy.deepcopy(stored)
-                    self.state["schema_version"] = 2
+                    self.state["schema_version"] = 3
+                    self.state.setdefault("route_block", None)
+                    self.state.setdefault("configuration_block", None)
             except Exception:
                 pass
         if self.expected_epoch is not None:
@@ -6168,6 +6243,14 @@ class _GenerationRetryCoordinator:
             value = self.state.get("configuration_block")
             return copy.deepcopy(value) if isinstance(value, dict) else None
 
+    def route_error(self) -> dict[str, Any] | None:
+        with self.lock:
+            value = self.state.get("route_block")
+            return copy.deepcopy(value) if isinstance(value, dict) else None
+
+    def blocking_error(self) -> dict[str, Any] | None:
+        return self.configuration_error() or self.route_error()
+
     def batch_stop(self, root_key: str, *, limit: int) -> dict[str, Any] | None:
         with self.lock:
             deadline_error = self._deadline_error()
@@ -6192,11 +6275,27 @@ class _GenerationRetryCoordinator:
             return None
 
     def set_configuration_error(self, detail: dict[str, Any]) -> None:
-        if detail.get("requires_configuration") is not True:
+        if (
+            detail.get("failure_state") != "configuration_blocked"
+            and detail.get("requires_configuration") is not True
+        ):
             return
         with self.lock:
             self.state["configuration_block"] = copy.deepcopy(detail)
             self._persist()
+
+    def set_route_error(self, detail: dict[str, Any]) -> None:
+        if detail.get("failure_state") != "route_blocked":
+            return
+        with self.lock:
+            self.state["route_block"] = copy.deepcopy(detail)
+            self._persist()
+
+    def set_blocking_error(self, detail: dict[str, Any]) -> None:
+        if detail.get("failure_state") == "route_blocked":
+            self.set_route_error(detail)
+        elif detail.get("failure_state") == "configuration_blocked" or detail.get("requires_configuration") is True:
+            self.set_configuration_error(detail)
 
     def prepare_item_budget(self, parent_key: str, item_key: str, *, limit: int = 4) -> str:
         """Charge previous batch attempts to this item without sharing sibling retries."""
@@ -6241,9 +6340,9 @@ class _GenerationRetryCoordinator:
             deadline_error = self._deadline_error()
             if deadline_error:
                 raise _GenerationRetryBudgetExceeded(deadline_error["message"])
-            config_error = self.configuration_error()
-            if config_error:
-                raise _GenerationRetryBudgetExceeded(config_error["message"])
+            blocking_error = self.blocking_error()
+            if blocking_error:
+                raise _GenerationRetryBudgetExceeded(blocking_error["message"])
             batches = self.state.setdefault("batches", {})
             row = batches.setdefault(root_key, {"calls_used": 0, "limit": limit, "attempts": [], "circuit": None})
             row["limit"] = max(int(row.get("limit") or 0), limit)
@@ -6304,7 +6403,12 @@ class _GenerationRetryCoordinator:
                             attempt["budget_charged"] = False
                             row["calls_used"] = max(0, int(row.get("calls_used") or 0) - 1)
                     break
-            if detail and detail.get("requires_configuration"):
+            if detail and detail.get("failure_state") == "route_blocked":
+                self.state["route_block"] = copy.deepcopy(detail)
+            elif detail and (
+                detail.get("failure_state") == "configuration_blocked"
+                or detail.get("requires_configuration")
+            ):
                 self.state["configuration_block"] = copy.deepcopy(detail)
             self._persist()
             if self.job_id:
@@ -6333,7 +6437,7 @@ class _GenerationRetryCoordinator:
         with self.lock:
             batches = self.state.get("batches") if isinstance(self.state.get("batches"), dict) else {}
             return {
-                "schema_version": 2,
+                "schema_version": 3,
                 "total_model_calls": sum(
                     max(
                         0,
@@ -6354,6 +6458,7 @@ class _GenerationRetryCoordinator:
                 ),
                 "batches": copy.deepcopy(batches),
                 "configuration_blocked": isinstance(self.state.get("configuration_block"), dict),
+                "route_blocked": isinstance(self.state.get("route_block"), dict),
             }
 
 
@@ -6363,11 +6468,32 @@ def _configuration_blocked_error(cause: dict[str, Any], *, pending: bool) -> dic
         "message": _clean(cause.get("message"), 500) or "模型服务配置不可用，请检查 API 配置。",
         "retryable": False,
         "requires_configuration": True,
+        "failure_state": "configuration_blocked",
         "pending": pending,
         "signature": _clean(cause.get("signature"), 200) or _clean(cause.get("code"), 100),
         "cause_code": _clean(cause.get("code"), 100),
         "detail": "本题尚未完成。请检查 API 配置后继续未完成项。",
     }
+
+
+def _route_blocked_error(cause: dict[str, Any], *, pending: bool) -> dict[str, Any]:
+    return {
+        "code": "provider_route_blocked",
+        "message": _clean(cause.get("message"), 500) or "当前模型路由暂不可用。",
+        "retryable": False,
+        "requires_configuration": False,
+        "failure_state": "route_blocked",
+        "pending": pending,
+        "signature": _clean(cause.get("signature"), 200) or _clean(cause.get("code"), 100),
+        "cause_code": _clean(cause.get("code"), 100),
+        "detail": "本题尚未完成。请恢复当前路由，或在用户授权后选择能力等价的后备路由。",
+    }
+
+
+def _provider_blocked_error(cause: dict[str, Any], *, pending: bool) -> dict[str, Any]:
+    if cause.get("failure_state") == "route_blocked":
+        return _route_blocked_error(cause, pending=pending)
+    return _configuration_blocked_error(cause, pending=pending)
 
 
 def _retry_circuit_error(cause: dict[str, Any]) -> dict[str, Any]:
@@ -8942,17 +9068,18 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         )
         generation_tool_loop = None
         retry_limit = 4
-        configuration_error = retry_coordinator.configuration_error()
-        if configuration_error:
+        blocking_error = retry_coordinator.blocking_error()
+        if blocking_error:
             failures = {
                 _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}":
-                _configuration_blocked_error(configuration_error, pending=True)
+                _provider_blocked_error(blocking_error, pending=True)
                 for index, item in enumerate(batch_plan)
             }
+            blocked_status = str(blocking_error.get("failure_state") or "configuration_blocked")
             return batch_start, [], failures, {
                 "batch_start": batch_start + 1,
                 "batch_end": batch_start + batch_count,
-                "status": "configuration_blocked",
+                "status": blocked_status,
                 "model_call_count": 0,
                 "failed_plan_item_ids": sorted(failures),
             }
@@ -9265,8 +9392,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     raise
                 except Exception as exc:
                     error = _generation_error_detail(exc)
-                    if error.get("requires_configuration"):
-                        retry_coordinator.set_configuration_error(error)
+                    if error.get("failure_state") in {"configuration_blocked", "route_blocked"}:
+                        retry_coordinator.set_blocking_error(error)
                     attempt_report["attempts"].append({
                         "attempt": recovery_attempt,
                         "error_code": error["code"],
@@ -9305,11 +9432,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 if recovered is not None:
                     rows_by_index[target_index] = recovered
                     continue
-                configuration_error = retry_coordinator.configuration_error()
-                if configuration_error:
+                blocking_error = retry_coordinator.blocking_error()
+                if blocking_error:
                     for rest_target in missing_before_recovery[missing_position:]:
-                        structural_failures[rest_target - 1] = _configuration_blocked_error(
-                            configuration_error,
+                        structural_failures[rest_target - 1] = _provider_blocked_error(
+                            blocking_error,
                             pending=rest_target != target_index,
                         )
                     break
@@ -9359,6 +9486,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 delivered_evidence_refs=batch_delivered_evidence_refs,
                 item_ids=[item.get("plan_item_id") for item in batch_plan],
                 tool_loop=generation_tool_loop,
+                allow_ambiguous_400_compensation=batch_count == 1,
             )
             if image_orchestration == MAIN_MODEL_TOOL_LOOP:
                 raw_batch = _bind_practice_generated_images(raw_batch)
@@ -9366,20 +9494,25 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             batch_diagnostic["image_tool_artifact_count"] = len(raw_batch.get("_image_tool_artifacts") or [])
         except Exception as exc:
             error_detail = _generation_error_detail(exc)
-            if error_detail.get("requires_configuration"):
-                retry_coordinator.set_configuration_error(error_detail)
+            if error_detail.get("failure_state") in {"configuration_blocked", "route_blocked"}:
+                retry_coordinator.set_blocking_error(error_detail)
                 failures = {
                     _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}":
-                    _configuration_blocked_error(error_detail, pending=False)
+                    _provider_blocked_error(error_detail, pending=False)
                     for index, item in enumerate(batch_plan)
                 }
+                blocked_status = str(error_detail.get("failure_state") or "configuration_blocked")
                 batch_diagnostic.update({
-                    "status": "configuration_blocked",
+                    "status": blocked_status,
                     "error_code": error_detail["code"],
                     "failed_plan_item_ids": sorted(failures),
                 })
                 return batch_start, [], failures, batch_diagnostic
-            if batch_count > 1 and error_detail.get("circuit_breaker_eligible") is False:
+            if (
+                batch_count > 1
+                and error_detail.get("code") == "provider_http_429"
+                and error_detail.get("circuit_breaker_eligible") is False
+            ):
                 failures = {
                     _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}": {
                         **copy.deepcopy(error_detail),
@@ -9394,7 +9527,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "failed_plan_item_ids": sorted(failures),
                 })
                 return batch_start, [], failures, batch_diagnostic
-            if batch_count <= 1 or not _is_transport_generation_error(exc):
+            if batch_count <= 1 or not (
+                _is_transport_generation_error(exc)
+                or _is_ambiguous_provider_400(error_detail)
+            ):
                 raise
             # A dead batch stream must not erase every question in that batch.
             # Retry each slot independently so one unstable response has a
@@ -9403,11 +9539,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             split_failures: dict[str, dict[str, Any]] = {}
             split_reports: list[dict[str, Any]] = []
             for local_index, planned_item in enumerate(batch_plan):
-                if retry_coordinator.configuration_error():
-                    config_error = retry_coordinator.configuration_error() or error_detail
+                if retry_coordinator.blocking_error():
+                    blocked_error = retry_coordinator.blocking_error() or error_detail
                     for rest_index, rest_item in enumerate(batch_plan[local_index:], start=local_index):
                         rest_id = _clean(rest_item.get("plan_item_id"), 80) or f"plan_item_{batch_start + rest_index + 1:02d}"
-                        split_failures[rest_id] = _configuration_blocked_error(config_error, pending=True)
+                        split_failures[rest_id] = _provider_blocked_error(blocked_error, pending=True)
                     break
                 try:
                     item_id = (
@@ -9650,11 +9786,11 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     raise
                 except Exception as exc:
                     repair_error = _generation_error_detail(exc)
-                    if repair_error.get("requires_configuration"):
-                        retry_coordinator.set_configuration_error(repair_error)
+                    if repair_error.get("failure_state") in {"configuration_blocked", "route_blocked"}:
+                        retry_coordinator.set_blocking_error(repair_error)
                         rows_by_index.pop(target_index, None)
-                        structural_failures[target_index - 1] = _configuration_blocked_error(repair_error, pending=False)
-                        retry_report["status"] = "configuration_blocked"
+                        structural_failures[target_index - 1] = _provider_blocked_error(repair_error, pending=False)
+                        retry_report["status"] = str(repair_error.get("failure_state") or "configuration_blocked")
                         retry_report["error"] = repair_error
                         batch_diagnostic["content_gate_retries"].append(retry_report)
                         break
@@ -10158,6 +10294,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         "image_orchestration": image_orchestration,
         "retry_budget": retry_summary,
         "configuration_blocked": retry_summary["configuration_blocked"],
+        "route_blocked": retry_summary["route_blocked"],
         "requires_configuration": retry_summary["configuration_blocked"],
         "total_count": count,
         "generated_count": int(quality.get("generated_count") or 0),
@@ -10165,6 +10302,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     })
     if retry_summary["configuration_blocked"] and int(quality.get("generated_count") or 0) == 0:
         result["generation"]["status"] = "configuration_blocked"
+    elif retry_summary["route_blocked"] and int(quality.get("generated_count") or 0) == 0:
+        result["generation"]["status"] = "route_blocked"
     resume_history_id = _clean(payload.get("resume_from_history_id"), 100)
     if resume_history_id:
         result["history_id"] = resume_history_id

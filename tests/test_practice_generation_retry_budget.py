@@ -77,7 +77,7 @@ def _patch_runtime(monkeypatch, fake_call) -> None:
     )
 
 
-@pytest.mark.parametrize("status_code", [401, 403, 404])
+@pytest.mark.parametrize("status_code", [401, 404])
 def test_configuration_error_short_circuits_batch_without_split(monkeypatch, status_code: int) -> None:
     calls = 0
 
@@ -96,6 +96,109 @@ def test_configuration_error_short_circuits_batch_without_split(monkeypatch, sta
     assert all(item["generation_error"]["retryable"] is False for item in result["exercises"])
     assert all(item["generation_error"]["requires_configuration"] is True for item in result["exercises"])
     assert all("request-id" not in item["generation_error"]["message"].lower() for item in result["exercises"])
+
+
+def test_permission_error_blocks_only_the_selected_route(monkeypatch) -> None:
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise LLMError("Provider HTTP 403: forbidden", status_code=403)
+
+    _patch_runtime(monkeypatch, fake_call)
+    result = exercise_generation.generate_practice_from_plan(_payload(3))
+
+    assert calls == 1
+    assert result["generation"]["status"] == "route_blocked"
+    assert result["generation"]["route_blocked"] is True
+    assert result["generation"]["configuration_blocked"] is False
+    assert all(item["generation_error"]["failure_state"] == "route_blocked" for item in result["exercises"])
+    assert all(item["generation_error"]["requires_configuration"] is False for item in result["exercises"])
+
+
+def test_lingsuan_ambiguous_batch_400_splits_and_compensates_only_failed_item_once(monkeypatch) -> None:
+    calls = 0
+
+    def fake_call(*_args, **kwargs):
+        nonlocal calls
+        calls += 1
+        item_ids = list(kwargs.get("item_ids") or [])
+        if calls <= 3:
+            raise LLMError(
+                'Provider HTTP 400: {"error":{"message":"Invalid request","type":"invalid_request_error"}}',
+                status_code=400,
+            )
+        knowledge_index = 2 if item_ids == ["plan_item_02"] else 3
+        return {"exercises": [_exercise(1, knowledge_index)]}
+
+    _patch_runtime(monkeypatch, fake_call)
+    provider = SimpleNamespace(name="lingsuan_google", supports_vision=False)
+    monkeypatch.setattr(exercise_generation, "_primary_model_runtime", lambda _payload: (provider, "gemini-3.6-flash"))
+    monkeypatch.setattr(
+        exercise_generation,
+        "OpenAICompatibleClient",
+        lambda selected: SimpleNamespace(config=selected),
+    )
+
+    result = exercise_generation.generate_practice_from_plan(_payload(3))
+
+    assert calls == 5  # one batch, two same-route item-1 attempts, then items 2 and 3
+    assert [item["generation_status"] for item in result["exercises"]] == ["failed", "completed", "completed"]
+    assert result["exercises"][0]["generation_error"]["failure_state"] == "service_degraded"
+    assert result["generation"]["configuration_blocked"] is False
+    assert result["generation"]["route_blocked"] is False
+
+
+def test_lingsuan_ambiguous_400_compensation_keeps_exact_route_and_request(monkeypatch) -> None:
+    provider = SimpleNamespace(name="lingsuan_google", api_protocol="gemini", supports_vision=False)
+    client = SimpleNamespace(config=provider)
+    messages = [{"role": "user", "content": "same-request"}]
+    observed: list[tuple[object, object, str, object]] = []
+
+    def fail_twice(call_client, call_messages, **kwargs):
+        observed.append((call_client, call_messages, kwargs["model"], kwargs["thinking"]))
+        raise LLMError("Provider HTTP 400: Invalid request", status_code=400)
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fail_twice)
+    monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
+    attempts: list[dict] = []
+
+    with pytest.raises(LLMError):
+        exercise_generation._call_practice_json_with_transport_retry(
+            client,
+            messages,
+            model="gemini-3.6-flash",
+            temperature=0.35,
+            thinking="minimal",
+            timeout_seconds=30,
+            attempts=4,
+            backoff_seconds=0,
+            attempt_log=attempts,
+            allow_ambiguous_400_compensation=True,
+        )
+
+    assert len(observed) == 2
+    assert all(row == (client, messages, "gemini-3.6-flash", "minimal") for row in observed)
+    assert attempts[0]["recovery_action"] == "same_route_ambiguous_400_compensation"
+    assert attempts[1]["recovery_action"] == ""
+
+
+def test_ambiguous_400_from_other_provider_fails_each_item_without_global_block(monkeypatch) -> None:
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise LLMError("Provider HTTP 400: Invalid request", status_code=400)
+
+    _patch_runtime(monkeypatch, fake_call)
+    result = exercise_generation.generate_practice_from_plan(_payload(3))
+
+    assert calls == 4  # one batch plus one attempt per item; no generic 400 retry
+    assert all(item["generation_status"] == "failed" for item in result["exercises"])
+    assert all(item["generation_error"]["failure_state"] == "service_degraded" for item in result["exercises"])
+    assert result["generation"]["configuration_blocked"] is False
 
 
 def test_same_transport_signature_exhausts_one_item_without_retrying_every_sibling(monkeypatch) -> None:
@@ -235,7 +338,7 @@ def test_latex_fill_in_slot_is_accepted_without_regeneration(monkeypatch, blank:
     assert result["generation"]["batch_diagnostics"][0].get("content_gate_retries") is None
 
 
-def test_partial_success_survives_configuration_block_and_continuation_only_fills_missing(tmp_path, monkeypatch) -> None:
+def test_partial_success_survives_route_block_and_continuation_only_fills_missing(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(practice_store, "PRACTICE_HISTORY_DIR", tmp_path / "history")
     calls = 0
 
@@ -256,7 +359,8 @@ def test_partial_success_survives_configuration_block_and_continuation_only_fill
     assert calls == 2
     assert listed["status"] == "completed_with_issues"
     assert (listed["generated_count"], listed["total_count"], listed["unfinished_count"]) == (1, 3, 2)
-    assert listed["configuration_blocked"] is True
+    assert listed["configuration_blocked"] is False
+    assert listed["route_blocked"] is True
 
     continuation = practice_store.build_practice_continuation_payload(history_id)
     resumed_calls = 0

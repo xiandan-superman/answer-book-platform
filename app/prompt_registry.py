@@ -31,6 +31,7 @@ _EXAM_GENERATION_SECTIONS = (
     "task_profile",
     "question",
     "textbook_evidence",
+    "image_label_language_requirement",
     "output_schema",
     "tool_instructions",
 )
@@ -39,6 +40,7 @@ _PRACTICE_GENERATION_SECTIONS = (
     "task_profile",
     "source_evidence",
     "blueprint",
+    "image_label_language_requirement",
     "output_schema",
     "tool_instructions",
 )
@@ -49,6 +51,7 @@ _EXAM_REPAIR_SECTIONS = (
     "textbook_evidence",
     "previous_candidate",
     "current_issues",
+    "image_label_language_requirement",
     "output_schema",
     "tool_instructions",
 )
@@ -62,10 +65,11 @@ def _contract(
     output: str,
     consumers: tuple[str, ...],
     disabled: tuple[tuple[str, tuple[str, ...]], ...] = (),
+    version: str = "1",
 ) -> PromptContract:
     return PromptContract(
         prompt_id=prompt_id,
-        version="1",
+        version=version,
         task_profiles=profiles,
         section_order=sections,
         output_contract=output,
@@ -131,6 +135,7 @@ _CONTRACTS = (
         output="json_object",
         consumers=("answer_generation", "answer_preview"),
         disabled=(("question_only", ("textbook_evidence",)),),
+        version="2",
     ),
     _contract(
         "exam.answer_draft_batch",
@@ -139,6 +144,7 @@ _CONTRACTS = (
         output="json_object",
         consumers=("answer_generation",),
         disabled=(("question_only", ("textbook_evidence",)),),
+        version="2",
     ),
     _contract(
         "exam.answer_audit_repair",
@@ -147,6 +153,7 @@ _CONTRACTS = (
         output="json_object",
         consumers=("audit_model_repair",),
         disabled=(("question_only", ("textbook_evidence",)),),
+        version="2",
     ),
     _contract(
         "exam.answer_docx_repair",
@@ -155,6 +162,7 @@ _CONTRACTS = (
         output="json_object",
         consumers=("docx_model_repair",),
         disabled=(("question_only", ("textbook_evidence",)),),
+        version="2",
     ),
     _contract(
         "exam.selective_review",
@@ -166,9 +174,10 @@ _CONTRACTS = (
     _contract(
         "figure.drawing_code",
         profiles=("exam", "question_only"),
-        sections=("base_rules", "question", "answer_candidate", "figure_spec", "output_schema"),
+        sections=("base_rules", "question", "answer_candidate", "figure_spec", "image_label_language_requirement", "output_schema"),
         output="text_or_json_object",
         consumers=("drawing_code", "figure_repair"),
+        version="2",
     ),
     _contract(
         "figure.visual_review",
@@ -204,6 +213,7 @@ _CONTRACTS = (
         sections=_PRACTICE_GENERATION_SECTIONS,
         output="json_object",
         consumers=("practice_generation",),
+        version="2",
     ),
     _contract(
         "practice.semantic_review",
@@ -229,16 +239,18 @@ _CONTRACTS = (
     _contract(
         "practice.figure_repair",
         profiles=("practice", "knowledge"),
-        sections=("base_rules", "exercise", "figure_spec", "current_issues", "output_schema"),
+        sections=("base_rules", "exercise", "figure_spec", "current_issues", "image_label_language_requirement", "output_schema"),
         output="json_object",
         consumers=("practice_figure_repair",),
+        version="2",
     ),
     _contract(
         "figure.tool_repair",
         profiles=("exam", "question_only"),
-        sections=("base_rules", "question", "answer_candidate", "figure_asset", "current_issues", "tool_instructions", "output_schema"),
+        sections=("base_rules", "question", "answer_candidate", "figure_asset", "current_issues", "image_label_language_requirement", "tool_instructions", "output_schema"),
         output="json_object",
         consumers=("figure_tool_repair",),
+        version="2",
     ),
     _contract(
         "tool.image_generation",

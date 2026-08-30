@@ -1252,6 +1252,43 @@ function setResultPageState(state = "empty", task = null) {
   setText("resultPageSubtitle", state === "issues" ? "解析已完成，其中部分内容需要人工复核。" : "解析已完成，可以审阅题目并准备下载。");
 }
 
+function renderResultDeliveryVerdict(task = {}, report = null) {
+  const verdict = $("resultDeliveryVerdict");
+  if (!verdict) return;
+  const data = report && typeof report === "object" ? report : null;
+  let tone = "pending";
+  let icon = "fas fa-circle-notch fa-spin";
+  let title = "正在确认交付状态";
+  let message = "平台正在核对任务状态、质量检查和正式文件。";
+  if (dataFormalAcceptancePassed(data)) {
+    tone = "ready";
+    icon = "fas fa-circle-check";
+    title = "可正式交付";
+    message = "最终验收已通过，可直接下载正式交付包。";
+  } else if (task.status === "completed_with_issues" || data?.status === "completed_with_issues") {
+    tone = "review";
+    icon = "fas fa-triangle-exclamation";
+    title = "可预览，但需要复核";
+    message = "结果文件已保留，但仍有质量风险；处理复核项后再用于正式交付。";
+  } else if (["failed", "cancelled"].includes(task.status) || data?.delivery_ready === false || data?.ok === false) {
+    tone = "blocked";
+    icon = "fas fa-circle-xmark";
+    title = "当前不可交付";
+    message = task.status === "failed"
+      ? "流程未完成，请先查看停止原因并从检查点重试。"
+      : "质量检查尚未通过，请先处理阻断项。";
+  } else if (task.status === "completed") {
+    tone = "review";
+    icon = "fas fa-clipboard-check";
+    title = "结果已生成，等待最终验收";
+    message = "可先审阅内容；通过下载条件检查后才能导出正式交付包。";
+  }
+  verdict.className = `delivery-verdict delivery-verdict-${tone}`;
+  verdict.querySelector(".delivery-verdict-icon").innerHTML = `<i class="${icon}"></i>`;
+  setText("resultDeliveryTitle", title);
+  setText("resultDeliveryMessage", message);
+}
+
 function setVisual(id, title, body, kind = "info") {
   const el = $(id);
   if (!el) return;
@@ -1468,11 +1505,11 @@ function taskStatusMeta(status, currentStage = "") {
     running: { icon: "fas fa-spinner fa-spin", label: "进行中" },
     queued: { icon: "fas fa-hourglass-start", label: "排队中" },
     completed: { icon: "fas fa-check", label: "已完成" },
-    completed_with_issues: { icon: "fas fa-triangle-exclamation", label: "完成待复核" },
-    needs_input: { icon: "fas fa-user-check", label: "待人工处理" },
+    completed_with_issues: { icon: "fas fa-triangle-exclamation", label: "结果需复核" },
+    needs_input: { icon: "fas fa-user-check", label: "等待我确认" },
     paused: { icon: "fas fa-pause", label: "已暂停" },
     cancelled: { icon: "fas fa-ban", label: "已取消" },
-    failed: { icon: "fas fa-triangle-exclamation", label: "需要处理" }
+    failed: { icon: "fas fa-triangle-exclamation", label: "未完成" }
   };
   return meta[normalized] || meta.queued;
 }
@@ -1884,7 +1921,75 @@ function updateTaskSummary(task) {
   }
   currentExamAnalysisProfile = task.analysis_profile || "evidence_backed";
   const questionOnly = currentExamAnalysisProfile === "question_only";
-  setText("taskPageEyebrow", questionOnly ? "题目解析 · 解析进行中" : "真题解析 · 解析进行中");
+  const taskStateLabel = isActionRequiredTask(task)
+    ? "等待确认"
+    : ({
+      completed: "已完成",
+      completed_with_issues: "结果需复核",
+      failed: "未完成",
+      cancelled: "已取消",
+      paused: "已暂停"
+  }[task.status] || "解析进行中");
+  setText("taskPageEyebrow", `${questionOnly ? "题目解析" : "真题解析"} · ${taskStateLabel}`);
+  const taskPagePresentation = isActionRequiredTask(task)
+    ? {
+      title: "等待你的确认",
+      description: "当前步骤已完成，确认后任务才会继续；离开本页不会丢失已完成内容。",
+      progressLabel: "已完成进度",
+      executionHeading: "等待确认的阶段",
+      state: "needs-input",
+    }
+    : ({
+      failed: {
+        title: "任务未完成",
+        description: "任务已停止，已完成内容和安全检查点均已保留；请查看问题排查与停止位置。",
+        progressLabel: "流程停止位置",
+        executionHeading: "停止阶段",
+        state: "failed",
+      },
+      paused: {
+        title: "任务已暂停",
+        description: "任务不会继续派发新请求，已完成内容和调用预算均已保留；可在确认后继续。",
+        progressLabel: "暂停时进度",
+        executionHeading: "暂停位置",
+        state: "paused",
+      },
+      cancelled: {
+        title: "任务已取消",
+        description: "任务不会继续执行，取消前已保存的内容仍然保留。",
+        progressLabel: "取消时进度",
+        executionHeading: "取消位置",
+        state: "cancelled",
+      },
+      completed: {
+        title: "解析已完成",
+        description: "全部自动阶段已结束，可以前往结果页审阅内容和交付文件。",
+        progressLabel: "任务总体进度",
+        executionHeading: "完成情况",
+        state: "completed",
+      },
+      completed_with_issues: {
+        title: "解析已结束，结果需复核",
+        description: "结果与文件已保留，请按提示完成复核；正式交付包仍遵循现有下载条件。",
+        progressLabel: "任务总体进度",
+        executionHeading: "完成情况",
+        state: "completed-with-issues",
+      },
+    }[task.status] || {
+      title: task.status === "queued" ? "等待开始解析" : "解析进度",
+      description: task.status === "queued"
+        ? "任务已进入队列，可以离开本页；开始执行后这里会显示实时阶段。"
+        : "任务会在后台持续执行，可以离开本页；需要确认或出现问题时，平台会明确提示。",
+      progressLabel: "任务总体进度",
+      executionHeading: task.status === "queued" ? "等待执行" : "正在做什么",
+      state: task.status === "queued" ? "queued" : "running",
+    });
+  setText("taskPageTitle", taskPagePresentation.title);
+  setText("taskPageDescription", taskPagePresentation.description);
+  setText("totalProgressLabel", taskPagePresentation.progressLabel);
+  setText("taskExecutionHeadingText", taskPagePresentation.executionHeading);
+  const taskPage = $("page-task");
+  if (taskPage) taskPage.dataset.taskState = taskPagePresentation.state;
   setText("resultPageEyebrow", questionOnly ? "题目解析 · 审阅与下载" : "真题解析 · 审阅与下载");
   setText("taskSummary", `${statusLabel(task.status)} · ${task.exam_display_name || shortName(task.exam_path)}`);
   applyExamTaskControls(task, task.quality_summary || {});
@@ -1900,10 +2005,11 @@ function renderFinalAcceptanceSummary(task = {}, report = null) {
   const hint = $("finalAcceptanceSummary");
   if (!hint) return;
   const data = report && typeof report === "object" ? report : null;
+  renderResultDeliveryVerdict(task, data);
   if (data?.status === "completed_with_issues") {
-    const warnings = (data.warnings || []).slice(0, 3);
+    const warnings = (data.warnings || []).slice(0, 3).map((item) => publicDiagnosticMessage(item));
     hint.className = "result-card result-warn";
-    hint.innerHTML = `<strong><i class="fas fa-triangle-exclamation"></i> 完成待复核</strong><p>文件可下载，但图片存在明确的科学性或语义风险，不视为最终验收通过。${warnings.length ? `风险：${warnings.map((item) => escapeHtml(item)).join("；")}` : "请查看图件复核报告。"}</p>`;
+    hint.innerHTML = `<strong><i class="fas fa-triangle-exclamation"></i> 可预览，需复核</strong><p>文件可下载，但图片存在明确的科学性或语义风险，不视为最终验收通过。${warnings.length ? `风险：${warnings.map((item) => escapeHtml(item)).join("；")}` : "请查看图件复核报告。"}</p>`;
     return;
   }
   if (dataFormalAcceptancePassed(data)) {
@@ -1912,7 +2018,7 @@ function renderFinalAcceptanceSummary(task = {}, report = null) {
     return;
   }
   if (data?.delivery_ready === false || data?.ok === false) {
-    const issues = (data.issues || []).slice(0, 4);
+    const issues = (data.issues || []).slice(0, 4).map((item) => publicDiagnosticMessage(item));
     hint.className = "result-card result-error";
     hint.innerHTML = `<strong><i class="fas fa-circle-xmark"></i> 最终验收未通过</strong><p>当前结果不能作为正式交付。${issues.length ? `阻断项：${issues.map((item) => escapeHtml(item)).join("；")}` : "请查看质量与诊断。"}</p>`;
     return;
@@ -1967,6 +2073,16 @@ function applyExamTaskControls(task = {}, qualitySummary = {}) {
     deliveryButton.disabled = !deliveryAllowed;
     deliveryButton.setAttribute("aria-disabled", deliveryAllowed ? "false" : "true");
     deliveryButton.title = deliveryAllowed ? "下载解析文件与复核报告" : "完成质量检查后才能下载正式结果";
+    const deliveryHint = $("deliveryPackageHint");
+    if (deliveryHint) {
+      deliveryHint.textContent = deliveryAllowed
+        ? "已通过下载条件检查，可导出正式 Word、PDF 与复核记录。"
+        : task.status === "completed_with_issues"
+          ? "当前可下载上方单个预览文件；处理复核项并通过验收后，正式交付包才会解锁。"
+          : task.status === "completed"
+            ? "请先检查下载条件；验收通过后才能导出正式交付包。"
+            : "任务尚未通过最终验收，正式交付包暂不可用。";
+    }
   }
   renderFinalAcceptanceSummary(task, report);
 }
@@ -2481,7 +2597,7 @@ function showPracticeLoadingTaskId(jobId) {
   setText("practiceLoadingTaskId", value);
   const row = $("practiceLoadingTaskIdRow");
   row?.classList.toggle("hidden", !value);
-  row?.classList.toggle("flex", Boolean(value));
+  if (row && !value) row.open = false;
 }
 
 async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
@@ -2598,7 +2714,7 @@ async function refresh() {
   const versionParts = String(version.version || "").trim().split(/\s+/);
   const appVersion = String(version.app_version || versionParts[0] || "未知").replace(/^v/i, "");
   $("platformVersion").textContent = `v${appVersion}`;
-  $("versionBox").textContent = `应用版本 v${appVersion} · ${version.release_manifest_exists ? "正式发布清单已就绪" : "本地源码预览"}`;
+  $("versionBox").textContent = `应用版本 v${appVersion} · ${version.release_manifest_exists ? "本机数据安全保存" : "本地源码预览"}`;
   await loadApiConfiguration();
   await Promise.all([loadLibraryFiles(), loadPracticeHistory()]);
 }
@@ -3957,6 +4073,11 @@ function openPracticeScopeDrawer() {
 function scrollPracticePanelIntoView(target) {
   if (!target) return;
   const navBottom = document.querySelector(".app-nav")?.getBoundingClientRect().bottom || 90;
+  const targetRect = target.getBoundingClientRect();
+  const visibleTop = navBottom + 16;
+  // Opening a saved task already resets the page to the top. Keep the title
+  // and workflow steps visible when the requested panel is in the first view.
+  if (targetRect.top >= visibleTop && targetRect.top <= window.innerHeight * 0.68) return;
   let documentTop = 0;
   for (let node = target; node; node = node.offsetParent) documentTop += node.offsetTop || 0;
   const top = Math.max(0, documentTop - navBottom - 16);
@@ -5559,12 +5680,12 @@ function renderPracticePlan(plan) {
       <div class="practice-plan-edit-body"><div class="practice-plan-edit-grid">
         <label>题型<select data-plan-field="question_type">${planTypes.map((type) => `<option${type === item.question_type ? " selected" : ""}>${type}</option>`).join("")}</select></label>
         <label>难度<select data-plan-field="difficulty">${planDifficulties.map((level) => `<option${level === item.difficulty ? " selected" : ""}>${level}</option>`).join("")}</select></label>
-        <label class="practice-plan-wide">目标能力<input data-plan-field="target_skill" value="${escapeHtml(item.target_skill || "核心能力")}"></label>
-        <label>变化方式<input data-plan-field="variation_type" value="${escapeHtml(item.variation_type || "")}"></label>
+        <label class="practice-plan-wide">目标能力<textarea class="practice-plan-compact-textarea" rows="2" data-plan-field="target_skill">${escapeHtml(item.target_skill || "核心能力")}</textarea></label>
+        <label class="practice-plan-wide">变化方式<textarea class="practice-plan-compact-textarea" rows="2" data-plan-field="variation_type">${escapeHtml(item.variation_type || "")}</textarea></label>
         <label class="practice-plan-wide">设计意图<textarea rows="2" data-plan-field="design_intent">${escapeHtml(item.design_intent || "")}</textarea></label>
-        <label class="practice-plan-wide">难度实现<input data-plan-difficulty-levers value="${escapeHtml((item.difficulty_levers || []).join("、") || "待补充难度调节方式")}" readonly aria-label="第 ${index + 1} 项难度调节方式"></label>
+        <label class="practice-plan-wide">难度实现<textarea class="practice-plan-compact-textarea" rows="2" data-plan-difficulty-levers readonly aria-label="第 ${index + 1} 项难度调节方式">${escapeHtml((item.difficulty_levers || []).join("、") || "待补充难度调节方式")}</textarea></label>
         <label class="practice-plan-wide">难度依据<textarea data-plan-difficulty-rationale rows="2" readonly aria-label="第 ${index + 1} 项难度依据">${escapeHtml(item.difficulty_rationale || "待补充难度依据")}</textarea></label>
-        <label class="practice-plan-wide">必考知识点<input value="${escapeHtml((item.required_knowledge_points || []).join("、") || "待从绑定来源补齐")}" readonly aria-label="第 ${index + 1} 项必考知识点"></label>
+        <label class="practice-plan-wide">必考知识点<textarea class="practice-plan-compact-textarea" rows="2" readonly aria-label="第 ${index + 1} 项必考知识点">${escapeHtml((item.required_knowledge_points || []).join("、") || "待从绑定来源补齐")}</textarea></label>
         <fieldset class="practice-plan-wide practice-plan-source-editor"><legend>来源绑定</legend>${sourceCatalog.map((source) => {
           const sourceId = String(source.source_question_id || "");
           const refs = item.source_refs || [item.source_question_id];
@@ -9737,10 +9858,10 @@ function updateTaskModelSummary(profile) {
   );
   setText(taskModelControlIds(profile, "image").summary, `${displayProviderName(imageProviderName || "未选择")} / ${imageModel || "未选择模型"}${imageKeyState}`);
   if (profile === "practice" || (profile === "knowledge" && currentPracticeSourceMode === "knowledge")) {
-    setText("practiceCurrentModelBadge", `${displayProviderName(textProviderName || "未选择")} / ${textModel || "未选择模型"}${textKeyState}`);
+    setText("practiceCurrentModelBadge", `${shortTaskModelName(textModel, textProviderName)}${textKeyState}`);
   }
   if (profile === "knowledge") {
-    setText("knowledgeModelSummary", `${displayProviderName(textProviderName || "未选择")} / ${textModel || "未选择模型"}${textKeyState}`);
+    setText("knowledgeModelSummary", `${shortTaskModelName(textModel, textProviderName)}${textKeyState}`);
   }
 }
 
@@ -10086,11 +10207,11 @@ function taskProgressSummary(task) {
   const progress = task?.current_progress || null;
   const percent = taskProgressPercent(task);
   const terminal = {
-    failed: { label: "执行失败", meta: "请查看原因并按建议重试" },
+    failed: { label: "未完成", meta: "请查看停止原因并按建议重试" },
     cancelled: { label: "已取消", meta: "任务已取消，不会继续执行" },
     paused: { label: "已暂停", meta: "任务已暂停，可继续或取消" },
     completed: { label: "已完成", meta: "任务已完成" },
-    completed_with_issues: { label: "完成待复核", meta: "结果已保存，请按提示复核" }
+    completed_with_issues: { label: "结果需复核", meta: "结果已保存，请按提示复核" }
   }[task?.status];
   if (terminal) return { percent, stage: current || task.status, ...terminal };
 
@@ -10178,11 +10299,24 @@ function taskProgressPresentation(task, normalized, progress) {
   if (normalized === "cancelled") {
     return { label: "任务状态", value: "已取消", showBar: false };
   }
+  if (normalized === "needs_input" || isActionRequiredTask(task)) {
+    return { label: "等待操作", value: "确认后继续", showBar: false };
+  }
+  if (task?.is_generation_task && ["completed", "completed_with_issues"].includes(normalized)) {
+    const completion = practiceCompletionContract(task);
+    if (practiceCompletionHas(task, "configuration_blocked") || practiceCompletionHas(task, "generation_incomplete")) {
+      return {
+        label: "生成结果",
+        value: `${completion.generated_count}/${completion.total_count} 题`,
+        showBar: false
+      };
+    }
+  }
   if (normalized === "failed" && !task?.is_generation_task && !task?.is_format_task && (!task?.task_kind || task.task_kind === "exam")) {
     return { label: "流程停止位置", value: `${progress.percent}%`, showBar: true };
   }
   return {
-    label: ["completed", "completed_with_issues"].includes(normalized) ? "完成进度" : normalized === "queued" ? "等待执行" : "当前进度",
+    label: ["completed", "completed_with_issues"].includes(normalized) ? "流程进度" : normalized === "queued" ? "等待执行" : "当前进度",
     value: `${progress.percent}%`,
     showBar: true
   };
@@ -10278,7 +10412,7 @@ function updateTaskManagerStats(tasks) {
     dismissedSignature = localStorage.getItem(FAILED_TASK_FEEDBACK_DISMISS_KEY) || "";
   } catch (_error) {}
   const dismissed = Boolean(failedTasks.length && dismissedSignature === failedTaskSetSignature(failedTasks));
-  $("taskFailedFeedbackBar")?.classList.toggle("hidden", failedTasks.length === 0 || dismissed);
+  $("taskFailedFeedbackBar")?.classList.toggle("hidden", failedTasks.length === 0 || dismissed || activeTaskFilter !== "failed");
   setText("taskFailedFeedbackTitle", `${failedTasks.length} 个失败任务的诊断已自动处理`);
 }
 
@@ -10435,7 +10569,7 @@ function renderTaskManager(tasks = latestTasks) {
   for (const [index, task] of visible.entries()) {
     const normalized = taskDisplayStatus(task);
     const reviewPending = isActionRequiredTask(task);
-    const approvalText = task.error_presentation?.kind === "review_rejected" ? "结构被拒绝 · 待修正" : (isExamStructureReviewTask(task) ? "需确认题目结构" : "需要人工处理");
+    const approvalText = task.error_presentation?.kind === "review_rejected" ? "结构被拒绝 · 待修正" : (isExamStructureReviewTask(task) ? "需确认题目结构" : "等待你的确认");
     const baseStatusMeta = taskStatusMeta(normalized);
     const progress = taskProgressSummary(task);
     const percent = progress.percent;
@@ -10700,16 +10834,12 @@ function renderSystemStatus(data) {
 
   setText("systemHostName", host.name || "当前服务电脑");
   setText("systemPid", host.pid ? `PID ${host.pid}` : "-");
+  setText("systemAccessHost", host.access_host || "本机服务");
   setText("systemUptime", formatElapsedSeconds(service.uptime_seconds));
   setText("systemActiveCount", counts.active ?? counts.running ?? 0);
   setText("systemWaitingCount", `${counts.waiting || counts.queued || 0} / ${counts.warning || 0}`);
   setText("systemIssueCount", issueCount);
-  setText(
-    "systemMonitorSubtitle",
-    host.access_host
-      ? `当前监控地址：${host.access_host}，展示的是这台服务电脑的真实运行记录`
-      : "显示当前打开服务所在电脑的运行状态"
-  );
+  setText("systemMonitorSubtitle", "展示当前服务电脑的实时运行记录");
   setText("systemHealthHeadline", health.headline || healthMeta.label);
   setText("systemHealthDescription", health.errors?.length ? health.errors.join("；") : (healthState === "warning" ? "服务仍在运行，请留意等待时间较长的任务。" : "根据服务、任务和模型的真实运行记录持续更新。"));
   const overview = $("systemHealthOverview");
@@ -11692,7 +11822,7 @@ function filterTasks(filter) {
 }
 
 function updateTaskActiveFilterSummary() {
-  const statusLabels = { all: "全部状态", running: "进行中", queued: "排队中", needs_input: "待人工处理", completed_with_issues: "有待处理项", completed: "已完成", failed: "执行失败", cancelled: "已取消" };
+  const statusLabels = { all: "全部状态", running: "进行中", queued: "排队中", needs_input: "等待我确认", completed_with_issues: "结果需复核", completed: "已完成", failed: "未完成", cancelled: "已取消" };
   const kindLabels = { all: "全部业务", exam: "真题解析", practice: "按题出题", knowledge: "知识点出题", format: "格式审查" };
   setText("taskActiveFilterSummary", `当前显示：${kindLabels[activeTaskKind] || "全部业务"} · ${statusLabels[activeTaskFilter] || "全部状态"}`);
 }
@@ -11801,7 +11931,8 @@ function renderTaskDiagnostics(data) {
   if (!panel) return;
   panel.classList.remove("hidden");
   const summary = data.summary || {};
-  const statusText = data.error ? `${summary.stage || data.primary_stage_label}：${data.error}` : `${summary.stage || data.primary_stage_label} · ${data.status}`;
+  const publicStage = publicDiagnosticStage(summary.stage || data.primary_stage_label);
+  const statusText = data.error ? `${publicStage}：${publicDiagnosticMessage(data.error)}` : `${publicStage} · ${statusLabel(data.status)}`;
   $("diagnosticsSummary").innerHTML = `
     <strong>${escapeHtml(summary.title || "任务日志摘要")}</strong>
     <span>${escapeHtml(statusText)}</span>
@@ -11810,7 +11941,7 @@ function renderTaskDiagnostics(data) {
   $("diagnosticsRecommendations").innerHTML = renderDiagnosticsList(
     "建议排查动作",
     data.recommendations || [],
-    (item) => escapeHtml(item)
+    (item) => escapeHtml(publicDiagnosticMessage(item))
   );
   $("diagnosticsQuestions").innerHTML = renderDiagnosticsList(
     "涉及题号",
@@ -11827,7 +11958,7 @@ function renderTaskDiagnostics(data) {
     data.issues || [],
     (item) => {
       const qid = item.question_id ? `${item.question_id} · ` : "";
-      return `<strong>${escapeHtml(item.stage_label || item.stage)}</strong><span>${escapeHtml(qid + publicDiagnosticMessage(item.message, item.question_id))}</span>`;
+      return `<strong>${escapeHtml(publicDiagnosticStage(item.stage_label || item.stage))}</strong><span>${escapeHtml(qid + publicDiagnosticMessage(item.message, item.question_id))}</span>`;
     },
     "当前没有明确问题项"
   );
@@ -11845,6 +11976,17 @@ function renderTaskDiagnostics(data) {
   );
 }
 
+function publicDiagnosticStage(stage = "") {
+  const text = String(stage || "").trim();
+  const mappings = {
+    figure_quality_unattended_gate: "答案配图检查",
+    answer_coverage: "答案完整性检查",
+    content_quality: "内容质量检查",
+    final_acceptance: "最终交付检查",
+  };
+  return mappings[text] || stageLabel(text) || "任务检查";
+}
+
 function publicDiagnosticMessage(message = "", questionId = "") {
   let text = String(message || "").trim();
   if (questionId) {
@@ -11852,9 +11994,22 @@ function publicDiagnosticMessage(message = "", questionId = "") {
     const prefix = [`${normalizedQuestionId}:`, `${normalizedQuestionId}：`].find((candidate) => text.startsWith(candidate));
     if (prefix) text = text.slice(prefix.length).trim();
   }
+  const mappings = [
+    [/figure_quality_unattended_gate/gi, "答案配图需要人工复核"],
+    [/Figure artifact validation failed after bounded repairs/gi, "答案配图在自动修复后仍未通过质量检查"],
+    [/answer_coverage[^；。]*evidence_ids is empty/gi, "部分题目缺少可追溯依据"],
+    [/evidence_ids is empty/gi, "缺少可追溯依据"],
+    [/schema type error at evidence_ids(?:\.\d+)?/gi, "教材依据数据格式不正确"],
+    [/qa_[a-z0-9_-]+/gi, "对应题目"],
+    [/issue 级别问题/gi, "阻断问题"],
+    [/warning/gi, "提示项"],
+  ];
+  for (const [pattern, replacement] of mappings) text = text.replace(pattern, replacement);
   return text
     .replace(/no retrieval candidates/gi, "未找到可用的教材候选依据")
-    .replace(/retrieval audit failed/gi, "教材候选依据检索审查未通过");
+    .replace(/retrieval audit failed/gi, "教材候选依据检索审查未通过")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function loadTaskDiagnostics(taskId = activeTaskId) {
@@ -13074,33 +13229,39 @@ async function taskFiles() {
 
 const finalOutputFileSpecs = [
   {
-    label: "最终解析 Word",
+    label: "解析 Word",
     description: "Word 文档",
     icon: "fa-file-word",
-    match: (file) => file.kind === "output" && file.name === "answer_book.docx"
+    group: "primary",
+    match: (file) => file.kind === "output" && file.name === "answer_book.docx",
+    fallback: (file) => file.kind === "output" && file.name === "answer_book_review_candidate.docx"
   },
   {
     label: "解析 PDF",
     description: "PDF 文档",
     icon: "fa-file-pdf",
+    group: "primary",
     match: (file) => file.kind === "output" && file.name === "answer_book.pdf"
   },
   {
     label: "模型调用汇总",
     description: "Markdown 文档",
     icon: "fa-list-check",
+    group: "support",
     match: (file) => file.kind === "output" && file.name === "模型调用汇总.md"
   },
   {
     label: "题目依据排查",
     description: "排查表格",
     icon: "fa-table",
+    group: "support",
     match: (file) => file.name === "题目依据排查.csv"
   },
   {
     label: "审查报告文件",
     description: "Word 文档",
     icon: "fa-clipboard-check",
+    group: "support",
     match: (file) => file.kind === "output" && file.name === "question_review.docx",
     fallback: (file) => file.name === "question_review.csv"
   },
@@ -13108,6 +13269,7 @@ const finalOutputFileSpecs = [
     label: "作图题全流程图片",
     description: "Word 文档",
     icon: "fa-images",
+    group: "support",
     match: (file) => file.kind === "output" && file.name === "作图题全流程图片.docx"
   }
 ];
@@ -13124,6 +13286,7 @@ function finalOutputFiles(files) {
 function createFinalFileRow(entry) {
   const row = document.createElement("a");
   row.className = "file-row final-file-row";
+  row.dataset.fileGroup = entry.group || "primary";
   row.href = entry.file.download_url;
   row.title = entry.file.path || "";
   row.download = entry.file.name || entry.label;
@@ -13140,12 +13303,16 @@ function createFinalFileRow(entry) {
 function renderFiles(files) {
   const list = $("fileList");
   const resultList = $("resultFileList");
+  const supportList = $("resultSupportFileList");
+  const supportDetails = $("resultSupportFilesDetails");
   if (list) list.innerHTML = "";
   if (resultList) resultList.innerHTML = "";
+  if (supportList) supportList.innerHTML = "";
   const visibleFiles = finalOutputFiles(files || []);
   if (!visibleFiles.length) {
     if (list) list.textContent = "暂无最终输出文件";
     if (resultList) resultList.textContent = "暂无最终输出文件";
+    supportDetails?.classList.add("hidden");
     setText("metricFileCount", "0");
     const hint = $("finalResultHint");
     if (hint) {
@@ -13156,18 +13323,27 @@ function renderFiles(files) {
     }
     return 0;
   }
+  const primaryFiles = visibleFiles.filter((entry) => entry.group !== "support");
+  const supportFiles = visibleFiles.filter((entry) => entry.group === "support");
   for (const entry of visibleFiles) {
     const row = createFinalFileRow(entry);
     if (list) list.appendChild(row.cloneNode(true));
-    if (resultList) resultList.appendChild(row);
+    if (entry.group === "support") {
+      if (supportList) supportList.appendChild(row);
+    } else if (resultList) {
+      resultList.appendChild(row);
+    }
   }
-  setText("metricFileCount", String(visibleFiles.length));
+  if (resultList && !primaryFiles.length) resultList.textContent = "暂无主要预览文件";
+  supportDetails?.classList.toggle("hidden", supportFiles.length === 0);
+  setText("resultSupportFileCount", supportFiles.length ? `${supportFiles.length} 个` : "");
+  setText("metricFileCount", String(primaryFiles.length));
   const hint = $("finalResultHint");
   if (hint) {
     hint.className = "result-card result-info";
-    hint.innerHTML = `<strong>预览文件已读取</strong><p>这些单文件用于查看和复核，不代表正式交付。确认验收状态后，请使用“导出正式交付包”获取统一交付结果。</p>`;
+    hint.innerHTML = `<strong>预览文件已读取</strong><p>这些单文件用于查看和复核，不代表正式交付。确认验收状态后，请使用“下载正式交付包”获取统一交付结果。</p>`;
   }
-  return visibleFiles.length;
+  return primaryFiles.length;
 }
 
 function syncResultFiles() {
@@ -13176,14 +13352,31 @@ function syncResultFiles() {
     return clone;
   });
   const resultList = $("resultFileList");
+  const supportList = $("resultSupportFileList");
+  const supportDetails = $("resultSupportFilesDetails");
   if (!resultList) return;
   resultList.innerHTML = "";
+  if (supportList) supportList.innerHTML = "";
   if (!files.length) {
     resultList.textContent = "还没有读取文件。任务完成后点击“查看文件”。";
+    supportDetails?.classList.add("hidden");
     return;
   }
-  for (const file of files) resultList.appendChild(file);
-  setText("metricFileCount", String(files.length));
+  let supportCount = 0;
+  let primaryCount = 0;
+  for (const file of files) {
+    if (file.dataset.fileGroup === "support") {
+      supportList?.appendChild(file);
+      supportCount += 1;
+    } else {
+      resultList.appendChild(file);
+      primaryCount += 1;
+    }
+  }
+  if (!primaryCount) resultList.textContent = "暂无主要预览文件";
+  supportDetails?.classList.toggle("hidden", supportCount === 0);
+  setText("resultSupportFileCount", supportCount ? `${supportCount} 个` : "");
+  setText("metricFileCount", String(primaryCount));
 }
 
 function resultBlock(questions, label) {
@@ -13271,7 +13464,20 @@ function renderQuestionDetail(question) {
   const hideTopAnswer = shouldHideTopAnswer(question);
   const isTermExplanation = isTermExplanationQuestion(question);
   const analysisTitle = isShortAnswerQuestion(question) ? "答案" : "解析";
-  const directAnswerHtml = `<section class="answer-section"><h4>答案</h4><p>${practiceMarkdown(question.answer_summary || question.answer || "暂无答案")}</p></section>`;
+  const calculationAnswerAvailable = !isTermExplanation && isCalculationQuestion(question) && Boolean(solution?.text);
+  const outlineItems = [
+    ["result-question-original", "题目", true],
+    ["result-question-answer", "答案", !hideTopAnswer],
+    ["result-question-knowledge", "知识点", true],
+    ["result-question-evidence", "教材引用", true],
+    ["result-question-analysis", "解析", !isTermExplanation && !isShortAnswerQuestion(question)],
+    ["result-question-answer", "答案", isTermExplanation || isShortAnswerQuestion(question) || calculationAnswerAvailable],
+    ["result-question-options", "选项分析", !isTermExplanation && Boolean(optionAnalysis?.text)],
+    ["result-question-tips", "易错点", !isTermExplanation && Boolean(tips?.text)],
+    ["result-question-formulas", "公式", !isTermExplanation && Boolean((question.formulas || []).length)],
+    ["result-question-quality", "质量提示", Boolean(issueRows.length)]
+  ].filter(([, , visible]) => visible);
+  const directAnswerHtml = `<section id="result-question-answer" class="answer-section"><h4>答案</h4><p>${practiceMarkdown(question.answer_summary || question.answer || "暂无答案")}</p></section>`;
   detail.innerHTML = `
     <div class="question-detail-header">
       <h3>第 ${escapeHtml(question.display_number || question.number || question.index)} 题：${escapeHtml(question.type || "题目")}</h3>
@@ -13281,32 +13487,44 @@ function renderQuestionDetail(question) {
         <button class="text-button" type="button" data-result-question-feedback="${escapeHtml(question.question_id || "")}"><i class="fas fa-bug"></i>反馈此题</button>
       </div>
     </div>
-    <section class="original-question-block">
+    <nav class="result-question-outline" aria-label="本题内容导航">
+      <strong>本题内容</strong>
+      <div>${outlineItems.map(([target, label]) => `<button type="button" data-result-anchor="${target}">${label}</button>`).join("")}</div>
+    </nav>
+    <section id="result-question-original" class="original-question-block">
       <h4>题目</h4>
       <p>${practiceMarkdown(question.stem || "暂无原题内容")}</p>
     </section>
-    ${hideTopAnswer ? "" : `<section class="answer-section">
+    ${hideTopAnswer ? "" : `<section id="result-question-answer" class="answer-section">
       <h4>答案</h4>
       <p>${practiceMarkdown(question.answer_summary || question.answer || "暂无答案")}</p>
     </section>`}
-    <section class="knowledge-section">
+    <section id="result-question-knowledge" class="knowledge-section">
       <h4><i class="fas fa-lightbulb"></i>考查知识点</h4>
       ${renderTagList(question.knowledge_points || question.key_terms, "未提取到知识点")}
     </section>
-    <section class="evidence-section">
+    <section id="result-question-evidence" class="evidence-section">
       <h4><i class="fas fa-book-open"></i>教材引用</h4>
       <p>${practiceMarkdown(evidence?.text || (question.evidence_ids || []).join("、") || "暂无教材引用")}</p>
     </section>
-    ${isTermExplanation ? directAnswerHtml : `<section class="analysis-section">
+    ${isTermExplanation ? directAnswerHtml : `<section id="${isShortAnswerQuestion(question) ? "result-question-answer" : "result-question-analysis"}" class="analysis-section">
       <h4>${analysisTitle}</h4>
       <p>${practiceMarkdown(analysis?.text || "暂无解析内容")}</p>
     </section>`}
-    ${!isTermExplanation && isCalculationQuestion(question) && solution?.text ? `<section class="analysis-section"><h4>答案</h4><p>${practiceMarkdown(solution.text)}</p></section>` : ""}
-    ${!isTermExplanation && optionAnalysis?.text ? `<section class="analysis-section"><h4>选项分析</h4><p>${practiceMarkdown(optionAnalysis.text)}</p></section>` : ""}
-    ${!isTermExplanation && tips?.text ? `<section class="analysis-section"><h4>易错点及注意事项</h4><p>${practiceMarkdown(tips.text)}</p></section>` : ""}
-    ${!isTermExplanation && (question.formulas || []).length ? `<section class="formula-section"><h4>相关公式</h4>${(question.formulas || []).slice(0, 8).map((formula) => `<div><span class="practice-math">\\(${escapeHtml(formula.latex || "")}\\)</span><span>${escapeHtml(formula.source_note || "")}</span></div>`).join("")}</section>` : ""}
-    ${issueRows.length ? `<section class="quality-inline-section"><h4>质量提示</h4>${issueRows.map((issue) => `<p class="${issue.severity === "warning" ? "warn" : "issue"}">${escapeHtml(issue.message || "")}</p>`).join("")}</section>` : ""}
+    ${calculationAnswerAvailable ? `<section id="result-question-answer" class="analysis-section"><h4>答案</h4><p>${practiceMarkdown(solution.text)}</p></section>` : ""}
+    ${!isTermExplanation && optionAnalysis?.text ? `<section id="result-question-options" class="analysis-section"><h4>选项分析</h4><p>${practiceMarkdown(optionAnalysis.text)}</p></section>` : ""}
+    ${!isTermExplanation && tips?.text ? `<section id="result-question-tips" class="analysis-section"><h4>易错点及注意事项</h4><p>${practiceMarkdown(tips.text)}</p></section>` : ""}
+    ${!isTermExplanation && (question.formulas || []).length ? `<section id="result-question-formulas" class="formula-section"><h4>相关公式</h4>${(question.formulas || []).slice(0, 8).map((formula) => `<div><span class="practice-math">\\(${escapeHtml(formula.latex || "")}\\)</span><span>${escapeHtml(formula.source_note || "")}</span></div>`).join("")}</section>` : ""}
+    ${issueRows.length ? `<section id="result-question-quality" class="quality-inline-section"><h4>质量提示</h4>${issueRows.map((issue) => `<p class="${issue.severity === "warning" ? "warn" : "issue"}">${escapeHtml(issue.message || "")}</p>`).join("")}</section>` : ""}
   `;
+  detail.querySelectorAll("[data-result-anchor]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = detail.querySelector(`#${button.dataset.resultAnchor}`);
+      if (!target) return;
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    });
+  });
   detail.querySelector("[data-result-question-feedback]")?.addEventListener("click", (event) => {
     submitSupportFeedback("question", { question_id: question.question_id || "", task_id: activeTaskId || "" }, event.currentTarget);
   });
@@ -13325,7 +13543,8 @@ function renderTaskResultView(data) {
   const checkpointRedriveCount = Number(metrics.checkpoint_redrive_count || 0);
   setText("metricQuestionCount", metrics.question_count ?? "--");
   setText("metricCoveredCount", metrics.covered_count ?? metrics.answered_count ?? "--");
-  setText("metricReviewCount", Number(metrics.issue_count || 0) + Number(metrics.warning_count || 0));
+  const reviewCount = Number(metrics.issue_count || 0) + Number(metrics.warning_count || 0);
+  setText("metricReviewCount", data?.task?.status === "completed_with_issues" ? Math.max(1, reviewCount) : reviewCount);
   const subtitle = $("resultPageSubtitle");
   if (subtitle) {
     const checkpointSummary = checkpointReusableCount + checkpointRedriveCount
@@ -13393,7 +13612,7 @@ async function finalAcceptance() {
     const deliveryReady = dataDeliveryReady(data);
     setVisual(
       "runVisualResult",
-      formallyAccepted ? "最终验收通过" : (deliveryReady ? "完成待复核" : "最终验收未通过"),
+      formallyAccepted ? "最终验收通过" : (deliveryReady ? "可预览，需复核" : "最终验收未通过"),
       formallyAccepted ? "可以导出交付包。" : (deliveryReady ? "可下载含风险报告的交付包，但不视为验收通过。" : `发现 ${(data.issues || []).length} 个阻断问题，请先处理。`),
       formallyAccepted ? "ok" : (deliveryReady ? "warn" : "error")
     );

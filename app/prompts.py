@@ -15,6 +15,7 @@ from .capabilities.catalog import (
     schema_prompt_catalog,
 )
 from .drawing_code import question_drawing_mode
+from .image_orchestration import ensure_generation_image_label_language_requirement
 from .omml_input import strip_structured_math_metadata
 from .question_requirements import answer_figure_required
 from .question_scores import confirmed_score_from_question, normalize_score
@@ -568,10 +569,10 @@ def build_answer_draft_prompt(
         user_content = [{"type": "text", "text": user_text}, *image_parts]
     else:
         user_content = user_text
-    return [
+    return ensure_generation_image_label_language_requirement([
         {"role": "system", "content": SYSTEM_PROMPT if include_textbook_evidence else QUESTION_ONLY_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
-    ]
+    ])
 
 
 def build_answer_fragment_prompt(question: dict[str, Any], evidence: list[dict[str, Any]]) -> list[dict[str, str]]:

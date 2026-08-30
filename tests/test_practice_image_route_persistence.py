@@ -9,7 +9,7 @@ def test_compact_practice_request_preserves_atomic_image_route():
     compact = _compact_request(
         {
             "provider": "lingsuan_google",
-            "model": "gemini-3.7-flash-medium",
+            "model": "gemini-3.7-flash",
             "image_orchestration": "main_model_tool_loop",
             "image_provider": "lingsuan_image",
             "image_model": "gpt-image-2",

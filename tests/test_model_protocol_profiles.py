@@ -69,7 +69,7 @@ def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
             "qwen-vl-ocr",
         },
         "lingsuan_openai": {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"},
-        "lingsuan_google": set(providers["lingsuan_google"].model_options),
+        "lingsuan_google": {"gemini-3.6-flash", "gemini-3.5-flash"},
     }
     for provider_name, provider in providers.items():
         enabled = {

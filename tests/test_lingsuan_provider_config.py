@@ -116,9 +116,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             (
-                "gemini-3.7-flash-low",
-                "gemini-3.7-flash-medium",
-                "gemini-3.7-flash-high",
+                "gemini-3.7-flash",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
             ),
@@ -128,42 +126,53 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         self.assertEqual("gemini-3.6-flash", google.vision_model)
         self.assertTrue(all(provider_model_supports_vision(openai, model) for model in openai.model_options))
         self.assertTrue(all(provider_model_supports_vision(google, model) for model in google.model_options))
-        self.assertTrue(
-            all(
-                tool_loop_supported(OpenAICompatibleClient(google), google, model)
-                for model in google.model_options
-            )
-        )
+        self.assertFalse(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.7-flash"))
+        self.assertTrue(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.6-flash"))
+        self.assertTrue(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.5-flash"))
         self.assertTrue(set(openai.model_options).isdisjoint(google.model_options))
 
-    def test_stale_local_google_model_arrays_gain_gemini_37_without_losing_saved_defaults(self) -> None:
+    def test_stale_local_google_thinking_aliases_migrate_to_single_gemini_37(self) -> None:
         import json
 
         from app.settings import list_providers
 
         raw = json.loads((ROOT / "config" / "providers.example.json").read_text(encoding="utf-8"))
         google = raw["providers"]["lingsuan_google"]
-        google["default_model"] = "gemini-3.6-flash"
-        google["vision_model"] = "gemini-3.6-flash"
+        google["default_model"] = "gemini-3.7-flash-high"
+        google["vision_model"] = "gemini-3.7-flash-medium"
         for key in ("model_options", "vision_model_options"):
-            google[key] = ["gemini-3.6-flash", "gemini-3.5-flash"]
-        for model in ("gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"):
-            google["model_capabilities"].pop(model, None)
-            google["model_profiles"].pop(model, None)
-
-        with patch("app.settings.load_provider_config_file", return_value=raw):
-            provider = list_providers()["lingsuan_google"]
-
-        self.assertEqual("gemini-3.6-flash", provider.default_model)
+            google[key] = [
+                "gemini-3.7-flash-low",
+                "gemini-3.7-flash-medium",
+                "gemini-3.7-flash-high",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+            ]
         for model, level in (
             ("gemini-3.7-flash-low", "low"),
             ("gemini-3.7-flash-medium", "medium"),
             ("gemini-3.7-flash-high", "high"),
         ):
-            self.assertIn(model, provider.model_options)
-            self.assertIn(model, provider.vision_model_options)
-            self.assertEqual(("text", "vision"), provider.model_capabilities[model])
-            self.assertEqual(level, provider.model_profiles[model]["thinking_minimum"])
+            google["model_capabilities"][model] = ["text", "vision"]
+            google["model_profiles"][model] = {"thinking_minimum": level}
+
+        with patch("app.settings.load_provider_config_file", return_value=raw):
+            provider = list_providers()["lingsuan_google"]
+
+        self.assertEqual("gemini-3.7-flash", provider.default_model)
+        self.assertEqual("gemini-3.7-flash", provider.vision_model)
+        self.assertEqual(
+            ("gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"),
+            provider.model_options,
+        )
+        self.assertEqual(provider.model_options, provider.vision_model_options)
+        self.assertEqual(("text", "vision"), provider.model_capabilities["gemini-3.7-flash"])
+        self.assertEqual("minimal", provider.model_profiles["gemini-3.7-flash"]["thinking_minimum"])
+        self.assertFalse(provider.model_profiles["gemini-3.7-flash"].get("supports_tool_calls"))
+        for legacy_model in ("gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"):
+            self.assertNotIn(legacy_model, provider.model_options)
+            self.assertNotIn(legacy_model, provider.model_capabilities)
+            self.assertNotIn(legacy_model, provider.model_profiles)
 
     def test_legacy_lingsuan_provider_resolves_to_openai_only(self) -> None:
         from app.settings import get_provider

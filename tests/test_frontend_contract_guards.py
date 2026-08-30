@@ -254,7 +254,7 @@ def test_partial_practice_status_does_not_claim_everything_completed() -> None:
     contracts = (ROOT / "app" / "task_contracts.py").read_text(encoding="utf-8")
     assert '"generation_incomplete"' in contracts
     assert '"label": "存在未完成题目"' in contracts
-    assert 'completed_with_issues: { icon: "fas fa-triangle-exclamation", label: "完成待复核" }' in APP_JS
+    assert 'completed_with_issues: { icon: "fas fa-triangle-exclamation", label: "结果需复核" }' in APP_JS
 
 
 def test_practice_completion_contract_drives_all_public_surfaces() -> None:
@@ -263,7 +263,7 @@ def test_practice_completion_contract_drives_all_public_surfaces() -> None:
     assert "completion.display_label" in APP_JS
     assert "completion.action_label" in APP_JS
     assert "completion.primary.icon" in APP_JS
-    assert "完成有待处理项" in (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    assert "结果需复核" in (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 
 
 def test_review_candidate_download_prefers_explicit_candidate_filename() -> None:
@@ -387,7 +387,7 @@ def test_task_manager_uses_persisted_public_title_without_model_or_paths() -> No
 
 
 def test_task_manager_terminal_copy_and_unknown_network_statistics_are_truthful() -> None:
-    assert 'failed: { label: "执行失败", meta: "请查看原因并按建议重试" }' in APP_JS
+    assert 'failed: { label: "未完成", meta: "请查看停止原因并按建议重试" }' in APP_JS
     assert '["failed", "cancelled", "paused", "completed", "completed_with_issues"].includes(normalized)' in APP_JS
     assert '"模型请求次数统计中"' in APP_JS
     assert '"模型请求次数暂无数据"' in APP_JS
@@ -397,6 +397,9 @@ def test_task_manager_terminal_copy_and_unknown_network_statistics_are_truthful(
     assert "function taskProgressPresentation(task, normalized, progress)" in APP_JS
     assert 'return { label: "调用状态", value: "未发起调用", showBar: false };' in APP_JS
     assert 'return { label: "任务状态", value: "已取消", showBar: false };' in APP_JS
+    assert 'return { label: "等待操作", value: "确认后继续", showBar: false };' in APP_JS
+    assert 'label: "生成结果"' in APP_JS
+    assert 'value: `${completion.generated_count}/${completion.total_count} 题`' in APP_JS
     assert 'normalized === "failed" && !task?.is_generation_task && !task?.is_format_task' in APP_JS
     assert 'return { label: "流程停止位置", value: `${progress.percent}%`, showBar: true };' in APP_JS
     assert 'progressPresentation.showBar ? `<div class="manager-progress-track">' in APP_JS
@@ -420,6 +423,21 @@ def test_failed_exam_uses_real_stage_and_hides_internal_diagnostics_by_default()
     assert 'id="diagnosticsTechnicalDetails"' in INDEX_HTML
     assert '查看技术详情（文件路径与日志事件）' in INDEX_HTML
     assert '未找到可用的教材候选依据' in APP_JS
+    assert '答案配图需要人工复核' in APP_JS
+    assert 'id="resultDeliveryVerdict"' in INDEX_HTML
+    assert 'title = "可正式交付"' in APP_JS
+    assert 'id="resultSupportFilesDetails"' in INDEX_HTML
+    assert 'answer_book_review_candidate.docx' in APP_JS
+    assert 'map((item) => publicDiagnosticMessage(item))' in APP_JS
+    assert 'id="deliveryPackageHint"' in INDEX_HTML
+    assert 'id="finalAcceptanceBtn" class="secondary-button"' in INDEX_HTML
+    assert 'id="deliveryPackageBtn" class="primary-button"' in INDEX_HTML
+    assert '>下载正式交付包</button>' in INDEX_HTML
+    assert 'setText("metricFileCount", String(primaryFiles.length));' in APP_JS
+    assert 'setText("metricFileCount", String(primaryCount));' in APP_JS
+    assert 'class="result-question-outline"' in APP_JS
+    assert 'data-result-anchor=' in APP_JS
+    assert 'taskStateLabel = isActionRequiredTask(task)' in APP_JS
 
 
 def test_mobile_navigation_keeps_all_critical_actions_visible_and_targetable() -> None:
@@ -703,6 +721,30 @@ def test_monitor_prioritizes_health_and_collapses_infrequent_settings() -> None:
     assert "function syncMonitorAdvancedSummary()" in APP_JS
     assert "#page-monitor #systemMonitorPanel { order: 1; }" in PLATFORM_THEME_CSS
     assert "#page-monitor #systemMonitorPanel > .monitor-advanced-settings" in PLATFORM_THEME_CSS
+    assert '<h3><i class="fas fa-gauge-high"></i>服务概况</h3>' in INDEX_HTML
+    assert 'id="systemAccessHost"' in INDEX_HTML
+    assert 'setText("systemAccessHost", host.access_host || "本机服务");' in APP_JS
+    assert 'setText("systemMonitorSubtitle", "展示当前服务电脑的实时运行记录");' in APP_JS
+
+
+def test_desktop_operational_pages_preserve_balanced_layouts() -> None:
+    assert "@media (max-width: 1100px)" in PLATFORM_THEME_CSS
+    assert "#page-keys .key-provider-card.expanded {\n  grid-column: 1 / -1;" in PLATFORM_THEME_CSS
+    assert "#page-textbook .file-card-grid:has(> .library-option:only-child)" in PLATFORM_THEME_CSS
+    assert "#page-exam #taskTextbookChecklist:has(> .library-option:only-child)" in PLATFORM_THEME_CSS
+    assert "@media (min-width: 821px)" in WORD_FORMAT_HTML
+    assert ".file-picker { min-height: 100px; }" in WORD_FORMAT_HTML
+    assert ".submit-row { margin-top: 18px; margin-bottom: -18px;" in WORD_FORMAT_HTML
+
+
+def test_practice_review_pages_keep_context_and_show_long_fields() -> None:
+    assert "targetRect.top >= visibleTop && targetRect.top <= window.innerHeight * 0.68" in APP_JS
+    assert '<textarea id="practicePlanGoalInput" rows="2" maxlength="300"></textarea>' in INDEX_HTML
+    assert 'class="practice-plan-compact-textarea" rows="2" data-plan-field="target_skill"' in APP_JS
+    assert 'class="practice-plan-wide">变化方式<textarea class="practice-plan-compact-textarea" rows="2" data-plan-field="variation_type"' in APP_JS
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in PLATFORM_THEME_CSS
+    assert "#page-tasks .task-manager-needs_input .task-manager-progress" in PLATFORM_THEME_CSS
+    assert 'setText("knowledgeModelSummary", `${shortTaskModelName(textModel, textProviderName)}${textKeyState}`);' in APP_JS
 
 
 def test_practice_question_actions_have_visible_labels() -> None:
@@ -744,6 +786,23 @@ def test_task_statistics_are_the_only_status_filter_and_secondary_actions_collap
     assert '.task-manager-item.task-menu-open' in PLATFORM_THEME_CSS
     assert '.task-manager-list:has(.task-card-more[open])' in PLATFORM_THEME_CSS
     assert '当前显示：${kindLabels[activeTaskKind]' in APP_JS
+
+
+def test_terminal_task_page_uses_static_state_copy_and_loading_ids_are_disclosed() -> None:
+    assert 'id="taskPageDescription"' in INDEX_HTML
+    assert 'id="totalProgressLabel"' in INDEX_HTML
+    assert 'id="taskExecutionHeadingText"' in INDEX_HTML
+    assert 'title: "任务未完成"' in APP_JS
+    assert 'executionHeading: "停止阶段"' in APP_JS
+    assert 'title: "任务已暂停"' in APP_JS
+    assert 'executionHeading: "暂停位置"' in APP_JS
+    assert 'activeTaskFilter !== "failed"' in APP_JS
+    assert '<summary>查看任务标识</summary>' in INDEX_HTML
+    assert 'row?.classList.toggle("flex"' not in APP_JS
+    assert '#page-task[data-task-state="failed"] .progress-card' in PLATFORM_THEME_CSS
+    assert '#page-task .task-page-title.inline-title > .icon-button' in PLATFORM_THEME_CSS
+    assert 'grid-template-columns: 44px minmax(0, 1fr);' in PLATFORM_THEME_CSS
+    assert '#page-task .task-page-title.inline-title > div' in PLATFORM_THEME_CSS
 
 
 def test_completed_exam_with_issues_prioritizes_review_result() -> None:

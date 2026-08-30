@@ -22,11 +22,12 @@ STRUCTURED_ANSWER_MAX_TOKENS = 24576
 DRAWING_CODE_MAX_TOKENS = 32768
 FIGURE_AUXILIARY_MAX_TOKENS = 16384
 BAILIAN_QWEN37_MAX = "qwen3.7-max"
-LINGSUAN_GEMINI37_FLASH_MODELS = (
+LINGSUAN_GEMINI37_FLASH_MODEL = "gemini-3.7-flash"
+LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS = frozenset({
     "gemini-3.7-flash-low",
     "gemini-3.7-flash-medium",
     "gemini-3.7-flash-high",
-)
+})
 BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED = (
     BAILIAN_QWEN37_MAX,
     "qwen3.7-max-2026-05-20",
@@ -230,7 +231,8 @@ def list_providers() -> dict[str, ProviderConfig]:
         ).strip()
         if not supports_image_generation:
             image_model = ""
-        vision_model = str(item.get("vision_model", "") or item.get("default_model", "")).strip()
+        default_model = str(item.get("default_model", "")).strip()
+        vision_model = str(item.get("vision_model", "") or default_model).strip()
         supports_vision = bool(item.get("supports_vision", False) or ("vl" in vision_model.lower()) or vision_model.lower().endswith("v") or "vision" in vision_model.lower())
         if not supports_vision:
             vision_model = ""
@@ -263,23 +265,32 @@ def list_providers() -> dict[str, ProviderConfig]:
             json_mode_unsupported_models = list(
                 dict.fromkeys([*json_mode_unsupported_models, *BAILIAN_QWEN37_MAX_JSON_MODE_UNSUPPORTED])
             )
-        # Older installations may have copied the previous model arrays into
-        # providers.local.json. Keep newly supported vendor models selectable
-        # without overwriting the user's saved key or explicit default.
+        # Normalize the retired low/medium/high aliases into the same single
+        # model shape used by Gemini 3.6. Older local overlays must not restore
+        # three separate choices after an application update.
         if name == "lingsuan_google":
-            model_options = list(dict.fromkeys([*LINGSUAN_GEMINI37_FLASH_MODELS, *model_options]))
-            vision_model_options = list(dict.fromkeys([*LINGSUAN_GEMINI37_FLASH_MODELS, *vision_model_options]))
-            for model, level, label in zip(
-                LINGSUAN_GEMINI37_FLASH_MODELS,
-                ("low", "medium", "high"),
-                ("低推理", "中推理", "高推理"),
-            ):
-                model_option_labels.setdefault(model, f"Gemini 3.7 Flash（{label}）")
-                model_capabilities.setdefault(model, ("text", "vision"))
-                profile = model_profiles.setdefault(model, {})
-                profile.setdefault("api_protocol", "chat_completions")
-                profile.setdefault("thinking_minimum", level)
-                profile.setdefault("omit_parameters", ["temperature", "top_p", "top_k"])
+            model_options = list(dict.fromkeys([
+                LINGSUAN_GEMINI37_FLASH_MODEL,
+                *(model for model in model_options if model not in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS),
+            ]))
+            vision_model_options = list(dict.fromkeys([
+                LINGSUAN_GEMINI37_FLASH_MODEL,
+                *(model for model in vision_model_options if model not in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS),
+            ]))
+            for legacy_model in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS:
+                model_option_labels.pop(legacy_model, None)
+                model_capabilities.pop(legacy_model, None)
+                model_profiles.pop(legacy_model, None)
+            model_option_labels.setdefault(LINGSUAN_GEMINI37_FLASH_MODEL, "Gemini 3.7 Flash")
+            model_capabilities.setdefault(LINGSUAN_GEMINI37_FLASH_MODEL, ("text", "vision"))
+            profile = model_profiles.setdefault(LINGSUAN_GEMINI37_FLASH_MODEL, {})
+            profile.setdefault("api_protocol", "chat_completions")
+            profile.setdefault("thinking_minimum", "minimal")
+            profile.setdefault("omit_parameters", ["temperature", "top_p", "top_k"])
+            if default_model in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS:
+                default_model = LINGSUAN_GEMINI37_FLASH_MODEL
+            if vision_model in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS:
+                vision_model = LINGSUAN_GEMINI37_FLASH_MODEL
             for gemini_model in model_options:
                 if not str(gemini_model).lower().startswith("gemini-"):
                     continue
@@ -310,7 +321,7 @@ def list_providers() -> dict[str, ProviderConfig]:
             base_url=base_url,
             api_key=api_key,
             api_key_env=env_name,
-            default_model=str(item.get("default_model", "")),
+            default_model=default_model,
             model_options=tuple(model_options),
             model_option_labels=model_option_labels,
             allow_custom_model=bool(item.get("allow_custom_model", False)),

@@ -959,12 +959,20 @@ def track_model_call(
         raise
     outcome = "succeeded"
     error_text = ""
+    provider_error: dict[str, str] = {}
+    provider_request_id = ""
     result_ledger_error: ModelExecutionLedgerError | None = None
     try:
         yield record
     except BaseException as exc:
         outcome = _model_error_kind(exc)
         error_text = _safe_text(exc, 300)
+        provider_error = {
+            key: _safe_text(getattr(exc, f"provider_error_{key}", ""), 300)
+            for key in ("code", "type", "param", "message")
+            if getattr(exc, f"provider_error_{key}", "")
+        }
+        provider_request_id = _safe_text(getattr(exc, "provider_request_id", ""), 200)
         try:
             vars(exc).setdefault("model_invocation_id", invocation_id)
             vars(exc).setdefault("model_call_id", call_id)
@@ -999,6 +1007,8 @@ def track_model_call(
                 elapsed_ms=elapsed_ms,
                 error_kind=outcome if outcome != "succeeded" else "",
                 error=error_text,
+                provider_error=provider_error,
+                provider_request_id=provider_request_id,
                 usage={
                     key: final_record.get(key)
                     for key in (

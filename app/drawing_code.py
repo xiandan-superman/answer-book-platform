@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities.catalog import capability_policy_contributions
+from .image_orchestration import (
+    GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT,
+    ensure_generation_image_label_language_requirement,
+)
 from .llm_client import OpenAICompatibleClient, parse_json_content
 from .prompt_registry import prompt_contract
 from .question_types import explicit_question_type, iter_leaf_question_parts
@@ -1167,7 +1171,7 @@ def build_drawing_code_prompt(
             "Code must define exactly one function: draw(output_path: str) -> None.",
             "Use matplotlib Agg backend compatible code. You may import matplotlib.pyplot, numpy, math, textwrap.",
             "Do not read files, use network, shell, subprocess, OS APIs, eval, exec, or open.",
-            "Use Chinese for explanatory figure text: titles, axis names, legends, and annotations.",
+            GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT,
             "Keep variables, units, indices, and other standard scientific notation in their conventional form; do not translate established symbols into prose.",
             "Do not use color as an information channel. The figure must be readable after black-and-white printing.",
             "Use black, white, and gray only; distinguish categories with line styles, markers, hatch patterns, direct labels, vertical offsets, or subplots.",
@@ -1185,10 +1189,10 @@ def build_drawing_code_prompt(
     image_parts = _drawing_image_parts(question) if include_images else []
     if image_parts:
         user_content = [{"type": "text", "text": user_content}, *image_parts]
-    return [
+    return ensure_generation_image_label_language_requirement([
         {"role": "system", "content": "你是专业考试作图代码生成器，按 <JSON> 元数据 + <FILE> 源码块协议输出。"},
         {"role": "user", "content": user_content},
-    ]
+    ])
 
 
 def generate_drawing_code_spec(client: OpenAICompatibleClient, question: dict[str, Any], fragment: dict[str, Any], *, model: str, previous_issues: list[str] | None = None) -> dict[str, Any]:

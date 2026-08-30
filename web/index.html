@@ -825,10 +825,13 @@
                   <span><i class="fas fa-clock"></i><b id="practiceLoadingElapsed">刚刚开始</b></span>
                   <span><i class="fas fa-circle-check"></i>当前内容已保留</span>
                 </div>
-                <div id="practiceLoadingTaskIdRow" class="hidden items-center justify-center gap-2 text-[12px]">
-                  <span>任务 ID：<code id="practiceLoadingTaskId"></code></span>
-                  <button id="practiceLoadingCopyTaskId" type="button" class="text-button">复制</button>
-                </div>
+                <details id="practiceLoadingTaskIdRow" class="technical-details practice-loading-technical hidden text-[12px]">
+                  <summary>查看任务标识</summary>
+                  <div class="flex items-center justify-center gap-2">
+                    <span>任务 ID：<code id="practiceLoadingTaskId"></code></span>
+                    <button id="practiceLoadingCopyTaskId" type="button" class="text-button">复制</button>
+                  </div>
+                </details>
                 <p>可以离开当前页面，任务会继续；稍后从任务列表返回即可。</p>
               </div>
             </div>
@@ -853,7 +856,7 @@
               <header class="practice-plan-review-head mb-4">
                 <div class="practice-plan-review-kicker"><p id="practicePlanReviewMode" class="text-[11px] font-bold uppercase tracking-wide text-[var(--brand-primary)]">第一阶段完成 · 蓝图审查</p><span id="practicePlanCountBadge">0 项待审查</span></div>
                 <h3 id="practicePlanGoal" class="mt-1 text-[18px] font-bold text-[var(--brand-foreground)]">训练蓝图</h3>
-                <label class="practice-plan-goal-editor">训练目标<input id="practicePlanGoalInput" type="text" maxlength="300"></label>
+                <label class="practice-plan-goal-editor">训练目标<textarea id="practicePlanGoalInput" rows="2" maxlength="300"></textarea></label>
                 <p class="practice-plan-edit-hint"><i class="fas fa-pen-to-square"></i>下方内容可直接修改；若整体方向不合理，可重新生成整份蓝图。</p>
               </header>
               <section id="practicePlanCandidateActions" class="hidden mb-4 rounded-[var(--brand-radius-md)] border border-[#bfdbfe] bg-[#eff6ff] p-3 text-[13px] text-[#1e3a5f]"><strong>新版蓝图候选已生成</strong><p class="mt-1">原蓝图仍保留，请选择采用新版或恢复原版。</p><div class="mt-2 flex gap-2"><button id="practicePlanAdoptCandidateBtn" type="button" class="primary-button">采用新版</button><button id="practicePlanKeepOriginalBtn" type="button" class="secondary-button">保留原版</button></div></section>
@@ -1287,17 +1290,17 @@
             <div class="check-row"><span><i id="networkCheckIcon" class="fas fa-circle-notch fa-spin"></i>网络连通性</span><strong id="networkSummary">检测中...</strong></div>
             <div class="check-row"><span><i id="modelConfigCheckIcon" class="fas fa-circle-question"></i>API Key 与模型配置</span><strong id="modelConfigSummary">检测中...</strong></div>
             <div class="check-row"><span><i id="modelCallCheckIcon" class="fas fa-circle-question"></i>当前模型实际调用</span><strong id="modelCallSummary">尚未测试</strong></div>
-            <div class="check-row"><span><i id="pydanticShadowCheckIcon" class="fas fa-eye"></i>Pydantic 影子观察</span><strong id="pydanticShadowSummary">正在读取...</strong></div>
+            <details class="technical-details env-observation-details">
+              <summary><i class="fas fa-chart-line"></i>运行质量观察</summary>
+              <div class="check-row"><span><i id="pydanticShadowCheckIcon" class="fas fa-eye"></i>数据兼容性观察（Pydantic）</span><strong id="pydanticShadowSummary">正在读取...</strong></div>
+              <pre id="pydanticShadowReport">加载中...</pre>
+            </details>
           </div>
           <div id="environmentVisualResult" class="status-result result-info"><i class="fas fa-circle-notch fa-spin"></i><strong>正在检查运行环境...</strong></div>
           <div id="environmentRepairBox" class="env-repair-box hidden"></div>
           <details class="technical-details reference-extra">
             <summary>查看技术详情</summary>
             <pre id="environmentBox">加载中...</pre>
-          </details>
-          <details class="technical-details reference-extra">
-            <summary>查看影子观察报告</summary>
-            <pre id="pydanticShadowReport">加载中...</pre>
           </details>
         </article>
 
@@ -1481,18 +1484,19 @@
         </div>
         <article id="textbook-existing" class="reference-card textbook-card">
           <input id="textbooksDir" type="hidden">
-          <div class="textbook-format-note">
-            <strong><i class="fas fa-circle-info"></i> 推荐教材格式</strong>
-            <p>新流程推荐上传 MinerU 教材 ZIP 包，包内应包含 content_list.json、images 文件夹，建议同时保留 full.md、layout.json、origin.pdf。这样图、表、公式可以被定位，视觉模型也能读取对应图片。</p>
-            <p>当前库里的旧 JSON、PDF、Word、Markdown、TXT 仍可用，是因为程序还能读取其中的文字内容做检索和引用；但这些格式通常缺少教材图片文件或版面结构，遇到必须看图、复杂表格、公式截图的证据时只能作为文字证据使用，不能等同于完整教材包。</p>
-          </div>
+          <details class="technical-details textbook-format-note textbook-guidance-details">
+            <summary><i class="fas fa-circle-info"></i>教材格式说明</summary>
+            <p><strong>推荐：</strong>上传 MinerU 教材 ZIP 包，可完整保留图、表、公式和版面位置。</p>
+            <p>包内应包含 content_list.json 和 images 文件夹；建议同时保留 full.md、layout.json、origin.pdf。旧 JSON、PDF、Word、Markdown、TXT 仍可用于文字检索，但无法保证完整读取图片和复杂版面。</p>
+          </details>
           <div id="textbookMergeBox" class="merge-box hidden"></div>
           <div id="textbookChecklist" class="file-card-grid"></div>
-          <section id="sharedTextbookLibraryPanel" class="shared-library-panel">
+          <details id="sharedTextbookLibraryPanel" class="shared-library-panel shared-library-details">
+            <summary><i class="fas fa-share-nodes"></i>高级：连接共享教材库</summary>
             <div class="shared-library-heading">
               <div>
-                <h3><i class="fas fa-share-nodes"></i>共享教材库</h3>
-                <p>从 Tailnet 内的教材库主机下载已验证版本。下载完成后，教材与索引保存在本机，后续任务不依赖教材库主机在线。</p>
+                <h3>共享教材库</h3>
+                <p>从已配置的团队教材库下载验证版本。下载后教材与索引保存在本机。</p>
               </div>
               <button id="refreshSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-rotate"></i>刷新目录</button>
             </div>
@@ -1512,7 +1516,7 @@
               </div>
               <button id="publishSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-upload"></i>发布当前已选教材</button>
             </details>
-          </section>
+          </details>
         </article>
         <article id="textbook-upload" class="reference-card hidden">
           <div class="textbook-format-note upload-note">
@@ -1612,14 +1616,14 @@
         <button class="icon-button" type="button" onclick="goToPage('exam')" title="返回选择真题"><i class="fas fa-arrow-left"></i></button>
         <div>
           <p id="taskPageEyebrow" class="task-page-eyebrow">真题解析 · 解析进行中</p>
-          <h2>解析进度</h2>
-          <p>任务会在后台持续执行，可以离开本页；需要确认或出现问题时，平台会明确提示。</p>
+          <h2 id="taskPageTitle">解析进度</h2>
+          <p id="taskPageDescription">任务会在后台持续执行，可以离开本页；需要确认或出现问题时，平台会明确提示。</p>
         </div>
       </div>
 
       <article class="progress-card">
         <div class="progress-heading">
-          <span>任务总体进度</span>
+          <span id="totalProgressLabel">任务总体进度</span>
           <strong id="totalProgressText">--</strong>
         </div>
         <div class="total-progress"><span id="totalProgressBar"></span></div>
@@ -1646,7 +1650,7 @@
           <div id="taskStepList" class="task-step-list"></div>
         </article>
         <article class="panel-card">
-          <h3><i class="fas fa-wave-square text-green"></i>正在做什么</h3>
+          <h3 id="taskExecutionHeading"><i class="fas fa-wave-square text-green"></i><span id="taskExecutionHeadingText">正在做什么</span></h3>
           <label class="reference-extra">当前任务 ID</label>
           <input id="taskIdInput" class="reference-extra" placeholder="创建任务后自动填入，也可以从任务列表选择">
           <label class="inline-check reference-extra"><input id="renderCheck" type="checkbox" checked>生成 PDF/PNG 渲染复核</label>
@@ -1720,11 +1724,18 @@
         <div class="action-row"><button class="primary-button" type="button" onclick="goToPage('tasks')">选择任务<i class="fas fa-arrow-right"></i></button></div>
       </section>
       <div id="resultContent" class="result-content hidden">
+      <section id="resultDeliveryVerdict" class="delivery-verdict delivery-verdict-pending" role="status" aria-live="polite">
+        <span class="delivery-verdict-icon"><i class="fas fa-circle-notch fa-spin"></i></span>
+        <div>
+          <strong id="resultDeliveryTitle">正在确认交付状态</strong>
+          <p id="resultDeliveryMessage">平台正在核对任务状态、质量检查和正式文件。</p>
+        </div>
+      </section>
       <div class="metric-grid result-summary-grid">
         <article><strong id="metricQuestionCount">--</strong><span>题目总数</span></article>
         <article><strong id="metricCoveredCount">--</strong><span>已完成题目</span></article>
-        <article><strong id="metricReviewCount">--</strong><span>需要复核</span></article>
-        <article><strong id="metricFileCount">--</strong><span>可用文件</span></article>
+        <article><strong id="metricReviewCount">--</strong><span>复核提示</span></article>
+        <article><strong id="metricFileCount">--</strong><span>主要文件</span></article>
       </div>
       <div class="tab-row result-tabs" role="tablist" aria-label="解析结果内容">
         <button id="tab-result-analysis" class="tab-button active" role="tab" aria-selected="true" type="button" onclick="switchResultTab('analysis')"><i class="fas fa-file-alt"></i>解析内容</button>
@@ -1736,16 +1747,22 @@
           <div id="resultQuestionList" class="result-question-list"></div>
         </aside>
         <div class="question-detail-pane">
-          <div id="resultQuestionDetail" class="question-detail-empty">任务完成后，这里会显示原题和解析内容。</div>
           <div class="result-download-strip">
             <div class="action-row primary-actions">
-              <button id="finalAcceptanceBtn" type="button">检查下载条件</button>
-              <button id="deliveryPackageBtn" type="button">下载解析结果</button>
+              <button id="finalAcceptanceBtn" class="secondary-button" type="button">检查下载条件</button>
+              <button id="deliveryPackageBtn" class="primary-button" type="button">下载正式交付包</button>
             </div>
+            <small id="deliveryPackageHint" class="delivery-package-hint">任务通过最终验收后可导出正式交付包。</small>
             <div id="finalAcceptanceSummary" class="result-card muted-card">最终验收状态会显示在这里。</div>
             <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示当前任务实际生成的解析文件和审查报告。</div>
             <div id="resultFileList" class="file-list compact-file-list"></div>
+            <details id="resultSupportFilesDetails" class="result-support-files hidden">
+              <summary><i class="fas fa-folder-open"></i>复核与过程文件 <span id="resultSupportFileCount"></span></summary>
+              <p>仅在复核依据、模型调用或作图过程时使用，不属于主要交付文件。</p>
+              <div id="resultSupportFileList" class="file-list compact-file-list"></div>
+            </details>
           </div>
+          <div id="resultQuestionDetail" class="question-detail-empty">任务完成后，这里会显示原题和解析内容。</div>
         </div>
       </section>
       <section id="result-review" class="result-panel hidden">
@@ -1819,15 +1836,15 @@
             <i class="fas fa-clock"></i>
           </button>
           <button type="button" class="task-stat-card" data-filter="needs_input" onclick="filterTasks('needs_input')">
-            <div><strong id="taskStatNeedsInput">0</strong><span>待人工处理</span></div>
+            <div><strong id="taskStatNeedsInput">0</strong><span>等待我确认</span></div>
             <i class="fas fa-user-check"></i>
           </button>
           <button type="button" class="task-stat-card" data-filter="completed_with_issues" onclick="filterTasks('completed_with_issues')">
-            <div><strong id="taskStatIssues">0</strong><span>完成有待处理项</span></div>
+            <div><strong id="taskStatIssues">0</strong><span>结果需复核</span></div>
             <i class="fas fa-triangle-exclamation"></i>
           </button>
           <button type="button" class="task-stat-card" data-filter="failed" onclick="filterTasks('failed')">
-            <div><strong id="taskStatFailed">0</strong><span>执行失败</span></div>
+            <div><strong id="taskStatFailed">0</strong><span>未完成</span></div>
             <i class="fas fa-circle-exclamation"></i>
           </button>
           <button type="button" class="task-stat-card" data-filter="completed" onclick="filterTasks('completed')">
@@ -1902,8 +1919,8 @@
         <article class="system-monitor-panel" id="systemMonitorPanel">
           <div class="system-monitor-header">
             <div>
-              <h3><i class="fas fa-server"></i>运行监控</h3>
-              <p id="systemMonitorSubtitle">显示当前打开服务所在电脑的运行状态</p>
+              <h3><i class="fas fa-gauge-high"></i>服务概况</h3>
+              <p id="systemMonitorSubtitle">展示当前服务电脑的实时运行记录</p>
             </div>
             <button id="refreshSystemBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新运行状态</button>
           </div>
@@ -1914,14 +1931,20 @@
               <p id="systemHealthDescription">将根据服务、任务和模型的实际运行记录生成结论。</p>
             </div>
           </div>
-          <div class="system-monitor-grid">
-            <div><span>运行电脑</span><strong id="systemHostName">读取中</strong></div>
-            <div><span>服务进程</span><strong id="systemPid">-</strong></div>
+          <div class="system-monitor-grid system-monitor-summary-grid">
             <div><span>服务运行时长</span><strong id="systemUptime">-</strong></div>
             <div><span>当前任务</span><strong id="systemActiveCount">0</strong></div>
             <div><span>等待 / 较慢</span><strong id="systemWaitingCount">0 / 0</strong></div>
             <div><span>需要处理</span><strong id="systemIssueCount">0</strong></div>
           </div>
+          <details class="system-technical-details system-runtime-details">
+            <summary>服务技术信息</summary>
+            <div class="system-runtime-grid">
+              <div><span>运行电脑</span><strong id="systemHostName">读取中</strong></div>
+              <div><span>服务进程</span><strong id="systemPid">-</strong></div>
+              <div><span>访问地址</span><strong id="systemAccessHost">读取中</strong></div>
+            </div>
+          </details>
           <div id="systemServiceNotice" class="system-service-notice hidden"></div>
           <div class="system-health-sections">
             <section class="system-model-health">

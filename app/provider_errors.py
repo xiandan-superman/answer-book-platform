@@ -14,6 +14,7 @@ class ProviderErrorInfo:
     status_code: int | None = None
     retryable: bool = False
     requires_configuration: bool = False
+    failure_state: str = "item_failed"
 
 
 def _contains(text: str, *markers: str) -> bool:
@@ -59,6 +60,7 @@ def classify_provider_error(
         *,
         retryable: bool = False,
         requires_configuration: bool = False,
+        failure_state: str = "item_failed",
     ) -> ProviderErrorInfo:
         return ProviderErrorInfo(
             kind=kind,
@@ -68,6 +70,7 @@ def classify_provider_error(
             status_code=status,
             retryable=retryable,
             requires_configuration=requires_configuration,
+            failure_state=failure_state,
         )
 
     missing_key = re.fullmatch(
@@ -82,6 +85,7 @@ def classify_provider_error(
             "当前平台没有可用的 API Key，因此模型请求尚未发出。",
             "请前往 API 配置填写并验证对应平台的 Key，然后重试当前任务。",
             requires_configuration=True,
+            failure_state="configuration_blocked",
         )
 
     if (
@@ -105,6 +109,7 @@ def classify_provider_error(
             "模型服务未通过身份验证，API Key 可能无效、已过期或已被停用。",
             "请在 API 配置中重新填写并测试该平台的 Key，验证成功后再重试。",
             requires_configuration=True,
+            failure_state="configuration_blocked",
         )
 
     quota_markers = (
@@ -130,7 +135,7 @@ def classify_provider_error(
             "模型服务额度不足",
             "当前账号的调用额度、余额或免费配额可能已经用完。",
             "请在服务商控制台检查用量与账单，补充额度或更换可用平台后再继续。",
-            requires_configuration=True,
+            failure_state="route_blocked",
         )
 
     concurrency_markers = (
@@ -153,6 +158,7 @@ def classify_provider_error(
             "当前同时运行的模型请求过多，服务商暂时无法接收新请求。",
             action,
             retryable=True,
+            failure_state="service_degraded",
         )
 
     rate_markers = (
@@ -177,6 +183,7 @@ def classify_provider_error(
             "当前调用频率超过了服务商允许的速率，服务暂时拒绝了本次请求。",
             action,
             retryable=True,
+            failure_state="service_degraded",
         )
 
     if _contains(lowered, "error code: 1010", "cloudflare 1010"):
@@ -185,6 +192,7 @@ def classify_provider_error(
             "模型网关拒绝了当前客户端",
             "请求已到达服务商网关，但被其客户端兼容性或安全策略拦截。",
             "请更新平台后重新测试；若仍出现，请联系服务商确认 API 客户端接入策略。",
+            failure_state="route_blocked",
         )
 
     if status == 403 or _contains(lowered, "permission denied", "forbidden", "access denied", "permission_denied"):
@@ -193,7 +201,7 @@ def classify_provider_error(
             "模型访问权限不足",
             "当前账号或 API Key 没有所选模型、接入点或所在区域的调用权限。",
             "请在服务商控制台开通对应权限，或在 API 配置中改用已获授权的模型。",
-            requires_configuration=True,
+            failure_state="route_blocked",
         )
 
     if (
@@ -216,6 +224,7 @@ def classify_provider_error(
             "服务商未找到当前模型或 Endpoint（接入点），也可能是该模型尚未开通。",
             "请核对模型名称、Endpoint 和可用区域，并在连接测试通过后再重试。",
             requires_configuration=True,
+            failure_state="configuration_blocked",
         )
 
     length_markers = (
@@ -258,24 +267,33 @@ def classify_provider_error(
             "请检查输入中可能触发限制的内容，调整表述或资料范围后再试。",
         )
 
-    invalid_markers = (
+    explicit_invalid_markers = (
         "invalid argument",
         "invalid_argument",
         "invalid parameter",
         "invalid_parameter",
         "unsupported parameter",
         "unknown parameter",
-        "bad request",
         "参数无效",
         "参数不支持",
     )
-    if status in {400, 422} or _contains(lowered, *invalid_markers):
+    if _contains(lowered, *explicit_invalid_markers):
         return result(
             "provider_invalid_request",
             "模型请求参数不兼容",
             "当前模型不接受本次请求中的部分参数或内容格式。",
             "请重新测试所选模型；若仍失败，请切换模型或检查该模型的参数配置。",
             requires_configuration=True,
+            failure_state="configuration_blocked",
+        )
+
+    if status in {400, 422}:
+        return result(
+            "provider_ambiguous_invalid_request",
+            "模型请求暂未完成",
+            "模型网关拒绝了本次请求，但没有返回可定位的错误字段。",
+            "平台会缩小到当前题目重试或保留为待重试；其他题目不受影响。",
+            failure_state="service_degraded",
         )
 
     timeout_markers = (
@@ -301,6 +319,7 @@ def classify_provider_error(
             message,
             "请检查网络后从当前步骤重试；若反复出现，可减少单次生成量或稍后再试。",
             retryable=True,
+            failure_state="service_degraded",
         )
 
     network_markers = (
@@ -327,6 +346,7 @@ def classify_provider_error(
             "平台与模型服务之间的网络连接未建立或在传输过程中中断。",
             "请确认本机网络正常后重试；若持续发生，请稍后再试或切换服务商。",
             retryable=True,
+            failure_state="service_degraded",
         )
 
     overload_markers = (
@@ -346,6 +366,7 @@ def classify_provider_error(
             "服务商当前负载较高，暂时无法处理本次请求。",
             "请稍后从当前步骤重试；无需重新提交已经完成的内容。",
             retryable=True,
+            failure_state="service_degraded",
         )
 
     if status == 409:
@@ -355,6 +376,7 @@ def classify_provider_error(
             "服务商暂时无法在当前状态下处理这次请求。",
             "请稍后重试当前步骤；若持续出现，请重新测试所选模型。",
             retryable=True,
+            failure_state="service_degraded",
         )
 
     if status is not None and 500 <= status <= 599:
@@ -364,6 +386,7 @@ def classify_provider_error(
             "服务商在处理请求时发生内部错误，本次任务未能完成。",
             "请稍后从当前步骤重试；若持续出现，可切换模型或服务商。",
             retryable=True,
+            failure_state="service_degraded",
         )
 
     return result(
@@ -372,4 +395,5 @@ def classify_provider_error(
         "模型服务未能完成本次请求，具体原因暂时无法确定。",
         "请先检查 API 配置和模型服务状态，再重试当前步骤；若仍失败，请检查网络或切换服务商。",
         retryable=True,
+        failure_state="service_degraded",
     )

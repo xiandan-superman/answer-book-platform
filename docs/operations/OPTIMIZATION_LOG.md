@@ -33,6 +33,136 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260830-13｜桌面操作型标题与监控层级统一
+
+- status: verified
+- scope: 桌面端真题解析任务详情页标题区、运行监控首屏信息层级
+- changed: 将带返回操作的任务标题区改为“返回按钮—标题内容”的左对齐双栏结构，与结果页、配置页的操作型页头保持一致；运行监控卡片内的重复标题改为“服务概况”，将访问地址收进默认折叠的服务技术信息。
+- trigger: 用户截图与 1440×1000 实页复现显示，原任务页把返回箭头计入居中 flex 组，导致标题文字被向右挤偏；继续逐页检查发现运行监控在相邻层级重复显示“运行监控”，并在首屏直接暴露技术访问地址。
+- invariants: 仅修改桌面端 CSS 排版和对应静态合同测试；不修改返回事件、页面导航、任务状态、检查点、下载权限、模型调用、计费、用户数据或移动端；`delivery_ready=true` 的需复核任务继续允许下载正式交付包。
+- do_not_regress: 带返回操作的桌面任务页不得继续使用“箭头 + 居中标题”的混合语法；返回控件必须与左对齐标题形成清晰的一组；页面标题与首张内容卡不得重复使用同一标题，技术地址不应抢占普通用户首屏。
+- verification: 锁定 Python 3.11 完整本地门禁通过：pytest 与覆盖率轮次均为 1914 passed、16 deselected，整库分支覆盖率 70%，版本一致性、Python 编译、公式转换、许可证、项目完整度、Ruff 和 Mypy 全部通过。首轮覆盖率测试发现模型并发上限用例依赖 25ms 调度窗，改为有界同步后覆盖率下连续 6 次定向通过，最终整轮通过；生产并发逻辑未改动。未发起真实付费模型或生图请求；Git 索引源码包、隔离启动、远程门禁、公开附件和稳定更新源待后续核验。
+
+### OPT-20260830-12｜准备 0.9.37 生成恢复与桌面体验版本
+
+- status: verified
+- scope: 版本元数据、用户发布说明、模糊 400 恢复、灵算 Gemini 3.7 配置、生成图片语言合同、桌面任务/审查/交付页和源码 ZIP 发布候选
+- changed: 将 `APP_VERSION`、`VERSION`、发布清单和 `CHANGELOG.md` 同步升级为 0.9.37；发布说明覆盖错误四态与单题恢复、Gemini 3.7 单选迁移、中文生成图标注合同，以及桌面任务状态、蓝图审查、正式交付和长页布局修复；将模型并发上限测试的 25ms 调度窗改为有界双请求重叠同步，避免覆盖率仪器下的假阴性。
+- trigger: 用户确认本地实现后要求推送新版本，并明确不部署用户机；本地 `main` 尚为 v0.9.36，需把已验证的同一批未发布改动一并冻结为新补丁版。
+- invariants: 只由受保护的 `main` 自动工作流创建标签和公开附件；不连接或部署用户机；不因模糊 400 全局阻断或静默换模型；无后缀 Gemini 3.7 未实测工具能力不得冒充已验证；源码包不得包含 API Key、任务、教材、日志、输出或本地配置。
+- do_not_regress: 不得人工创建或推送标签；不得遗漏未跟踪的回归测试；必须在推送前跑完锁定 Python 3.11 完整门禁、从 Git 索引打包并反向验证、隔离数据目录启动；必须核验远程提交、自动标签、公开 ZIP/SHA256 和稳定更新源后才能宣布完成。
+- verification: 锁定 Python 3.11 完整本地门禁通过：pytest 与覆盖率轮次均为 1914 passed、16 deselected，整库分支覆盖率 70%，版本一致性、Python 编译、公式转换、许可证、项目完整度、Ruff 和 Mypy 全部通过。首轮覆盖率测试发现模型并发上限用例依赖 25ms 调度窗，改为有界同步后覆盖率下连续 6 次定向通过，最终整轮通过；生产并发逻辑未改动。40 个待发布文件的高风险凭据、私钥、本机路径和用户机地址扫描 0 命中。Git 索引源码包包含 387 个白名单文件，反向验证 0 问题；解压后使用独立数据目录启动，`/api/version` 返回 0.9.37、首页 HTTP 200，随后正常停止。未发起真实付费模型或生图请求；远程门禁、公开附件和稳定更新源待推送后核验。
+
+### OPT-20260830-11｜异常任务状态与任务管理首屏降噪
+
+- status: verified
+- scope: 桌面端任务管理、真题解析失败/暂停/取消/等待确认详情、模拟出题后台加载标识
+- changed: 失败诊断横幅只在“未完成”筛选中出现，并压缩状态统计、筛选与多选工具的纵向占用；任务详情按终止或等待状态切换页头、说明、总体进度标签和阶段标题，失败与暂停使用静态状态配色；模拟出题加载页将完整任务 ID 折叠到“查看任务标识”。
+- trigger: 1440×1000 实页审查发现全部任务首屏被与当前筛选无关的失败诊断横幅和多层工具占用，失败详情仍提示任务会持续执行、使用运行中蓝紫进度和“正在做什么”，加载页直接暴露完整内部任务 ID。
+- invariants: 不修改任务状态、进度计算、失败原因、检查点、继续/取消/重试动作、生成请求、质量判断、下载权限、模型调用、计费或用户数据；`delivery_ready=true` 的需复核任务继续允许下载正式交付包；不调整移动端。
+- do_not_regress: 失败、暂停、取消和等待确认页面不得使用“仍在持续执行”的运行中语义；终止态进度不得伪装成活动动画；技术任务标识默认不应抢占普通用户视线；失败诊断提示不得在无关筛选中长期占据首屏。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py tests/test_practice_redesign.py` 172 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js` 通过；1440×1000 浏览器复验全部任务、未完成筛选和失败任务详情，确认全部任务首屏不再显示失败横幅、任务列表提前进入首屏，失败详情显示“任务未完成 / 流程停止位置”及静态停止态配色；当前无真实 running/queued/paused 任务，未执行移动端或真实模型调用。
+
+### OPT-20260830-10｜灵算 Gemini 3.7 Flash 统一为单一路由
+
+- status: verified
+- scope: 灵算 Google 模型配置、旧本地配置迁移、模型能力登记、模型选择与主模型工具能力守卫
+- changed: 将 `gemini-3.7-flash-low/medium/high` 三个公开选项统一为一个 `gemini-3.7-flash`，采用与 3.6/3.5 相同的 Chat Completions、`thinking_minimum=minimal` 及采样参数省略规则；加载旧 `providers.local.json` 时删除三个旧别名，并将旧默认模型和视觉模型迁移到无后缀模型；能力表不继承旧别名的工具调用验证结论。
+- trigger: 用户要求 Gemini 3.7 Flash 与 3.6 Flash 使用相同的单模型选择逻辑，不再把推理深度显示为三个模型。
+- invariants: 不修改灵算 API Key、3.6/3.5 模型路由及现有用户数据；不得把旧别名的真实调用证据转移给尚未实测的无后缀路由；无后缀路由未完成真实工具探测前，不得开启主模型自主生图工具循环；旧历史记录保持可读。
+- do_not_regress: 旧本地覆盖配置不得重新显示 low/medium/high 三项；旧默认/视觉模型不得迁移成不存在的值；界面与 API 只能公开一个 Gemini 3.7 Flash 选项；不得伪造无后缀路由的结构化输出、工具调用或任务质量验证状态。
+- verification: `python3 -m pytest -q tests/test_lingsuan_provider_config.py tests/test_model_capability_registry.py tests/test_google_ai_provider.py tests/test_practice_image_route_persistence.py tests/test_model_protocol_profiles.py` 40 passed；`python3 -m pytest -q` 1913 passed、16 deselected；两个 JSON 配置通过 `python3 -m json.tool`，能力文档通过生成器同步，`git diff --check` 通过；未发起真实灵算模型调用，无后缀路由仍标记待验证。
+
+### OPT-20260830-09｜生成阶段图片文字语言统一
+
+- status: verified
+- scope: 真题/题目解析单题与批量答案生成、审查与 DOCX 回修、作图代码生成/修复、主模型图片工具修复、按题与知识点生题及题图修复、共用答案片段辅助入口
+- changed: 新增一个共享且幂等的主模型输入注入器，仅在生成或修改用户内容的调用中要求图片标题、说明和自然语言标注与题目语言一致，中文题优先简体中文，同时保留数学符号、字母标记、公式、单位和专业缩写；JSON、纯文本与多模态消息均在当前请求中最多注入一次，修复/再生成仍保留该要求；相关提示词合同升级为 v2。
+- trigger: 中文用户的生成图偶发无必要的英文标题；用户要求在主模型生成答案/题目时直接写清要求，失败后主模型修改或再生成时同样保留，且覆盖生题、解析和共用辅助工具。
+- invariants: 不增加 OCR、图片验收、生成后审查或额外模型调用；不要求每题必须生图；不修改材料识别、蓝图规划、语义审查、连接测试、模型路由、推理强度、图片像素或黑白打印规则。
+- do_not_regress: 不得把该要求扩展为全局 system 提示词或后置硬审查；同一模型请求已有等价要求时不得重复追加；修复或再生成不得丢失该要求；不得翻译或改写必要的专业符号、公式、单位和缩写。
+- verification: 生成、回修、幂等去重、多模态保留、练习生成/题图修复与非生成阶段隔离定向回归 248 passed；受影响文件 Ruff、`py_compile`、新增共享模块与提示词注册表 Mypy、公式转换、第三方声明、77 文件项目完整性与 `git diff --check` 通过；完整门禁的 Python 编译和版本一致性通过，全量 pytest 为 1912 passed、1 failed、16 deselected，唯一失败是本轮前已存在的灵算 Google `gemini-3.7-flash` 未完成公开配置/能力表同步，与本变更路径无关；未发起真实计费模型或生图请求。
+
+### OPT-20260830-08｜出题审查页上下文与长文本排版修复
+
+- status: verified
+- scope: 桌面端任务管理、按题出题蓝图审查、知识点出题入口与范围确认
+- changed: 等待确认任务卡移除重复的分散进度三段；打开已保存的范围/蓝图审查任务时，首屏可见面板不再触发自动滚动；训练目标、目标能力、变化方式、难度实现和必考知识点改为可换行文本框，蓝图编辑桌面网格改为两列并让长字段占满整行；知识点入口只显示可读模型简称。
+- trigger: 1440×1000 实页审查发现任务卡提示横跨三处且重复，任务管理进入审查页后停在约 349px 的页面中段，蓝图长文本被单行输入框截断且三列网格产生半页空洞，知识点入口暴露并截断原始模型 ID。
+- invariants: 不修改任务状态、确认条件、生成请求、蓝图内容、模型选择、下载权限、质量判断、调用次数、计费或用户数据；`delivery_ready=true` 的需复核任务继续允许下载正式交付包；不调整移动端。
+- do_not_regress: 从任务管理打开中间审查页不得跳过标题和步骤上下文；长段落不得再使用只可横向查看的单行控件；蓝图长字段不得无理由只占半页；普通入口不得暴露原始模型 ID；等待确认卡不得重复四次表达相同状态。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_practice_redesign.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py` 171 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js` 与 `git diff --check` 通过；1440×1000 浏览器复验任务管理、按题蓝图、知识点入口和知识点范围页，从任务管理打开两类审查页 scrollY 均为 0，长字段完整换行且模型摘要为“Gemini 3.6 Flash”；未执行移动端、真实确认或模型调用。
+
+### OPT-20260830-07｜桌面操作页空洞与首屏排版修复
+
+- status: verified
+- scope: API Key 配置、运行监控、Word 格式审查、教材管理与真题材料选择的桌面端布局
+- changed: API 平台展开卡改为横跨双列；运行监控只在 1100px 以下退化为单列；Word 工具压缩纯纵向留白并让 44px 主操作完整进入 1000px 高首屏；单本教材在教材管理和材料选择页使用受控宽度居中展示。
+- trigger: 1440×1000 实页审查发现 API 展开态右侧留下半屏空洞，监控页因 1500px 断点过早单列产生纵向空白，Word 工具主按钮位于首屏之外，单本教材被孤立在三列网格左侧。
+- invariants: 只修改桌面端样式，不修改任务状态、质量判断、下载权限、按钮事件、文件选择、教材索引、模型调用、计费或用户数据；`delivery_ready=true` 的需复核任务继续允许下载正式交付包；不调整移动端。
+- do_not_regress: 常规桌面宽度不得把可并列的监控空状态过早堆叠；展开式编辑区不得留下同等面积的空白列；首屏已完成配置的工具不得把唯一主操作挤出视口；单个网格项不得无理由贴在超宽容器一角。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_practice_redesign.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py` 170 passed；Word/监控相关扩大回归 124 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js` 与 `git diff --check` 通过；1440×1000 浏览器逐页复验 API 展开态、运行监控、Word 工具、教材管理和材料选择，Word 主按钮实测 top 898px、bottom 942px、高 44px；未执行移动端和真实模型调用。
+
+### OPT-20260830-06｜结果页按钮与整页排版修复
+
+- status: verified
+- scope: 桌面端结果页检查条件与下载交付包操作区
+- changed: 为两个裸按钮补回现有设计系统的主次按钮组件，增加桌面端 44px 高度、内边距、12px 间距、字重和主操作最小宽度；将占用 224px 的居中结果标题压缩为左对齐信息头；将与长正文等高的题目侧栏改为限定高度的吸顶列表，并把题目项从夸张胶囊改为现有卡片圆角。
+- trigger: 用户截图指出两个按钮显示为紧贴的文字胶囊；浏览器测量确认二者高度仅 24px、内边距为 0，未应用标准按钮组件。继续检查整页发现结果标题占 224px、正文到首屏 759px 才开始，题目侧栏被正文拉到 4627px 高，形成大面积无效留白。
+- invariants: 不修改按钮可见性、启用条件、点击处理、任务状态、质量判断或下载权限；`delivery_ready=true` 的需复核任务继续允许下载交付包；本轮不调整移动端。
+- do_not_regress: 结果页主要操作不得再使用无组件类的裸按钮；桌面首屏不得被装饰性标题卡过度占用；长正文不得把短侧栏拉成整页空白色块；视觉审查必须检查实际尺寸、内边距、间距、留白、对齐、禁用态和主次层级，不能只检查文案与流程。
+- verification: 前端状态/结果定向回归 169 passed，`node --check web/app.js`、`node --check web/task-contract-ui.js`、HTML 582 个 ID 零重复及 `git diff --check` 通过；1440×1000 浏览器实测按钮由 24px/零内边距修复为 44px/10×18px，按钮间距 12px，结果标题由约 224px 压缩到 119px，内容面板起点由约 759px 提前到 646px，题目列表限定为 882px 并在滚动时稳定吸顶；需复核任务下载按钮仍为启用状态；未执行移动端。
+
+### OPT-20260830-05｜撤回前端交付权限误判
+
+- status: verified
+- scope: 需复核任务的正式交付包按钮与任务质量标签
+- changed: 撤回将正式交付包错误绑定到“正式验收通过”的前端判断，恢复使用既有 `delivery_ready` 下载合同；恢复后端提供的“可交付待复核”标签，不再擅自改成“预览待复核”；第三轮审计报告同步删除错误结论。
+- trigger: 用户明确说明“需复核”结果允许下载正式交付包，前端审计不得改变产品逻辑；此前把视觉语义判断扩展成下载权限调整，超出了审计授权。
+- invariants: 前端只展示既有任务、质量和下载合同，不自行收紧或放宽权限；`completed_with_issues` 在 `delivery_ready=true` 时仍可下载带风险与验收报告的交付包；其他第三轮排版和阅读优化保持不变。
+- do_not_regress: 不得依据文案、视觉理解或一般产品惯例改写业务状态、质量门禁、下载权限、任务动作或后端合同；发现疑似逻辑矛盾时只记录并向用户确认。
+- verification: 前端状态/结果定向回归 169 passed，`node --check web/app.js` 与 `git diff --check` 通过；浏览器复验“可交付待复核”标签恢复，`delivery_ready=true` 的需复核任务正式交付包按钮为启用状态，提示继续说明可导出 Word、PDF 与复核记录；未执行移动端。
+
+### OPT-20260830-04｜桌面任务状态、正式交付与长题阅读纠偏
+
+- status: verified
+- scope: 桌面端任务管理、失败任务页眉、需复核结果下载区与超长单题解析阅读
+- changed: 失败、取消、暂停、等待确认和复核任务的页眉改为真实状态；等待确认任务不再显示百分比，部分生成任务改显实际生成题数；结果指标只统计主要 Word/PDF，正式交付包增加就地禁用原因并仅在正式验收通过时启用；复核稿统一称为“预览待复核”；超长单题增加可持续停留的段落导航和减弱动画偏好支持。
+- trigger: 第三轮桌面实页审计发现失败任务仍标“解析进行中”，等待确认及部分生成可能显示 100%，过程文件混入主要文件数，正式包禁用缺少原因，长题无法快速定位；进一步实页复核又发现“可预览需复核”任务实际启用了正式交付包且提示“已通过下载条件”。
+- invariants: 不修改后端任务状态、生成完成度、质量检查、最终验收报告、单文件预览下载、模型调用、计费或用户数据；只有现有正式验收合同判定通过时前端才启用正式交付包；本轮不做移动端适配与验证。
+- do_not_regress: 失败任务不得显示进行中；等待用户操作和未完成生成不得用 100% 暗示完成；主要文件数不得包含复核/过程文件；`completed_with_issues` 不得称为正式可交付或启用正式包；长题导航不得被主导航遮挡或在跳转后消失。
+- verification: 前端状态/下载/结果定向回归 169 passed，前端离线资源/任务合同扩大回归 141 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js`、HTML 582 个 ID 零重复及 `git diff --check` 通过；源码服务 8766 在 1440×1000 桌面视口完成浏览器复验，确认等待确认、部分生成、失败页眉、主要文件计数、正式交付门禁及题内导航状态正确；未执行移动端和真实计费生成。
+
+### OPT-20260830-03｜模型错误四态分级与模糊 400 单题恢复
+
+- status: verified
+- scope: 模型 HTTP 错误分类、专项练习批量/单题生成、耐久重试状态、历史任务投影与私有调用诊断
+- changed: 将调用失败明确分为 `item_failed`、`service_degraded`、`route_blocked`、`configuration_blocked`；无具体错误字段的 400 不再全局阻断，批量失败直接拆为单题，灵算单题仅在原供应商、模型、协议、消息和参数上补偿一次，二次失败只保留当前题并继续后续题；权限和额度耗尽只阻断当前路由；私有诊断补充服务商 `code/type/param/message` 与 request ID，公开错误继续使用脱敏文案。
+- trigger: 灵算 Gemini 批量生成中两个仅返回 `Invalid request` 的偶发 HTTP 400 被旧逻辑误判为全局参数配置错误，导致随后七题零调用并统一显示“模型配置不可用”，尽管同一路由在错误前后均有成功请求。
+- invariants: 不修改已成功题；不因模糊 400 切换模型、供应商、协议、上下文或生成参数；不降低推理与多模态能力；后备路由仍须用户授权且能力等价；完整请求/响应只进入有容量和保留期限制的私有诊断数据，不进入用户错误或通用运行日志。
+- do_not_regress: 通用 `Invalid request` 400 不得设置 `configuration_blocked` 或打开兄弟题熔断；批量模糊 400 不得原样重试整批；非灵算路由不得获得该补偿重试；灵算补偿不得超过一次或改变实际路由/请求；403、额度耗尽不得重新混入配置阻断；确定性 Key、模型/Endpoint 和明确不支持参数仍须快速阻断。
+- verification: `python3 -m pytest -q tests/test_provider_errors.py tests/test_practice_generation_retry_budget.py` 48 passed；`python3 -m pytest -q` 1907 passed、16 deselected；`python3 -m py_compile app/provider_errors.py app/exercise_generation.py app/llm_client.py app/runtime_monitor.py` 与 `git diff --check` 通过；Windows 用户机完整备份后部署一致的 0.9.36 运行包和本修复，远端真实 `import app.server` 及模糊 400 状态检查通过，7 个修复文件 SHA-256 与本地一致，计划任务已指向新项目源码启动器，局域网 `/api/version` 返回 HTTP 200 且版本/清单均为 0.9.36；未发起真实计费模型调用。
+
+### OPT-20260830-02｜桌面端创建与结果下载流程降噪
+
+- status: verified
+- scope: 首页版本提示、桌面导航、按题/知识点出题入口、结果下载区与最终验收风险说明
+- changed: 中等宽度桌面导航保留完整品牌名；首页将内部发布清单状态替换为本机数据保存提示；模拟出题底部操作条从覆盖页面的固定层改为内容末尾操作区，模型摘要仅显示可读模型名；结果下载区移到超长题目正文之前，主要 Word/PDF 与复核/过程文件分组，复核稿 Word 可作为预览回退；最终验收风险复用用户可读诊断映射，不再显示内部字段。
+- trigger: 第二轮逐页浏览器审计发现首步输入区被固定操作条遮挡，品牌名在桌面窄窗口被挤断，模型 ID 换行破坏卡片层级，下载入口位于数千像素题目正文之后，过程文件与主要交付文档混排，复核风险仍泄露 `answer_coverage` 和 `evidence_ids`。
+- invariants: 不修改任务状态、生成流程、质量门禁、最终验收结论、正式下载权限、模型选择、调用次数、计费和用户数据；复核稿只能标为预览文件；本轮按用户要求不调整移动端。
+- do_not_regress: 桌面输入表单不得被全局固定操作条遮挡；默认页面不得再次显示发布清单、原始模型 ID 或内部质量字段；主要 Word/PDF 必须先于过程文件出现，过程文件折叠后仍须可下载；不得把复核稿称为正式交付文件。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_practice_redesign.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py` 169 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js` 和 `git diff --check` 通过；源码服务 8766 启动成功，浏览器复验按题出题、知识点出题、API Key 配置、Word 格式审查、任务结果与过程文件折叠，确认遮挡、换行、下载层级和内部文案问题已消除；未执行移动端和真实计费生成。
+
+### OPT-20260830-01｜桌面端任务与交付信息降噪
+
+- status: verified
+- scope: 桌面端任务管理、任务诊断、结果交付结论、教材管理、环境自检、运行监控与工作流顶部导航
+- changed: 将任务筛选和状态文案改为“等待我确认、结果需复核、未完成”等用户结果语义，保留状态值和完成度计算不变；结果页新增“可正式交付、可预览但需复核、当前不可交付”首屏结论，并让复核任务至少显示一条复核提示；将内部门禁代码和常见英文诊断转换为用户可读说明，原文件路径与日志仍保留在技术详情；教材格式、共享教材库、Pydantic 观察、主机名和进程号默认折叠；任务/结果页取消第二层步骤栏吸顶，避免长页滚动时双层遮挡。
+- trigger: 全页面视觉与体验审计发现任务状态同时使用完成、失败、待处理和 100% 容易误判，结果页缺少单一交付结论，技术实现词和英文门禁直接面对普通用户，教材与监控首屏信息密度过高，任务/结果长页存在双层吸顶占用阅读空间。
+- invariants: 不修改后端任务状态、进度里程碑、质量门禁、最终验收、下载权限、Pydantic 影子观察行为、模型调用、计费和用户数据；`completed_with_issues` 仍不得被描述为正式验收通过；本轮按用户要求不调整移动端。
+- do_not_regress: 不得在默认诊断视图重新暴露门禁代码、英文内部错误、文件路径或日志事件；不得只凭 100% 暗示任务成功；结果页必须先给出唯一交付结论，且正式交付只能由既有最终验收合同决定；技术详情折叠后不得删除其原始排障数据或功能入口。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_practice_redesign.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py` 169 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js`、HTML 578 个 ID 零重复及 `git diff --check` 通过；源码服务在 8766 启动成功，浏览器逐页复验任务管理、结果页、失败诊断、环境自检、教材管理和运行监控，确认状态投影、交付结论、技术信息折叠和桌面布局正常；未执行移动端验证。
+
 ### OPT-20260829-24｜准备 0.9.36 运行时可靠性版本
 
 - status: verified

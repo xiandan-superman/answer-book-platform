@@ -795,6 +795,7 @@ def list_practice_records(limit: int = 30) -> list[dict[str, Any]]:
                 "unfinished_count": int(completion.get("unfinished_count") or max(0, total_count - generated_count)),
                 "failed_count": int(completion.get("failed_count") or quality.get("failed_count") or 0),
                 "configuration_blocked": generation.get("configuration_blocked") is True,
+                "route_blocked": generation.get("route_blocked") is True,
                 "requires_configuration": generation.get("requires_configuration") is True,
                 "generation": generation,
                 "quality": quality,

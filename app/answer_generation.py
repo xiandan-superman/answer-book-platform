@@ -23,7 +23,10 @@ from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import looks_like_formula
 from .image_artifacts import ImageArtifactStore
-from .image_orchestration import DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE
+from .image_orchestration import (
+    DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
+    ensure_generation_image_label_language_requirement,
+)
 from .llm_client import LLMError, OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .omml_input import strip_structured_math_metadata
@@ -3120,7 +3123,7 @@ def build_answer_batch_prompt(batch_items: list[dict[str, Any]]) -> list[dict[st
             for payload in payloads
         ],
     }
-    return [
+    return ensure_generation_image_label_language_requirement([
         {
             "role": "system",
             "content": (
@@ -3130,7 +3133,7 @@ def build_answer_batch_prompt(batch_items: list[dict[str, Any]]) -> list[dict[st
             ),
         },
         {"role": "user", "content": json.dumps(batch_payload, ensure_ascii=False)},
-    ]
+    ])
 
 
 def _batch_prompt_estimated_tokens(batch_items: list[dict[str, Any]]) -> int:

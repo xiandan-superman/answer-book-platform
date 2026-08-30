@@ -24,7 +24,7 @@ def test_prompt_catalog_has_unique_versioned_contracts_and_task_profiles() -> No
     assert len(PROMPT_CONTRACTS) == len(set(PROMPT_CONTRACTS))
     for prompt_id, contract in PROMPT_CONTRACTS.items():
         assert contract.prompt_id == prompt_id
-        assert contract.version == "1"
+        assert contract.version in {"1", "2"}
         assert contract.task_profiles
         assert contract.section_order
         assert contract.output_contract
@@ -40,6 +40,23 @@ def test_prompt_catalog_has_unique_versioned_contracts_and_task_profiles() -> No
         "exam.answer_draft_single"
     ].disabled_sections_by_profile == (("question_only", ("textbook_evidence",)),)
     assert PROMPT_CONTRACTS["exam.evidence_selection"].task_profiles == ("exam",)
+    prompt_v2 = {
+        "exam.answer_draft_single",
+        "exam.answer_draft_batch",
+        "exam.answer_audit_repair",
+        "exam.answer_docx_repair",
+        "figure.drawing_code",
+        "figure.tool_repair",
+        "practice.generation",
+        "practice.figure_repair",
+    }
+    assert {
+        prompt_id
+        for prompt_id, contract in PROMPT_CONTRACTS.items()
+        if contract.version == "2"
+    } == prompt_v2
+    for prompt_id in prompt_v2:
+        assert "image_label_language_requirement" in PROMPT_CONTRACTS[prompt_id].section_order
 
 
 def test_registered_observation_contains_hashes_but_no_prompt_content() -> None:
@@ -66,7 +83,7 @@ def test_registered_observation_contains_hashes_but_no_prompt_content() -> None:
     assert payload == original
     assert observation["prompt_id"] == "exam.answer_draft_single"
     assert observation["registered"] is True
-    assert observation["version"] == "1"
+    assert observation["version"] == "2"
     assert observation["transport_shape"] == "chat_messages"
     assert observation["message_count"] == 2
     assert observation["tool_schema_count"] == 1

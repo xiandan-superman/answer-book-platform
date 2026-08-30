@@ -10,6 +10,7 @@ from typing import Any
 from .answer_generation import attach_program_evidence_block, evidence_for_answer_generation, fragment_from_analysis_draft
 from .concurrency import model_request_slot, run_limited_concurrent
 from .formula_audit import audit_text_segments_no_formula, formula_like_matches
+from .image_orchestration import ensure_generation_image_label_language_requirement
 from .llm_client import OpenAICompatibleClient
 from .prompt_registry import prompt_contract
 from .retrieval import EvidenceCandidate
@@ -160,7 +161,7 @@ def _repair_prompt(
             for rule in payload.get("hard_rules", [])
         ]
         messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
-    return messages
+    return ensure_generation_image_label_language_requirement(messages)
 
 
 def repair_fragments_with_model_for_docx(

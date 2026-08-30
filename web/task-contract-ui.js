@@ -38,14 +38,14 @@
     hybrid_download: "下载云端结果",
     local_delivery: "本机生成并检查 Word",
     paused: "已暂停",
-    failed: "执行失败",
+    failed: "未完成",
     completed: "已完成"
   };
 
   const statusLabels = {
     completed: "已完成",
-    completed_with_issues: "完成待复核",
-    failed: "执行失败",
+    completed_with_issues: "结果需复核",
+    failed: "未完成",
     running: "执行中",
     paused: "已暂停",
     cancelled: "已取消",

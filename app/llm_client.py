@@ -76,12 +76,22 @@ class LLMError(RuntimeError):
         retry_after_seconds: float | None = None,
         transport_phase: str = "",
         partial_output_received: bool = False,
+        provider_error_code: str = "",
+        provider_error_type: str = "",
+        provider_error_param: str = "",
+        provider_error_message: str = "",
+        provider_request_id: str = "",
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
         self.transport_phase = transport_phase
         self.partial_output_received = bool(partial_output_received)
+        self.provider_error_code = provider_error_code
+        self.provider_error_type = provider_error_type
+        self.provider_error_param = provider_error_param
+        self.provider_error_message = provider_error_message
+        self.provider_request_id = provider_request_id
 
 
 class LLMTimeoutError(LLMError, TimeoutError):
@@ -363,12 +373,50 @@ def _http_retry_after_seconds(value: Any) -> float | None:
         return None
 
 
+def _http_provider_error_fields(exc: urllib.error.HTTPError, body: str) -> dict[str, str]:
+    parsed: Any = None
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError):
+        pass
+    source = parsed.get("error") if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict) else parsed
+    fields: dict[str, str] = {}
+    if isinstance(source, dict):
+        for key in ("code", "type", "param", "message"):
+            value = redact_credentials(str(source.get(key) or "").strip())[:800]
+            if value:
+                fields[key] = value
+    if exc.headers:
+        for header in ("x-request-id", "request-id", "x-correlation-id", "x-trace-id", "trace-id"):
+            value = str(exc.headers.get(header) or "").strip()[:200]
+            if value:
+                fields["request_id"] = value
+                break
+    return fields
+
+
+def _http_error_diagnostic_payload(exc: urllib.error.HTTPError, body: str) -> dict[str, Any]:
+    fields = _http_provider_error_fields(exc, body)
+    return {
+        "http_status": exc.code,
+        "error_body": body,
+        "provider_error": {key: fields[key] for key in ("code", "type", "param", "message") if key in fields},
+        "provider_request_id": fields.get("request_id", ""),
+    }
+
+
 def _http_llm_error(exc: urllib.error.HTTPError, body: str) -> LLMError:
     safe_body = redact_credentials(body[:800])
+    fields = _http_provider_error_fields(exc, body)
     return LLMError(
         f"Provider HTTP {exc.code}: {safe_body}",
         status_code=int(exc.code),
         retry_after_seconds=_http_retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None),
+        provider_error_code=fields.get("code", ""),
+        provider_error_type=fields.get("type", ""),
+        provider_error_param=fields.get("param", ""),
+        provider_error_message=fields.get("message", ""),
+        provider_request_id=fields.get("request_id", ""),
     )
 
 
@@ -963,7 +1011,7 @@ class OpenAICompatibleClient:
                         record_model_diagnostic(
                             call_record,
                             payload,
-                            response_payload={"http_status": exc.code, "error_body": body},
+                            response_payload=_http_error_diagnostic_payload(exc, body),
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
@@ -1398,7 +1446,7 @@ class OpenAICompatibleClient:
                         record_model_diagnostic(
                             call_record,
                             diagnostic_payload,
-                            response_payload={"http_status": exc.code, "error_body": error_body},
+                            response_payload=_http_error_diagnostic_payload(exc, error_body),
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
@@ -1509,7 +1557,7 @@ class OpenAICompatibleClient:
                         record_model_diagnostic(
                             call_record,
                             payload,
-                            response_payload={"http_status": exc.code, "error_body": body},
+                            response_payload=_http_error_diagnostic_payload(exc, body),
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
@@ -1590,7 +1638,7 @@ class OpenAICompatibleClient:
                         record_model_diagnostic(
                             call_record,
                             streaming_payload,
-                            response_payload={"http_status": exc.code, "error_body": body},
+                            response_payload=_http_error_diagnostic_payload(exc, body),
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )

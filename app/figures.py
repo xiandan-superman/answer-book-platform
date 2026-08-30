@@ -44,6 +44,10 @@ from .drawing_code import (
     validate_drawing_code,
 )
 from .image_artifacts import ImageArtifactStore
+from .image_orchestration import (
+    GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT,
+    ensure_generation_image_label_language_requirement,
+)
 from .llm_client import OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .prompt_registry import prompt_contract
@@ -4343,7 +4347,7 @@ def build_drawing_code_repair_payload(
             "代码必须定义且只定义一个顶层函数 draw(output_path: str) -> None。",
             "只能使用 matplotlib、numpy、math、textwrap；不得读写除 output_path 之外的文件，不得使用网络、shell、subprocess、OS API、eval、exec、open。",
             "必须保存 PNG 到 output_path。",
-            "图中解释性文字使用中文；题目要求的标准专业术语和符号可保留原始写法。",
+            GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT,
             "图必须黑白打印可读，只使用黑、白、灰；用线型、点型、填充、直接标注、上下分图或位置区分关键含义，不能靠颜色。",
             "修复目标是考试答案级插图，不是最低可运行示意图。",
             "不要添加题目未要求的大标题、粗箭头、坐标轴、图例或说明文字；这些元素会压缩图形主体并造成重叠。",
@@ -4845,7 +4849,7 @@ def repair_figures_with_model_for_visual_qa(
                 content.append({"type": "image_url", "image_url": {"url": source_url}})
             with prompt_contract("figure.tool_repair"):
                 agent_result = tool_loop.run_json(
-                    [
+                    ensure_generation_image_label_language_requirement([
                         {
                             "role": "system",
                             "content": (
@@ -4854,7 +4858,7 @@ def repair_figures_with_model_for_visual_qa(
                             ),
                         },
                         {"role": "user", "content": content},
-                    ],
+                    ]),
                     model=candidate_model,
                     max_tokens=FIGURE_AUXILIARY_MAX_TOKENS,
                     thinking="high",
@@ -4920,6 +4924,7 @@ def repair_figures_with_model_for_visual_qa(
             )
         else:
             messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
+        messages = ensure_generation_image_label_language_requirement(messages)
         with prompt_contract("figure.drawing_code"):
             if kind == "model_drawing_code" and hasattr(candidate_client, "chat_text"):
                 result = candidate_client.chat_text(

@@ -399,6 +399,7 @@ def _provider_test_error_payload(provider_name: str, model: str, exc: Exception)
         "suggested_action": info.suggested_action,
         "retryable": info.retryable,
         "requires_configuration": info.requires_configuration,
+        "failure_state": info.failure_state,
     }
 
 

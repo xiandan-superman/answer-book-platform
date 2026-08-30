@@ -23,6 +23,10 @@ from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import audit_text_segments_no_formula
 from .image_artifacts import ImageArtifactStore
+from .image_orchestration import (
+    GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT,
+    ensure_generation_image_label_language_requirement,
+)
 from .llm_client import OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .prompt_registry import prompt_contract
@@ -357,7 +361,8 @@ def _repair_prompt(
             "严格服从确认后的 question_type；如果确认题型不是作图题，不得因题干中的绘图相关词汇自行补充 drawing_code_specs 或 figure_specs。",
             "如果 visual_context.has_input_images 为 true，必须结合随消息附带的原题图片进行修复。",
             "如果 visual_context.needs_figure 为 true，必须按 visual_context.required_drawing_output 补充作图输出：code 模式输出 drawing_code_specs，figure_specs 模式输出 figure_specs。",
-            "code 模式的 drawing_code_specs 每项必须包含 code 字符串，代码必须定义 draw(output_path: str) -> None，使用 Matplotlib 保存 PNG，图中解释性文字优先中文，保留题目要求的标准专业术语和符号；黑白打印可读，不能靠颜色区分关键含义。",
+            GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT,
+            "code 模式的 drawing_code_specs 每项必须包含 code 字符串，代码必须定义 draw(output_path: str) -> None，使用 Matplotlib 保存 PNG；黑白打印可读，不能靠颜色区分关键含义。",
             "如果 visual_context.needs_figure 为 true 且 visual_context.has_input_images 为 false，必须仅依据题干文字生成 visual_context.required_drawing_output，并在 uncertainties 中说明原题未抽取到图片、按题干文字生成图示规格。",
             "如果 audit_issues 包含 missing_required_figure，必须优先补充 visual_context.required_drawing_output；只有在题干与图片均不足以确定图形时，才可在 uncertainties 中说明无法可靠作图。",
             "不要输出教材依据、页码、课本-p、evidence_id 或引用格式；教材依据由程序统一合并。",
@@ -403,7 +408,7 @@ def _repair_prompt(
         user_content = [{"type": "text", "text": user_text}, *image_parts]
     else:
         user_content = user_text
-    return [
+    return ensure_generation_image_label_language_requirement([
         {
             "role": "system",
             "content": "你是真题解析平台的单题审查修复器。只能返回 JSON，不要返回 Markdown。",
@@ -412,7 +417,7 @@ def _repair_prompt(
             "role": "user",
             "content": user_content,
         },
-    ]
+    ])
 
 
 def _repair_retry_prompt(
@@ -453,11 +458,11 @@ def _repair_retry_prompt(
             "Keep answer, answer_units, formulas, steps, result_quantities, and partitions numerically synchronized.",
         ],
     }
-    return [
+    return ensure_generation_image_label_language_requirement([
         copy.deepcopy(base_messages[0]),
         {"role": "assistant", "content": json.dumps(candidate, ensure_ascii=False)},
         {"role": "user", "content": json.dumps(retry_instruction, ensure_ascii=False)},
-    ]
+    ])
 
 
 def _block_has_payload(fragment: dict[str, Any], label: str) -> bool:
