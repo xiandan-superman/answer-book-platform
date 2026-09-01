@@ -565,9 +565,8 @@ def test_transport_retry_forwards_dynamic_context_contract(monkeypatch) -> None:
     assert captured["item_ids"] == ["plan_item_01"]
 
 
-def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monkeypatch) -> None:
+def test_transport_retry_preserves_protocol_after_stream_failure(monkeypatch) -> None:
     primary = object()
-    fallback = object()
     clients = []
 
     def fake_call(client, *_args, **_kwargs):
@@ -577,7 +576,6 @@ def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monk
         return {"ok": True}
 
     monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
-    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
     monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
     attempts = []
     result = exercise_generation._call_practice_json_with_transport_retry(
@@ -585,13 +583,13 @@ def test_transport_retry_switches_to_fallback_protocol_after_stream_failure(monk
         attempts=2, backoff_seconds=0, attempt_log=attempts,
     )
     assert result == {"ok": True}
-    assert clients == [primary, fallback]
-    assert attempts[-1]["protocol_fallback"] is True
+    assert clients == [primary, primary]
+    assert attempts[-1]["protocol_fallback"] is False
+    assert attempts[-1]["same_protocol_retry"] is True
 
 
 def test_transport_retry_with_model_tool_loop_never_drops_to_text_only_fallback(monkeypatch) -> None:
     primary = object()
-    fallback = object()
     tool_loop = object()
     clients = []
     delivered_loops = []
@@ -604,7 +602,6 @@ def test_transport_retry_with_model_tool_loop_never_drops_to_text_only_fallback(
         return {"ok": True}
 
     monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
-    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
     monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
 
     result = exercise_generation._call_practice_json_with_transport_retry(
@@ -658,7 +655,6 @@ def test_transport_retry_respects_provider_protocol_fallback_policy(monkeypatch)
 
 def test_transport_retry_reconnects_responses_before_any_protocol_fallback(monkeypatch) -> None:
     primary = object()
-    fallback = object()
     clients = []
 
     def fake_call(client, *_args, **_kwargs):
@@ -668,14 +664,12 @@ def test_transport_retry_reconnects_responses_before_any_protocol_fallback(monke
         return {"ok": True}
 
     monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
-    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
     monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
     attempts = []
 
     result = exercise_generation._call_practice_json_with_transport_retry(
         primary, [], model="fake", temperature=0, thinking="low", timeout_seconds=30,
         attempts=2, backoff_seconds=0, attempt_log=attempts,
-        same_protocol_retries=1, allow_chat_fallback=False,
     )
 
     assert result == {"ok": True}
@@ -685,9 +679,8 @@ def test_transport_retry_reconnects_responses_before_any_protocol_fallback(monke
     assert attempts[-1]["protocol_fallback"] is False
 
 
-def test_invalid_json_uses_four_progressively_stricter_gemini_attempts(monkeypatch) -> None:
+def test_invalid_json_preserves_gemini_thinking_and_protocol_across_stricter_attempts(monkeypatch) -> None:
     primary = SimpleNamespace(config=SimpleNamespace(name="lingsuan_google"))
-    fallback = SimpleNamespace(config=SimpleNamespace(name="lingsuan_google"))
     observed = []
 
     def fake_call(client, messages, **kwargs):
@@ -697,7 +690,6 @@ def test_invalid_json_uses_four_progressively_stricter_gemini_attempts(monkeypat
         return {"exercises": [_exercise(1)]}
 
     monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
-    monkeypatch.setattr(exercise_generation, "_chat_fallback_client", lambda _client: fallback)
     monkeypatch.setattr(exercise_generation.time, "sleep", lambda _seconds: None)
     attempts = []
 
@@ -714,8 +706,8 @@ def test_invalid_json_uses_four_progressively_stricter_gemini_attempts(monkeypat
     )
 
     assert result["exercises"]
-    assert [item["thinking"] for item in observed] == [None, "minimal", "minimal", "minimal"]
-    assert [item["client"] for item in observed] == [primary, primary, primary, fallback]
+    assert [item["thinking"] for item in observed] == [None, None, None, None]
+    assert [item["client"] for item in observed] == [primary, primary, primary, primary]
     assert [item["strict_json_contract"] for item in attempts] == [False, False, True, True]
 
 

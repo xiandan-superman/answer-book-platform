@@ -578,11 +578,75 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual(200, attempts[0]["reasoning_tokens"])
         self.assertEqual("stop", attempts[1]["finish_reason"])
 
+    def test_generic_json_retry_stops_after_ambiguous_400(self):
+        from app.llm_client import LLMError, OpenAICompatibleClient
+
+        client = OpenAICompatibleClient(self._provider())
+        urls = []
+
+        def fake_urlopen(request, timeout):
+            urls.append(request.full_url)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(b'{"error":"Invalid request"}'),
+            )
+
+        client._urlopen = fake_urlopen
+        with self.assertRaisesRegex(LLMError, "Provider HTTP 400"):
+            client.chat_json_object(
+                [{"role": "user", "content": "return JSON"}],
+                attempts=3,
+            )
+
+        self.assertEqual(["https://example.test/v1/chat/completions"], urls)
+
+    def test_generic_json_retry_preserves_request_on_retryable_503(self):
+        from app.llm_client import OpenAICompatibleClient
+
+        client = OpenAICompatibleClient(self._provider())
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            if len(requests) == 1:
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    503,
+                    "Service Unavailable",
+                    {},
+                    io.BytesIO(b'{"error":"temporarily unavailable"}'),
+                )
+            return _FakeResponse(
+                {
+                    "choices": [{"finish_reason": "stop", "message": {"content": '{"ok":true}'}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                }
+            )
+
+        client._urlopen = fake_urlopen
+        result = client.chat_json_object(
+            [{"role": "user", "content": "return JSON"}],
+            model="test-model",
+            thinking="disabled",
+            attempts=2,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, len(requests))
+        self.assertEqual(requests[0], requests[1])
+        self.assertEqual("test-model", requests[1]["model"])
+        self.assertEqual({"type": "disabled"}, requests[1]["thinking"])
+
     def test_responses_endpoint_404_falls_back_to_chat_completions(self):
         from app import runtime_monitor
         from app.llm_client import ResponsesAPIClient
 
-        client = ResponsesAPIClient(self._provider(api_protocol="responses"))
+        client = ResponsesAPIClient(
+            self._provider(api_protocol="responses", responses_fallback_to_chat=True)
+        )
         urls = []
 
         def fake_urlopen(request, timeout):
@@ -664,6 +728,41 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         self.assertEqual(["https://example.test/v1/responses"], urls)
 
+    def test_responses_multimodal_404_does_not_cross_protocol(self):
+        from app.llm_client import LLMError, ResponsesAPIClient
+
+        client = ResponsesAPIClient(
+            self._provider(api_protocol="responses", responses_fallback_to_chat=True)
+        )
+        urls = []
+
+        def fake_urlopen(request, timeout):
+            urls.append(request.full_url)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                404,
+                "Not Found",
+                {},
+                io.BytesIO(b'{"error":"Not Found"}'),
+            )
+
+        client._urlopen = fake_urlopen
+        with self.assertRaisesRegex(LLMError, "Provider HTTP 404"):
+            client.chat_json(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "inspect"},
+                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                        ],
+                    }
+                ],
+                model="test-model",
+            )
+
+        self.assertEqual(["https://example.test/v1/responses"], urls)
+
     def test_responses_model_404_does_not_fall_back(self):
         from app.llm_client import LLMError, ResponsesAPIClient
 
@@ -689,15 +788,10 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         self.assertEqual(["https://example.test/v1/responses"], urls)
 
-    def test_responses_fallback_can_be_disabled(self):
+    def test_responses_fallback_is_disabled_by_default(self):
         from app.llm_client import LLMError, ResponsesAPIClient
 
-        client = ResponsesAPIClient(
-            self._provider(
-                api_protocol="responses",
-                responses_fallback_to_chat=False,
-            )
-        )
+        client = ResponsesAPIClient(self._provider(api_protocol="responses"))
         urls = []
 
         def fake_urlopen(request, timeout):

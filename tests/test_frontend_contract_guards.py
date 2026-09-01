@@ -914,7 +914,7 @@ def test_practice_and_knowledge_preflight_missing_model_configuration_before_job
 
 def test_practice_drawing_question_explains_why_answer_image_is_not_generated() -> None:
     assert "本题要求学生作图" in APP_JS
-    assert "不会调用 gpt-image-2 生成答案图" in APP_JS
+    assert "不会额外调用图片生成模型" in APP_JS
 
 
 def test_practice_preview_renders_real_diagrams_and_exposes_invalid_figures() -> None:
@@ -1051,3 +1051,66 @@ def test_word_format_rule_page_collapses_long_categories_without_hiding_editing(
 def test_legacy_uploading_stage_is_presented_as_user_facing_work() -> None:
     task_contract_ui = (ROOT / "web" / "task-contract-ui.js").read_text(encoding="utf-8")
     assert 'uploading: "准备输入材料"' in task_contract_ui
+
+
+def test_final_acceptance_issues_separate_public_actions_from_technical_details() -> None:
+    styles_css = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="final-acceptance-issue-list"' in APP_JS
+    assert 'class="technical-details final-acceptance-technical"' in APP_JS
+    assert '[/output missing:\\s*[^；;]+/gi, "正式 Word 文件尚未生成或已不可用"]' in APP_JS
+    assert '[/figure_delivery\\s*:\\s*/gi, "答案配图不完整："]' in APP_JS
+    assert '.replace(/对应题目\\s+题干要求/gi, "对应题目要求")' in APP_JS
+    assert ".final-acceptance-issue-list li" in styles_css
+    assert ".final-acceptance-technical ul" in styles_css
+
+
+def test_practice_editor_stays_centered_with_persistent_header_and_actions() -> None:
+    styles_css = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="practice-editor-body"' in INDEX_HTML
+    assert "height: min(760px, calc(100vh - 48px));" in styles_css
+    assert ".practice-editor form {\n  display: grid;\n  grid-template-rows: auto minmax(0, 1fr) auto;" in styles_css
+    assert ".practice-editor-body {" in styles_css
+    assert "overflow-y: auto;" in styles_css
+    assert "margin: auto;" in styles_css
+
+
+def test_long_result_pages_keep_context_and_hide_internal_rendering_labels() -> None:
+    assert 'requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));' in APP_JS
+    assert 'aria-label="选择第 ${escapeHtml(item.number || String(idx + 1))} 题"' in APP_JS
+    assert '<span>选择</span></label>' in APP_JS
+    assert "不会额外调用图片生成模型" in APP_JS
+    assert "不会调用 gpt-image-2" not in APP_JS
+    assert '[/answer_coverage\\s*:\\s*/gi, ""]' in APP_JS
+    assert '[/answer is pending review/gi, "答案内容仍需人工复核"]' in APP_JS
+    assert 'const warningList = warnings.length' in APP_JS
+    assert '有题目的答案内容仍需人工复核' in APP_JS
+    assert '缺少原始解析草稿，生成质量需要人工复核' in APP_JS
+    assert '.replace(/⟦(?:MATHML|LATEX):[\\s\\S]*?⟧/gi, "")' in APP_JS
+    assert '<small>${escapeHtml(stemPreview)}${plainStem.length > 26 ? "..." : ""}</small>' in APP_JS
+    assert "#page-practice .practice-exercise__select:has(input:checked)" in PLATFORM_THEME_CSS
+    assert "min-width: 68px;" in PLATFORM_THEME_CSS
+
+
+def test_practice_requirement_presets_are_compact_editable_and_locally_persisted() -> None:
+    styles_css = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+    server_py = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
+    preset_store = (ROOT / "app" / "practice_requirement_presets.py").read_text(encoding="utf-8")
+
+    assert 'id="practiceRequirementPresetsPopover"' in INDEX_HTML
+    assert 'id="practiceRequirementPresetAdd"' in INDEX_HTML
+    assert 'id="practiceScopeFocus" type="text" role="combobox"' in INDEX_HTML
+    assert "输入补充要求，或选择已保存的要求" in INDEX_HTML
+    assert 'id="practiceRequirementPresetSaveCurrent"' not in INDEX_HTML
+    assert 'id="practiceRequirementPresetsManage"' not in INDEX_HTML
+    assert 'data-requirement-preset-edit="${safeId}"' in APP_JS
+    assert 'data-requirement-preset-delete="${safeId}"' in APP_JS
+    assert 'addEventListener("click", () => createPracticeRequirementPreset())' in APP_JS
+    assert 'title="${safeText}"' in APP_JS
+    assert "text-overflow: ellipsis;" in styles_css
+    assert ".practice-requirement-preset-text" in styles_css
+    assert "white-space: nowrap;" in styles_css
+    assert 'api("/api/practice/requirement-presets")' in APP_JS
+    assert 'parsed.path == "/api/practice/requirement-presets"' in server_py
+    assert 'LOCAL_CONFIG_DIR / "practice_requirement_presets.json"' in preset_store

@@ -1085,9 +1085,25 @@
                 <label>挑战<input id="practiceDifficultyChallengeCount" type="number" min="0" max="30" value="0"></label>
                 <strong id="practiceDifficultyAllocation">已分配 5 / 5 题</strong>
               </div>
-              <label class="practice-scope-config__focus">补充要求
-                <input id="practiceScopeFocus" type="text" placeholder="例如：侧重跨知识点综合，不超出材料范围">
-              </label>
+              <div class="practice-scope-config__focus">
+                <span class="practice-scope-config__focus-label">补充要求</span>
+                <div class="practice-requirement-selector">
+                  <div class="practice-requirement-combobox">
+                    <input id="practiceScopeFocus" type="text" role="combobox" aria-autocomplete="none" aria-haspopup="listbox" aria-expanded="false" aria-controls="practiceRequirementPresetsPopover" placeholder="输入补充要求，或选择已保存的要求">
+                    <button id="practiceRequirementPresetsButton" class="practice-requirement-presets-button" type="button" aria-label="展开已保存的补充要求" aria-haspopup="listbox" aria-expanded="false" aria-controls="practiceRequirementPresetsPopover">
+                      <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                  <section id="practiceRequirementPresetsPopover" class="practice-requirement-presets-popover hidden" role="listbox" aria-label="已保存的常用要求" aria-multiselectable="true">
+                    <div id="practiceRequirementPresetsList" class="practice-requirement-presets-list" role="group" aria-label="选择常用要求"></div>
+                    <p id="practiceRequirementPresetsEmpty" class="practice-requirement-presets-empty hidden">还没有常用要求，可以先新建一条。</p>
+                    <p id="practiceRequirementPresetsError" class="practice-requirement-presets-error hidden" role="alert"></p>
+                    <footer>
+                      <button id="practiceRequirementPresetAdd" class="secondary-button" type="button"><i class="fas fa-plus" aria-hidden="true"></i>新建常用要求</button>
+                    </footer>
+                  </section>
+                </div>
+              </div>
             </div>
             <fieldset>
               <legend>题型 <small id="practiceScopeTypeHint">可多选；不选则由蓝图自动搭配</small></legend>
@@ -1149,20 +1165,22 @@
             <div><span>题目编辑器</span><h3 id="practiceEditorTitle">编辑题目</h3></div>
             <button type="submit" value="cancel" aria-label="关闭"><i class="fas fa-xmark"></i></button>
           </header>
-          <div class="practice-editor-grid">
-            <label>题型<select id="practiceEditType"></select></label>
-            <label>难度<select id="practiceEditDifficulty"><option>基础</option><option>进阶</option><option>挑战</option></select></label>
+          <div class="practice-editor-body">
+            <div class="practice-editor-grid">
+              <label>题型<select id="practiceEditType"></select></label>
+              <label>难度<select id="practiceEditDifficulty"><option>基础</option><option>进阶</option><option>挑战</option></select></label>
+            </div>
+            <label>训练能力<input id="practiceEditSkill" type="text"></label>
+            <label>题干（Markdown / LaTeX）<textarea id="practiceEditStem" rows="7"></textarea></label>
+            <label>选项（每行一个）<textarea id="practiceEditOptions" rows="4"></textarea></label>
+            <details>
+              <summary>公式、表格与图表数据</summary>
+              <label>公式（每行：位置 | LaTeX | 说明）<textarea id="practiceEditFormulas" rows="4"></textarea></label>
+              <label>表格结构（JSON）<textarea id="practiceEditTables" rows="5" spellcheck="false"></textarea></label>
+              <label>图表结构（JSON）<textarea id="practiceEditFigures" rows="5" spellcheck="false"></textarea></label>
+            </details>
+            <p id="practiceEditorError" class="practice-error hidden" role="alert"></p>
           </div>
-          <label>训练能力<input id="practiceEditSkill" type="text"></label>
-          <label>题干（Markdown / LaTeX）<textarea id="practiceEditStem" rows="7"></textarea></label>
-          <label>选项（每行一个）<textarea id="practiceEditOptions" rows="4"></textarea></label>
-          <details>
-            <summary>公式、表格与图表数据</summary>
-            <label>公式（每行：位置 | LaTeX | 说明）<textarea id="practiceEditFormulas" rows="4"></textarea></label>
-            <label>表格结构（JSON）<textarea id="practiceEditTables" rows="5" spellcheck="false"></textarea></label>
-            <label>图表结构（JSON）<textarea id="practiceEditFigures" rows="5" spellcheck="false"></textarea></label>
-          </details>
-          <p id="practiceEditorError" class="practice-error hidden" role="alert"></p>
           <footer>
             <button id="practiceEditorCopyDraft" type="button" class="secondary-button hidden">复制旧稿内容</button>
             <button id="practiceEditorMergeDraft" type="button" class="secondary-button hidden">开始受控手工合并</button>

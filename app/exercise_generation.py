@@ -9,7 +9,6 @@ import random
 import re
 import threading
 import time
-from dataclasses import replace
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -1966,6 +1965,25 @@ def _normalize_options(value: Any) -> list[dict[str, str]]:
             # 选项顺序由程序拥有，避免模型重复返回两个 A/B 等标签。
             rows.append({"label": chr(65 + index), "text": text})
     return rows
+
+
+def _randomize_choice_option_order(
+    exercise: dict[str, Any],
+    *,
+    question_type: str = "",
+    rng: Any | None = None,
+) -> None:
+    """Shuffle one generated choice question once before final delivery."""
+    resolved_type = _clean(question_type or exercise.get("question_type"), 20)
+    if resolved_type not in {"单选题", "多选题"}:
+        return
+    options = _normalize_options(exercise.get("options"))
+    if len(options) < 2:
+        return
+    (rng or random.SystemRandom()).shuffle(options)
+    for index, option in enumerate(options):
+        option["label"] = chr(65 + index)
+    exercise["options"] = options
 
 
 def _has_fill_in_blank(stem: Any) -> bool:
@@ -5113,28 +5131,6 @@ def _primary_model_runtime(payload: dict[str, Any]):
     return primary, resolve_provider_model(primary, _clean(payload.get("model"), 200) or None)
 
 
-def _chat_protocol_provider(provider, model: str = ""):
-    """Clone a provider onto Chat Completions without mutating shared config."""
-    selected = str(model or getattr(provider, "default_model", "") or "").strip()
-    profiles = {key: dict(value) for key, value in (getattr(provider, "model_profiles", {}) or {}).items()}
-    effective = str((profiles.get(selected) or {}).get("api_protocol") or getattr(provider, "api_protocol", "") or "").strip().lower()
-    if effective in {
-        "chat_completions",
-        "openai_compatible",
-        "",
-    }:
-        return provider
-    profile = dict(profiles.get(selected) or {})
-    profile["api_protocol"] = "chat_completions"
-    profiles[selected] = profile
-    return replace(
-        provider,
-        api_protocol="chat_completions",
-        responses_streaming=False,
-        model_profiles=profiles,
-    )
-
-
 def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:
     """Use the provider's configured protocol for practice generation."""
     return OpenAICompatibleClient(provider)
@@ -5199,17 +5195,6 @@ def _practice_model_tool_loop(
         ],
         artifact_store,
     )
-
-
-def _chat_fallback_client(client: OpenAICompatibleClient) -> OpenAICompatibleClient:
-    """Use Chat only when the selected provider explicitly permits that fallback."""
-    config = getattr(client, "config", None)
-    protocol = str(getattr(config, "api_protocol", "") or "").strip().lower()
-    if config is None or protocol in {"chat_completions", "openai_compatible", ""}:
-        return client
-    if not bool(getattr(config, "responses_fallback_to_chat", True)):
-        return client
-    return OpenAICompatibleClient(_chat_protocol_provider(config, getattr(config, "default_model", "")))
 
 
 def _model_route(payload: dict[str, Any], has_images: bool, provider, model: str) -> str:
@@ -5297,7 +5282,7 @@ def _call_practice_json(
     except LLMError as first_error:
         if not repair_invalid_json:
             raise
-        repair_client = _chat_fallback_client(client)
+        repair_client = client
         repair_messages = [
             *messages,
             {"role": "assistant", "content": result.content},
@@ -5344,7 +5329,7 @@ def _call_practice_json(
                     model=model,
                     temperature=0,
                     max_tokens=output_token_budget,
-                    thinking=_practice_retry_thinking(repair_client, model),
+                    thinking=thinking,
                     timeout=timeout_seconds,
                     task_stage=task_stage,
                     required_evidence_refs=required_evidence_refs,
@@ -5357,7 +5342,7 @@ def _call_practice_json(
         try:
             raw = _parse_safe_practice_json(repaired.content)
         except LLMError as repair_error:
-            raise LLMError(f"{first_error}；Chat 修复后仍失败：{repair_error}") from repair_error
+            raise LLMError(f"{first_error}；同路由 JSON 修复后仍失败：{repair_error}") from repair_error
     return raw
 
 
@@ -5896,18 +5881,6 @@ def _supports_ambiguous_400_compensation(client: Any) -> bool:
     return provider.startswith("lingsuan_")
 
 
-def _practice_retry_thinking(client: Any, model: str) -> str:
-    """Choose the lowest reasoning effort the selected model actually accepts."""
-
-    provider = str(getattr(getattr(client, "config", None), "name", "") or "").lower()
-    selected = str(model or "").lower()
-    if provider == "lingsuan_google" or selected.startswith("gemini-"):
-        return "minimal"
-    if provider == "lingsuan_xai" or selected.startswith("grok-4.5"):
-        return "low"
-    return "disabled"
-
-
 def _strict_practice_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         *messages,
@@ -5949,8 +5922,6 @@ def _call_practice_json_with_transport_retry(
     before_attempt: Callable[[int], None] | None = None,
     after_attempt: Callable[[int, dict[str, Any] | None], None] | None = None,
     max_retry_after_seconds: float = 30.0,
-    same_protocol_retries: int = 0,
-    allow_chat_fallback: bool = True,
     retry_invalid_json: bool = True,
     initial_json_error: bool = False,
     attempt_offset: int = 0,
@@ -5969,24 +5940,14 @@ def _call_practice_json_with_transport_retry(
     # A user-selected main-model tool transaction cannot cross to a protocol
     # fallback that lacks the same conversation and image bindings. Keep every
     # retry on the registered route; otherwise fail instead of becoming text-only.
-    allow_equivalent_chat_fallback = allow_chat_fallback and tool_loop is None
     for attempt in range(1, max(1, attempts) + 1):
         overall_attempt = attempt + max(0, int(attempt_offset))
         if ensure_active is not None:
             ensure_active()
         if before_attempt is not None:
             before_attempt(attempt)
-        use_primary_protocol = ambiguous_400_compensation_active or (
-            overall_attempt < 4 or not allow_equivalent_chat_fallback
-            if retrying_invalid_json
-            else attempt <= 1 + max(0, int(same_protocol_retries)) or not allow_equivalent_chat_fallback
-        )
-        attempt_client = client if use_primary_protocol else _chat_fallback_client(client)
-        attempt_thinking = (
-            _practice_retry_thinking(attempt_client, model)
-            if retrying_invalid_json and overall_attempt >= 2
-            else thinking
-        )
+        attempt_client = client
+        attempt_thinking = thinking
         attempt_messages = (
             _strict_practice_json_messages(messages)
             if retrying_invalid_json and overall_attempt >= 3
@@ -6101,15 +6062,9 @@ def _call_practice_json_with_transport_retry(
             config = getattr(attempt_client, "config", None)
             current_protocol = str(getattr(config, "api_protocol", "") or attempt_client.__class__.__name__)
             next_overall_attempt = overall_attempt + 1
-            next_use_primary_protocol = ambiguous_400_compensation_active or (
-                next_overall_attempt < 4 or not allow_equivalent_chat_fallback
-                if retrying_invalid_json
-                else attempt + 1 <= 1 + max(0, int(same_protocol_retries)) or not allow_equivalent_chat_fallback
-            )
-            next_protocol = (
-                str(getattr(getattr(client, "config", None), "api_protocol", "") or client.__class__.__name__)
-                if next_use_primary_protocol
-                else "chat_completions"
+            next_protocol = str(
+                getattr(getattr(client, "config", None), "api_protocol", "")
+                or client.__class__.__name__
             )
             pending_retry_observation = record_model_retry_scheduled(
                 exc,
@@ -7651,10 +7606,11 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
     provider, model = _model_runtime(payload, bool(analysis_images))
     item_label = "知识单元" if is_knowledge_mode else "原题"
 
-    def analysis_chunks() -> list[tuple[str, list[str]]]:
+    def analysis_chunks() -> list[tuple[str, list[int]]]:
         text = str(sources["text"] or "").strip()
-        if len(text) <= 18000 and len(analysis_images) <= 8:
-            return [(text, list(analysis_images))]
+        all_image_numbers = list(range(1, len(analysis_images) + 1))
+        if len(text) <= 18000:
+            return [(text, all_image_numbers)]
         paragraphs: list[str] = []
         for paragraph in text.split("\n\n"):
             paragraph = paragraph.strip()
@@ -7672,7 +7628,7 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
                     current = f"{current}\n{line}".strip()
             if current:
                 paragraphs.append(current)
-        chunks: list[tuple[str, list[str]]] = []
+        chunks: list[tuple[str, list[int]]] = []
         current_parts: list[str] = []
         current_refs: set[int] = set()
         current_length = 0
@@ -7682,12 +7638,8 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
                 for value in re.findall(r"⟦IMAGE_REF:(\d+);", paragraph)
                 if 1 <= int(value) <= len(analysis_images)
             }
-            if current_parts and (
-                current_length + len(paragraph) > 11000
-                or len(current_refs | paragraph_refs) > 8
-            ):
-                ordered = sorted(current_refs)
-                chunks.append(("\n\n".join(current_parts), [analysis_images[index - 1] for index in ordered]))
+            if current_parts and current_length + len(paragraph) > 11000:
+                chunks.append(("\n\n".join(current_parts), sorted(current_refs)))
                 current_parts = []
                 current_refs = set()
                 current_length = 0
@@ -7695,15 +7647,35 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
             current_refs.update(paragraph_refs)
             current_length += len(paragraph) + 2
         if current_parts:
-            ordered = sorted(current_refs)
-            chunks.append(("\n\n".join(current_parts), [analysis_images[index - 1] for index in ordered[:8]]))
-        return chunks or [(text, list(analysis_images[:8]))]
+            chunks.append(("\n\n".join(current_parts), sorted(current_refs)))
+        if not chunks:
+            return [(text, all_image_numbers)]
 
-    chunks = analysis_chunks()
+        # Images uploaded as independent files and rendered PDF pages do not
+        # carry DOCX IMAGE_REF anchors.  Attach each such image once to the
+        # first text chunk instead of silently dropping it.  Anchored images
+        # stay with every chunk that references them, and positional numbers
+        # remain stable even when two attachments have identical bytes.
+        anchored_numbers = {
+            image_number
+            for _chunk_text, image_numbers in chunks
+            for image_number in image_numbers
+        }
+        unanchored_numbers = [
+            image_number
+            for image_number in all_image_numbers
+            if image_number not in anchored_numbers
+        ]
+        if unanchored_numbers:
+            first_text, first_numbers = chunks[0]
+            chunks[0] = (first_text, sorted({*first_numbers, *unanchored_numbers}))
+        return chunks
+
+    chunk_specs = analysis_chunks()
     source_fragments: dict[str, str] = {}
     chunk_ref_ids: dict[int, list[str]] = {}
-    annotated_chunks: list[tuple[str, list[str]]] = []
-    for chunk_index, (chunk_text, chunk_images) in enumerate(chunks, start=1):
+    annotated_chunks: list[tuple[str, list[str], list[int]]] = []
+    for chunk_index, (chunk_text, chunk_image_numbers) in enumerate(chunk_specs, start=1):
         annotated_parts: list[str] = []
         ref_ids: list[str] = []
         for part_index, paragraph in enumerate((part.strip() for part in chunk_text.split("\n\n")), start=1):
@@ -7714,7 +7686,11 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
             ref_ids.append(ref_id)
             annotated_parts.append(f"⟦SOURCE_REF:{ref_id}⟧\n{paragraph}")
         chunk_ref_ids[chunk_index] = ref_ids
-        annotated_chunks.append(("\n\n".join(annotated_parts), chunk_images))
+        annotated_chunks.append((
+            "\n\n".join(annotated_parts),
+            [analysis_images[index - 1] for index in chunk_image_numbers],
+            chunk_image_numbers,
+        ))
     chunks = annotated_chunks
 
     def build_task(material: str, chunk_index: int) -> str:
@@ -7767,12 +7743,8 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
 """
     raw_responses: list[dict[str, Any]] = []
     analysis_context_plans: list[dict[str, Any]] = []
-    for chunk_index, (chunk_text, chunk_images) in enumerate(chunks, start=1):
-        chunk_visual_refs = [
-            f"image:{image_index}"
-            for image_index, image in enumerate(analysis_images, start=1)
-            if image in chunk_images
-        ]
+    for chunk_index, (chunk_text, chunk_images, chunk_image_numbers) in enumerate(chunks, start=1):
+        chunk_visual_refs = [f"image:{image_index}" for image_index in chunk_image_numbers]
         chunk_required_visual_refs = image_evidence_refs(chunk_text)
         chunk_required_refs = [*(chunk_ref_ids.get(chunk_index) or []), *chunk_required_visual_refs]
         analysis_messages = [
@@ -7809,11 +7781,6 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             timeout_seconds=_practice_stage_timeout("analyze", 900),
             attempts=2 if chunk_images else 3,
-            same_protocol_retries=1,
-            # Vision requests stay on streaming Responses. Re-sending the
-            # same Base64 images through non-streaming Chat lets upstream
-            # proxies sit silent until their 524 ceiling and adds no quality.
-            allow_chat_fallback=not bool(chunk_images),
             ensure_active=lambda: ensure_practice_generation_active(payload),
             task_stage="source_analysis",
             required_evidence_refs=chunk_required_refs,
@@ -9032,6 +8999,10 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 injected["plan_item_id"] = pid
                 injected["source_question_id"] = _clean(item.get("source_question_id"), 80)
                 injected["number"] = idx + 1
+                _randomize_choice_option_order(
+                    injected,
+                    question_type=_clean(item.get("question_type"), 20),
+                )
                 all_exercises.append(injected)
             except Exception:
                 # 草案规范化失败则忽略，交由模型正常生成该项
@@ -10151,6 +10122,16 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 item for item in restored
                 if str(item.get("plan_item_id") or "") not in already_completed_ids
             ]
+            planned_type_by_id = {
+                str(item.get("plan_item_id") or ""): _clean(item.get("question_type"), 20)
+                for item in batch_plan
+                if isinstance(item, dict)
+            }
+            for item in restored:
+                _randomize_choice_option_order(
+                    item,
+                    question_type=planned_type_by_id.get(str(item.get("plan_item_id") or ""), ""),
+                )
             isolated_failures = {
                 plan_item_id: error
                 for plan_item_id, error in isolated_failures.items()
@@ -10808,6 +10789,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
                 item["message"] for item in figure_issues
             )
             raise ValueError("单题重生未通过题干配图门禁：" + detail)
+    _randomize_choice_option_order(exercise)
     exercise["exercise_id"] = _clean(current.get("exercise_id"), 100) or f"practice_{index + 1:02d}"
     exercise["number"] = index + 1
     merged = list(exercises)

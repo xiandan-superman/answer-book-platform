@@ -202,7 +202,6 @@ def repair_fragments_with_model_for_docx(
     repaired_qids: list[str] = []
     repair_issues: list[dict[str, Any]] = []
     fragments_by_qid = {_qid(fragment): fragment for fragment in fragments if _qid(fragment)}
-    fallback_model = next((item for item in provider.model_options if item != model), None)
 
     target_rows = list(grouped_findings.items())[: max(1, max_repairs)]
     max_workers = 1 if client is not None else docx_model_repair_worker_count()
@@ -231,7 +230,6 @@ def repair_fragments_with_model_for_docx(
                         messages,
                         model=model,
                         max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                        fallback_model=fallback_model,
                         task_stage="format_repair",
                         item_ids=[qid],
                         enforce_context_budget=True,

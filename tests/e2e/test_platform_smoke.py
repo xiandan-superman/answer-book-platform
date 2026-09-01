@@ -310,8 +310,7 @@ def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_dow
             first.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "独立文件A.docx"
         _wait_for_platform_dialog(page, title="Word 已开始下载")
-        assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
-        assert "本页无法确认最终保存路径" in page.locator("#platformDialogMessage").inner_text()
+        assert "本页无法确认最终保存路径" in page.locator("#platformDialogMessage").text_content()
         page.locator("#platformDialogConfirm").click()
         page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").get_by_role("button", name="再次下载").wait_for()
         assert page.locator(".practice-word-recovery-item").filter(has_text="独立文件B.docx").is_visible()
@@ -447,9 +446,8 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
 
         completed_item.get_by_role("button", name="下载 Word").click()
         _wait_for_platform_dialog(page, title="Word 下载失败")
-        assert page.locator("#platformDialogTitle").inner_text() == "Word 下载失败"
-        assert "SECRET-123" not in page.locator("#platformDialogMessage").inner_text()
-        assert "未能获取 失败后重试.docx" in page.locator("#platformDialogMessage").inner_text()
+        assert "SECRET-123" not in page.locator("#platformDialogMessage").text_content()
+        assert "未能获取 失败后重试.docx" in page.locator("#platformDialogMessage").text_content()
         page.locator("#platformDialogConfirm").click()
         assert "失败后重试.docx" in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
 
@@ -459,7 +457,6 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
             completed_item.get_by_role("button", name="下载 Word").click()
         assert download_info.value.suggested_filename == "失败后重试.docx"
         _wait_for_platform_dialog(page, title="Word 已开始下载")
-        assert page.locator("#platformDialogTitle").inner_text() == "Word 已开始下载"
         page.locator("#platformDialogConfirm").click()
         remaining_storage = page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
         assert "失败后重试.docx" in remaining_storage
@@ -528,7 +525,6 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
 
         item.get_by_role("button", name="保存 Word").click()
         _wait_for_platform_dialog(page, title="已取消保存")
-        assert page.locator("#platformDialogTitle").inner_text() == "已取消保存"
         page.locator("#platformDialogConfirm").click()
         assert "桌面保存.docx" in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
         assert download_calls["count"] == 0
@@ -537,8 +533,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
         item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
         item.get_by_role("button", name="保存 Word").click()
         _wait_for_platform_dialog(page, title="Word 保存失败")
-        assert page.locator("#platformDialogTitle").inner_text() == "Word 保存失败"
-        assert "没有权限" in page.locator("#platformDialogMessage").inner_text()
+        assert "没有权限" in page.locator("#platformDialogMessage").text_content()
         page.locator("#platformDialogConfirm").click()
         assert "desktop_saved_path" not in page.evaluate("localStorage.getItem(PRACTICE_WORD_EXPORT_POINTER_STORAGE_KEY)")
 
@@ -546,8 +541,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
         item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
         item.get_by_role("button", name="保存 Word").click()
         _wait_for_platform_dialog(page, title="Word 已保存")
-        assert page.locator("#platformDialogTitle").inner_text() == "Word 已保存"
-        assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in page.locator("#platformDialogMessage").inner_text()
+        assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in page.locator("#platformDialogMessage").text_content()
         page.locator("#platformDialogConfirm").click()
 
         saved_item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")

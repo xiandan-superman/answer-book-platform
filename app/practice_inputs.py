@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import base64
-from io import BytesIO
 import mimetypes
 import re
 import subprocess
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -26,8 +26,8 @@ from .practice_source_store import (
 MAX_FILE_COUNT = 12
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_TOTAL_BYTES = 36 * 1024 * 1024
-MAX_PDF_PAGES = 8
 MAX_REFERENCE_IMAGES = 24
+MAX_ANALYSIS_IMAGES = MAX_REFERENCE_IMAGES
 MIN_MEANINGFUL_TEXT_CHARS = 40
 
 
@@ -268,7 +268,7 @@ def _pdf_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any]
                 dpi=135,
                 image_format="jpeg",
                 first_page=1,
-                last_page=MAX_PDF_PAGES,
+                last_page=MAX_ANALYSIS_IMAGES,
             )
             for image_path in rendered_pages:
                 images.append(_data_url(image_path.read_bytes(), "image/jpeg"))
@@ -392,7 +392,7 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
     # The model receives one global image budget, not one budget per file.
     # Reconcile per-file counts after truncation so the UI cannot claim that
     # every image from a later file was delivered.
-    remaining = max(0, MAX_PDF_PAGES - len(images))
+    remaining = max(0, MAX_ANALYSIS_IMAGES - len(images))
     for diagnostics in file_diagnostics:
         if diagnostics.get("analysis_mode") == "text":
             continue
@@ -417,8 +417,8 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
             )
             if warning not in diagnostics["warnings"]:
                 diagnostics["warnings"].append(warning)
-    images.extend(fallback_images[: max(0, MAX_PDF_PAGES - len(images))])
-    images = images[:MAX_PDF_PAGES]
+    images.extend(fallback_images[: max(0, MAX_ANALYSIS_IMAGES - len(images))])
+    images = images[:MAX_ANALYSIS_IMAGES]
     # Preserve positional identity: IMAGE_REF:n in extracted DOCX text points
     # to the nth item in this list, even when two files contain equal bytes.
     reference_images = reference_images[:MAX_REFERENCE_IMAGES]

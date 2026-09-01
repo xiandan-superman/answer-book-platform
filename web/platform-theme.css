@@ -6135,9 +6135,21 @@ body[data-active-page="practice"] .app-shell {
 }
 
 #page-practice .practice-exercise__select {
-  flex-basis: 36px;
-  width: 36px;
+  display: inline-flex;
+  flex-basis: auto;
+  width: auto;
+  min-width: 68px;
   height: 36px;
+  gap: 6px;
+  padding: 0 9px;
+  color: #466187;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+#page-practice .practice-exercise__select:has(input:checked) {
+  color: #2457a7;
 }
 
 /* Material selection: one workflow, searchable recent files, no covered content. */

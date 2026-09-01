@@ -2691,7 +2691,6 @@ def explain_missing_evidence_binding(
                 messages,
                 model=model,
                 max_tokens=DEFAULT_MODEL_MAX_TOKENS,
-                fallback_model=next((item for item in getattr(client.config, "model_options", ()) if item != model), None),
                 task_stage="review",
                 item_ids=[str(question.get("question_id") or question.get("number") or "")],
                 enforce_context_budget=True,
@@ -2889,7 +2888,6 @@ def generate_one_fragment(
     last_issues: list[str] = []
     data: dict[str, Any] | None = None
     max_tokens = structured_answer_max_tokens(provider, question)
-    fallback_model = next((item for item in provider.model_options if item != model), None)
     formula_repair_requested = False
     for attempt in range(retries + 1):
         assistant_content = ""
@@ -2917,7 +2915,6 @@ def generate_one_fragment(
                         messages,
                         model=model,
                         max_tokens=max_tokens,
-                        fallback_model=fallback_model,
                         attempt_callback=attempt_callback,
                         attempts=1,
                         thinking=thinking_mode,
@@ -3197,7 +3194,6 @@ def generate_batch_fragments(
     messages = build_answer_batch_prompt(batch_items)
     if tool_loop is not None:
         messages = _with_main_model_image_tool_contract(messages)
-    fallback_model = next((item for item in provider.model_options if item != model), None)
     thinking_mode = answer_generation_thinking_mode(provider)
     max_tokens = min(
         STRUCTURED_ANSWER_MAX_TOKENS,
@@ -3219,7 +3215,6 @@ def generate_batch_fragments(
                 messages,
                 model=model,
                 max_tokens=max_tokens,
-                fallback_model=fallback_model,
                 attempt_callback=attempt_callback,
                 attempts=1,
                 timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),

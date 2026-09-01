@@ -359,9 +359,45 @@ class FigureRuntimeObservabilityTests(unittest.TestCase):
             temperature=0.1,
             max_tokens=12288,
         )
-        plans = OpenAICompatibleClient(provider)._json_retry_plans([], "model-a", 8192, 1, "model-b", None)
+        plans = OpenAICompatibleClient(provider)._json_retry_plans([], "model-a", 8192, 1)
         self.assertTrue(plans)
         self.assertTrue(all(plan["max_tokens"] <= 8192 for plan in plans))
+
+    def test_generic_json_retry_never_switches_model_disables_thinking_or_compacts(self) -> None:
+        import inspect
+
+        from app.llm_client import OpenAICompatibleClient
+        from app.settings import ProviderConfig
+
+        provider = ProviderConfig(
+            name="test",
+            type="openai_compatible",
+            base_url="https://example.test/v1",
+            api_key="test",
+            default_model="model-a",
+            model_options=("model-a", "model-b"),
+            allow_custom_model=False,
+            model_hint="",
+            temperature=0.1,
+            max_tokens=12288,
+            thinking_mode="medium",
+        )
+        messages = [{"role": "user", "content": "full evidence"}]
+        signature = inspect.signature(OpenAICompatibleClient.chat_json_object)
+        self.assertNotIn("fallback_model", signature.parameters)
+        self.assertNotIn("compact_messages", signature.parameters)
+        plans = OpenAICompatibleClient(provider)._json_retry_plans(
+            messages,
+            "model-a",
+            8192,
+            3,
+        )
+
+        self.assertEqual(3, len(plans))
+        self.assertTrue(all(plan["model"] == "model-a" for plan in plans))
+        self.assertTrue(all(plan["thinking"] == "medium" for plan in plans))
+        self.assertTrue(all(plan["messages"] is messages for plan in plans))
+        self.assertTrue(all(plan["strategy"].startswith("same_route_attempt_") for plan in plans))
 
     def test_drawing_code_request_forces_disabled_thinking_with_its_own_budget(self) -> None:
         from app.drawing_code import build_drawing_code_prompt, generate_drawing_code_spec

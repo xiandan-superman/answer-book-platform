@@ -1794,6 +1794,55 @@ textarea {
   color: #15803d;
 }
 
+.final-acceptance-issue-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.final-acceptance-issue-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(185, 28, 28, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.66);
+  color: #7f1d1d;
+  line-height: 1.55;
+}
+
+.final-acceptance-issue-list li i {
+  margin-top: 4px;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.final-acceptance-technical {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(185, 28, 28, 0.12);
+}
+
+.final-acceptance-technical summary {
+  color: #8f4a4a;
+}
+
+.final-acceptance-technical ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #7f1d1d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .merge-box {
   margin: 0 0 16px;
   padding: 16px;
@@ -7063,6 +7112,199 @@ body.practice-drawer-open { overflow: hidden; }
   padding: 0 10px;
   background: #fff;
 }
+.practice-scope-config__focus {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 750;
+}
+.practice-scope-config__focus-label { display: block; }
+.practice-requirement-selector {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 0;
+  margin-top: 5px;
+}
+.practice-requirement-combobox {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid #b8c8e0;
+  border-radius: 8px;
+  background: #fff;
+}
+.practice-requirement-combobox:focus-within {
+  border-color: #b8c8e0;
+}
+.practice-requirement-combobox:has(#practiceScopeFocus:focus) {
+  border-color: #5c88d6;
+}
+#page-practice .practice-requirement-combobox > #practiceScopeFocus {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  padding: 0 4px 0 12px;
+  outline: 0;
+  background: transparent;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#page-practice .practice-requirement-presets-button {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  border: 0;
+  border-left: 1px solid #e2e8f0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: #6b7b92;
+}
+#page-practice .practice-requirement-presets-button:hover {
+  background: #f3f6fb;
+}
+#page-practice .practice-requirement-presets-button:focus,
+#page-practice .practice-requirement-presets-button:focus-visible {
+  outline: 0 !important;
+  outline-offset: 0 !important;
+}
+#page-practice .practice-requirement-presets-button:focus-visible {
+  background: transparent;
+  box-shadow: none;
+}
+#page-practice .practice-requirement-presets-button:focus-visible > i {
+  color: #356bc2;
+}
+#page-practice .practice-requirement-presets-button > i:last-child {
+  margin-left: 0;
+  color: #7185a4;
+  font-size: 10px;
+  transition: transform .16s ease;
+}
+#page-practice .practice-requirement-presets-button[aria-expanded="true"] > i:last-child {
+  transform: rotate(180deg);
+}
+.practice-requirement-presets-popover {
+  position: static;
+  grid-column: 1 / 2;
+  width: 100%;
+  margin-top: 1px;
+  overflow: hidden;
+  border: 1px solid #d4deed;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(35, 57, 92, .07);
+  color: #334155;
+}
+.practice-requirement-presets-list {
+  display: grid;
+  max-height: 244px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 8px;
+}
+.practice-requirement-preset-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 24px minmax(0, 1fr) 30px 30px;
+  align-items: center;
+  gap: 4px;
+  min-height: 42px;
+  border-radius: 8px;
+  padding: 4px 5px;
+}
+.practice-requirement-preset-row:hover { background: #f5f8fd; }
+.practice-requirement-preset-row > label {
+  display: contents;
+  cursor: pointer;
+}
+.practice-requirement-preset-row input[type="checkbox"] {
+  position: static;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #356bc2;
+  opacity: 1;
+  pointer-events: auto;
+}
+.practice-requirement-preset-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #3d4f69;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#page-practice .practice-requirement-preset-action {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  padding: 0;
+  background: transparent;
+  color: #728098;
+}
+#page-practice .practice-requirement-preset-action:hover {
+  background: #e9f0fb;
+  color: #2d5ca8;
+}
+#page-practice .practice-requirement-preset-delete {
+  color: #a85a5a;
+}
+.practice-requirement-presets-empty,
+.practice-requirement-presets-error {
+  margin: 0;
+  padding: 20px 16px;
+  color: #718096;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+.practice-requirement-presets-error { color: #b42318; }
+.practice-requirement-presets-popover > footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  border-top: 1px solid #e7ecf4;
+  padding: 10px 12px;
+}
+#page-practice .practice-requirement-presets-popover > footer button {
+  min-height: 36px;
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: #2e61b5;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.practice-scope-config-disclosure.requirement-presets-open { overflow: visible !important; }
 .practice-scope-config fieldset { margin-top: 10px; padding: 0; border: 0; }
 .practice-scope-config fieldset > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .practice-scope-config fieldset label { cursor: pointer; }
@@ -7298,7 +7540,9 @@ body.practice-drawer-open { overflow: hidden; }
 
 .practice-editor {
   width: min(760px, calc(100vw - 32px));
-  max-height: 90vh;
+  height: min(760px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  margin: auto;
   padding: 0;
   overflow: hidden;
   border: 0;
@@ -7333,7 +7577,24 @@ body.practice-drawer-open { overflow: hidden; }
 .practice-live-progress i { color: var(--brand-primary, #1e3a8a); }
 .practice-live-progress b { font-weight: 700; }
 .practice-live-progress p { margin-top: 9px; font-size: 12px; line-height: 1.55; }
-.practice-editor form { display: grid; gap: 12px; max-height: 90vh; padding: 22px; overflow-y: auto; }
+.practice-editor form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+.practice-editor-body {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  padding: 16px 22px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 
 /* Practice workflow: one continuous document below the progress module. */
 #page-practice .workbench-grid.practice-inline-flow {
@@ -7453,7 +7714,11 @@ body.practice-drawer-open { overflow: auto !important; }
 }
 .practice-editor header,
 .practice-editor footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.practice-editor header { padding-bottom: 13px; border-bottom: 1px solid var(--brand-border, #e2e7f0); }
+.practice-editor header {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--brand-border, #e2e7f0);
+  background: #fff;
+}
 .practice-editor header span { color: var(--brand-primary, #1e3a8a); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .practice-editor header h3 { margin-top: 3px; font-size: 20px; }
 #page-practice .practice-editor header button {
@@ -7483,7 +7748,13 @@ body.practice-drawer-open { overflow: auto !important; }
 .practice-editor details { padding: 11px 12px; border: 1px solid var(--brand-border, #e2e7f0); border-radius: 10px; background: #f8fafc; }
 .practice-editor details summary { cursor: pointer; color: #475569; font-size: 11px; font-weight: 800; }
 .practice-editor details label { margin-top: 10px; }
-.practice-editor footer { justify-content: flex-end; padding-top: 13px; border-top: 1px solid var(--brand-border, #e2e7f0); }
+.practice-editor footer {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--brand-border, #e2e7f0);
+  background: #fff;
+}
 .practice-editor footer button { min-height: 40px; padding: 0 15px; }
 
 @media (max-width: 1180px) {
@@ -7505,6 +7776,12 @@ body.practice-drawer-open { overflow: auto !important; }
   .practice-strategy-picker > div { grid-template-columns: 1fr; }
   .practice-strategy-picker label > span { min-height: 92px; }
   .practice-scope-config__grid { grid-template-columns: 1fr; }
+  .practice-requirement-presets-popover {
+    position: static;
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-top: 2px;
+  }
   .practice-editor-grid { grid-template-columns: 1fr; }
   .practice-scope-resume { min-height: 360px; padding: 30px 20px; }
   .practice-scope-resume__actions { width: 100%; flex-direction: column-reverse; }

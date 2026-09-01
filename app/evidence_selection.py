@@ -455,58 +455,6 @@ def _selection_prompt(
     ]
 
 
-def _message_text_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                return str(part.get("text") or "")
-    return ""
-
-
-def _compact_selection_prompt_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    compacted: list[dict[str, Any]] = []
-    for message in messages:
-        if message.get("role") != "user":
-            compacted.append(message)
-            continue
-        try:
-            payload = json.loads(_message_text_content(message.get("content")) or "{}")
-        except json.JSONDecodeError:
-            compacted.append(message)
-            continue
-        compact_candidates = []
-        for raw in payload.get("candidate_evidence", []):
-            if not isinstance(raw, dict):
-                continue
-            evidence_text = clean_text(raw.get("evidence_text") or raw.get("text") or "")
-            compact_candidates.append(
-                {
-                    "evidence_id": raw.get("evidence_id"),
-                    "knowledge_point": raw.get("knowledge_point"),
-                    "citation_textbook": raw.get("citation_textbook") or raw.get("textbook"),
-                    "chapter_section": raw.get("chapter_section") or raw.get("chapter"),
-                    "printed_page": raw.get("printed_page") or raw.get("page_start"),
-                    "score": raw.get("score"),
-                    "source_type": raw.get("source_type"),
-                    "caption": raw.get("caption"),
-                    "surrounding_text_preview": clean_text(raw.get("surrounding_text_preview") or "")[:220],
-                    "table_html": clean_text(raw.get("table_html") or "")[:420],
-                    "visual_summary": clean_text(raw.get("visual_summary") or "")[:420],
-                    "visual_status": raw.get("visual_status"),
-                    "text_model_can_read_visual": raw.get("text_model_can_read_visual"),
-                    "visual_warning": clean_text(raw.get("visual_warning") or "")[:220],
-                    "asset_available": raw.get("asset_available"),
-                    "evidence_text": evidence_text[:420],
-                }
-            )
-        payload["candidate_evidence"] = compact_candidates
-        payload["compact_prompt"] = True
-        compacted.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
-    return compacted
-
-
 def _normalize_selection(question: dict[str, Any], plan: dict[str, Any], data: dict[str, Any], candidates: list[EvidenceCandidate]) -> dict[str, Any]:
     available_ids = {candidate.evidence_id for candidate in candidates}
     qid = str(question.get("question_id", "")).strip()
@@ -772,7 +720,6 @@ def _select_one(
         }
         return selection
     try:
-        fallback_model = next((item for item in provider.model_options if item != model), None)
         include_visual_assets = provider_model_supports_vision(provider, model)
         candidate_payload = _candidate_payload(candidates, include_visual_assets=include_visual_assets)
         messages = _selection_prompt(
@@ -789,8 +736,6 @@ def _select_one(
                 messages,
                 model=model,
                 max_tokens=EVIDENCE_SELECTION_MAX_TOKENS,
-                fallback_model=fallback_model,
-                compact_messages=_compact_selection_prompt_messages,
                 thinking="disabled",
                 timeout=EVIDENCE_SELECTION_TIMEOUT_SECONDS,
                 task_stage="evidence_selection",

@@ -1,7 +1,7 @@
 import base64
-from io import BytesIO
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -11,7 +11,6 @@ from lxml import etree
 from PIL import Image
 
 from app.practice_inputs import _reference_image_data_url, parse_practice_sources
-
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -86,7 +85,7 @@ class PracticeInputTests(unittest.TestCase):
             path.with_suffix(".tmp.docx").replace(path)
         return path
 
-    def test_omml_order_table_formula_and_image_warning(self):
+    def test_omml_order_table_formula_and_more_than_eight_images(self):
         with tempfile.TemporaryDirectory() as raw:
             path = self.make_docx(Path(raw), formulas=True, images=9, table_formula=True)
             result = parse_practice_sources(_payload(path))
@@ -96,14 +95,14 @@ class PracticeInputTests(unittest.TestCase):
             self.assertIn("表格前x", result["text"])
             self.assertEqual(diagnostics["omml_formula_count"], 2)
             self.assertEqual(diagnostics["table_count"], 1)
-            self.assertEqual(diagnostics["image_count_included"], 8)
+            self.assertEqual(diagnostics["image_count_included"], 9)
             self.assertEqual(diagnostics["reference_image_count_included"], 9)
             self.assertEqual(diagnostics["image_anchor_count_included"], 9)
             self.assertEqual(len(diagnostics["embedded_image_order"]), 9)
             self.assertEqual(len(diagnostics["reference_image_order"]), 9)
             self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 9)
             self.assertEqual(result["reference_image_count"], 9)
-            self.assertTrue(diagnostics["warnings"])
+            self.assertFalse(diagnostics["warnings"])
 
     def test_plain_docx_has_no_formula_warning(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -111,6 +110,19 @@ class PracticeInputTests(unittest.TestCase):
             diagnostics = parse_practice_sources(_payload(path))["file_diagnostics"][0]
             self.assertEqual(diagnostics["omml_formula_count"], 0)
             self.assertFalse(diagnostics["warnings"])
+
+    def test_docx_images_beyond_twenty_four_are_explicitly_reported(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = self.make_docx(Path(raw), formulas=False, images=25)
+            result = parse_practice_sources(_payload(path))
+            diagnostics = result["file_diagnostics"][0]
+
+            self.assertEqual(diagnostics["embedded_image_count"], 25)
+            self.assertEqual(diagnostics["image_count_included"], 24)
+            self.assertEqual(diagnostics["reference_image_count_included"], 24)
+            self.assertEqual(result["reference_image_count"], 24)
+            self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 24)
+            self.assertTrue(any("超过" in warning for warning in diagnostics["warnings"]))
 
     def test_docx_with_substantial_native_text_does_not_force_vision(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -151,7 +163,7 @@ class PracticeInputTests(unittest.TestCase):
             payload["source_files"].append(_payload(second)["source_files"][0])
             result = parse_practice_sources(payload)
             counts = [item["image_count_included"] for item in result["file_diagnostics"]]
-            self.assertEqual(counts, [5, 3])
+            self.assertEqual(counts, [5, 5])
             reference_counts = [item["reference_image_count_included"] for item in result["file_diagnostics"]]
             anchor_counts = [item["image_anchor_count_included"] for item in result["file_diagnostics"]]
             self.assertEqual(reference_counts, [5, 5])
@@ -159,7 +171,7 @@ class PracticeInputTests(unittest.TestCase):
             self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 10)
             self.assertIn("⟦IMAGE_REF:6;", result["text"])
             self.assertEqual(result["reference_image_count"], 10)
-            self.assertTrue(result["file_diagnostics"][1]["warnings"])
+            self.assertFalse(result["file_diagnostics"][1]["warnings"])
 
     def test_corrupt_docx_is_rejected(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -174,16 +186,16 @@ class PracticeInputTests(unittest.TestCase):
         diagnostics = {
             "format": "pdf",
             "page_count_total": 12,
-            "page_numbers_used": list(range(1, 9)),
-            "page_numbers_omitted": list(range(9, 13)),
-            "warnings": ["PDF 共 12 页，仅向模型传递前 8 页图像。"],
+            "page_numbers_used": list(range(1, 13)),
+            "page_numbers_omitted": [],
+            "warnings": [],
         }
-        with patch("app.practice_inputs._pdf_content", return_value=("", ["data:image/jpeg;base64,AA=="] * 8, diagnostics)):
+        with patch("app.practice_inputs._pdf_content", return_value=("", ["data:image/jpeg;base64,AA=="] * 12, diagnostics)):
             result = parse_practice_sources(payload)
         row = result["file_diagnostics"][0]
-        self.assertEqual(row["image_count_included"], 8)
-        self.assertEqual(row["page_numbers_used"], list(range(1, 9)))
-        self.assertEqual(row["page_numbers_omitted"], list(range(9, 13)))
+        self.assertEqual(row["image_count_included"], 12)
+        self.assertEqual(row["page_numbers_used"], list(range(1, 13)))
+        self.assertEqual(row["page_numbers_omitted"], [])
 
 
 if __name__ == "__main__":

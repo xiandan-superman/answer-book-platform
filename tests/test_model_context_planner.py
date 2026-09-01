@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app import model_context_planner
 from app.model_capability_registry import model_task_support
 from app.model_context_planner import (
     build_model_context_plan,
@@ -42,7 +43,7 @@ def test_platform_context_plan_blocks_unsupported_image_input() -> None:
     assert "不支持" in context_plan_block_reason(plan)
 
 
-def test_platform_context_plan_blocks_stage_image_limit() -> None:
+def test_platform_context_plan_treats_stage_image_recommendation_as_advisory() -> None:
     plan = build_model_context_plan(
         stage="source_analysis",
         provider_name="bigmodel",
@@ -50,9 +51,36 @@ def test_platform_context_plan_blocks_stage_image_limit() -> None:
         messages=_image_message(9),
     )
 
-    assert plan["maximum_images"] == 8
+    assert plan["recommended_images"] == 8
+    assert plan["over_recommended_images"] is True
+    assert plan["maximum_images"] is None
+    assert plan["too_many_images"] is False
+    assert plan["image_limit_authority"] == "stage_quality_advisory"
+    assert context_plan_block_reason(plan) == ""
+
+
+def test_platform_context_plan_blocks_only_registered_provider_hard_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        model_context_planner,
+        "get_model_capability",
+        lambda _provider, _model: {
+            "native_inputs": ["text", "image"],
+            "limits": {"max_images_per_request": 10},
+            "quality_limits": {"source_analysis": {"max_images": 8}},
+        },
+    )
+    plan = build_model_context_plan(
+        stage="source_analysis",
+        provider_name="test-provider",
+        model_name="test-model",
+        messages=_image_message(11),
+    )
+
+    assert plan["recommended_images"] == 8
+    assert plan["maximum_images"] == 10
     assert plan["too_many_images"] is True
-    assert "拆分" in context_plan_block_reason(plan)
+    assert plan["image_limit_authority"] == "provider_hard_limit"
+    assert "硬上限 10 张" in context_plan_block_reason(plan)
 
 
 def test_platform_context_plan_blocks_missing_required_evidence() -> None:

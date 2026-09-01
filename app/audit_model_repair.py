@@ -723,7 +723,6 @@ def repair_fragments_with_model_for_audit(
     selections = _selection_map(selection_data)
     include_textbook_evidence = str((selection_data or {}).get("analysis_profile") or "") != "question_only"
     fragments_by_qid = {_qid(fragment): fragment for fragment in fragments if _qid(fragment)}
-    fallback_model = next((item for item in provider.model_options if item != model), None)
     repaired_qids: list[str] = []
     repair_issues: list[dict[str, Any]] = []
 
@@ -795,7 +794,6 @@ def repair_fragments_with_model_for_audit(
                                 messages,
                                 model=model,
                                 max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                                fallback_model=fallback_model,
                                 thinking="disabled",
                                 timeout=audit_model_repair_timeout_seconds(question),
                                 task_stage="review",

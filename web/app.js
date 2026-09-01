@@ -102,6 +102,10 @@ let practicePreferenceSequence = 0;
 let practiceDifficultySelectionOrder = 0;
 let practiceVariantSelectionOrder = 0;
 let practiceRegenerationInProgress = false;
+let practiceRequirementPresets = [];
+let practiceRequirementPresetSelection = new Set();
+let practiceRequirementPresetsLoaded = false;
+let practiceRequirementPresetsLoading = null;
 const pendingReviewTaskIds = new Set();
 const handledReviewDecisionRequests = new Set();
 let examStructureReviewModalOpen = false;
@@ -787,6 +791,7 @@ function restorePracticeScopeConfig(config = {}) {
   if ($("practiceDifficultyIntermediateCount")) $("practiceDifficultyIntermediateCount").value = config.difficulty_counts?.intermediate ?? $("practiceDifficultyIntermediateCount").value;
   if ($("practiceDifficultyChallengeCount")) $("practiceDifficultyChallengeCount").value = config.difficulty_counts?.challenge ?? $("practiceDifficultyChallengeCount").value;
   if ($("practiceScopeFocus")) $("practiceScopeFocus").value = config.focus || "";
+  syncPracticeRequirementPresetCount();
   const types = new Set(config.question_types || []);
   document.querySelectorAll('input[name="practiceScopeQuestionType"]').forEach((input) => { input.checked = types.has(input.value); });
   syncPracticeSourceContentPreference(config.include_source_content_in_generation !== false);
@@ -2013,8 +2018,11 @@ function renderFinalAcceptanceSummary(task = {}, report = null) {
         .map((item) => publicDiagnosticMessage(item).replace(/[；。]+$/, ""))
         .filter(Boolean)
     )).slice(0, 3);
+    const warningList = warnings.length
+      ? `<ul class="final-acceptance-issue-list">${warnings.map((item) => `<li><i class="fas fa-circle-exclamation" aria-hidden="true"></i><span>${escapeHtml(item)}</span></li>`).join("")}</ul>`
+      : "";
     hint.className = "result-card result-warn";
-    hint.innerHTML = `<strong><i class="fas fa-triangle-exclamation"></i> 需关注的复核风险</strong><p>正式交付包可正常下载；以下提示用于交付前后核对，不影响下载。${warnings.length ? `风险：${warnings.map((item) => escapeHtml(item)).join("；")}` : "请查看复核报告。"}</p>`;
+    hint.innerHTML = `<strong><i class="fas fa-triangle-exclamation"></i> 需关注的复核风险</strong><p>正式交付包可正常下载；以下提示用于交付前后核对，不影响下载。${warnings.length ? "" : "请查看复核报告。"}</p>${warningList}`;
     return;
   }
   if (dataFormalAcceptancePassed(data)) {
@@ -2023,9 +2031,19 @@ function renderFinalAcceptanceSummary(task = {}, report = null) {
     return;
   }
   if (data?.delivery_ready === false || data?.ok === false) {
-    const issues = (data.issues || []).slice(0, 4).map((item) => publicDiagnosticMessage(item));
+    const rawIssues = (data.issues || []).slice(0, 4).map((item) => {
+      if (item && typeof item === "object") return String(item.message || item.detail || item.code || "").trim();
+      return String(item || "").trim();
+    }).filter(Boolean);
+    const issues = rawIssues.map((item) => publicDiagnosticMessage(item)).filter(Boolean);
+    const issueList = issues.length
+      ? `<ul class="final-acceptance-issue-list">${issues.map((item) => `<li><i class="fas fa-circle-exclamation" aria-hidden="true"></i><span>${escapeHtml(item)}</span></li>`).join("")}</ul>`
+      : "";
+    const technicalDetails = rawIssues.length
+      ? `<details class="technical-details final-acceptance-technical"><summary>查看技术详情</summary><ul>${rawIssues.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details>`
+      : "";
     hint.className = "result-card result-error";
-    hint.innerHTML = `<strong><i class="fas fa-circle-xmark"></i> 最终验收未通过</strong><p>当前结果不能作为正式交付。${issues.length ? `阻断项：${issues.map((item) => escapeHtml(item)).join("；")}` : "请查看质量与诊断。"}</p>`;
+    hint.innerHTML = `<strong><i class="fas fa-circle-xmark"></i> 最终验收未通过</strong><p>当前结果暂不能作为正式交付。${issues.length ? "请先处理以下问题：" : "请查看质量与诊断。"}</p>${issueList}${technicalDetails}`;
     return;
   }
   hint.className = "result-card muted-card";
@@ -2105,6 +2123,207 @@ function dataFormalAcceptancePassed(report) {
 
 async function api(path, options = {}) {
   return window.PlatformApi.request(path, options);
+}
+
+function practiceRequirementTokens(value = "") {
+  return String(value || "")
+    .split(/[；;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function selectedRequirementPresetIdsFromInput() {
+  const tokens = new Set(practiceRequirementTokens($("practiceScopeFocus")?.value));
+  return new Set(practiceRequirementPresets.filter((item) => tokens.has(item.text)).map((item) => item.id));
+}
+
+function syncPracticeRequirementPresetCount() {
+  const selected = selectedRequirementPresetIdsFromInput();
+  practiceRequirementPresetSelection = selected;
+  const count = selected.size;
+  const button = $("practiceRequirementPresetsButton");
+  if (button) button.setAttribute("aria-label", count ? `展开已保存的补充要求，当前已选 ${count} 项` : "展开已保存的补充要求");
+  if (!$("practiceRequirementPresetsPopover")?.classList.contains("hidden")) renderPracticeRequirementPresets();
+}
+
+function setPracticeRequirementPresetError(message = "") {
+  const error = $("practiceRequirementPresetsError");
+  if (!error) return;
+  error.textContent = message;
+  error.classList.toggle("hidden", !message);
+}
+
+function renderPracticeRequirementPresets() {
+  const list = $("practiceRequirementPresetsList");
+  if (!list) return;
+  list.innerHTML = practiceRequirementPresets.map((item) => {
+    const safeId = escapeHtml(item.id);
+    const safeText = escapeHtml(item.text);
+    const checked = practiceRequirementPresetSelection.has(item.id) ? "checked" : "";
+    return `
+      <div class="practice-requirement-preset-row" data-requirement-preset-row="${safeId}" role="option" aria-selected="${checked ? "true" : "false"}">
+        <label title="${safeText}">
+          <input type="checkbox" data-requirement-preset-select="${safeId}" ${checked} aria-label="选择：${safeText}">
+          <span class="practice-requirement-preset-text">${safeText}</span>
+        </label>
+        <button class="practice-requirement-preset-action" type="button" data-requirement-preset-edit="${safeId}" title="编辑此要求" aria-label="编辑：${safeText}"><i class="fas fa-pen" aria-hidden="true"></i></button>
+        <button class="practice-requirement-preset-action practice-requirement-preset-delete" type="button" data-requirement-preset-delete="${safeId}" title="删除此要求" aria-label="删除：${safeText}"><i class="fas fa-trash" aria-hidden="true"></i></button>
+      </div>`;
+  }).join("");
+  $("practiceRequirementPresetsEmpty")?.classList.toggle("hidden", practiceRequirementPresets.length > 0);
+  window.lucide?.createIcons();
+}
+
+async function loadPracticeRequirementPresets(force = false) {
+  if (practiceRequirementPresetsLoaded && !force) return practiceRequirementPresets;
+  if (practiceRequirementPresetsLoading && !force) return practiceRequirementPresetsLoading;
+  practiceRequirementPresetsLoading = api("/api/practice/requirement-presets")
+    .then((payload) => {
+      practiceRequirementPresets = Array.isArray(payload?.items) ? payload.items : [];
+      practiceRequirementPresetsLoaded = true;
+      practiceRequirementPresetSelection = selectedRequirementPresetIdsFromInput();
+      setPracticeRequirementPresetError("");
+      renderPracticeRequirementPresets();
+      syncPracticeRequirementPresetCount();
+      return practiceRequirementPresets;
+    })
+    .finally(() => { practiceRequirementPresetsLoading = null; });
+  return practiceRequirementPresetsLoading;
+}
+
+function closePracticeRequirementPresets() {
+  const popover = $("practiceRequirementPresetsPopover");
+  const button = $("practiceRequirementPresetsButton");
+  const input = $("practiceScopeFocus");
+  popover?.classList.add("hidden");
+  button?.setAttribute("aria-expanded", "false");
+  input?.setAttribute("aria-expanded", "false");
+  popover?.closest(".practice-scope-config-disclosure")?.classList.remove("requirement-presets-open");
+  renderPracticeRequirementPresets();
+}
+
+async function openPracticeRequirementPresets() {
+  const popover = $("practiceRequirementPresetsPopover");
+  const button = $("practiceRequirementPresetsButton");
+  if (!popover || !button) return;
+  if (!popover.classList.contains("hidden")) {
+    closePracticeRequirementPresets();
+    return;
+  }
+  popover.classList.remove("hidden");
+  button.setAttribute("aria-expanded", "true");
+  $("practiceScopeFocus")?.setAttribute("aria-expanded", "true");
+  popover.closest(".practice-scope-config-disclosure")?.classList.add("requirement-presets-open");
+  practiceRequirementPresetSelection = selectedRequirementPresetIdsFromInput();
+  renderPracticeRequirementPresets();
+  try {
+    await loadPracticeRequirementPresets();
+  } catch (error) {
+    setPracticeRequirementPresetError(String(error).replace(/^Error:\s*/, ""));
+  }
+}
+
+async function mutatePracticeRequirementPreset(body) {
+  const payload = await api("/api/practice/requirement-presets", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+  practiceRequirementPresets = Array.isArray(payload?.items) ? payload.items : [];
+  practiceRequirementPresetsLoaded = true;
+  setPracticeRequirementPresetError("");
+  renderPracticeRequirementPresets();
+  syncPracticeRequirementPresetCount();
+}
+
+async function createPracticeRequirementPreset(initialText = null) {
+  const text = initialText === null ? await platformPrompt({
+      eyebrow: "生题配置",
+      title: "新建常用要求",
+      message: "保存后可在今后的生题任务中直接选择；内容会保存在本机。",
+      inputLabel: "要求内容",
+      placeholder: "例如：侧重跨知识点综合，不超出材料范围",
+      confirmText: "保存"
+    }) : initialText;
+  if (text === null) return;
+  try {
+    await mutatePracticeRequirementPreset({ action: "create", text });
+    const created = practiceRequirementPresets.find((item) => item.text === String(text).replace(/\s+/g, " ").trim());
+    if (created) practiceRequirementPresetSelection.add(created.id);
+    renderPracticeRequirementPresets();
+    applyPracticeRequirementPresets();
+    return true;
+  } catch (error) {
+    setPracticeRequirementPresetError(String(error).replace(/^Error:\s*/, ""));
+    return false;
+  }
+}
+
+function replacePracticeRequirementToken(previousText, nextText = "") {
+  const input = $("practiceScopeFocus");
+  if (!input) return;
+  input.value = practiceRequirementTokens(input.value)
+    .map((token) => token === previousText ? nextText : token)
+    .filter(Boolean)
+    .join("；");
+}
+
+async function editPracticeRequirementPreset(presetId) {
+  const item = practiceRequirementPresets.find((preset) => preset.id === presetId);
+  if (!item) return;
+  const text = await platformPrompt({
+    eyebrow: "生题配置",
+    title: "编辑常用要求",
+    message: "修改会同步用于以后选择，不会改动已经生成的题目。",
+    inputLabel: "要求内容",
+    defaultValue: item.text,
+    confirmText: "保存修改"
+  });
+  if (text === null) return;
+  try {
+    await mutatePracticeRequirementPreset({ action: "update", id: presetId, text });
+    if (practiceRequirementPresetSelection.has(presetId)) {
+      replacePracticeRequirementToken(item.text, String(text).replace(/\s+/g, " ").trim());
+      applyPracticeRequirementPresets();
+    }
+  } catch (error) {
+    setPracticeRequirementPresetError(String(error).replace(/^Error:\s*/, ""));
+  }
+}
+
+async function deletePracticeRequirementPreset(presetId) {
+  const item = practiceRequirementPresets.find((preset) => preset.id === presetId);
+  if (!item) return;
+  const confirmed = await platformConfirm({
+    eyebrow: "管理常用要求",
+    title: "删除这条常用要求？",
+    message: item.text,
+    confirmText: "删除",
+    tone: "danger"
+  });
+  if (!confirmed) return;
+  try {
+    const wasSelected = practiceRequirementPresetSelection.has(presetId);
+    practiceRequirementPresetSelection.delete(presetId);
+    if (wasSelected) replacePracticeRequirementToken(item.text);
+    await mutatePracticeRequirementPreset({ action: "delete", id: presetId });
+    applyPracticeRequirementPresets();
+  } catch (error) {
+    setPracticeRequirementPresetError(String(error).replace(/^Error:\s*/, ""));
+  }
+}
+
+function applyPracticeRequirementPresets() {
+  const input = $("practiceScopeFocus");
+  if (!input) return;
+  const presetTexts = new Set(practiceRequirementPresets.map((item) => item.text));
+  const manualTokens = practiceRequirementTokens(input.value).filter((text) => !presetTexts.has(text));
+  const selectedTexts = practiceRequirementPresets
+    .filter((item) => practiceRequirementPresetSelection.has(item.id))
+    .map((item) => item.text);
+  input.value = [...manualTokens, ...selectedTexts].join("；");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  syncPracticeRequirementPresetCount();
 }
 
 function supportFeedbackPayload(scope = "page", extra = {}) {
@@ -4786,7 +5005,7 @@ function renderPracticeResults(data) {
           <small>${escapeHtml(item.target_skill || "核心能力训练")}</small>
           <em class="${item.difficulty === "挑战" ? "hard" : item.difficulty === "基础" ? "easy" : ""}">${escapeHtml(item.difficulty)}</em>
           <div class="practice-exercise__actions">
-            <label title="选择本题" class="practice-exercise__select"><input type="checkbox" data-practice-select="${idx}" ${selectedPracticeExerciseIndexes.has(idx) ? "checked" : ""}><span class="visually-hidden">选择本题</span></label>
+            <label title="选择本题" class="practice-exercise__select"><input type="checkbox" aria-label="选择第 ${escapeHtml(item.number || String(idx + 1))} 题" data-practice-select="${idx}" ${selectedPracticeExerciseIndexes.has(idx) ? "checked" : ""}><span>选择</span></label>
             <button type="button" class="practice-question-action" data-practice-feedback="${idx}" title="反馈此题"><i class="fas fa-bug"></i><span>反馈</span></button>
             ${generationFailed ? "" : `<button type="button" class="practice-question-action" data-practice-edit="${idx}" title="编辑本题"><i class="fas fa-pen"></i><span>编辑</span></button>`}
             <button type="button" class="practice-question-action practice-question-action--primary" ${configurationNeedsReview ? "data-practice-config" : `data-practice-regenerate="${idx}"`} title="${configurationNeedsReview ? "检查 API 配置" : auditNeedsReview ? "复审并生成本题" : "重新生成本题"}"><i class="fas ${configurationNeedsReview ? "fa-key" : "fa-rotate"}"></i><span>${configurationNeedsReview ? "检查配置" : auditNeedsReview ? "复审生成" : "重新生成"}</span></button>
@@ -4808,7 +5027,7 @@ function renderPracticeResults(data) {
       ` : `
         <div class="practice-stem">${practiceMarkdown(item.stem)}</div>
         ${practiceExtrasHtml(item, "stem")}
-        ${item.question_type === "作图题" && !(item.figures || []).length ? `<div class="practice-source-link"><i class="fas fa-pencil-ruler"></i>本题要求学生作图，因此未附完整答案曲线，也不会调用 gpt-image-2 生成答案图。</div>` : ""}
+        ${item.question_type === "作图题" && !(item.figures || []).length ? `<div class="practice-source-link"><i class="fas fa-pencil-ruler"></i>本题要求学生作图，因此未附完整答案曲线，也不会额外调用图片生成模型。</div>` : ""}
         ${item.options?.length ? `<div class="practice-options">${item.options.map((option) => `<p><b>${escapeHtml(option.label)}</b>${practiceMarkdown(option.text)}</p>`).join("")}</div>` : ""}
         ${tagsArr.length ? `<div class="practice-exercise-tags">${visibleTags.map((t) => `<span>${escapeHtml(t)}</span>`).join("")}${tagsArr.length > visibleTags.length ? `<span class="practice-tag-count">+${tagsArr.length - visibleTags.length}</span>` : ""}</div>` : ""}
         ${semanticRisks.length ? `<div class="practice-generation-error" role="alert"><i class="fas fa-shield-halved"></i><div><strong>语义复核发现 ${semanticRisks.length} 项需修复</strong><p>${escapeHtml(semanticRisks.slice(0, 2).map((risk) => risk.message || risk.suggested_action || "语义风险").join("；"))}</p><button type="button" class="secondary-button" data-practice-semantic-fix="${idx}" data-practice-semantic-instruction="${escapeHtml(semanticFixInstruction)}"><i class="fas fa-wand-magic-sparkles"></i>按复核建议修复本题</button></div></div>` : ""}
@@ -5180,6 +5399,7 @@ function renderPracticeSourceSelection(data) {
     latestPracticeRequest?.difficulty_counts
   );
   if ($("practiceScopeFocus")) $("practiceScopeFocus").value = latestPracticeRequest?.focus || "";
+  syncPracticeRequirementPresetCount();
   const existingTypes = new Set(latestPracticeRequest?.question_types || []);
   document.querySelectorAll('input[name="practiceScopeQuestionType"]').forEach((input) => { input.checked = existingTypes.has(input.value); });
   $("practiceStrategySettings")?.classList.remove("hidden");
@@ -11844,6 +12064,9 @@ async function openGenerationTaskResult(task) {
     renderPracticeResults(latestPracticeSet);
     setPracticeStage("results");
     setPracticeStageDescription(task.task_kind === "knowledge" ? "知识点出题结果" : "按题出题结果");
+    // Long saved results can trigger scroll anchoring after goToPage() has
+    // already reset the viewport. Reset again once the result layout exists.
+    requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
   } catch (err) {
     if (sessionVersion !== practiceSessionVersion) return;
     await platformAlert(String(err).replace(/^Error:\s*/, ""), { title: "无法打开出题结果", tone: "danger" });
@@ -12143,9 +12366,13 @@ function publicDiagnosticMessage(message = "", questionId = "") {
     [/figure_quality_unattended_gate/gi, "答案配图需要人工复核"],
     [/Figure artifact validation failed after bounded repairs/gi, "答案配图在自动修复后仍未通过质量检查"],
     [/answer_coverage[^；。]*evidence_ids is empty/gi, "部分题目缺少可追溯依据"],
+    [/answer_coverage\s*:\s*/gi, ""],
+    [/answer is pending review/gi, "答案内容仍需人工复核"],
     [/evidence_ids is empty/gi, "缺少可追溯依据"],
     [/schema type error at evidence_ids(?:\.\d+)?/gi, "教材依据数据格式不正确"],
     [/OMML formula count \d+ below expected minimum \d+/gi, "文档公式数量低于预期，请复核公式是否完整"],
+    [/output missing:\s*[^；;]+/gi, "正式 Word 文件尚未生成或已不可用"],
+    [/figure_delivery\s*:\s*/gi, "答案配图不完整："],
     [/qa_[a-z0-9_-]+/gi, "对应题目"],
     [/issue 级别问题/gi, "阻断问题"],
     [/warning/gi, "提示项"],
@@ -12154,6 +12381,9 @@ function publicDiagnosticMessage(message = "", questionId = "") {
   return text
     .replace(/no retrieval candidates/gi, "未找到可用的教材候选依据")
     .replace(/retrieval audit failed/gi, "教材候选依据检索审查未通过")
+    .replace(/对应题目\s+题干要求/gi, "对应题目要求")
+    .replace(/对应题目\s*[:：]\s*答案内容仍需人工复核/gi, "有题目的答案内容仍需人工复核")
+    .replace(/缺少模型原始解析草稿，无法审计解析生成质量/gi, "缺少原始解析草稿，生成质量需要人工复核")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -13563,7 +13793,13 @@ function renderResultQuestionList(questions) {
   for (const [questionIndex, question] of questions.entries()) {
     const checkpoint = checkpointStatusMeta(question.checkpoint_status);
     const sourceNumber = String(question.display_number || question.number || question.index || "").trim();
-    const stemPreview = `${sourceNumber ? `原题 ${sourceNumber} · ` : ""}${String(question.stem || "").slice(0, 18)}`;
+    const plainStem = String(question.stem || "")
+      .replace(/⟦(?:MATHML|LATEX):[\s\S]*?⟧/gi, "")
+      .replace(/<[^>]+>/g, "")
+      .replace(/[*_`#]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const stemPreview = `${sourceNumber ? `原题 ${sourceNumber} · ` : ""}${plainStem.slice(0, 26)}`;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "result-question-item";
@@ -13571,7 +13807,7 @@ function renderResultQuestionList(questions) {
     button.innerHTML = `
       <span>
         <strong>第 ${questionIndex + 1} 项</strong>
-        <small>${practiceMarkdown(stemPreview)}${(question.stem || "").length > 18 ? "..." : ""}</small>
+        <small>${escapeHtml(stemPreview)}${plainStem.length > 26 ? "..." : ""}</small>
       </span>
       <div class="result-question-meta">
         <em>${escapeHtml(question.type || "题目")}</em>
@@ -13584,7 +13820,6 @@ function renderResultQuestionList(questions) {
     });
     list.appendChild(button);
   }
-  requestAnimationFrame(() => typesetMath(list));
 }
 
 function renderTagList(items, fallback = "暂无") {
@@ -14326,6 +14561,42 @@ $("knowledgeForm")?.addEventListener("change", () => {
 });
 $("practiceScopeDrawer")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practiceScopeDrawer")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
+$("practiceScopeFocus")?.addEventListener("input", syncPracticeRequirementPresetCount);
+$("practiceRequirementPresetsButton")?.addEventListener("click", openPracticeRequirementPresets);
+$("practiceRequirementPresetAdd")?.addEventListener("click", () => createPracticeRequirementPreset());
+$("practiceRequirementPresetsList")?.addEventListener("change", (event) => {
+  const input = event.target.closest("[data-requirement-preset-select]");
+  if (!input) return;
+  const presetId = input.getAttribute("data-requirement-preset-select");
+  if (input.checked) practiceRequirementPresetSelection.add(presetId);
+  else practiceRequirementPresetSelection.delete(presetId);
+  renderPracticeRequirementPresets();
+  applyPracticeRequirementPresets();
+});
+$("practiceRequirementPresetsList")?.addEventListener("click", (event) => {
+  const edit = event.target.closest("[data-requirement-preset-edit]");
+  if (edit) {
+    editPracticeRequirementPreset(edit.getAttribute("data-requirement-preset-edit"));
+    return;
+  }
+  const remove = event.target.closest("[data-requirement-preset-delete]");
+  if (remove) deletePracticeRequirementPreset(remove.getAttribute("data-requirement-preset-delete"));
+});
+document.addEventListener("pointerdown", (event) => {
+  const popover = $("practiceRequirementPresetsPopover");
+  const button = $("practiceRequirementPresetsButton");
+  const input = $("practiceScopeFocus");
+  if (!popover || popover.classList.contains("hidden")) return;
+  if (popover.contains(event.target) || button?.contains(event.target) || input?.contains(event.target)) return;
+  closePracticeRequirementPresets();
+});
+document.addEventListener("keydown", (event) => {
+  const popover = $("practiceRequirementPresetsPopover");
+  if (event.key !== "Escape" || !popover || popover.classList.contains("hidden")) return;
+  event.preventDefault();
+  closePracticeRequirementPresets();
+  $("practiceRequirementPresetsButton")?.focus({ preventScroll: true });
+});
 $("practicePlanReview")?.addEventListener("input", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 $("practicePlanReview")?.addEventListener("change", () => schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode));
 async function runPracticeWorkspaceDraftAction(button, action, errorTitle) {
@@ -14682,6 +14953,7 @@ $("practiceShowAllHistory")?.addEventListener("click", async () => {
 restorePracticeSidebarState();
 syncPracticeConfigState();
 updatePracticeConfigSummary();
+loadPracticeRequirementPresets().catch(() => {});
 setPracticeStage("submit");
 setPracticeStageDescription("提交题目后，平台会先判断是单题还是题目集；单题将直接进入蓝图，题目集需要先选择训练范围。");
 setPracticeStatusBanner("就绪");

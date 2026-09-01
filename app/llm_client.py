@@ -115,15 +115,11 @@ def _json_retry_category(
         return "output_limit_repair"
     if result is not None:
         return "json_structure_repair"
-    if str(next_plan.get("model") or "") != str(plan.get("model") or ""):
-        return "capability_equivalent_route_fallback"
-    if next_plan.get("strategy") == "compact_fallback_disable_thinking":
-        return "history_compaction"
     if next_plan.get("strategy") != plan.get("strategy"):
         current_strategy = str(plan.get("strategy") or "")
         next_strategy = str(next_plan.get("strategy") or "")
-        if re.fullmatch(r"attempt_\d+", current_strategy) and re.fullmatch(
-            r"attempt_\d+", next_strategy
+        if re.fullmatch(r"(?:same_route_)?attempt_\d+", current_strategy) and re.fullmatch(
+            r"(?:same_route_)?attempt_\d+", next_strategy
         ):
             info = classify_provider_error(
                 error,
@@ -1071,8 +1067,6 @@ class OpenAICompatibleClient:
         max_tokens: int | None = None,
         timeout: int = 120,
         attempts: int = 2,
-        fallback_model: str | None = None,
-        compact_messages: Any | None = None,
         attempt_callback: Any | None = None,
         thinking: str | None = None,
         task_stage: str = "general",
@@ -1086,15 +1080,16 @@ class OpenAICompatibleClient:
             "ok": False,
             "attempts": [],
             "recommendations": [],
+            "quality_preserving": True,
         }
-        plans = self._json_retry_plans(messages, model, max_tokens, attempts, fallback_model, compact_messages, thinking)
+        plans = self._json_retry_plans(messages, model, max_tokens, attempts, thinking)
         for plan_index, plan in enumerate(plans):
             current_messages = plan["messages"]
             result: LLMResult | None = None
             if callable(attempt_callback):
                 attempt_callback("started", self._json_attempt_report(plan))
             try:
-                with model_diagnostic_hint(strategy=plan.get("strategy"), compact_prompt=plan.get("strategy") == "compact_fallback_disable_thinking"):
+                with model_diagnostic_hint(strategy=plan.get("strategy"), compact_prompt=False):
                     result = self.chat_json(
                         current_messages,
                         model=plan["model"],
@@ -1127,6 +1122,18 @@ class OpenAICompatibleClient:
                 if callable(attempt_callback):
                     attempt_callback("failed", report)
                 if plan_index + 1 < len(plans):
+                    error_info = classify_provider_error(
+                        exc,
+                        status_code=getattr(exc, "status_code", None),
+                        transport_phase=str(getattr(exc, "transport_phase", "") or ""),
+                        retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+                    )
+                    # A completed response may still need a same-route JSON or
+                    # output-boundary repair.  Transport/service failures may
+                    # also be retried.  Deterministic configuration, route,
+                    # content and ambiguous-request failures stop here.
+                    if result is None and not error_info.retryable:
+                        break
                     next_plan = plans[plan_index + 1]
                     source_invocation_id, source_call_id = _result_execution_reference(result)
                     observation = record_model_retry_scheduled(
@@ -1656,45 +1663,28 @@ class OpenAICompatibleClient:
 
     def _json_retry_plans(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str | None,
         max_tokens: int | None,
         attempts: int,
-        fallback_model: str | None,
-        compact_messages: Any | None,
         thinking: str | None = None,
     ) -> list[dict[str, Any]]:
         primary_model = str(model or self.config.default_model)
         requested_ceiling = int(max_tokens or self.config.max_tokens or DEFAULT_MODEL_MAX_TOKENS)
         requested_thinking = _normalize_thinking_mode(thinking if thinking is not None else getattr(self.config, "thinking_mode", "auto"))
         base_tokens = _effective_max_tokens(self.config, requested_ceiling, requested_thinking)
-        increased_tokens = max(base_tokens * 2, int(self.config.max_tokens or base_tokens), DEFAULT_MODEL_MAX_TOKENS)
-        if _is_reasoning_heavy_provider(self.config):
-            increased_tokens = max(increased_tokens, 32768)
-        # Retries may change strategy, but must not silently exceed the caller's budget ceiling.
+        # Generic retry is deliberately route- and quality-preserving. Model
+        # switching, reasoning reduction and lossy message compaction require
+        # a separate, explicitly authorized flow.
         base_tokens = min(base_tokens, requested_ceiling)
-        increased_tokens = min(increased_tokens, requested_ceiling)
-        if thinking is not None:
-            return [
-                {"strategy": f"attempt_{idx + 1}", "model": primary_model, "max_tokens": base_tokens, "thinking": requested_thinking, "messages": messages}
-                for idx in range(max(1, attempts))
-            ]
-        if fallback_model or compact_messages:
-            target_model = str(fallback_model or primary_model)
-            compact = compact_messages(messages) if callable(compact_messages) else messages
-            return [
-                {"strategy": "primary", "model": primary_model, "max_tokens": base_tokens, "thinking": None, "messages": messages},
-                {"strategy": "increase_max_tokens", "model": primary_model, "max_tokens": increased_tokens, "thinking": None, "messages": messages},
-                {"strategy": "disable_thinking", "model": primary_model, "max_tokens": increased_tokens, "thinking": "disabled", "messages": messages},
-                {"strategy": "fallback_model", "model": target_model, "max_tokens": increased_tokens, "thinking": None, "messages": messages},
-                {"strategy": "compact_fallback_disable_thinking", "model": target_model, "max_tokens": increased_tokens, "thinking": "disabled", "messages": compact},
-            ]
         return [
-            {"strategy": "primary", "model": primary_model, "max_tokens": base_tokens, "thinking": None, "messages": messages},
-            {"strategy": "increase_max_tokens", "model": primary_model, "max_tokens": increased_tokens, "thinking": None, "messages": messages},
-            {"strategy": "disable_thinking", "model": primary_model, "max_tokens": increased_tokens, "thinking": "disabled", "messages": messages},
-        ] if _is_reasoning_heavy_provider(self.config) else [
-            {"strategy": f"attempt_{idx + 1}", "model": primary_model, "max_tokens": base_tokens, "thinking": None, "messages": messages}
+            {
+                "strategy": f"same_route_attempt_{idx + 1}",
+                "model": primary_model,
+                "max_tokens": base_tokens,
+                "thinking": requested_thinking,
+                "messages": messages,
+            }
             for idx in range(max(1, attempts))
         ]
 
@@ -1708,7 +1698,7 @@ class OpenAICompatibleClient:
             "model": plan.get("model"),
             "max_tokens": plan.get("max_tokens"),
             "thinking": request_meta.get("thinking") if isinstance(request_meta, dict) else plan.get("thinking"),
-            "compact_prompt": plan.get("strategy") == "compact_fallback_disable_thinking",
+            "compact_prompt": False,
             "finish_reason": _normalized_finish_reason(raw),
             "content_length": len(content or ""),
             "prompt_tokens": usage.get("prompt_tokens"),
@@ -1840,7 +1830,11 @@ class ResponsesAPIClient(OpenAICompatibleClient):
             else:
                 raw = self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
         except LLMError as exc:
-            if bool(getattr(self.config, "responses_fallback_to_chat", True)) and _is_responses_endpoint_unsupported(str(exc)):
+            if _protocol_fallback_allowed(
+                messages,
+                str(exc),
+                configured=bool(getattr(self.config, "responses_fallback_to_chat", False)),
+            ):
                 observation = record_model_retry_scheduled(
                     exc,
                     category="protocol_adaptation",
@@ -1979,7 +1973,11 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
             )
         except LLMError as exc:
             profile = _model_profile(self.config, target_model)
-            if bool(profile.get("messages_fallback_to_chat")) and _is_responses_endpoint_unsupported(str(exc)):
+            if _protocol_fallback_allowed(
+                messages,
+                str(exc),
+                configured=bool(profile.get("messages_fallback_to_chat")),
+            ):
                 observation = record_model_retry_scheduled(
                     exc,
                     category="protocol_adaptation",
@@ -2060,6 +2058,33 @@ def _is_responses_endpoint_unsupported(error: str) -> bool:
     # A provider may also use 404 for an unknown model. Do not mask that as
     # protocol incompatibility.
     return "model" not in text
+
+
+def _protocol_fallback_allowed(
+    messages: list[dict[str, Any]],
+    error: str,
+    *,
+    configured: bool,
+) -> bool:
+    """Permit one same-model text fallback only for an explicit missing endpoint.
+
+    Multimodal content is intentionally excluded because a protocol conversion
+    can change image binding, ordering or provider-side preprocessing. Tool
+    requests use a different entry point and therefore never reach this path.
+    """
+
+    if not configured or not _is_responses_endpoint_unsupported(error):
+        return False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if str(part.get("type") or "").strip().lower() in {"image", "image_url", "input_image"}:
+                return False
+    return True
 
 
 def _safe_protocol_fallback_reason(error: str) -> str:

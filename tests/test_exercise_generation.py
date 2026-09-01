@@ -1693,6 +1693,53 @@ def test_source_analysis_attaches_docx_reference_images_even_when_text_first(mon
     assert result["generation"]["reference_image_count"] == 1
 
 
+def test_source_analysis_sends_all_nine_images_without_eight_image_truncation(monkeypatch):
+    captured_image_counts: list[int] = []
+    images = [f"data:image/png;base64,image{index}" for index in range(1, 10)]
+    monkeypatch.setattr(
+        exercise_generation,
+        "parse_practice_sources",
+        lambda _payload: {
+            "text": "请整体分析这组连续图片。",
+            "images": images,
+            "reference_images": images,
+            "file_names": [f"第{index}页.png" for index in range(1, 10)],
+            "file_diagnostics": [],
+            "analysis_mode": "mixed",
+        },
+    )
+    monkeypatch.setattr(exercise_generation, "OpenAICompatibleClient", lambda _provider: object())
+    monkeypatch.setattr(
+        exercise_generation,
+        "_model_runtime",
+        lambda _payload, _has_images: (SimpleNamespace(name="vision-test"), "vision-model"),
+    )
+    monkeypatch.setattr(exercise_generation, "_model_route", lambda *_args: "primary_multimodal")
+
+    def fake_call(_client, messages, **_kwargs):
+        content = messages[-1]["content"]
+        captured_image_counts.append(sum(
+            1
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ))
+        return {
+            "source_scope": {"mode": "single", "title": "连续图片", "questions": []},
+            "source_analysis": {"subject": "材料科学"},
+        }
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+
+    result = exercise_generation.analyze_practice_source({"source_mode": "exam"})
+
+    assert captured_image_counts == [9]
+    assert result["generation"]["reference_image_count"] == 9
+    assert result["generation"]["analysis_chunk_count"] == 1
+    context_plan = result["generation"]["context_plans"][0]
+    assert context_plan["input_modalities"]["images"] == 9
+    assert context_plan["too_many_images"] is False
+
+
 def test_source_analysis_repairs_empty_constraints_per_question_without_global_leakage(monkeypatch):
     calls: list[str] = []
 
@@ -1989,6 +2036,41 @@ def test_normalize_options_removes_labels_repeated_inside_option_text():
         {"label": "A", "text": "第一项"},
         {"label": "B", "text": "第二项"},
     ]
+
+
+@pytest.mark.parametrize("question_type", ["单选题", "多选题"])
+def test_final_choice_arrangement_randomizes_options_and_relabels(question_type):
+    class ReverseOrder:
+        @staticmethod
+        def shuffle(options):
+            options.reverse()
+
+    exercise = _exercise(
+        question_type=question_type,
+        options=[
+            {"label": "A", "text": "正确项"},
+            {"label": "B", "text": "干扰项一"},
+            {"label": "C", "text": "干扰项二"},
+            {"label": "D", "text": "干扰项三"},
+        ],
+    )
+
+    exercise_generation._randomize_choice_option_order(exercise, rng=ReverseOrder())
+
+    assert exercise["options"] == [
+        {"label": "A", "text": "干扰项三"},
+        {"label": "B", "text": "干扰项二"},
+        {"label": "C", "text": "干扰项一"},
+        {"label": "D", "text": "正确项"},
+    ]
+
+
+def test_final_choice_arrangement_does_not_touch_non_choice_questions():
+    exercise = _exercise(options=[{"label": "A", "text": "原始内容"}])
+
+    exercise_generation._randomize_choice_option_order(exercise)
+
+    assert exercise["options"] == [{"label": "A", "text": "原始内容"}]
 
 
 def test_normalize_practice_set_lifts_markdown_pipe_table_out_of_stem():

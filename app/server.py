@@ -91,6 +91,10 @@ from .practice_queue import (
     start_practice_queue_consumer,
     stop_practice_queue_consumer,
 )
+from .practice_requirement_presets import (
+    practice_requirement_presets_payload,
+    update_practice_requirement_presets,
+)
 from .practice_source_store import persist_practice_source_files
 from .practice_store import (
     PracticeEditConflict,
@@ -349,7 +353,7 @@ def _provider_test_protocol_override(provider, body: dict) -> tuple[object, bool
         raise ValueError(f"Unsupported API protocol: {raw_protocol}")
     fallback = _optional_bool(
         body.get("responses_fallback_to_chat"),
-        bool(getattr(provider, "responses_fallback_to_chat", True)),
+        bool(getattr(provider, "responses_fallback_to_chat", False)),
     )
     return replace(
         provider,
@@ -973,6 +977,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/word-format/settings":
             self.send_json(word_format_settings_payload())
             return
+        if parsed.path == "/api/practice/requirement-presets":
+            self.send_json(practice_requirement_presets_payload())
+            return
         if len(parts) == 4 and parts[:3] == ["api", "word-format", "tasks"]:
             try:
                 self.send_json(word_format_task_payload(parts[3]))
@@ -1432,6 +1439,16 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     body.get("settings"),
                 )
                 self.send_json({"profile": body.get("profile"), "settings": normalized, "message": "已设为该标准的永久默认"})
+                return
+            if parsed.path == "/api/practice/requirement-presets":
+                body = self.read_json()
+                self.send_json(
+                    update_practice_requirement_presets(
+                        str(body.get("action") or ""),
+                        preset_id=str(body.get("id") or ""),
+                        text=body.get("text"),
+                    )
+                )
                 return
             parts = [unquote(x) for x in parsed.path.strip("/").split("/") if x]
             if len(parts) == 5 and parts[:3] == ["api", "practice", "export-jobs"] and parts[4] == "retry":

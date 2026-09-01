@@ -99,6 +99,5 @@ def test_workspace_draft_buttons_resolve_history_and_ignore_empty_archives() -> 
         assert empty_page.evaluate("practiceWorkspaceRestoreCandidates.exam") is None
         empty_page.evaluate("void restorePreviousPracticeWorkspace('exam')")
         _wait_for_platform_dialog_message(empty_page, "还没有可恢复的历史草稿")
-        assert "还没有可恢复的历史草稿" in empty_page.locator("#platformDialogMessage").inner_text()
 
         browser.close()

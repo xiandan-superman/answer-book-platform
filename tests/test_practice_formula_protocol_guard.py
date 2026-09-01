@@ -65,31 +65,15 @@ def test_lingsuan_non_gpt_model_keeps_configured_protocol():
     assert client.config.api_protocol == "responses"
 
 
-def test_control_character_in_responses_output_retries_through_chat(monkeypatch):
+def test_control_character_in_responses_output_repairs_on_same_route():
     primary_calls = []
-    chat_calls = []
-    fallback_configs = []
 
     class PrimaryResponsesClient:
         config = _provider()
 
         def chat_json(self, messages, **kwargs):
             primary_calls.append((messages, kwargs))
-            return _result(_malformed_latex_json())
-
-    class ChatFallbackClient:
-        def __init__(self, config):
-            self.config = config
-
-        def chat_json(self, messages, **kwargs):
-            chat_calls.append((messages, kwargs))
-            return _result(_valid_latex_json())
-
-    def client_factory(config):
-        fallback_configs.append(config)
-        return ChatFallbackClient(config)
-
-    monkeypatch.setattr(exercise_generation, "OpenAICompatibleClient", client_factory)
+            return _result(_malformed_latex_json() if len(primary_calls) == 1 else _valid_latex_json())
 
     parsed = exercise_generation._call_practice_json(
         PrimaryResponsesClient(),
@@ -100,30 +84,19 @@ def test_control_character_in_responses_output_retries_through_chat(monkeypatch)
     )
 
     assert parsed["exercises"][0]["stem"] == "$\\beta$"
-    assert len(primary_calls) == 1
-    assert len(chat_calls) == 1
-    assert fallback_configs[0].api_protocol == "chat_completions"
-    assert fallback_configs[0].responses_streaming is False
-    assert chat_calls[0][1]["thinking"] == "disabled"
+    assert len(primary_calls) == 2
+    assert primary_calls[1][1]["thinking"] is None
+    assert primary_calls[1][1]["model"] == "gpt-5.6-terra"
 
 
-def test_invalid_chat_retry_is_rejected_instead_of_returned(monkeypatch):
+def test_invalid_same_route_retry_is_rejected_instead_of_returned():
     class PrimaryResponsesClient:
         config = _provider()
 
         def chat_json(self, _messages, **_kwargs):
             return _result(_malformed_latex_json())
 
-    class InvalidChatFallbackClient:
-        def __init__(self, config):
-            self.config = config
-
-        def chat_json(self, _messages, **_kwargs):
-            return _result(_malformed_latex_json())
-
-    monkeypatch.setattr(exercise_generation, "OpenAICompatibleClient", InvalidChatFallbackClient)
-
-    with pytest.raises(LLMError, match="Chat 修复后仍失败"):
+    with pytest.raises(LLMError, match="同路由 JSON 修复后仍失败"):
         exercise_generation._call_practice_json(
             PrimaryResponsesClient(),
             [{"role": "user", "content": "return JSON"}],

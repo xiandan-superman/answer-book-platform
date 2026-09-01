@@ -45,15 +45,27 @@ def estimate_text_tokens(text: str) -> int:
     return max(1, non_ascii + math.ceil(ascii_count / 4))
 
 
+def _dict_value(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def model_stage_quality_limit(provider_name: str, model_name: str, stage: str) -> int:
-    record = get_model_capability(provider_name, model_name) or {}
-    quality_limits = record.get("quality_limits") if isinstance(record.get("quality_limits"), dict) else {}
-    stage_limits = quality_limits.get(stage) if isinstance(quality_limits.get(stage), dict) else {}
+    record = _dict_value(get_model_capability(provider_name, model_name))
+    quality_limits = _dict_value(record.get("quality_limits"))
+    stage_limits = _dict_value(quality_limits.get(stage))
     try:
         configured = int(stage_limits.get("recommended_input_tokens") or 0)
     except (TypeError, ValueError):
         configured = 0
     return max(2000, configured or DEFAULT_QUALITY_INPUT_TOKENS.get(stage, DEFAULT_QUALITY_INPUT_TOKENS["general"]))
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
 
 def _message_text(content: Any) -> str:
@@ -129,14 +141,19 @@ def build_model_context_plan(
     )
     quality_limit = model_stage_quality_limit(provider_name, model_name, stage)
     capability = get_model_capability(provider_name, model_name)
-    quality_limits = (
-        capability.get("quality_limits") if isinstance(capability, dict) and isinstance(capability.get("quality_limits"), dict) else {}
+    capability_record = _dict_value(capability)
+    quality_limits = _dict_value(capability_record.get("quality_limits"))
+    stage_limits = _dict_value(quality_limits.get(stage))
+    # ``quality_limits.max_images`` predates the shared context planner.  It
+    # records a stage-level quality recommendation, not a provider protocol
+    # limit, so exceeding it must stay observable without rejecting an
+    # otherwise valid multimodal request.  A real hard limit has to be
+    # registered separately under ``limits.max_images_per_request``.
+    recommended_images = _positive_int(
+        stage_limits.get("recommended_images", stage_limits.get("max_images"))
     )
-    stage_limits = quality_limits.get(stage) if isinstance(quality_limits.get(stage), dict) else {}
-    try:
-        max_images = max(0, int(stage_limits.get("max_images") or 0))
-    except (TypeError, ValueError):
-        max_images = 0
+    provider_limits = _dict_value(capability_record.get("limits"))
+    maximum_images = _positive_int(provider_limits.get("max_images_per_request"))
     unsupported_modalities: list[str] = []
     for modality, count_key in (
         ("image", "image_count"),
@@ -171,8 +188,19 @@ def build_model_context_plan(
             "files": inspected["file_count"],
         },
         "unsupported_modalities": unsupported_modalities,
-        "maximum_images": max_images or None,
-        "too_many_images": bool(max_images and inspected["image_count"] > max_images),
+        "recommended_images": recommended_images or None,
+        "over_recommended_images": bool(
+            recommended_images and inspected["image_count"] > recommended_images
+        ),
+        "maximum_images": maximum_images or None,
+        "too_many_images": bool(maximum_images and inspected["image_count"] > maximum_images),
+        "image_limit_authority": (
+            "provider_hard_limit"
+            if maximum_images
+            else "stage_quality_advisory"
+            if recommended_images
+            else "unbounded_by_platform"
+        ),
         "required_evidence_refs": required_refs,
         "delivered_evidence_refs": delivered_refs,
         "evidence_complete": not omitted_refs,
@@ -191,8 +219,8 @@ def context_plan_block_reason(plan: dict[str, Any], *, enforce_budget: bool = Tr
         return f"当前模型 {provider_model} 不支持本次任务包含的{visible}输入，请更换兼容模型。"
     if plan.get("too_many_images"):
         return (
-            f"本次任务包含 {plan.get('input_modalities', {}).get('images')} 张图片，超过当前模型在该任务中的平台质量上限 "
-            f"{plan.get('maximum_images')} 张。请按题目或页码拆分后重试。"
+            f"本次任务包含 {plan.get('input_modalities', {}).get('images')} 张图片，超过当前路由已登记的单次请求硬上限 "
+            f"{plan.get('maximum_images')} 张。请更换具有等价能力的路由，或按题目、页码拆分后重试。"
         )
     omitted = plan.get("omitted_required_evidence_refs") or []
     if omitted:

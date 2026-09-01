@@ -17,7 +17,22 @@
 4. 输出合同、错误翻译、限流和降级策略已验证；
 5. 任务开始前能判断该模型是否兼容当前输入和任务阶段。
 
-### 1.1 主模型自主生图的 Harness 基线
+### 1.1 官方 Harness 身份与刷新纪律
+
+所有模型调用相关的实现、故障和设计，优先对照以下两个官方开源上游；同名项目、Fork、镜像、包管理器页面、搜索摘要和第三方解读都不能替代官方源码：
+
+| 上游 | 唯一认可的官方 Git 地址 | 2026-09-01 核验快照 |
+|---|---|---|
+| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`633ab199cfd724aa78013c006b27a2b3d049fc3b` |
+| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`dd6322d604e00eec1ba5e0c8541159906a21094a` |
+
+快照只用于判断参考是否过期，不代表永久锁定分支或提交。每次相关排障或修改开始前必须查询官方远端 `HEAD`，动态取得默认分支和最新提交；使用本地检出时还必须确认 `origin` 精确匹配上表 Git 地址并取得最新远端引用。实际结论必须记录仓库 URL、默认分支、完整提交 SHA、核对时间和阅读文件，不能只写“参考 Codex/DeepSeek”。
+
+若最新提交、引用路径或相关合同与上一次记录不同，先重新阅读变化并更新本节的核验快照、对应专题、能力登记和变更账本，再修改平台。网络不可用或官方身份无法核验时，只能把现有材料标为“未核验旧参考”；不得宣称它代表当前官方实现，也不得据此作依赖上游现行行为的设计结论。
+
+优先对照范围覆盖请求/响应协议、上下文组装与压缩、结构化输出、工具注册与事件循环、重试/退避与错误分类、并发/取消、会话持久化/恢复、能力门、模型/协议切换和多模态输入输出。若某一 Harness 没有同类实现，必须如实记录“未覆盖”，再说明本项目因教学质量、完成率、费用、隐私或跨平台边界所需的自定义方案，不能虚构上游能力，也不能无差异照搬。
+
+### 1.2 主模型自主生图的 Harness 基线
 
 这条链路不得由平台自行发明内容决策协议。实现、排障和后续修改都必须先对照以下官方源码（查阅日期：2026-08-29）：
 
@@ -51,13 +66,26 @@
 
 遇到新问题时必须先形成“Codex 直接实现、DeepSeek 通用合同、本项目教学约束”三列对照，再决定最小完整修改。若上游源码已经变化，以当前官方实现为准并更新本节查阅日期、能力登记、回归和变更账本；禁止用关键词、题型规则、第三方分类器或代理主观判断取代主模型调用决策。
 
-### 1.2 Token 计量与上下文压缩边界
+### 1.3 Token 计量与上下文压缩边界
 
-2026-08-29 对照 OpenAI Codex 当前 [`context_window.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/session/context_window.rs) 与 DeepSeek Harness 当前 [`compaction.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/compaction.md)、[`compaction-basic/README.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/compaction/compaction-basic/README.md) 后，平台采用以下边界：
+2026-09-01 重新对照 OpenAI Codex `633ab199cfd724aa78013c006b27a2b3d049fc3b` 的 [`responses_retry.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/responses_retry.rs)、[`compact.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs)，以及 DeepSeek Harness `dd6322d604e00eec1ba5e0c8541159906a21094a` 的 [`llm-streaming.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/llm-streaming.md)、[`llm-retry`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm-retry/src/index.ts) 和 [`compaction.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/compaction.md) 后，平台采用以下边界：
 
 - Token Meter 独立于压缩策略，计量实际请求中的 system/user/assistant/tool 消息、工具 schema、历史工具结果、图片估算和结构开销；同一服务商通道与模型累计至少 3 条 provider-reported usage 后，使用中位比例校准本地估算。现有任务质量预算仍保持原权威，新增完整计量先作为并列观察，防止估算变化提前提高失败率。
 - DeepSeek Harness 会先裁剪超大工具结果、重新计量并保持工具调用/结果边界平衡；本平台当前只在主模型工具循环超过质量预算时，确定性压缩较旧且失败的工具结果正文，保留最近 2 条失败及所有调用身份。成功结果、图片像素、采用资产、题干、答案约束、教材/真题证据、用户消息和工具 schema 均不可压缩。
-- 当前不调用模型生成上下文摘要，因此压缩新增模型调用、Token 和网络请求均为 0；也不宣称具备 Codex/DeepSeek 的完整会话压缩、跨进程 replay 或上下文溢出自动重放。未来扩大到历史对话摘要前，必须先用固定真实任务语料验证答案质量和任务完成率，并取得用户确认。
+- 通用 JSON 重试只允许原服务商、原模型、原协议、原消息和原思考深度的再试；不得关闭思考、改用备选模型或调用业务证据压缩回调。确定性鉴权、权限、配额、模型/端点和明确参数错误立即停止；仅已分类为可重试的网络/超时/限流/5xx 故障在原路由再试。
+- Responses/Messages 协议不支持时，只有通道已显式允许、上游明确返回端点级 404/405/501、请求为纯文本且同一服务商/模型时，适配器才能单次切换到 Chat；模糊 400、超时、429、5xx、图片、工具与业务 JSON 修复不得触发协议切换。内置 Responses 路由默认不允许回退；灵算 Gemini 使用已登记的 Chat 路由直达。
+- 当前不调用模型生成上下文摘要，也已删除教材证据选择重试中的截断式压缩；不宣称具备 Codex/DeepSeek 的完整会话压缩、跨进程 replay 或上下文溢出自动重放。不可分割的教材/真题证据若超出硬上下文容量，必须保留原文并显式失败或等待用户授权的等价大上下文路由，不得用摘要换取成功。未来扩大到历史对话摘要前，必须先用固定真实任务语料验证答案质量和任务完成率，并取得用户确认。
+
+### 1.4 多图输入数量与省略边界
+
+2026-09-01 按 1.1 的官方身份重新核验：OpenAI Codex `633ab199cfd724aa78013c006b27a2b3d049fc3b` 的 `codex-rs/tui/src/bottom_pane/chat_composer/attachment_state.rs` 和 `codex-rs/core/src/image_preparation.rs` 未设置通用 8 张计数门禁，而是逐图准备并把无法处理的单图替换为模型可见省略说明；DeepSeek Harness `dd6322d604e00eec1ba5e0c8541159906a21094a` 的 `packages/attachment/attachment-local/src/index.ts` 默认单条消息接收 20 张，`packages/llm/llm-deepseek/README.zh.md` 的请求级高水位为 600 张，超过数量或字节预算时从最旧前缀移出请求并为每张图保留模型可见占位符。
+
+本平台据此采用以下边界：
+
+- `quality_limits.<stage>.max_images` 是既有质量建议，只进入诊断；第 9 张以后图片不得因此设置 `too_many_images`、阻断请求或静默截断。只有模型能力登记的 `limits.max_images_per_request` 才是可执行硬上限。
+- 生题材料接收继续保留本项目已有的 24 张边界，以控制本地文件解析、Base64 内存和多模型兼容风险；9～24 张不是错误。超过 24 张时必须在逐文件诊断中明确列出未使用页/图，不能声称已经分析。
+- 短材料把全部已接收图片交给同一次主模型分析，保留跨图比较；长文本只按文本段落长度分段，DOCX 图片依靠稳定 `IMAGE_REF` 编号进入相关段，未锚定的独立图片也必须至少进入一个分析段。
+- 当前没有实现 DeepSeek 式持久附件占位和请求级最旧前缀卸载，因此不得宣称与其 600 张历史高水位等价。扩大 24 张接收边界或新增自动卸载前，必须先登记各供应商真实硬限制，并用跨页、跨图固定语料验证答案质量和任务完成率。
 
 ## 2. 强制登记字段
 

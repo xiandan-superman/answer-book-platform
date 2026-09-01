@@ -33,6 +33,96 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260901-04｜v0.9.39 源码发布准备
+
+- status: verified
+- scope: 版本元数据、用户更新日志、发布包内容与隔离数据的 Chromium 端到端发布验证
+- changed: 将 `APP_VERSION`、`VERSION` 和发布清单统一升级为 0.9.39，补充用户可见更新记录；端到端夹具改为等待弹窗最终文本而不依赖动画可见性瞬间，上传契约测试显式模拟已配置 Key，不读取本机私密配置。
+- trigger: 用户要求推送并更新版本；发布前隔离数据端到端检查暴露了弹窗动画瞬时可见性和本机 API Key 对测试结果的隐式影响。
+- invariants: 源码包只来自 Git 索引，不包含 API Key、用户任务、教材、日志或输出；测试不访问真实计费模型；发布仍由 `main` 质量工作流通过后自动建立标签与稳定源码包。
+- do_not_regress: 不得手工建立版本标签或绕过质量门禁；不得用本机 Key 让端到端套件偶然通过；弹窗契约应断言最终内容，不应在 GSAP 开合动画期间读取受渲染状态影响的 `innerText`。
+- verification: `python3 scripts/run_quality_gates.py --full` 通过，pytest 1943 passed、16 deselected，分支覆盖率 70%，py_compile、版本一致性、公式、第三方声明、项目完整度、Ruff 和 Mypy 均通过；隔离用户数据目录的 `python3 -m pytest -q -m e2e` 16 passed、1943 deselected；未发起真实模型请求，未部署用户机。
+
+### OPT-20260901-03｜模型重试保持质量与协议回退收紧
+
+- status: verified
+- scope: 真题解析、生题、教材证据选择、内容/Word 修复共用模型 JSON 重试，Responses/Messages 协议适配和模型调用报告
+- changed: 通用 JSON 重试改为始终使用原服务商、原模型、原协议、原消息和原思考深度，删除关思考、备选模型及业务压缩参数和所有内部调用；删除教材证据截断式压缩；确定性和模糊 400 不再通用重试，可分类的网络/超时/限流/5xx 只原路由重试；生题传输和 JSON 修复不再切到 Chat 或降低思考深度；协议适配默认关闭，仅显式启用、纯文本、同模型且端点明确返回 404/405/501 时允许一次切换。
+- trigger: 匿名化实际运行记录未见压缩、关思考、换模型或协议回退真实触发，且未见上下文/输出硬上限结束；旧通用路径仍会在未授权时改变模型、思考、证据完整性或协议语义，对真题解析质量风险高于完成率收益。
+- invariants: 不压缩题干、答案约束、教材/真题证据、用户消息、成功工具结果或图片；不静默换模型/服务商；不把模糊 400 扩大为全局配置阻断；保留生题已有的灵算单题模糊 400 一次同路由补偿和批次拆分；内置 Responses 路由和灵算 Gemini 已登记直达协议不变。
+- do_not_regress: 不得恢复 `disable_thinking`、`fallback_model`、`compact_messages`、`compact_fallback_disable_thinking` 或业务重试中的 Responses/Messages→Chat 切换；超时、429、5xx、模糊 400、图片、工具、JSON 无效和内容问题不得触发协议回退；未经真实任务质量对比和用户确认不得引入摘要式上下文压缩。
+- verification: 2026-09-01 动态核对 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `633ab199cfd724aa78013c006b27a2b3d049fc3b`，阅读 `codex-rs/core/src/responses_retry.rs`、`codex-rs/core/src/compact.rs`；核对 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `dd6322d604e00eec1ba5e0c8541159906a21094a`，阅读 `docs/subsystems/llm-streaming.md`、`docs/subsystems/compaction.md`、`packages/llm/llm-retry/src/index.ts`。本项目采用同路由可重试故障恢复和可选的旧失败工具结果无损裁剪，不采用上游会话摘要，是真题解析证据完整性的必要差异。定向回归 173 passed；`python3 scripts/run_quality_gates.py --full` 通过，pytest 1943 passed、16 deselected，分支覆盖率 70%，py_compile、版本、公式、许可证、项目完整度、Ruff 和 Mypy 均通过；未发起真实计费模型调用，未部署或发布。
+
+### OPT-20260901-02｜多图任务移除 8 张硬阻断与截断
+
+- status: verified
+- scope: 三类业务共用模型上下文计划、按题/知识点生题材料解析与来源分析、多图诊断和模型接入标准
+- changed: 将阶段 `quality_limits.max_images` 明确降为只读质量建议，只有能力登记的 `limits.max_images_per_request` 才能阻断；生题 PDF/DOCX/独立图片的分析接收边界统一为既有 24 张参考图预算，短材料一次发送全部已接收图片，长文本仅按段落长度拆分并用稳定图片编号保持映射；超过 24 张继续显式报告未使用内容。
+- trigger: 9 张以上图片虽然已被解析为耐久参考图，公共规划器仍把 GLM 的 8 张阶段建议当硬上限，材料分析又在入口和分段末尾截到前 8 张，导致任务提前失败或第 9 张以后证据未进入来源分析。
+- invariants: 不静默丢弃必要图片，不因建议值提高失败率；短材料保持跨图整体理解，长材料保持图文编号；无图、纯文本识图交接、模型能力门、Token 预算、模型/协议选择、调用次数和 24 张以上容量边界不变；没有用户授权不切换供应商或模型。
+- do_not_regress: 不得重新把阶段质量建议解释为供应商硬限制；不得恢复 `[:8]`、前 8 页渲染或按相同图片字节反推编号；真实硬上限必须来自精确服务商/模型能力登记；超过材料接收边界必须保留可见诊断。
+- verification: 2026-09-01 从官方远端再次确认 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `633ab199cfd724aa78013c006b27a2b3d049fc3b`，阅读 `attachment_state.rs`、`image_preparation.rs`；确认 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `dd6322d604e00eec1ba5e0c8541159906a21094a`，阅读 `attachment-local/src/index.ts`、`llm-deepseek/README.zh.md`。本项目保留 24 张教学材料接收边界和长文本确定性分段，是对本地内存、多供应商兼容与教学证据映射的必要差异，未实现 DeepSeek 600 张历史卸载。新增/调整的 9 张、12 页、24/25 张、建议/硬上限回归与核心文件定向测试 182 passed，协议和上下文扩大回归 93 passed；`python3 scripts/run_quality_gates.py --full` 通过，pytest 1939 passed、16 deselected，分支覆盖率 70%，Ruff、Mypy、Python 编译、版本、公式、许可证和项目完整度全部通过；未发起真实计费模型调用，未部署或发布。
+
+### OPT-20260901-01｜模型问题统一核对官方 Harness 最新实现
+
+- status: verified
+- scope: 项目级模型故障诊断、模型协议/上下文/工具/重试/恢复/多模态设计、模型接入标准与上游参考治理
+- changed: 将原本主要覆盖自主生图和多模态工具闭环的 Harness 规则扩展到所有模型相关问题；在 `AGENTS.md` 和模型接入标准中固定 OpenAI Codex 与 DeepSeek Harness 的唯一官方仓库身份和当前核验快照，要求每次动态确认远端默认分支和最新提交、校验本地 `origin`、记录完整 SHA/时间/文件/合同及项目差异，并在上游变化时先更新模型接入标准，禁止把旧检出、Fork、镜像或搜索摘要当作当前官方实现。
+- trigger: 现有 `AGENTS.md` 只明确要求多模态工具修改优先核对 Harness，未覆盖结构化输出、上下文分片、重试、错误分类、并发、取消和会话恢复等一般模型问题，也未规定如何确认官方仓库及防止本地参考过期。
+- invariants: Harness 是优先调查和合同对照基线，不替代本项目教学质量、完成率、费用、隐私和跨平台约束；上游更新不得未经差异评估直接复制；纯规范修改不改变运行代码、模型调用、任务状态、用户数据或发布状态。
+- do_not_regress: 不得把同名仓库、Fork、第三方文章、缓存页面或未更新的本地副本称为官方当前实现；不得永久假设默认分支名称；采用上游结论时不得省略完整提交身份、核对时间和本项目必要差异；官方无法核验时不得伪称已查阅最新版本。
+- verification: 2026-09-01 通过两个官方 Git URL 重新浅克隆并校验远端：OpenAI Codex 默认分支 `main`、提交 `633ab199cfd724aa78013c006b27a2b3d049fc3b`，DeepSeek Harness 默认分支 `master`、提交 `dd6322d604e00eec1ba5e0c8541159906a21094a`；既有接入标准引用的 Codex `spec_plan.rs`、`image-generation/src/tool.rs`、`context_window.rs` 及 DeepSeek `tools/README.md`、`tool-calls.ts`、`core.md`、`compaction.md`、`compaction-basic/README.md` 在上述提交均存在。项目完整度审计检查 77 个必需文件、0 问题；`git diff --check -- AGENTS.md docs/MODEL_PROVIDER_INTEGRATION_STANDARD_DRAFT.md docs/operations/OPTIMIZATION_LOG.md` 通过；纯协作规范改动，未运行代码测试或模型调用。
+
+### OPT-20260831-01｜生题选项最终随机编排
+
+- status: verified
+- scope: 按题出题与知识点出题共享的正式生成结果、单题重新生成
+- changed: 单选题和多选题在新题通过生成门禁、进入检查点前由后端随机打乱选项一次，再按最终顺序重新标注 A、B、C、D；已成功题、已保存结果不在续作、展示或导出时重排。
+- trigger: 模型常先生成正确陈述再补干扰项，现有程序原样保留模型顺序，实测出现正确答案集中在 A 的系统性偏差。
+- invariants: 不修改题干、选项文本、正确项数量、蓝图、模型提示词、调用次数、任务状态或历史用户数据；非选择题和生成失败占位不受影响。
+- do_not_regress: 不得恢复直接采用模型选项顺序；不得在页面刷新、历史加载或 Word 导出时再次打乱；打乱后必须由程序连续重建选项标签。
+- verification: 选项顺序、重标注与非选择题隔离新增回归 3 passed；生题、批量恢复、重试预算、阶段修复与信任边界定向回归 258 passed；完整 pytest 1936 passed、16 deselected；受影响文件 Ruff、`py_compile` 与 `git diff --check` 通过。未发起真实模型调用，未部署用户机。
+
+### OPT-20260830-27｜用户机 0.9.38 同步补充要求组合输入
+
+- status: verified
+- scope: Windows 用户机模拟出题补充要求、8766 局域网服务启动与本机常用项持久化
+- changed: 在实际运行的 0.9.38 源码目录最小同步组合输入框、常用要求本机存储模块和接口；部署前备份原文件与计划任务；将失效计划任务改为实际 0.9.38 目录和打包 Python 环境，并为 TCP 8766 增加明确入站放行。
+- trigger: 用户明确要求将本地已确认优化同步到 SSH 用户机；排查发现旧计划任务仍指向 0.9.36 废弃目录，而当前 8766 实际由另一套 0.9.38 源码运行，重启后打包 Python 未被既有按程序防火墙规则覆盖。
+- invariants: 只同步补充要求功能需要的后端模块、接口和三项前端文件；不覆盖密钥、任务、教材、输出或其他用户数据；版本和发布清单保持 0.9.38；不发起模型调用。
+- do_not_regress: 部署判断必须以运行中 `/api/version` 和进程源码目录为准，不得再用废弃目录的 `VERSION` 推断；计划任务必须指向实际源码目录；8766 必须从局域网可访问；临时 CRUD 验证项必须删除。
+- verification: 远端打包 Python `py_compile` 与 `import app.server` 通过，5 个同步文件 SHA-256 与本地最小补丁一致；远端本机 `/api/version` 返回 0.9.38 且发布清单一致，计划任务状态 Running；局域网 `/api/version`、带监控认证的首页和常用要求 GET 通过，首页包含组合输入、新建入口和目标占位文案；临时常用要求经 POST 创建和删除成功，最终 `item_count=0`、`storage=local_user_data`；未发起模型调用。
+
+### OPT-20260830-26｜生题补充要求组合输入与本机常用项
+
+- status: verified
+- scope: 模拟出题范围确认中的补充要求输入、常用要求下拉与本机持久化
+- changed: 将补充要求收敛为可直接编辑且可展开多选的单行组合输入框；下拉内直接提供逐项编辑、删除和底部新建，选择后即时同步输入；长内容单行省略；常用项通过独立本机接口原子写入系统用户数据目录。
+- trigger: 独立下拉、编辑框、保存按钮和管理模式偏离用户确认的简约 C 方案，箭头点击还被全局焦点规则绘制为突兀蓝框；旧点击事件曾被误当作新建文本。
+- invariants: 不修改正式生题请求中的 `focus` 字段合同、题量/难度/题型、任务状态、模型调用、计费或既有任务数据；源码更新只替换代码，不覆盖系统用户数据目录中的常用要求；不部署用户机。
+- do_not_regress: 不得恢复独立编辑框、“保存为常用”或管理模式；箭头点击不得出现独立重描边；下拉长文字必须保持单行省略；新建事件不得把浏览器事件对象写入数据；编辑和删除必须留在下拉项内。
+- verification: `python3 -m pytest -q tests/test_practice_requirement_presets.py tests/test_frontend_contract_guards.py tests/test_practice_redesign.py tests/test_paths_distribution.py` 177 passed；Ruff、`py_compile`、`node --check web/app.js`、`git diff --check` 通过；1280×820、760×760、560×720 内置浏览器检查通过，直接输入与勾选同步有效，长文本保持单行省略，箭头点击无独立蓝框，最终控制台 0 warning/error；未发起模型调用或部署用户机。
+
+### OPT-20260830-25｜长结果页上下文与复核风险展示修复
+
+- status: verified
+- scope: 桌面端模拟出题历史结果、长题卡操作区、真题结果题目侧栏与需复核风险卡
+- changed: 历史练习结果完成布局后再次复位页面顶部，避免滚动锚定跳过标题和流程；题卡选择入口增加可见文字和逐题无障碍名称；作图说明隐藏原始图片模型路由；结果侧栏预览去除旧 MathML/LATEX 内部标记；需复核风险将内部检查键和英文诊断转为三条独立可读提示。
+- trigger: 1280×720 实页检查发现从任务列表打开 2/3 题结果时停在 `scrollY=344`，标题与流程被跳过；长题卡选择入口只剩无文字方框，作图说明直接显示 `gpt-image-2`；可交付待复核结果把 `answer_coverage`、`answer is pending review` 和三项风险挤为单段，题目侧栏可能显示 `MATHML` 标记。
+- invariants: 仅调整桌面端前端滚动复位、可见标签、预览文本清理、诊断文案映射、风险排版和静态合同测试；不修改题目数据、选择/下载/生成行为、任务状态、最终验收、质量门、检查点、模型调用、计费或用户数据；`delivery_ready=true` 的需复核任务继续允许下载正式交付包；不调整移动端。
+- do_not_regress: 从任务管理打开长结果必须先显示标题和流程上下文；题卡选择控件不得再次退化为无文字方框；普通视图不得暴露原始模型路由、检查键、英文内部诊断或公式序列化标记；多条复核风险不得重新压成日志式长段落；前端不得据此改变验收或下载合同。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py tests/test_practice_redesign.py` 187 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js`、主站 592 个及独立 Word 工具 40 个 HTML ID 唯一性检查、`git diff --check` 通过；1280×720 内置浏览器复验历史结果入口 `scrollY=0`、题卡显示“选择”且选择后已选计数和下载按钮即时启用，普通页面不再出现 `gpt-image-2`、`answer_coverage`、`answer is pending review` 或侧栏 `MATHML` 标记，三项风险独立展示；未执行移动端、下载、复制、重新生成、继续、保存、删除、任务状态写入或模型调用。
+
+### OPT-20260830-24｜题目编辑弹窗与验收诊断排版修复
+
+- status: verified
+- scope: 桌面端模拟出题题目编辑器、真题结果最终检查结果卡
+- changed: 原生题目编辑弹窗显式居中并改为固定页眉、独立滚动正文和常驻底部操作区，长题干下仍能直接看到取消与应用修改；最终检查失败项从整段内部错误拆为用户可读的问题列表，常见缺失 Word 与答案配图问题改为操作语义，本机路径和内部检查键默认收进技术详情。
+- trigger: 1280×720 真实任务实页审查发现题目编辑器因全局零外边距贴在视口左上角，底部操作需滚动整个表单才能出现；点击“查看检查结果”后，验收卡直接显示 `output missing`、本机绝对路径和 `figure_delivery`，两条问题挤成一段日志式长句。
+- invariants: 只调整桌面端前端结构、样式、诊断文案映射和静态合同测试；不修改编辑保存内容与接口、任务状态、最终验收结论、质量门、下载条件、检查按钮请求、检查点、模型调用、计费或用户数据；`delivery_ready=true` 的需复核任务继续允许下载正式交付包；不调整移动端。
+- do_not_regress: 桌面弹窗不得再次依赖浏览器默认外边距定位；长表单滚动时标题和提交操作必须持续可见；普通验收结果不得默认暴露绝对路径或内部检查键；技术详情仍须可展开读取原始诊断；前端不得据视觉判断改写验收或下载合同。
+- verification: `python3 -m pytest -q tests/test_frontend_contract_guards.py tests/test_task_result_checkpoint_view.py tests/test_render_delivery_consistency.py tests/test_practice_redesign.py` 186 passed；`node --check web/app.js`、`node --check web/task-contract-ui.js`、主站 592 个及 Word 工具 40 个 HTML ID 唯一性检查、`git diff --check` 通过；1280×720 内置浏览器实测题目编辑弹窗由左上角 `(0,0)` 改为居中 `(256.5,24)`、底部操作区位于可视范围内，最终检查卡默认只显示两条可读问题且原始路径/内部键收进折叠技术详情；未执行移动端、编辑保存、下载、任务状态写入或模型调用。
+
 ### OPT-20260830-23｜运行详情交互边界与发布端到端同步
 
 - status: verified

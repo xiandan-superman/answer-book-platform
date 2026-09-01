@@ -104,7 +104,7 @@ class ProviderConfig:
     thinking_mode: str = "auto"
     json_mode_unsupported_models: tuple[str, ...] = ()
     api_protocol: str = "chat_completions"
-    responses_fallback_to_chat: bool = True
+    responses_fallback_to_chat: bool = False
     responses_streaming: bool = True
     user_agent: str = ""
 
@@ -369,7 +369,7 @@ def list_providers() -> dict[str, ProviderConfig]:
                 else str(item.get("api_protocol", "chat_completions") or "chat_completions").strip().lower()
             ),
             responses_fallback_to_chat=(
-                False if builtin_responses else bool(item.get("responses_fallback_to_chat", True))
+                False if builtin_responses else bool(item.get("responses_fallback_to_chat", False))
             ),
             responses_streaming=True if builtin_responses else bool(item.get("responses_streaming", True)),
             user_agent=(

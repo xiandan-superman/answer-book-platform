@@ -99,6 +99,13 @@ def test_atomic_selection_deduplication_restore_and_final_request_body() -> None
             if parsed.hostname not in {"127.0.0.1", "localhost"}:
                 route.abort()
                 return
+            if parsed.path == "/api/providers" and request.method == "GET":
+                response = route.fetch()
+                providers = response.json()
+                for config in providers.values():
+                    config["api_key_set"] = True
+                route.fulfill(response=response, json=providers)
+                return
             if parsed.path == "/api/practice/jobs" and request.method == "POST":
                 captured_requests.append(json.loads(request.post_data or "{}"))
                 route.fulfill(

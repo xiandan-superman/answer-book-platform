@@ -442,7 +442,8 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
     retries = [
         (qid, info)
         for qid, info in answer_models.items()
-        if int(info.get("attempt_count") or 0) > 1 or str(info.get("strategy") or "") not in {"", "primary", "attempt_1"}
+        if int(info.get("attempt_count") or 0) > 1
+        or str(info.get("strategy") or "") not in {"", "primary", "attempt_1", "same_route_attempt_1"}
     ]
     if retries:
         lines.extend(["", "## 答案生成重试/兜底", ""])
