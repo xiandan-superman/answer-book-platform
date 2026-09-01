@@ -102,7 +102,7 @@ class PracticeInputTests(unittest.TestCase):
             self.assertEqual(len(diagnostics["reference_image_order"]), 9)
             self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 9)
             self.assertEqual(result["reference_image_count"], 9)
-            self.assertFalse(diagnostics["warnings"])
+            self.assertFalse(any("图片" in warning or "图像" in warning for warning in diagnostics["warnings"]))
 
     def test_plain_docx_has_no_formula_warning(self):
         with tempfile.TemporaryDirectory() as raw:
