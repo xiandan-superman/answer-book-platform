@@ -18,6 +18,7 @@ from app.practice_export import (
     validate_docx_output,
     validate_practice_export,
 )
+from app.rich_text_math import iter_delimited_math
 
 
 def _practice() -> dict:
@@ -116,6 +117,65 @@ def test_practice_export_converts_inline_latex_and_sets_portable_chinese_font():
     assert "宋体" in font_table
     assert 'm:mathFont m:val="Cambria Math"' in settings
     assert "w:doNotExpandShiftReturn" not in settings
+
+
+def test_shared_math_parser_keeps_multiline_display_formula_as_one_span():
+    spans = list(iter_delimited_math("before $$\n\\frac{a}{b}=c\n$$ after"))
+
+    assert len(spans) == 1
+    assert spans[0].latex == r"\frac{a}{b}=c"
+    assert spans[0].display is True
+
+
+def test_practice_solution_renders_multiline_answer_and_step_as_native_math():
+    data = _practice()
+    data["exercises"][0]["answer"] = "结果为\n$$\n\\frac{a}{b}=c\n$$"
+    data["exercises"][0]["solution_steps"] = ["代入 $$\nx^2=4\n$$ 计算。"]
+
+    report = validate_practice_export(data)
+    content = build_practice_solution_docx(data)
+    xml = _document_xml(content)
+
+    assert report["ok"] is True
+    assert "m:oMath" in xml
+    assert "$$" not in xml
+    assert r"\frac" not in xml
+
+
+def test_practice_preflight_covers_answer_and_solution_steps(monkeypatch):
+    data = _practice()
+    data["exercises"][0]["exercise_id"] = "exercise-1"
+    data["exercises"][0]["answer"] = r"$bad_answer$"
+    data["exercises"][0]["solution_steps"] = [r"$bad_step$"]
+
+    monkeypatch.setattr(
+        "app.practice_export.preflight_expression_render",
+        lambda plan: "模拟公式转换失败" if "bad_" in plan.raw else None,
+    )
+
+    report = validate_practice_export(data)
+
+    assert report["ok"] is False
+    assert any("答案" in issue and "模拟公式转换失败" in issue for issue in report["blocking_issues"])
+    assert any("解析第 1 步" in issue and "模拟公式转换失败" in issue for issue in report["blocking_issues"])
+
+
+def test_practice_renderer_never_silently_falls_back_to_raw_latex(monkeypatch):
+    data = _practice()
+    data["exercises"][0]["answer"] = r"$x^2$"
+
+    def fail_render(*args, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr("app.practice_export.render_expression_omml", fail_render)
+
+    try:
+        build_practice_solution_docx(data)
+    except ValueError as exc:
+        assert "field=answer" in str(exc)
+        assert "无法转换为 Word 公式对象" in str(exc)
+    else:
+        raise AssertionError("公式转换失败时不应生成含原始 LaTeX 的 Word")
 
 
 def test_practice_export_preserves_fill_in_blanks_and_visible_question_content():

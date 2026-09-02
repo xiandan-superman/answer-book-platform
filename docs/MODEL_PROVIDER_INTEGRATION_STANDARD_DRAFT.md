@@ -21,10 +21,10 @@
 
 所有模型调用相关的实现、故障和设计，优先对照以下两个官方开源上游；同名项目、Fork、镜像、包管理器页面、搜索摘要和第三方解读都不能替代官方源码：
 
-| 上游 | 唯一认可的官方 Git 地址 | 2026-09-01 核验快照 |
+| 上游 | 唯一认可的官方 Git 地址 | 2026-09-03 核验快照 |
 |---|---|---|
-| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`633ab199cfd724aa78013c006b27a2b3d049fc3b` |
-| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`dd6322d604e00eec1ba5e0c8541159906a21094a` |
+| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`fc953e5234f2452e393310b2be2b29a482c4d907` |
+| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`49a606bc5b5934603f22a26957a07dc799ab0291` |
 
 快照只用于判断参考是否过期，不代表永久锁定分支或提交。每次相关排障或修改开始前必须查询官方远端 `HEAD`，动态取得默认分支和最新提交；使用本地检出时还必须确认 `origin` 精确匹配上表 Git 地址并取得最新远端引用。实际结论必须记录仓库 URL、默认分支、完整提交 SHA、核对时间和阅读文件，不能只写“参考 Codex/DeepSeek”。
 
@@ -68,24 +68,51 @@
 
 ### 1.3 Token 计量与上下文压缩边界
 
-2026-09-01 重新对照 OpenAI Codex `633ab199cfd724aa78013c006b27a2b3d049fc3b` 的 [`responses_retry.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/responses_retry.rs)、[`compact.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs)，以及 DeepSeek Harness `dd6322d604e00eec1ba5e0c8541159906a21094a` 的 [`llm-streaming.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/llm-streaming.md)、[`llm-retry`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm-retry/src/index.ts) 和 [`compaction.md`](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/compaction.md) 后，平台采用以下边界：
+2026-09-03 重新对照 OpenAI Codex `fc953e5234f2452e393310b2be2b29a482c4d907` 的 [`responses_retry.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/responses_retry.rs)、[`retained_context.rs`](https://github.com/openai/codex/blob/main/codex-rs/history/src/retained_context.rs)，以及 DeepSeek Harness `49a606bc5b5934603f22a26957a07dc799ab0291` 的 [`llm-retry`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm-retry/src/index.ts)、[`agent-loop`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/README.md) 和 [`session-persistence`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session/session-persistence/README.md) 后，平台采用以下边界：
 
 - Token Meter 独立于压缩策略，计量实际请求中的 system/user/assistant/tool 消息、工具 schema、历史工具结果、图片估算和结构开销；同一服务商通道与模型累计至少 3 条 provider-reported usage 后，使用中位比例校准本地估算。现有任务质量预算仍保持原权威，新增完整计量先作为并列观察，防止估算变化提前提高失败率。
 - DeepSeek Harness 会先裁剪超大工具结果、重新计量并保持工具调用/结果边界平衡；本平台当前只在主模型工具循环超过质量预算时，确定性压缩较旧且失败的工具结果正文，保留最近 2 条失败及所有调用身份。成功结果、图片像素、采用资产、题干、答案约束、教材/真题证据、用户消息和工具 schema 均不可压缩。
 - 通用 JSON 重试只允许原服务商、原模型、原协议、原消息和原思考深度的再试；不得关闭思考、改用备选模型或调用业务证据压缩回调。确定性鉴权、权限、配额、模型/端点和明确参数错误立即停止；仅已分类为可重试的网络/超时/限流/5xx 故障在原路由再试。
+- 可重试故障使用有界指数退避，并尊重服务商 `Retry-After`；同一“服务商 + 模型 + 协议”连续 3 次可重试故障后进入冷却和单探针，不得阻断同服务商的其他模型或协议。代理网关明确表示“当前账号组无可用账号”的 404 属于可恢复路由池故障，不等同于模型永久不存在。
+- 考查内容规划中的每题临时故障最多使用原路由共 3 次尝试；部分题失败时保留其他成功题和可见风险，全部题均失败时任务明确失败并提示用户稍后重试，不再把本地关键词兜底伪装成模型规划成功。
 - Responses/Messages 协议不支持时，只有通道已显式允许、上游明确返回端点级 404/405/501、请求为纯文本且同一服务商/模型时，适配器才能单次切换到 Chat；模糊 400、超时、429、5xx、图片、工具与业务 JSON 修复不得触发协议切换。内置 Responses 路由默认不允许回退；灵算 Gemini 使用已登记的 Chat 路由直达。
 - 当前不调用模型生成上下文摘要，也已删除教材证据选择重试中的截断式压缩；不宣称具备 Codex/DeepSeek 的完整会话压缩、跨进程 replay 或上下文溢出自动重放。不可分割的教材/真题证据若超出硬上下文容量，必须保留原文并显式失败或等待用户授权的等价大上下文路由，不得用摘要换取成功。未来扩大到历史对话摘要前，必须先用固定真实任务语料验证答案质量和任务完成率，并取得用户确认。
 
 ### 1.4 多图输入数量与省略边界
 
-2026-09-01 按 1.1 的官方身份重新核验：OpenAI Codex `633ab199cfd724aa78013c006b27a2b3d049fc3b` 的 `codex-rs/tui/src/bottom_pane/chat_composer/attachment_state.rs` 和 `codex-rs/core/src/image_preparation.rs` 未设置通用 8 张计数门禁，而是逐图准备并把无法处理的单图替换为模型可见省略说明；DeepSeek Harness `dd6322d604e00eec1ba5e0c8541159906a21094a` 的 `packages/attachment/attachment-local/src/index.ts` 默认单条消息接收 20 张，`packages/llm/llm-deepseek/README.zh.md` 的请求级高水位为 600 张，超过数量或字节预算时从最旧前缀移出请求并为每张图保留模型可见占位符。
+2026-09-03 按 1.1 的官方身份重新核验：OpenAI Codex `fc953e5234f2452e393310b2be2b29a482c4d907` 仍逐图准备附件；DeepSeek Harness `49a606bc5b5934603f22a26957a07dc799ab0291` 的附件和输出保留合同继续要求明确保留内容、精确省略量和恢复入口，不允许把容量截断伪装成完整输入。
 
 本平台据此采用以下边界：
 
 - `quality_limits.<stage>.max_images` 是既有质量建议，只进入诊断；第 9 张以后图片不得因此设置 `too_many_images`、阻断请求或静默截断。只有模型能力登记的 `limits.max_images_per_request` 才是可执行硬上限。
-- 生题材料接收继续保留本项目已有的 24 张边界，以控制本地文件解析、Base64 内存和多模型兼容风险；9～24 张不是错误。超过 24 张时必须在逐文件诊断中明确列出未使用页/图，不能声称已经分析。
+- 生题材料单次模型请求保持 24 张图的边界，但同一任务可按原始顺序保留并分批分析最多 600 张页图/内嵌图；每批继续使用原服务商、原模型、原协议和原思考深度。超过总上限必须明确停止并要求拆分文件，不得只取前 24 张后声称已完整分析。
 - 短材料把全部已接收图片交给同一次主模型分析，保留跨图比较；长文本只按文本段落长度分段，DOCX 图片依靠稳定 `IMAGE_REF` 编号进入相关段，未锚定的独立图片也必须至少进入一个分析段。
-- 当前没有实现 DeepSeek 式持久附件占位和请求级最旧前缀卸载，因此不得宣称与其 600 张历史高水位等价。扩大 24 张接收边界或新增自动卸载前，必须先登记各供应商真实硬限制，并用跨页、跨图固定语料验证答案质量和任务完成率。
+- 本平台实现的 600 张是任务内按 24 张窗口的确定性分批，不是 DeepSeek 的历史附件最旧前缀卸载，两者不得混称。任一页的结构化与视觉表示均失败时仍必须显式停止。
+
+### 1.5 文件输入与局部表示失败
+
+2026-09-03 动态核验 OpenAI Codex `fc953e5234f2452e393310b2be2b29a482c4d907` 的 `codex-rs/core/src/mcp_openai_file.rs`、`codex-rs/history/src/retained_context.rs` 与 `codex-rs/core/src/responses_retry.rs`，以及 DeepSeek Harness `49a606bc5b5934603f22a26957a07dc799ab0291` 的 `packages/core/agent-loop/README.md`、`packages/session/session-persistence/README.md`、`packages/util/output-retention/README.md` 和 `packages/llm/llm-retry/src/index.ts`。最新上游没有推翻 1.3/1.4 的重试和附件结论，但进一步明确以下差异：
+
+- Codex 普通 `UserInput` 没有通用本地文档变体；Apps/MCP 工具仅对 `openai/fileParams` 声明的参数读取本地文件、上传至 OpenAI 文件存储并改写工具参数。它不提供 Word 内部段落、公式或图表的局部成功报告。
+- DeepSeek Harness 当前附件合同只覆盖图片：保存内容寻址的耐久标准化对象，再按路由生成确定性请求版本；Files 上传解析失败时以相同请求图片重建整次请求为内联 Base64，陈旧文件 ID 只允许一次替换尝试。它没有 Word 文档解析或 Word 局部失败恢复合同。
+- 本平台因真题和教材质量要求采用必要扩展：原文件继续保存在用户数据目录；文本、公式、表格、内嵌图片和页面视觉是独立且可诊断的表示；一种表示失败时只使用同一原文件生成的等价表示补偿，不换材料、不摘要题面、不换模型。Word 公式结构化失败时生成原始页面视觉并只送入受影响题目的视觉理解链路；该页面视觉不得被误当作原题配图写入最终 Word。
+- PDF 同时保留文字和有界页面视觉；DOCX 优先结构化提取 OMML、表格与内嵌图片，在文字不足、公式结构退化或直接教材 Word 含复杂视觉内容时生成页面视觉补偿；图片保留原始像素；TXT/Markdown 保留完整文字并报告解码替代。所有表示均记录 `ready/degraded/failed/not_required` 和局部失败码。
+- 至少一种足以覆盖必要内容的表示可用时继续任务并保留风险；同一必要内容的结构化与视觉表示都不可用时明确停止，不把空白或缺失内容交给模型。超过有界页图预算时列出未覆盖页，不能宣称已完整分析。
+
+### 1.6 任务恢复、工具结果与 Word 发布边界
+
+- 全平台文本和结构化模型请求共用传输错误分类；只有未接收部分输出的可重试故障才使用原路由、原请求有界重试，等待期可被任务取消中断。结构化输出修复只处理已完成响应的 JSON 语法/合同错误，不再把网络错误文本伪装成模型上一版答案。
+- 工具调用在执行前持久化 `started`，结果后持久化 `result`；恢复时同一稳定会话中只有 `started` 而无 `result` 的调用标记为 `TOOL_OUTCOME_UNKNOWN`，禁止自动重放可能已产生外部副作用的操作。
+- 任何 Word 修复改写答案片段后，必须针对最新片段重跑内容质量门并绑定 SHA-256；未渲染的 Word 只能是待复核候选件。最终验收先在中性候选名上完成，再通过同目录原子替换发布；发布前后保存候选与成品哈希及事务状态，交付 ZIP 也必须先在临时名上完整校验后再原子替换。
+
+### 1.7 结构化内容到 Word 的输出合同
+
+2026-09-03 核对 OpenAI Codex `fc953e5234f2452e393310b2be2b29a482c4d907` 的 `codex-rs/core-plugins/src/artifact_operation.rs` 和结构化输出指引：Codex Harness 只跟踪 `documents` 产物操作，不在核心中实现 LaTeX→DOCX；官方 documents 运行时要求生成后渲染、检查页图并在缺陷时重做。DeepSeek Harness `49a606bc5b5934603f22a26957a07dc799ab0291` 的工具输出使用声明 schema 和运行时校验，但同样没有 DOCX/OMML 转换层。本平台因原生 Word 公式交付需要作必要扩展：
+
+- 答案摘要保留人可读文本，同时在生成、修复和历史迁移边界确定性生成 `answer_summary_segments`；数学内容只以 `formula_ref` 指向 `formulas`，DOCX 渲染器优先消费已校验的结构段。
+- 多行 `$$...$$` 是一个完整显示公式，内部换行只作排版空白；不得按行或按 `\text{}` 内容拆成普通文本。
+- 结构校验同时检查摘要段类型、原始 LaTeX 分隔符残留和公式引用完整性；DOCX 转换错误必须包含题目 ID 与 `answer_summary` 字段。
+- 旧检查点在 Word 本地修复阶段升级为同一结构合同，再重建、审计和渲染；不增加模型请求，不改写已确认的答案语义。
 
 ## 2. 强制登记字段
 

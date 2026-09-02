@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import html as html_lib
 import json
 import re
@@ -11,7 +12,9 @@ from typing import Any
 
 from docx import Document
 
+from .input_representations import REPRESENTATION_SCHEMA, render_page_representation
 from .mineru_content import rows_from_mineru_content_list
+from .omml_input import mixed_text_with_structured_math
 from .text_utils import clean_text
 from .textbook_package import is_textbook_package, prepare_textbook_package
 
@@ -475,7 +478,7 @@ def rows_from_docx(name: str, path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     block_index = 0
     for paragraph in document.paragraphs:
-        text = clean_text(paragraph.text)
+        text = clean_text(mixed_text_with_structured_math(paragraph._p).text)
         if not text:
             continue
         block_index += 1
@@ -486,7 +489,7 @@ def rows_from_docx(name: str, path: Path) -> list[dict[str, Any]]:
         for row in table.rows:
             cells: list[str] = []
             for cell in row.cells:
-                value = clean_text(cell.text)
+                value = clean_text(mixed_text_with_structured_math(cell._tc).text)
                 if value:
                     cells.append(value)
             if cells:
@@ -506,6 +509,91 @@ def rows_from_docx(name: str, path: Path) -> list[dict[str, Any]]:
             )
         )
     return rows
+
+
+def _representation_dir(stage_dir: Path, source: Path) -> Path:
+    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
+    return stage_dir / "input_representations" / f"{source.stem[:40]}-{digest}"
+
+
+def _page_visual_rows(
+    name: str,
+    path: Path,
+    representation: dict[str, Any],
+    *,
+    logical_page: bool = False,
+) -> list[dict[str, Any]]:
+    paths = [str(value) for value in representation.get("paths") or []]
+    texts = [clean_text(str(value)) for value in representation.get("page_texts") or []]
+    rows: list[dict[str, Any]] = []
+    for index, asset_path in enumerate(paths, start=1):
+        page_idx = 0 if logical_page else index
+        page_text = texts[index - 1] if index <= len(texts) else ""
+        rows.append(
+            {
+                "block_id": f"{name}:p{page_idx}:page-visual-{index}",
+                "textbook": name,
+                "source_file": str(path),
+                "page_idx": page_idx,
+                "block_index": 100000 + index,
+                "reading_order": 100000 + index,
+                "block_type": "page_visual",
+                "source_type": "figure_block",
+                "chapter_section": "",
+                "bbox": "",
+                "text": "",
+                "caption": f"原始文档第 {index} 页视觉补偿",
+                "ocr_text": page_text,
+                "asset_path": asset_path,
+                "table_html": "",
+                "visual_summary": "",
+                "visual_status": "source_page",
+                "visual_unreadable_reason": "",
+                "table_rows": "",
+                "surrounding_text_refs": "",
+                "surrounding_text_preview": "",
+                "retrieval_text": page_text,
+                "char_count": len(page_text),
+            }
+        )
+    return rows
+
+
+def rows_from_pdf(
+    name: str,
+    path: Path,
+    stage_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    representation = render_page_representation(
+        path,
+        _representation_dir(stage_dir, path),
+        source_format="pdf",
+        max_pages=10000,
+    )
+    if representation.get("status") == "failed" or not representation.get("paths"):
+        raise ValueError(f"教材 PDF 无法生成可核对的文本和页面表示：{path.name}")
+    rows: list[dict[str, Any]] = []
+    page_texts = [clean_text(str(value)) for value in representation.get("page_texts") or []]
+    for page_idx, page_text in enumerate(page_texts, start=1):
+        if page_text:
+            rows.append(
+                _text_row(
+                    name=name,
+                    path=path,
+                    block_index=page_idx,
+                    text=page_text,
+                )
+                | {
+                    "block_id": f"{name}:p{page_idx}:b1",
+                    "page_idx": page_idx,
+                    "block_index": 1,
+                    "reading_order": 1,
+                }
+            )
+    rows.extend(_page_visual_rows(name, path, representation))
+    diagnostic = {key: value for key, value in representation.items() if key not in {"paths", "page_texts"}}
+    diagnostic.update({"schema": REPRESENTATION_SCHEMA, "source_file": str(path), "raw_retained": True})
+    return rows, diagnostic
 
 
 def bind_surrounding_text(rows: list[dict[str, Any]], window: int = 1) -> list[dict[str, Any]]:
@@ -583,7 +671,7 @@ def textbook_name_from_file(path: Path) -> str:
 
 
 def discover_textbooks(textbooks_dir: Path) -> list[Path]:
-    allowed = {".docx", ".json", ".md", ".markdown", ".txt", ".zip"}
+    allowed = {".pdf", ".docx", ".json", ".md", ".markdown", ".txt", ".zip"}
     return sorted(
         p
         for p in textbooks_dir.iterdir()
@@ -816,6 +904,7 @@ def build_textbook_index_for_files(
 ) -> IndexResult:
     rows: list[dict[str, Any]] = []
     package_audits: list[dict[str, Any]] = []
+    input_representations: list[dict[str, Any]] = []
     for path in files:
         name = textbook_name_from_file(path)
         if is_textbook_package(path):
@@ -830,7 +919,40 @@ def build_textbook_index_for_files(
         elif path.suffix.lower() == ".json":
             rows.extend(rows_from_json(name, path))
         elif path.suffix.lower() == ".docx":
-            rows.extend(rows_from_docx(name, path))
+            docx_rows = rows_from_docx(name, path)
+            document = Document(path)
+            formula_count = len(document.element.findall(".//{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"))
+            visual_count = len(document.element.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"))
+            diagnostic: dict[str, Any] = {
+                "schema": REPRESENTATION_SCHEMA,
+                "source_file": str(path),
+                "source_format": "docx",
+                "raw_retained": True,
+                "structured_text_status": "ready" if docx_rows else "failed",
+                "formula_count": formula_count,
+                "embedded_visual_count": visual_count,
+            }
+            if formula_count or visual_count:
+                page_representation = render_page_representation(
+                    path,
+                    _representation_dir(stage_dir, path),
+                    source_format="docx",
+                    max_pages=10000,
+                )
+                docx_rows.extend(_page_visual_rows(name, path, page_representation, logical_page=True))
+                diagnostic["page_visual_status"] = page_representation.get("status")
+                diagnostic["page_count_total"] = page_representation.get("page_count_total", 0)
+                diagnostic["page_visual_error"] = page_representation.get("error", "")
+            else:
+                diagnostic["page_visual_status"] = "not_required"
+            if not docx_rows:
+                raise ValueError(f"教材 Word 未提取到可用文本或页面表示：{path.name}")
+            rows.extend(docx_rows)
+            input_representations.append(diagnostic)
+        elif path.suffix.lower() == ".pdf":
+            pdf_rows, diagnostic = rows_from_pdf(name, path, stage_dir)
+            rows.extend(pdf_rows)
+            input_representations.append(diagnostic)
         else:
             rows.extend(rows_from_text(name, path))
     rows = enrich_rows_with_sections(rows)
@@ -845,6 +967,8 @@ def build_textbook_index_for_files(
     page_map_ok, page_map_issues = audit_page_map(page_rows)
     result = IndexResult(len(files), len(rows), str(blocks_csv), str(page_map_csv), page_map_ok, page_map_issues)
     status = asdict(result)
+    if input_representations:
+        status["input_representations"] = input_representations
     if package_audits:
         status["textbook_package_audits"] = package_audits
         (stage_dir / "textbook_package_audit.json").write_text(json.dumps({"packages": package_audits}, ensure_ascii=False, indent=2), encoding="utf-8")

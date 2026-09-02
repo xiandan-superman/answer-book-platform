@@ -14,7 +14,10 @@ from .answer_generation import (
     demote_simple_symbol_formulas,
 )
 from .docx_v4 import _answer_summary_formula_candidates
-from .expression_promotion import promote_split_partial_derivatives
+from .expression_promotion import (
+    promote_answer_summary_mathematical_expressions,
+    promote_split_partial_derivatives,
+)
 from .omml_input import strip_structured_math_metadata
 from .v4_schema import validate_v4_answer_fragment
 
@@ -122,7 +125,7 @@ def _repair_formula_text_segments(fragment: dict[str, Any]) -> dict[str, Any]:
         if changed:
             block["segments"] = repaired_segments
     fragment["formulas"] = formulas
-    return fragment
+    return promote_answer_summary_mathematical_expressions(fragment)
 
 
 def _strip_internal_formula_metadata(fragment: dict[str, Any]) -> dict[str, Any]:

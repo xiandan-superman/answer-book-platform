@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from app.answer_generation import _replace_formula_placeholders_in_text
 from app.expression_promotion import promote_inline_mathematical_expressions
 from app.formula_audit import audit_text_segments_no_formula
-from app.answer_generation import _replace_formula_placeholders_in_text
 from app.fragment_repair import _repair_formula_text_segments
+from app.v4_schema import validate_v4_answer_fragment
 
 
 def test_promoted_sentence_formula_stays_inline() -> None:
@@ -26,6 +27,73 @@ def test_promoted_sentence_formula_stays_inline() -> None:
     assert formula["display"] is False
     assert reference["type"] == "formula_ref"
     assert reference["inline"] is True
+
+
+def test_multiline_display_math_in_answer_summary_is_promoted_to_typed_segments() -> None:
+    fragment = {
+        "schema_version": "answer_book.answer_fragment.v4",
+        "question_id": "qa_s01_02_02",
+        "answer": "见解析",
+        "answer_summary": (
+            "异氰酸酯的物质的量为\n"
+            "$$\n"
+            r"n_{\mathrm{OCN-C_6H_4-NCO}}=\frac{m}{M}"
+            "\n$$\n"
+            "计算结果如上。"
+        ),
+        "evidence_ids": [],
+        "blocks": [],
+        "formulas": [],
+    }
+
+    repaired = promote_inline_mathematical_expressions(fragment)
+    second = promote_inline_mathematical_expressions(repaired)
+
+    assert repaired == second
+    assert [segment["type"] for segment in repaired["answer_summary_segments"]] == [
+        "text",
+        "formula_ref",
+        "text",
+    ]
+    reference = repaired["answer_summary_segments"][1]
+    assert reference["display"] is True
+    assert reference["inline"] is False
+    assert len(repaired["formulas"]) == 1
+    assert "$$" not in "".join(
+        str(segment.get("text") or "") for segment in repaired["answer_summary_segments"]
+    )
+    assert validate_v4_answer_fragment(repaired) == []
+
+
+def test_docx_local_repair_upgrades_legacy_answer_summary_math() -> None:
+    fragment = {
+        "question_id": "legacy_summary",
+        "answer_summary": "结果：$$\nx=\\frac{a}{b}\n$$",
+        "formulas": [],
+        "blocks": [],
+    }
+
+    repaired = _repair_formula_text_segments(fragment)
+
+    assert repaired["answer_summary_segments"][1]["type"] == "formula_ref"
+    assert repaired["answer_summary_segments"][1]["display"] is True
+    assert repaired["formulas"][0]["latex"] == r"x=\frac{a}{b}"
+
+
+def test_schema_rejects_raw_summary_latex_without_typed_segments() -> None:
+    fragment = {
+        "schema_version": "answer_book.answer_fragment.v4",
+        "question_id": "raw_summary",
+        "answer": "见解析",
+        "answer_summary": r"$x=1$",
+        "evidence_ids": [],
+        "blocks": [],
+        "formulas": [],
+    }
+
+    assert "answer_summary contains raw LaTeX delimiter; use answer_summary_segments" in (
+        validate_v4_answer_fragment(fragment)
+    )
 
 
 def test_ratio_equivalence_is_promoted_before_generation_validation() -> None:

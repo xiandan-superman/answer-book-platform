@@ -166,7 +166,7 @@ class StructuredAnswerTokenTests(unittest.TestCase):
         explicit_disabled = ProviderConfig(**base, thinking_mode="disabled")
         calculation = {"question_type": "计算题"}
         self.assertEqual("disabled", answer_generation_attempt_thinking_mode(automatic, calculation, 0))
-        self.assertEqual("low", answer_generation_attempt_thinking_mode(automatic, calculation, 1))
+        self.assertEqual("disabled", answer_generation_attempt_thinking_mode(automatic, calculation, 1))
         self.assertEqual("disabled", answer_generation_attempt_thinking_mode(explicit_disabled, calculation, 1))
 
     def test_explicit_reasoning_receives_provider_full_token_allowance(self) -> None:

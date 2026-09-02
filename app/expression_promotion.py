@@ -564,4 +564,78 @@ def promote_inline_mathematical_expressions(fragment: dict[str, Any]) -> dict[st
         or "程序在结构校验前从解析正文中提升" not in str(formula.get("source_note") or "")
     ]
     fragment["formulas"] = formulas
-    return promote_split_partial_derivatives(fragment)
+    fragment = promote_split_partial_derivatives(fragment)
+    return promote_answer_summary_mathematical_expressions(fragment)
+
+
+def promote_answer_summary_mathematical_expressions(fragment: dict[str, Any]) -> dict[str, Any]:
+    """Give ``answer_summary`` the same typed math boundary as body blocks.
+
+    The human-readable scalar remains for UI and old checkpoint compatibility;
+    Word and other strict consumers use ``answer_summary_segments``. Rebuilding
+    the segments from the scalar on every pass also prevents stale structured
+    data after a model or user repair changes the summary.
+    """
+
+    summary = str(fragment.get("answer_summary") or "")
+    formulas = [item for item in fragment.get("formulas", []) or [] if isinstance(item, dict)]
+    existing_ids = {str(item.get("formula_id") or "") for item in formulas}
+    by_latex = {
+        normalize_expression_latex(str(item.get("latex") or "")): str(item.get("formula_id") or "")
+        for item in formulas
+        if str(item.get("latex") or "").strip() and str(item.get("formula_id") or "").strip()
+    }
+    qid = re.sub(r"[^A-Za-z0-9_]+", "_", str(fragment.get("question_id") or "q"))
+    created = 0
+
+    def formula_id_for(latex: str, *, display: bool) -> str:
+        nonlocal created
+        normalized = normalize_expression_latex(latex)
+        if normalized in by_latex:
+            return by_latex[normalized]
+        while True:
+            created += 1
+            formula_id = f"f_{qid}_answer_summary_math_{created:02d}"
+            if formula_id not in existing_ids:
+                break
+        existing_ids.add(formula_id)
+        by_latex[normalized] = formula_id
+        formulas.append(
+            {
+                "formula_id": formula_id,
+                "latex": normalized,
+                "role": "result",
+                "display": display,
+                "source_note": "程序在结构校验前从答案摘要中提升的数学表达式。",
+            }
+        )
+        return formula_id
+
+    candidates = _answer_summary_formula_candidates(summary)
+    if not candidates:
+        fragment["answer_summary_segments"] = (
+            [{"type": "text", "text": summary}] if summary else []
+        )
+        fragment["formulas"] = formulas
+        return fragment
+
+    segments: list[dict[str, Any]] = []
+    cursor = 0
+    for start, end, latex in candidates:
+        if start > cursor:
+            segments.append({"type": "text", "text": summary[cursor:start]})
+        display = summary[start:end].startswith("$$")
+        segments.append(
+            {
+                "type": "formula_ref",
+                "formula_id": formula_id_for(latex, display=display),
+                "inline": not display,
+                "display": display,
+            }
+        )
+        cursor = end
+    if cursor < len(summary):
+        segments.append({"type": "text", "text": summary[cursor:]})
+    fragment["answer_summary_segments"] = segments
+    fragment["formulas"] = formulas
+    return fragment

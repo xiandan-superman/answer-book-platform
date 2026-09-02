@@ -760,7 +760,12 @@ def repair_fragments_with_model_for_audit(
                     artifact_store,
                     reference_images=question.get("image_refs") or [],
                 )
-                tool_loop = ModelToolLoop(repair_client, [image_tool], artifact_store)
+                tool_loop = ModelToolLoop(
+                    repair_client,
+                    [image_tool],
+                    artifact_store,
+                    session_id=f"audit_repair:{audit_stage}:{qid}",
+                )
             base_messages = _repair_prompt(
                 audit_stage=audit_stage,
                 question=question,

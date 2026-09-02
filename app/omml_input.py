@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 import platform
-import threading
 import re
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -52,6 +52,24 @@ def _find_omml2mathml_xsl_cached(system: str, env_path: str) -> Path | None:
                 Path("/Applications/Microsoft Word.app/Contents/Resources/OMML2MATHML.XSL"),
             )
         )
+    elif system == "Windows":
+        roots = [
+            Path(value)
+            for value in (
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("ProgramFiles"),
+            )
+            if value
+        ]
+        for root in roots:
+            candidates.extend(
+                (
+                    root / "Microsoft Office" / "root" / "Office16" / "OMML2MML.XSL",
+                    root / "Microsoft Office" / "Office16" / "OMML2MML.XSL",
+                    root / "Microsoft Office" / "root" / "Office15" / "OMML2MML.XSL",
+                    root / "Microsoft Office" / "Office15" / "OMML2MML.XSL",
+                )
+            )
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()

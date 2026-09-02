@@ -12,6 +12,7 @@ from typing import Any
 from .concurrency import run_limited_concurrent
 from .llm_client import LLMError, OpenAICompatibleClient
 from .prompt_registry import prompt_contract
+from .provider_errors import classify_provider_error
 from .question_understanding import attach_question_visuals, needs_vision_model
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text, tokenize_zh_en
@@ -28,6 +29,8 @@ class KnowledgePlanResult:
     output_json: str
     max_workers: int = 1
     parallel_enabled: bool = False
+    failure_state: str = ""
+    failure_message: str = ""
 
 
 def knowledge_planning_worker_count() -> int:
@@ -266,7 +269,7 @@ def generate_knowledge_plans(
                     model=active_model,
                     max_tokens=DEFAULT_MODEL_MAX_TOKENS,
                     timeout=timeout,
-                    attempts=1,
+                    attempts=3,
                     task_stage="knowledge_planning",
                     item_ids=[qid],
                     enforce_context_budget=True,
@@ -312,6 +315,22 @@ def generate_knowledge_plans(
     for item in results:
         issues.extend(item.get("issues") or [])
         token_feedback.extend(item.get("token_feedback") or [])
+    failed_model_items = [item for item in results if item.get("error")]
+    all_model_items_failed = bool(
+        use_model
+        and provider.api_key
+        and questions
+        and len(failed_model_items) == len(questions)
+    )
+    failure_state = ""
+    failure_message = ""
+    if all_model_items_failed:
+        first_error = failed_model_items[0].get("error") or ""
+        failure = classify_provider_error(first_error)
+        failure_state = failure.failure_state
+        failure_message = (
+            f"{failure.title}：{failure.message} {failure.suggested_action}"
+        )
     output = {
         "schema_version": SCHEMA_VERSION,
         "provider": provider.name,
@@ -319,6 +338,11 @@ def generate_knowledge_plans(
         "plans": plans,
         "issues": issues,
         "model_token_feedback": token_feedback,
+        "model_failure": {
+            "all_items_failed": all_model_items_failed,
+            "failure_state": failure_state,
+            "message": failure_message,
+        },
         "concurrency": {
             "max_workers": max_workers,
             "parallel_enabled": max_workers > 1 and len(questions) > 1,
@@ -327,19 +351,21 @@ def generate_knowledge_plans(
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
-    progress_payload["status"] = "completed"
+    progress_payload["status"] = "failed" if all_model_items_failed else "completed"
     progress_payload["completed"] = len(plans)
     progress_payload["failed"] = len(issues)
     progress_payload["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     _write_progress(progress_json, progress_payload)
     return KnowledgePlanResult(
-        ok=not issues or len(plans) == len(questions),
+        ok=not all_model_items_failed,
         question_count=len(questions),
         plan_count=len(plans),
         issue_count=sum(len(x.get("issues", [])) for x in issues),
         output_json=str(output_json),
         max_workers=max_workers,
         parallel_enabled=max_workers > 1 and len(questions) > 1,
+        failure_state=failure_state,
+        failure_message=failure_message,
     )
 
 

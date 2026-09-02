@@ -66,6 +66,18 @@ def test_ambiguous_http_400_is_service_degraded_not_configuration_blocked() -> N
     assert info.retryable is False
 
 
+def test_gateway_account_group_unavailable_is_retryable_even_when_wrapped_as_model_not_found() -> None:
+    info = classify_provider_error(
+        '{"error":{"message":"Model \\"gemini-3.7-flash-medium\\" is not supported by any configured account in this group","type":"model_not_found"}}',
+        status_code=404,
+    )
+
+    assert info.kind == "provider_route_pool_unavailable"
+    assert info.failure_state == "service_degraded"
+    assert info.requires_configuration is False
+    assert info.retryable is True
+
+
 def test_explicit_unsupported_parameter_remains_configuration_blocked() -> None:
     info = classify_provider_error(
         '{"error":{"message":"unsupported parameter: reasoning_effort","param":"reasoning_effort"}}',

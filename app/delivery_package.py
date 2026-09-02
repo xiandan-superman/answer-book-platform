@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
 
-from .final_acceptance import build_final_acceptance_report
+from .final_acceptance import build_final_acceptance_report, read_json
 from .model_usage_report import MODEL_USAGE_REPORT_NAME, build_model_usage_report
 
 STAGE_REPORTS = [
@@ -85,7 +87,14 @@ def build_task_delivery_package(
     stage_dir: Path,
     output_dir: Path,
 ) -> dict[str, Any]:
-    final = build_final_acceptance_report(stage_dir, output_dir, require_render=True)
+    stored_acceptance = read_json(stage_dir / "final_acceptance_report.json") or {}
+    stored_candidate = output_dir / "answer_book_review_candidate.docx"
+    final = build_final_acceptance_report(
+        stage_dir,
+        output_dir,
+        require_render=bool(stored_acceptance.get("require_render", True)),
+        candidate_docx=stored_candidate if stored_candidate.exists() else None,
+    )
     if final["status"] == "failed":
         return {"ok": False, "status": final["status"], "issues": final["issues"], "warnings": final["warnings"], "zip": None}
     build_model_usage_report(stage_dir, output_dir, task_id)
@@ -94,72 +103,78 @@ def build_task_delivery_package(
     delivery_dir = output_dir / "delivery"
     delivery_dir.mkdir(parents=True, exist_ok=True)
     zip_path = delivery_dir / f"{task_id}_delivery.zip"
-    if zip_path.exists():
-        zip_path.unlink()
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{task_id}_delivery.", suffix=".zip.tmp", dir=str(delivery_dir))
+    os.close(fd)
+    pending_zip_path = Path(raw_tmp)
 
     added: list[str] = []
     integrity: list[dict[str, Any]] = []
-    review_candidate = final.get("delivery_tier") == "review_candidate"
-    candidate_path = output_dir / "answer_book_review_candidate.docx"
-    answer_book_path = candidate_path if review_candidate and candidate_path.exists() else output_dir / "answer_book.docx"
-    answer_book_arcname = "answer_book_review_candidate.docx" if review_candidate else "answer_book.docx"
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for path, arcname in [
-            (answer_book_path, answer_book_arcname),
-            (output_dir / "question_review.docx", "question_review.docx"),
-            (output_dir / "作图题全流程图片.docx", "作图题全流程图片.docx"),
-            (output_dir / MODEL_USAGE_REPORT_NAME, MODEL_USAGE_REPORT_NAME),
-        ]:
-            if path.exists():
-                zf.write(path, arcname)
-                added.append(arcname)
-                integrity.append(_integrity_entry(path, arcname))
-        rendered_dir = output_dir / "word_rendered"
-        if rendered_dir.exists():
-            pdf = rendered_dir / "answer_book.pdf"
-            if pdf.exists():
-                zf.write(pdf, "answer_book.pdf")
-                added.append("answer_book.pdf")
-                integrity.append(_integrity_entry(pdf, "answer_book.pdf"))
-            for png in sorted(rendered_dir.glob("page-*.png")):
-                arcname = f"rendered_pages/{png.name}"
-                zf.write(png, arcname)
-                added.append(arcname)
-                integrity.append(_integrity_entry(png, arcname))
-        for name in STAGE_REPORTS:
-            path = stage_dir / name
-            if path.exists():
-                arcname = f"reports/{name}"
-                zf.write(path, arcname)
-                added.append(arcname)
-                integrity.append(_integrity_entry(path, arcname))
-        manifest = {
-            "task_id": task_id,
-            "status": final["status"],
-            "delivery_tier": final.get("delivery_tier"),
-            "formal_acceptance_passed": bool(final.get("formal_acceptance_passed")),
-            "warning_count": final["warning_count"],
-            "diagnostic_advisories": {
-                **advisories,
-                "governance_policy": "unattended",
-                "review_file_included": "question_review.docx" in added or "reports/question_review.csv" in added,
-            },
-            "files": added,
-            "file_integrity": integrity,
-        }
-        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-        added.append("manifest.json")
+    try:
+        review_candidate = final.get("delivery_tier") == "review_candidate"
+        candidate_path = output_dir / "answer_book_review_candidate.docx"
+        answer_book_path = candidate_path if review_candidate and candidate_path.exists() else output_dir / "answer_book.docx"
+        answer_book_arcname = "answer_book_review_candidate.docx" if review_candidate else "answer_book.docx"
+        with zipfile.ZipFile(pending_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path, arcname in [
+                (answer_book_path, answer_book_arcname),
+                (output_dir / "question_review.docx", "question_review.docx"),
+                (output_dir / "作图题全流程图片.docx", "作图题全流程图片.docx"),
+                (output_dir / MODEL_USAGE_REPORT_NAME, MODEL_USAGE_REPORT_NAME),
+            ]:
+                if path.exists():
+                    zf.write(path, arcname)
+                    added.append(arcname)
+                    integrity.append(_integrity_entry(path, arcname))
+            rendered_dir = output_dir / "word_rendered"
+            if rendered_dir.exists():
+                pdf = rendered_dir / "answer_book.pdf"
+                if pdf.exists():
+                    zf.write(pdf, "answer_book.pdf")
+                    added.append("answer_book.pdf")
+                    integrity.append(_integrity_entry(pdf, "answer_book.pdf"))
+                for png in sorted(rendered_dir.glob("page-*.png")):
+                    arcname = f"rendered_pages/{png.name}"
+                    zf.write(png, arcname)
+                    added.append(arcname)
+                    integrity.append(_integrity_entry(png, arcname))
+            for name in STAGE_REPORTS:
+                path = stage_dir / name
+                if path.exists():
+                    arcname = f"reports/{name}"
+                    zf.write(path, arcname)
+                    added.append(arcname)
+                    integrity.append(_integrity_entry(path, arcname))
+            manifest = {
+                "task_id": task_id,
+                "status": final["status"],
+                "delivery_tier": final.get("delivery_tier"),
+                "formal_acceptance_passed": bool(final.get("formal_acceptance_passed")),
+                "warning_count": final["warning_count"],
+                "diagnostic_advisories": {
+                    **advisories,
+                    "governance_policy": "unattended",
+                    "review_file_included": "question_review.docx" in added or "reports/question_review.csv" in added,
+                },
+                "files": added,
+                "file_integrity": integrity,
+            }
+            zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            added.append("manifest.json")
 
-    verification = _verify_delivery_zip(zip_path)
-    if not verification["ok"]:
-        zip_path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "status": "delivery_package_invalid",
-            "issues": verification["issues"],
-            "warnings": final["warnings"],
-            "zip": None,
-        }
+        verification = _verify_delivery_zip(pending_zip_path)
+        if not verification["ok"]:
+            return {
+                "ok": False,
+                "status": "delivery_package_invalid",
+                "issues": verification["issues"],
+                "warnings": final["warnings"],
+                "zip": None,
+            }
+
+        os.replace(pending_zip_path, zip_path)
+        verification["zip"] = str(zip_path)
+    finally:
+        pending_zip_path.unlink(missing_ok=True)
 
     return {
         "ok": True,

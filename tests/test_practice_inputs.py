@@ -111,18 +111,18 @@ class PracticeInputTests(unittest.TestCase):
             self.assertEqual(diagnostics["omml_formula_count"], 0)
             self.assertFalse(diagnostics["warnings"])
 
-    def test_docx_images_beyond_twenty_four_are_explicitly_reported(self):
+    def test_docx_images_beyond_one_request_are_retained_for_batched_analysis(self):
         with tempfile.TemporaryDirectory() as raw:
             path = self.make_docx(Path(raw), formulas=False, images=25)
             result = parse_practice_sources(_payload(path))
             diagnostics = result["file_diagnostics"][0]
 
             self.assertEqual(diagnostics["embedded_image_count"], 25)
-            self.assertEqual(diagnostics["image_count_included"], 24)
-            self.assertEqual(diagnostics["reference_image_count_included"], 24)
-            self.assertEqual(result["reference_image_count"], 24)
-            self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 24)
-            self.assertTrue(any("超过" in warning for warning in diagnostics["warnings"]))
+            self.assertEqual(diagnostics["image_count_included"], 25)
+            self.assertEqual(diagnostics["reference_image_count_included"], 25)
+            self.assertEqual(result["reference_image_count"], 25)
+            self.assertEqual(result["text"].count("⟦IMAGE_REF:"), 25)
+            self.assertFalse(any("超过" in warning for warning in diagnostics["warnings"]))
 
     def test_docx_with_substantial_native_text_does_not_force_vision(self):
         with tempfile.TemporaryDirectory() as raw:

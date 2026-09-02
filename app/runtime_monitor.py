@@ -762,6 +762,7 @@ def _model_execution_budget(context: dict[str, str]) -> QualityExecutionBudget:
 
 def _wait_for_provider_circuit_probe(
     budget_key: tuple[str, str],
+    route_key: str,
     provider: str,
     budget: QualityExecutionBudget,
 ) -> bool:
@@ -774,14 +775,14 @@ def _wait_for_provider_circuit_probe(
             state = _RUN_MODEL_BUDGETS.get(budget_key)
             if not isinstance(state, dict):
                 return False
-            failures = int((state.get("provider_failures") or {}).get(provider, 0) or 0)
+            failures = int((state.get("provider_failures") or {}).get(route_key, 0) or 0)
             if failures < budget.provider_failure_circuit_breaker:
                 return False
             elapsed = max(0.0, time.monotonic() - float(state.get("started_monotonic") or time.monotonic()))
             if elapsed >= budget.max_model_wall_seconds_per_run:
                 raise RuntimeError(f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)")
             circuits = state.setdefault("provider_circuits", {})
-            circuit = circuits.setdefault(provider, {
+            circuit = circuits.setdefault(route_key, {
                 "opened_monotonic": time.monotonic(),
                 "probe_in_flight": False,
             })
@@ -833,6 +834,7 @@ def track_model_call(
         except Exception:
             pass
     budget_key = (str(context.get("task_id") or ""), str(context.get("run_id") or ""))
+    route_key = "|".join((str(provider), str(model), str(protocol or "default")))
     budget: QualityExecutionBudget | None = None
     circuit_probe = False
     if all(budget_key):
@@ -848,13 +850,13 @@ def track_model_call(
                     "provider_circuits": {},
                 },
             )
-        circuit_probe = _wait_for_provider_circuit_probe(budget_key, provider, budget)
+        circuit_probe = _wait_for_provider_circuit_probe(budget_key, route_key, provider, budget)
     with _MODEL_LOCK:
         if all(budget_key):
             assert budget is not None
             state = _RUN_MODEL_BUDGETS[budget_key]
             elapsed = max(0.0, time.monotonic() - float(state["started_monotonic"]))
-            provider_failures = int((state.get("provider_failures") or {}).get(provider, 0) or 0)
+            provider_failures = int((state.get("provider_failures") or {}).get(route_key, 0) or 0)
             exhausted_reason = ""
             if int(state["call_count"]) >= budget.max_model_calls_per_run:
                 exhausted_reason = f"model call budget exhausted ({budget.max_model_calls_per_run})"
@@ -953,12 +955,13 @@ def track_model_call(
                 if state is not None:
                     state["call_count"] = max(0, int(state.get("call_count") or 0) - 1)
                     if circuit_probe:
-                        circuit = (state.get("provider_circuits") or {}).get(provider)
+                        circuit = (state.get("provider_circuits") or {}).get(route_key)
                         if isinstance(circuit, dict):
                             circuit["probe_in_flight"] = False
         raise
     outcome = "succeeded"
     error_text = ""
+    circuit_breaker_eligible = False
     provider_error: dict[str, str] = {}
     provider_request_id = ""
     result_ledger_error: ModelExecutionLedgerError | None = None
@@ -967,6 +970,7 @@ def track_model_call(
     except BaseException as exc:
         outcome = _model_error_kind(exc)
         error_text = _safe_text(exc, 300)
+        circuit_breaker_eligible = not isinstance(exc, ModelRequestAborted) and classify_provider_error(exc).retryable
         provider_error = {
             key: _safe_text(getattr(exc, f"provider_error_{key}", ""), 300)
             for key in ("code", "type", "param", "message")
@@ -1045,15 +1049,17 @@ def track_model_call(
                         token_value = int(record.get("prompt_tokens") or 0) + int(record.get("completion_tokens") or 0)
                     state["token_count"] = int(state.get("token_count") or 0) + int(token_value or 0)
                     failures = dict(state.get("provider_failures") or {})
-                    failures[provider] = (
-                        0 if outcome == "succeeded" else int(failures.get(provider, 0) or 0) + 1
+                    failures[route_key] = (
+                        int(failures.get(route_key, 0) or 0) + 1
+                        if outcome != "succeeded" and circuit_breaker_eligible
+                        else 0
                     )
                     state["provider_failures"] = failures
                     circuits = state.setdefault("provider_circuits", {})
-                    if outcome == "succeeded":
-                        circuits.pop(provider, None)
-                    elif failures[provider] >= budget.provider_failure_circuit_breaker:
-                        circuits[provider] = {
+                    if outcome == "succeeded" or not circuit_breaker_eligible:
+                        circuits.pop(route_key, None)
+                    elif failures[route_key] >= budget.provider_failure_circuit_breaker:
+                        circuits[route_key] = {
                             "opened_monotonic": time.monotonic(),
                             "probe_in_flight": False,
                         }

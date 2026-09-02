@@ -5194,6 +5194,7 @@ def _practice_model_tool_loop(
             )
         ],
         artifact_store,
+        session_id=f"practice_generation:{run_scope}:{scope_digest}",
     )
 
 
@@ -7672,6 +7673,18 @@ def analyze_practice_source(payload: dict[str, Any]) -> dict[str, Any]:
         return chunks
 
     chunk_specs = analysis_chunks()
+    # One file can contain far more visual pages than a single provider
+    # request should carry. Preserve every retained page and analyze it in
+    # stable windows rather than dropping pages after the first 24.
+    expanded_chunk_specs: list[tuple[str, list[int]]] = []
+    for chunk_text, chunk_image_numbers in chunk_specs:
+        image_windows = [
+            chunk_image_numbers[index:index + 24]
+            for index in range(0, len(chunk_image_numbers), 24)
+        ] or [[]]
+        for image_window in image_windows:
+            expanded_chunk_specs.append((chunk_text, image_window))
+    chunk_specs = expanded_chunk_specs
     source_fragments: dict[str, str] = {}
     chunk_ref_ids: dict[int, list[str]] = {}
     annotated_chunks: list[tuple[str, list[str], list[int]]] = []

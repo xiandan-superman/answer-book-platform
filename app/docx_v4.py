@@ -33,6 +33,7 @@ from .question_types import (
     is_term_explanation_question,
     question_has_type,
 )
+from .rich_text_math import iter_delimited_math
 
 MIN_WORD_FIGURE_HEIGHT_CM = 3.8
 WIDE_WORD_FIGURE_ASPECT_RATIO = 2.4
@@ -95,7 +96,6 @@ RELATION_SUMMARY_RE = re.compile(
     rf"(?<![A-Za-z0-9])({FORMULA_TOKEN_RE})\s*(≤|≥|<=|>=|<|>)\s*({FORMULA_EXPR_RE})(?![A-Za-z0-9])"
 )
 SYMBOLIC_EQUATION_SUMMARY_RE = re.compile(rf"(?<![A-Za-z0-9])({FORMULA_EXPR_RE})\s*=\s*({FORMULA_EXPR_RE})(?![A-Za-z0-9])")
-DOLLAR_LATEX_SUMMARY_RE = re.compile(r"\$([^$\n]+)\$")
 PARTIAL_DERIVATIVE_SUMMARY_RE = re.compile(
     r"[（(]\s*(?:∂|\\partial)\s*[（(]\s*"
     r"(?P<numerator>[A-Za-zΔ∆][A-Za-z0-9Δ∆]*(?:_[A-Za-z0-9]+)?)\s*[)）]\s*"
@@ -474,10 +474,9 @@ def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
         for plan in build_text_expression_render_plans(text)
         if plan.rule_id == "core.text_equation"
     }
-    for match in DOLLAR_LATEX_SUMMARY_RE.finditer(text):
-        latex = match.group(1).strip()
-        if latex:
-            candidates.append((match.start(), match.end(), latex))
+    for span in iter_delimited_math(text):
+        if span.latex:
+            candidates.append((span.start, span.end, span.latex))
     for match in PARTIAL_DERIVATIVE_SUMMARY_RE.finditer(text):
         numerator = _latex_atom(match.group("numerator"))
         numerator = re.sub(r"^\\Delta(?=[A-Za-z])", r"\\Delta ", numerator)
@@ -696,6 +695,8 @@ def add_mixed_paragraph(
                 append_domain_text_runs(paragraph, chunk[cursor:], highlight=highlight)
 
     def render_inline_formula(segment: dict, formula: dict) -> bool:
+        if bool(segment.get("display")):
+            return False
         if bool(segment.get("inline")):
             return True
         # Compatibility for fragments created before promoted sentence tokens
@@ -1189,7 +1190,43 @@ def _add_ordered_answer_units(doc: Document, fragment: dict, formulas: dict[str,
     return True
 
 
-def _add_answer_text(doc: Document, answer_text: str, formulas: dict[str, dict], strict_formula_audit: bool, base_dir: Path) -> None:
+def _add_structured_answer_summary(
+    doc: Document,
+    segments: list[dict],
+    formulas: dict[str, dict],
+    *,
+    label: str,
+    base_dir: Path,
+    question_id: str,
+) -> None:
+    try:
+        add_mixed_paragraph(doc, segments, formulas, label, base_dir)
+    except Exception as exc:
+        raise ValueError(
+            f"question_id={question_id or '<unknown>'} field=answer_summary: {exc}"
+        ) from exc
+
+
+def _add_answer_text(
+    doc: Document,
+    answer_text: str,
+    formulas: dict[str, dict],
+    strict_formula_audit: bool,
+    base_dir: Path,
+    *,
+    structured_segments: list[dict] | None = None,
+    question_id: str = "",
+) -> None:
+    if structured_segments is not None:
+        _add_structured_answer_summary(
+            doc,
+            structured_segments,
+            formulas,
+            label="答案",
+            base_dir=base_dir,
+            question_id=question_id,
+        )
+        return
     text = str(answer_text or "")
     if "$" in text or _answer_summary_formula_candidates(text):
         add_labeled_formula_text_paragraph(doc, "答案", text, size=11, strict_formula_audit=strict_formula_audit)
@@ -1203,8 +1240,27 @@ def _add_answer_text(doc: Document, answer_text: str, formulas: dict[str, dict],
     )
 
 
-def _add_indented_answer_text(doc: Document, answer_text: str, strict_formula_audit: bool) -> None:
+def _add_indented_answer_text(
+    doc: Document,
+    answer_text: str,
+    strict_formula_audit: bool,
+    *,
+    structured_segments: list[dict] | None = None,
+    formulas: dict[str, dict] | None = None,
+    base_dir: Path | None = None,
+    question_id: str = "",
+) -> None:
     add_text_paragraph(doc, "答案：", bold=True, size=11)
+    if structured_segments is not None:
+        _add_structured_answer_summary(
+            doc,
+            structured_segments,
+            formulas or {},
+            label="",
+            base_dir=base_dir or Path("."),
+            question_id=question_id,
+        )
+        return
     text = normalize_answer_hierarchy_markers(answer_text)
     if "$" in text or _answer_summary_formula_candidates(text):
         add_formula_text_body_paragraph(doc, text, size=11, strict_formula_audit=strict_formula_audit)
@@ -1236,6 +1292,17 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
         formulas = {str(f.get("formula_id")): f for f in fragment.get("formulas", [])}
         answer = str(fragment.get("answer", ""))
         answer_summary = str(fragment.get("answer_summary", "")).strip()
+        raw_summary_segments = fragment.get("answer_summary_segments")
+        answer_summary_segments = (
+            [segment for segment in raw_summary_segments if isinstance(segment, dict)]
+            if isinstance(raw_summary_segments, list)
+            else None
+        )
+        selected_answer_segments = (
+            answer_summary_segments
+            if answer_summary_segments is not None and _answer_text(answer, answer_summary) == answer_summary
+            else None
+        )
         section_context = {
             "section": section,
             "question_type": fragment.get("question_type") or "",
@@ -1243,11 +1310,27 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
         }
         if is_term_explanation_section(section_context):
             _add_number_and_evidence(doc, number, fragment, formulas, fragments_json.parent)
-            _add_indented_answer_text(doc, _answer_text(answer, answer_summary), strict_answer_summary_formula_audit)
+            _add_indented_answer_text(
+                doc,
+                _answer_text(answer, answer_summary),
+                strict_answer_summary_formula_audit,
+                structured_segments=selected_answer_segments,
+                formulas=formulas,
+                base_dir=fragments_json.parent,
+                question_id=qid,
+            )
             continue
         if is_graphic_section(section_context):
             _add_number_and_evidence(doc, number, fragment, formulas, fragments_json.parent)
-            _add_indented_answer_text(doc, _answer_text(answer, answer_summary), strict_answer_summary_formula_audit)
+            _add_indented_answer_text(
+                doc,
+                _answer_text(answer, answer_summary),
+                strict_answer_summary_formula_audit,
+                structured_segments=selected_answer_segments,
+                formulas=formulas,
+                base_dir=fragments_json.parent,
+                question_id=qid,
+            )
             # Preserve the original artifact before the generated answer figure
             # so users can compare the source condition with the solution.
             for label in ("原题图", "图示", "解析", "易错点及注意事项"):
@@ -1255,7 +1338,15 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
             continue
         if is_short_answer_section(section_context):
             _add_number_and_evidence(doc, number, fragment, formulas, fragments_json.parent)
-            _add_indented_answer_text(doc, _answer_text(answer, answer_summary), strict_answer_summary_formula_audit)
+            _add_indented_answer_text(
+                doc,
+                _answer_text(answer, answer_summary),
+                strict_answer_summary_formula_audit,
+                structured_segments=selected_answer_segments,
+                formulas=formulas,
+                base_dir=fragments_json.parent,
+                question_id=qid,
+            )
             # A nominal short-answer question may contain calculation or
             # drawing leaves.  When every leaf can be mapped safely, preserve
             # the source unit order instead of emitting all prose first and a
@@ -1321,7 +1412,15 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
         fill_answer_text = _answer_text(answer, answer_summary)
         if is_fill_section(section_context) and ("$" in fill_answer_text or _answer_summary_formula_candidates(fill_answer_text)):
             add_text_paragraph(doc, f"{number}、", size=11)
-            _add_answer_text(doc, fill_answer_text, formulas, strict_answer_summary_formula_audit, fragments_json.parent)
+            _add_answer_text(
+                doc,
+                fill_answer_text,
+                formulas,
+                strict_answer_summary_formula_audit,
+                fragments_json.parent,
+                structured_segments=selected_answer_segments,
+                question_id=qid,
+            )
             for block in fragment.get("blocks", []):
                 add_mixed_paragraph(
                     doc,
@@ -1336,7 +1435,22 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
         else:
             add_text_paragraph(doc, f"{number}、{answer}", size=11)
         if should_show_answer_summary(section_context, answer, answer_summary):
-            add_answer_summary_paragraph(doc, answer_summary, size=11, strict_formula_audit=strict_answer_summary_formula_audit)
+            if answer_summary_segments is not None:
+                _add_structured_answer_summary(
+                    doc,
+                    answer_summary_segments,
+                    formulas,
+                    label="答",
+                    base_dir=fragments_json.parent,
+                    question_id=qid,
+                )
+            else:
+                add_answer_summary_paragraph(
+                    doc,
+                    answer_summary,
+                    size=11,
+                    strict_formula_audit=strict_answer_summary_formula_audit,
+                )
         for block in fragment.get("blocks", []):
             label = str(block.get("label", ""))
             display_label = display_block_label(section_context, label)

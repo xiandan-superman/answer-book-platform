@@ -43,6 +43,7 @@ class AnswerFragmentV4(BaseModel):
     schema_version: Literal["answer_book.answer_fragment.v4"]
     question_id: str
     answer: str
+    answer_summary_segments: Optional[list[SegmentV4]] = None
     blocks: list[BlockV4]
     formulas: list[FormulaV4]
     evidence_ids: list[str]
@@ -110,6 +111,28 @@ def validate_v4_answer_fragment(data: dict[str, Any]) -> list[str]:
             issues.append(f"formulas[{idx}].latex looks empty")
 
     referenced_formula_ids: set[str] = set()
+
+    summary_segments = data.get("answer_summary_segments")
+    if summary_segments is None and "$" in str(data.get("answer_summary") or ""):
+        issues.append("answer_summary contains raw LaTeX delimiter; use answer_summary_segments")
+    if summary_segments is not None:
+        if not isinstance(summary_segments, list):
+            issues.append("answer_summary_segments must be a list")
+        else:
+            for sidx, segment in enumerate(summary_segments):
+                if not isinstance(segment, dict):
+                    issues.append(f"answer_summary_segments[{sidx}] must be object")
+                    continue
+                stype = segment.get("type")
+                if stype not in {"text", "formula_ref"}:
+                    issues.append(f"answer_summary_segments[{sidx}].type invalid: {stype}")
+                if stype == "formula_ref":
+                    fid = str(segment.get("formula_id", "")).strip()
+                    if not fid:
+                        issues.append(f"answer_summary_segments[{sidx}] formula_ref missing formula_id")
+                    referenced_formula_ids.add(fid)
+                if stype == "text" and "$" in str(segment.get("text") or ""):
+                    issues.append(f"answer_summary_segments[{sidx}] contains raw LaTeX delimiter")
     for bidx, block in enumerate(data.get("blocks") or []):
         if not isinstance(block, dict):
             issues.append(f"blocks[{bidx}] must be object")

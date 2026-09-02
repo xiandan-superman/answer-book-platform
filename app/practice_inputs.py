@@ -14,8 +14,9 @@ from docx import Document
 from lxml import etree
 from PIL import Image
 
+from .input_representations import REPRESENTATION_SCHEMA, render_page_representation
 from .omml_input import find_omml2mathml_xsl, mixed_text_with_structured_math
-from .pdf_render import pdf_page_count, render_pdf_pages
+from .pdf_render import pdf_page_count
 from .practice_source_store import (
     extraction_cache_key,
     load_extraction_cache,
@@ -26,8 +27,10 @@ from .practice_source_store import (
 MAX_FILE_COUNT = 12
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_TOTAL_BYTES = 36 * 1024 * 1024
-MAX_REFERENCE_IMAGES = 24
-MAX_ANALYSIS_IMAGES = MAX_REFERENCE_IMAGES
+# Keep the per-request visual budget at 24, but retain enough source pages for
+# deterministic multi-request analysis instead of silently keeping only the
+# first request-sized window.
+MAX_ANALYSIS_IMAGES = 600
 MIN_MEANINGFUL_TEXT_CHARS = 40
 
 
@@ -168,7 +171,7 @@ def _docx_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any
                     if member not in contextual_media:
                         contextual_media.append(member)
             reference_media = contextual_media + [member for member in ordered_media if member not in contextual_media]
-            diagnostics["reference_image_order"] = reference_media[:MAX_REFERENCE_IMAGES]
+            diagnostics["reference_image_order"] = reference_media[:MAX_ANALYSIS_IMAGES]
         anchorable_media = set(diagnostics["reference_image_order"])
 
         def image_anchor_suffix(element: Any) -> str:
@@ -241,6 +244,9 @@ def _pdf_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any]
             "page_numbers_used": [],
             "page_numbers_omitted": [],
             "warnings": [],
+            "representation_schema": REPRESENTATION_SCHEMA,
+            "representations": [],
+            "partial_failures": [],
         }
         try:
             subprocess.run(
@@ -253,34 +259,69 @@ def _pdf_content(name: str, data: bytes) -> tuple[str, list[str], dict[str, Any]
             text = text_path.read_text(encoding="utf-8", errors="replace").strip()
         except (FileNotFoundError, subprocess.SubprocessError):
             text = ""
-        # Text PDFs do not need page rendering. Besides being faster, this
-        # prevents a text-first document from doing unused image work before
-        # the model call.
-        if _has_meaningful_text(text):
-            diagnostics["page_numbers_used"] = list(range(1, total_pages + 1)) if total_pages else []
-            return text, [], diagnostics
-        images: list[str] = []
-        try:
-            rendered_pages = render_pdf_pages(
-                source,
-                root,
-                prefix="page",
-                dpi=135,
-                image_format="jpeg",
-                first_page=1,
-                last_page=MAX_ANALYSIS_IMAGES,
-            )
-            for image_path in rendered_pages:
-                images.append(_data_url(image_path.read_bytes(), "image/jpeg"))
-        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        diagnostics["representations"].append({
+            "kind": "structured_text",
+            "status": "ready" if _has_meaningful_text(text) else ("degraded" if text else "failed"),
+            "character_count": len(text),
+        })
+        page_representation = render_page_representation(
+            source,
+            root / "page-visuals",
+            source_format="pdf",
+            max_pages=MAX_ANALYSIS_IMAGES,
+        )
+        images = [
+            _data_url(Path(path).read_bytes(), "image/jpeg")
+            for path in page_representation.get("paths", [])
+            if Path(path).is_file()
+        ]
+        diagnostics["representations"].append({
+            key: value
+            for key, value in page_representation.items()
+            if key not in {"paths", "page_texts", "error"}
+        })
+        if page_representation.get("status") == "failed":
+            diagnostics["partial_failures"].append({
+                "code": "page_visual_representation_failed",
+                "representation": "page_visuals",
+                "message": "PDF 页面视觉表示生成失败，已保留可用的文字表示。",
+            })
+            diagnostics["warnings"].append("PDF 页面视觉表示生成失败，图表和版式可能需要复核。")
             if not text:
-                raise ValueError(f"{name} 无法解析；请确认 PDF 未损坏。") from exc
+                raise ValueError(f"{name} 的文字和页面视觉表示均无法解析；请确认 PDF 未损坏。")
         used_count = min(total_pages or len(images), len(images))
         diagnostics["page_numbers_used"] = list(range(1, used_count + 1))
         if total_pages > used_count:
             diagnostics["page_numbers_omitted"] = list(range(used_count + 1, total_pages + 1))
             diagnostics["warnings"].append(f"PDF 共 {total_pages} 页，仅向模型传递前 {used_count} 页图像。")
         return text, images, diagnostics
+
+
+def _docx_page_visuals(name: str, data: bytes) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="practice-docx-pages-") as raw_dir:
+        root = Path(raw_dir)
+        source = root / name
+        source.write_bytes(data)
+        representation = render_page_representation(
+            source,
+            root / "page-visuals",
+            source_format="docx",
+            max_pages=MAX_ANALYSIS_IMAGES,
+        )
+        representation["data_urls"] = [
+            _data_url(Path(path).read_bytes(), "image/jpeg")
+            for path in representation.get("paths", [])
+            if Path(path).is_file()
+        ]
+        return representation
+
+
+def _docx_requires_page_compensation(text: str, diagnostics: dict[str, Any]) -> bool:
+    return bool(
+        not _has_meaningful_text(text)
+        or diagnostics.get("omml_degraded_formula_count")
+        or "⟦OMML_UNREADABLE⟧" in text
+    )
 
 
 def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
@@ -340,31 +381,123 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
             image = _data_url(data, mime if mime.startswith("image/") else "image/png")
             images.append(image)
             reference_images.append(image)
+            file_diagnostics.append({
+                "name": name,
+                "format": "image",
+                "analysis_mode": "vision",
+                "representation_schema": REPRESENTATION_SCHEMA,
+                "representations": [
+                    {"kind": "raw_original", "status": "ready", "byte_count": len(data)},
+                    {"kind": "original_pixels", "status": "ready"},
+                ],
+                "partial_failures": [],
+                "warnings": [],
+            })
         elif mime == "application/pdf" or suffix == ".pdf":
             text, pages, diagnostics = _pdf_content(name, data)
+            diagnostics.setdefault("representation_schema", REPRESENTATION_SCHEMA)
+            diagnostics.setdefault("representations", [])
+            diagnostics.setdefault("partial_failures", [])
+            diagnostics["representations"].insert(0, {
+                "kind": "raw_original",
+                "status": "ready",
+                "byte_count": len(data),
+            })
             if text:
                 text_parts.append(f"## 文件：{name}\n\n{text}")
             if not _has_meaningful_text(text):
                 fallback_images.extend(pages)
-            reference_slots = max(0, MAX_REFERENCE_IMAGES - len(reference_images))
+            reference_slots = max(0, MAX_ANALYSIS_IMAGES - len(reference_images))
             included_references = pages[:reference_slots]
             reference_images.extend(included_references)
             diagnostics["reference_image_count_included"] = len(included_references)
             diagnostics["name"] = name
-            diagnostics["analysis_mode"] = "text" if _has_meaningful_text(text) else "vision"
+            diagnostics["analysis_mode"] = "mixed" if text and pages else ("vision" if pages else "text")
             diagnostics["page_images_available"] = len(pages)
             diagnostics["image_count_included"] = 0
             file_diagnostics.append(diagnostics)
         elif suffix == ".docx" or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            text, embedded, diagnostics = _docx_content(name, data)
+            try:
+                text, embedded, diagnostics = _docx_content(name, data)
+            except Exception as exc:
+                text = ""
+                embedded = []
+                diagnostics = {
+                    "format": "docx",
+                    "warnings": [],
+                    "omml_formula_count": 0,
+                    "omml_structured_formula_count": 0,
+                    "omml_degraded_formula_count": 0,
+                    "embedded_image_count": 0,
+                    "reference_image_order": [],
+                    "representation_schema": REPRESENTATION_SCHEMA,
+                    "representations": [
+                        {"kind": "structured_text", "status": "failed", "character_count": 0},
+                    ],
+                    "partial_failures": [{
+                        "code": "structured_text_representation_failed",
+                        "representation": "structured_text",
+                        "message": "Word 结构化文字表示生成失败。",
+                    }],
+                    "structured_text_error_type": type(exc).__name__,
+                }
+            diagnostics.setdefault("representation_schema", REPRESENTATION_SCHEMA)
+            diagnostics.setdefault("representations", [])
+            diagnostics.setdefault("partial_failures", [])
+            if not any(item.get("kind") == "structured_text" for item in diagnostics["representations"]):
+                diagnostics["representations"].append({
+                    "kind": "structured_text",
+                    "status": "degraded" if diagnostics.get("omml_degraded_formula_count") else ("ready" if text else "failed"),
+                    "character_count": len(text),
+                    "formula_count": int(diagnostics.get("omml_formula_count") or 0),
+                    "structured_formula_count": int(diagnostics.get("omml_structured_formula_count") or 0),
+                })
+            diagnostics["representations"].insert(0, {
+                "kind": "raw_original",
+                "status": "ready",
+                "byte_count": len(data),
+            })
+            diagnostics["representations"].append({
+                "kind": "embedded_visuals",
+                "status": "ready" if embedded else "not_present",
+                "image_count": len(embedded),
+            })
+            page_visuals: list[str] = []
+            page_compensation_required = _docx_requires_page_compensation(text, diagnostics)
+            if page_compensation_required and raw.get("resource_id"):
+                page_representation = _docx_page_visuals(name, data)
+                page_visuals = list(page_representation.pop("data_urls", []))
+                diagnostics["representations"].append({
+                    key: value
+                    for key, value in page_representation.items()
+                    if key not in {"paths", "page_texts", "error"}
+                })
+                diagnostics["page_count_total"] = int(page_representation.get("page_count_total") or 0)
+                diagnostics["page_images_available"] = len(page_visuals)
+                if page_representation.get("status") == "failed":
+                    diagnostics["partial_failures"].append({
+                        "code": "page_visual_representation_failed",
+                        "representation": "page_visuals",
+                        "message": "Word 页面视觉补偿生成失败，已保留可用的结构化内容。",
+                    })
+                    diagnostics["warnings"].append("Word 页面视觉补偿生成失败，复杂公式或版式需要复核。")
+            else:
+                diagnostics["representations"].append({
+                    "kind": "page_visuals",
+                    "status": "not_required" if not page_compensation_required else "deferred_until_persisted",
+                })
+            if not text and not embedded and not page_visuals:
+                raise ValueError(f"{name} 的结构化文字、内嵌图片和页面视觉表示均无法解析。")
             diagnostics["name"] = name
-            use_embedded_images = not _has_meaningful_text(text)
-            diagnostics["analysis_mode"] = "mixed" if use_embedded_images and embedded else "text"
-            if not use_embedded_images:
+            compensation_visuals = [*embedded, *page_visuals]
+            diagnostics["analysis_visual_count_available"] = len(compensation_visuals)
+            use_compensation_images = bool(compensation_visuals and _docx_requires_page_compensation(text, diagnostics))
+            diagnostics["analysis_mode"] = "mixed" if text and use_compensation_images else ("vision" if use_compensation_images else "text")
+            if not use_compensation_images:
                 diagnostics["image_count_included"] = 0
             file_diagnostics.append(diagnostics)
-            reference_slots = max(0, MAX_REFERENCE_IMAGES - len(reference_images))
-            included_references = embedded[:reference_slots]
+            reference_slots = max(0, MAX_ANALYSIS_IMAGES - len(reference_images))
+            included_references = compensation_visuals[:reference_slots]
             diagnostics["reference_image_count_included"] = len(included_references)
             if text:
                 first_reference_number = len(reference_images) + 1
@@ -377,15 +510,34 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
                 filtered_text, included_anchor_count = filter_image_anchors(text, member_reference_numbers)
                 diagnostics["image_anchor_count_included"] = included_anchor_count
                 text_parts.append(f"## 文件：{name}\n\n{filtered_text}")
-            if use_embedded_images:
-                fallback_images.extend(embedded)
+            if use_compensation_images:
+                fallback_images.extend(compensation_visuals)
             reference_images.extend(included_references)
-            if len(embedded) > len(included_references):
+            if len(compensation_visuals) > len(included_references):
                 warning = "内嵌图片超过全局参考图像上限，部分图片未传给模型。"
                 if warning not in diagnostics["warnings"]:
                     diagnostics["warnings"].append(warning)
         elif mime.startswith("text/") or suffix in {".txt", ".md"}:
-            text_parts.append(f"## 文件：{name}\n\n{data.decode('utf-8', errors='replace').strip()}")
+            decoded = data.decode("utf-8", errors="replace").strip()
+            replacement_count = decoded.count("\ufffd")
+            text_parts.append(f"## 文件：{name}\n\n{decoded}")
+            file_diagnostics.append({
+                "name": name,
+                "format": "text",
+                "analysis_mode": "text",
+                "representation_schema": REPRESENTATION_SCHEMA,
+                "representations": [{
+                    "kind": "structured_text",
+                    "status": "degraded" if replacement_count else "ready",
+                    "character_count": len(decoded),
+                }],
+                "partial_failures": ([{
+                    "code": "invalid_utf8_replaced",
+                    "representation": "structured_text",
+                    "message": "文件含有无法按 UTF-8 解码的字符，已使用替代符保留其位置。",
+                }] if replacement_count else []),
+                "warnings": (["文本文件包含无法按 UTF-8 解码的字符，需要复核。"] if replacement_count else []),
+            })
         else:
             raise ValueError(f"暂不支持文件类型：{name}")
 
@@ -399,6 +551,8 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
         available = int(
             diagnostics.get("page_images_available")
             if diagnostics.get("format") == "pdf"
+            else diagnostics.get("analysis_visual_count_available")
+            if diagnostics.get("format") == "docx"
             else diagnostics.get("embedded_image_count")
             or 0
         )
@@ -419,19 +573,41 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
                 diagnostics["warnings"].append(warning)
     images.extend(fallback_images[: max(0, MAX_ANALYSIS_IMAGES - len(images))])
     images = images[:MAX_ANALYSIS_IMAGES]
+    omitted_sources = [
+        str(item.get("name") or "未命名文件")
+        for item in file_diagnostics
+        if (
+            item.get("page_numbers_omitted")
+            or int(item.get("page_images_available") or item.get("analysis_visual_count_available") or 0)
+            > int(item.get("reference_image_count_included") or 0)
+        )
+    ]
+    if omitted_sources:
+        raise ValueError(
+            "材料页面或图片超过完整分批分析上限，已停止以避免遗漏："
+            + "、".join(omitted_sources)
+            + "。请将文件拆分后重试。"
+        )
     # Preserve positional identity: IMAGE_REF:n in extracted DOCX text points
     # to the nth item in this list, even when two files contain equal bytes.
-    reference_images = reference_images[:MAX_REFERENCE_IMAGES]
+    reference_images = reference_images[:MAX_ANALYSIS_IMAGES]
     text = "\n\n".join(part for part in text_parts if part.strip()).strip()
     if not text and not images:
         raise ValueError("请填写题目文字或上传题目文件。")
     result = {
+        "representation_schema": REPRESENTATION_SCHEMA,
         "text": text,
         "images": images,
         "reference_images": reference_images,
         "reference_image_count": len(reference_images),
         "file_names": names,
         "file_diagnostics": file_diagnostics,
+        "partial_failures": [
+            {"name": item.get("name", ""), **failure}
+            for item in file_diagnostics
+            for failure in item.get("partial_failures", [])
+            if isinstance(failure, dict)
+        ],
         "analysis_mode": "mixed" if text and images else ("vision" if images else "text"),
     }
     if cache_key:

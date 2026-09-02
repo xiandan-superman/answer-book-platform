@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -93,6 +94,11 @@ def test_docx_audit_uses_local_repair_before_model_and_stops_when_resolved(
     )
 
     assert result["ok"] is True
+    assert result["content_changed"] is True
+    assert result["content_quality"]["revalidated_after_docx_fragment_change"] is True
+    assert result["content_quality"]["candidate_sha256"] == hashlib.sha256(
+        fragments_path.read_bytes()
+    ).hexdigest()
     assert repair_order == ["local"]
     assert result["repair"]["strategy"] == "local_first_then_bounded_model"
     assert [item["attempt"] for item in result["repair"]["attempts"]] == [

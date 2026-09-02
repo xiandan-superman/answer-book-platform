@@ -5,6 +5,7 @@ import posixpath
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from zipfile import ZipFile
 
 from docx import Document
@@ -12,7 +13,8 @@ from lxml import etree
 
 from .capabilities.catalog import capability_policy_contributions
 from .formula_audit import looks_like_formula
-from .omml_input import mixed_text_with_structured_math
+from .input_representations import REPRESENTATION_SCHEMA, render_page_representation
+from .omml_input import mixed_text_with_structured_math, strip_structured_math_metadata
 from .question_requirements import answer_figure_required, source_image_required
 from .text_utils import clean_text, cn_to_int
 
@@ -389,6 +391,93 @@ def _attach_question_snapshots(items: list[dict], output_json: Path) -> None:
         snapshot = _write_question_snapshot(item, snapshot_dir, index)
         if snapshot:
             item["question_snapshot_refs"] = [snapshot]
+
+
+def _page_match_text(value: str) -> str:
+    visible = strip_structured_math_metadata(str(value or ""))
+    return "".join(character.lower() for character in visible if character.isalnum())
+
+
+def _best_page_index(item: dict, page_texts: list[str], item_index: int, item_count: int) -> int:
+    if not page_texts:
+        return 0
+    needle = _page_match_text(str(item.get("stem") or ""))
+    chunks = [needle[offset : offset + 10] for offset in range(0, min(len(needle), 100), 10) if len(needle[offset : offset + 10]) >= 5]
+    scores = [sum(1 for chunk in chunks if chunk in _page_match_text(text)) for text in page_texts]
+    if scores and max(scores) > 0:
+        return scores.index(max(scores))
+    return min(len(page_texts) - 1, max(0, item_index * len(page_texts) // max(1, item_count)))
+
+
+def _attach_page_visual_compensation(exam_file: Path, items: list[dict], output_json: Path) -> dict[str, Any]:
+    affected = [
+        (index, item)
+        for index, item in enumerate(items)
+        if isinstance(item, dict)
+        and ("⟦OMML_STRUCTURE_UNAVAILABLE⟧" in json.dumps(item, ensure_ascii=False) or "⟦OMML_UNREADABLE⟧" in json.dumps(item, ensure_ascii=False))
+    ]
+    representations: list[dict[str, Any]] = [
+        {"kind": "raw_original", "status": "ready", "byte_count": exam_file.stat().st_size},
+        {
+            "kind": "structured_text",
+            "status": "degraded" if affected else "ready",
+            "affected_question_count": len(affected),
+        },
+    ]
+    partial_failures: list[dict[str, Any]] = []
+    if not affected:
+        representations.append({"kind": "page_visuals", "status": "not_required"})
+        return {
+            "schema_version": REPRESENTATION_SCHEMA,
+            "representations": representations,
+            "partial_failures": partial_failures,
+            "page_visual_compensated_question_ids": [],
+        }
+
+    page_representation = render_page_representation(
+        exam_file,
+        output_json.parent / "source_page_visuals",
+        source_format="docx",
+        max_pages=24,
+    )
+    representations.append({
+        key: value
+        for key, value in page_representation.items()
+        if key not in {"paths", "page_texts", "error"}
+    })
+    paths = [Path(path) for path in page_representation.get("paths", []) if Path(path).is_file()]
+    if not paths:
+        partial_failures.append({
+            "code": "page_visual_representation_failed",
+            "representation": "page_visuals",
+            "message": "原始 Word 页面视觉补偿生成失败，已保留可见公式字符并标记结构损失。",
+        })
+        return {
+            "schema_version": REPRESENTATION_SCHEMA,
+            "representations": representations,
+            "partial_failures": partial_failures,
+            "page_visual_compensated_question_ids": [],
+        }
+
+    page_texts = [str(text or "") for text in page_representation.get("page_texts", [])]
+    page_texts.extend([""] * max(0, len(paths) - len(page_texts)))
+    compensated_ids: list[str] = []
+    for item_index, item in affected:
+        page_index = _best_page_index(item, page_texts, item_index, len(items))
+        if not 0 <= page_index < len(paths):
+            continue
+        item["page_visual_refs"] = [str(paths[page_index])]
+        item["page_visual_compensation"] = {
+            "reason": "structured_formula_degraded",
+            "page_number": page_index + 1,
+        }
+        compensated_ids.append(str(item.get("question_id") or item.get("number") or item_index + 1))
+    return {
+        "schema_version": REPRESENTATION_SCHEMA,
+        "representations": representations,
+        "partial_failures": partial_failures,
+        "page_visual_compensated_question_ids": compensated_ids,
+    }
 
 
 def section_kind(raw_title: str, body: list[str]) -> tuple[str, str]:
@@ -964,6 +1053,7 @@ def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
     for section in split_sections(paragraphs):
         items.extend(question_items(section))
     _ensure_unique_question_ids(items)
+    input_representations = _attach_page_visual_compensation(exam_file, items, output_json)
     _attach_question_snapshots(items, output_json)
     source_paragraphs = [line for line in paragraphs if not str(line).startswith(IMAGE_MARKER_PREFIX)]
     source_paragraphs = [text for line in source_paragraphs if (text := _source_line_text(str(line)))]
@@ -975,6 +1065,7 @@ def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
         "paragraph_count": len(source_paragraphs),
         "source_paragraphs": source_paragraphs,
         "items": items,
+        "input_representations": input_representations,
         "notes": ["Program extracted structure; review warnings before production."],
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)

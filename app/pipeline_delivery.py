@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,6 +41,15 @@ def delivery_status_message(final_report: dict[str, Any]) -> str:
     if final_report.get("delivery_tier") == "review_candidate":
         return "当前 Word 可阅读且可继续复核，但不应作为正式解析发布。"
     return "当前产物已通过正式验收。"
+
+
+def _artifact_integrity(path: Path) -> dict[str, Any]:
+    content = path.read_bytes()
+    return {
+        "path": str(path),
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
 
 
 def finalize_primary_docx_filename(
@@ -250,6 +261,20 @@ def complete_pipeline_delivery(
         model=model,
         use_model=use_model,
     )
+    if docx_result.get("content_changed"):
+        refreshed_content_quality = docx_result.get("content_quality")
+        if isinstance(refreshed_content_quality, dict) and refreshed_content_quality:
+            content_quality = refreshed_content_quality
+        mark(
+            "content_quality_after_docx_repair",
+            "passed" if content_quality.get("ok") else "review_candidate",
+            {
+                "revalidated": True,
+                "issue_count": len(content_quality.get("issues", [])),
+                "warning_count": len(content_quality.get("warnings", [])),
+                "candidate_sha256": content_quality.get("candidate_sha256", ""),
+            },
+        )
     issues = docx_result["issues"]
     docx_audit_report = {
         "schema_version": "answer_book.docx_audit.v2",
@@ -418,27 +443,61 @@ def complete_pipeline_delivery(
     update_task(task_id, current_stage="final_acceptance")
     mark("final_acceptance", "started", {"require_render": render_with_word})
     formal_docx_path = output_dir / "answer_book.docx"
-    formal_docx_path.unlink(missing_ok=True)
-    docx_path.replace(formal_docx_path)
-    docx_path = formal_docx_path
     final_report = build_final_acceptance_report(
         stage_dir,
         output_dir,
         require_render=render_with_word,
+        candidate_docx=docx_path,
     )
     if not final_report.get("delivery_ready", final_report.get("ok", False)):
-        primary_docx, review_candidate_docx = finalize_primary_docx_filename(
-            output_dir,
-            docx_path,
-            final_report,
-        )
         write_json(stage_dir / "final_acceptance_report.json", final_report)
         mark("final_acceptance", "failed", {"issues": final_report["issues"][:30]})
         raise RuntimeError("Final acceptance audit failed")
-    primary_docx, review_candidate_docx = finalize_primary_docx_filename(
-        output_dir,
-        docx_path,
-        final_report,
+    review_candidate_path = output_dir / "answer_book_review_candidate.docx"
+    publication_target = formal_docx_path if final_report.get("formal_acceptance_passed") else review_candidate_path
+    candidate_integrity = _artifact_integrity(docx_path)
+    publication_manifest_path = stage_dir / "publication_manifest.json"
+    publication_manifest = {
+        "schema_version": "answer_book.publication.v1",
+        "state": "prepared",
+        "delivery_tier": str(final_report.get("delivery_tier") or "blocked"),
+        "source": candidate_integrity,
+        "target": str(publication_target),
+    }
+    # Persist the exact approved candidate before the atomic name promotion.
+    # A crash can therefore be distinguished from an unvalidated output on
+    # the next inspection instead of silently trusting a formal-looking file.
+    write_json(publication_manifest_path, publication_manifest)
+    if final_report.get("formal_acceptance_passed"):
+        primary_docx = formal_docx_path
+        review_candidate_docx = ""
+        os.replace(docx_path, primary_docx)
+        review_candidate_path.unlink(missing_ok=True)
+    else:
+        primary_docx = review_candidate_path
+        review_candidate_docx = str(review_candidate_path)
+        os.replace(docx_path, primary_docx)
+        formal_docx_path.unlink(missing_ok=True)
+    docx_path = primary_docx
+    artifact_integrity = {"docx": _artifact_integrity(primary_docx)}
+    if artifact_integrity["docx"]["sha256"] != candidate_integrity["sha256"]:
+        raise RuntimeError("候选 Word 原子发布后完整性校验失败")
+    publication_manifest.update(
+        {
+            "state": "committed",
+            "committed": artifact_integrity["docx"],
+        }
+    )
+    write_json(publication_manifest_path, publication_manifest)
+    rendered_pdf = output_dir / "word_rendered" / "answer_book.pdf"
+    if rendered_pdf.exists():
+        artifact_integrity["pdf"] = _artifact_integrity(rendered_pdf)
+    final_report.setdefault("outputs", {}).update(
+        {
+            "docx": str(primary_docx),
+            "docx_exists": primary_docx.exists(),
+            "artifact_integrity": artifact_integrity,
+        }
     )
     try:
         final_artifact_adoption = mark_final_adopted_assets(read_json(fragments_json) or {})
@@ -448,8 +507,7 @@ def complete_pipeline_delivery(
             "unresolved_selected_asset_count": 0,
             "report_unavailable": True,
         }
-    if review_candidate_docx:
-        write_json(stage_dir / "final_acceptance_report.json", final_report)
+    write_json(stage_dir / "final_acceptance_report.json", final_report)
     answer_delivery_summary = final_report.get("answer_fragment_delivery_summary") or {}
     delivery_status = {
         "schema_version": "answer_book.delivery_status.v1",
@@ -462,6 +520,7 @@ def complete_pipeline_delivery(
         "review_docx": str(output_dir / "question_review.docx"),
         "answer_fragment_delivery_summary": answer_delivery_summary,
         "artifact_adoption": final_artifact_adoption,
+        "artifact_integrity": artifact_integrity,
         "message": delivery_status_message(final_report),
     }
     write_json(output_dir / "delivery_status.json", delivery_status)

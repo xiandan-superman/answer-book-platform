@@ -16,11 +16,19 @@ from app.docx_audit import (
 )
 from app.docx_v4 import _answer_summary_formula_candidates, build_docx_from_fragments
 from app.expression_normalization import normalize_control_word_boundaries
+from app.expression_promotion import promote_inline_mathematical_expressions
 from app.final_acceptance import build_final_acceptance_report
 from app.omml import FormulaConversionError, normalize_latex, omml_from_latex
 
 
 class FormulaRenderingGuardTests(unittest.TestCase):
+    def test_multiline_display_latex_is_one_formula_candidate(self) -> None:
+        text = "结果：$$\nx=\\frac{a}{b}\n$$。"
+
+        candidates = _answer_summary_formula_candidates(text)
+
+        self.assertEqual([r"x=\frac{a}{b}"], [latex for _start, _end, latex in candidates])
+
     def test_unicode_large_operator_with_subscript_is_promoted_to_latex(self) -> None:
         candidates = _answer_summary_formula_candidates("答案中的 ∑_B 需要保留。")
 
@@ -292,6 +300,46 @@ class FormulaRenderingGuardTests(unittest.TestCase):
             issues = audit_docx_v4(output_docx, min_formulas=1)
 
         self.assertFalse(any("raw latex marker in normal text" in issue for issue in issues), issues)
+
+    def test_structured_multiline_answer_summary_renders_without_raw_latex(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            fragments_json = root / "answer_fragments.json"
+            output_docx = root / "answer_book.docx"
+            fragment = promote_inline_mathematical_expressions(
+                {
+                    "schema_version": "answer_book.answer_fragment.v4",
+                    "question_id": "qa_s01_02_02",
+                    "section": "六、简答题",
+                    "question_type": "简答题",
+                    "number": "2",
+                    "answer": "见解析",
+                    "answer_summary": (
+                        "异氰酸酯的物质的量为\n"
+                        "$$\n"
+                        r"n_{\mathrm{OCN-C_6H_4-NCO}}=\frac{m}{M}"
+                        "\n$$"
+                    ),
+                    "evidence_ids": [],
+                    "blocks": [],
+                    "formulas": [],
+                }
+            )
+            fragments_json.write_text(
+                json.dumps(
+                    {"schema_version": "answer_book.answer_fragments.v4", "fragments": [fragment]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            build_docx_from_fragments(fragments_json, output_docx)
+            document = Document(output_docx)
+            paragraph_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+            issues = audit_docx_v4(output_docx, min_formulas=1)
+
+        self.assertNotIn("$$", paragraph_text)
+        self.assertFalse(any("raw latex marker" in issue for issue in issues), issues)
 
     def test_fill_blank_answer_field_renders_dollar_latex_as_omml(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:

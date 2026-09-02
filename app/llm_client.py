@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, TypeVar
 
 from .concurrency import ModelRequestAborted, ensure_model_request_active, model_request_slot
 from .model_context_planner import build_model_context_plan, context_plan_block_reason
@@ -96,6 +96,89 @@ class LLMError(RuntimeError):
 
 class LLMTimeoutError(LLMError, TimeoutError):
     """Timeout that remains compatible with legacy ``TimeoutError`` checks."""
+
+
+class StructuredOutputError(LLMError):
+    """A completed model response whose final text is not valid structured output."""
+
+    def __init__(self, message: str, *, content: str = "") -> None:
+        super().__init__(message)
+        self.content = str(content or "")
+
+
+class IncompleteOutputError(LLMError):
+    """A terminal provider response that stopped at an output boundary."""
+
+
+_RequestResultT = TypeVar("_RequestResultT")
+
+
+def _cancellable_retry_sleep(delay_seconds: float) -> None:
+    """Wait in short leases so pause/cancel can interrupt a scheduled retry."""
+
+    deadline = time.monotonic() + max(0.0, float(delay_seconds))
+    while True:
+        ensure_model_request_active()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.25, remaining))
+
+
+def _same_route_transport_request(
+    request: Callable[[], _RequestResultT],
+    *,
+    provider: str,
+    model: str,
+    protocol: str,
+    max_attempts: int = 2,
+) -> _RequestResultT:
+    """Retry only pre-completion transient failures without changing semantics."""
+
+    attempts = max(1, int(max_attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            return request()
+        except LLMError as exc:
+            info = classify_provider_error(
+                exc,
+                status_code=getattr(exc, "status_code", None),
+                transport_phase=str(getattr(exc, "transport_phase", "") or ""),
+                retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+            )
+            if (
+                attempt >= attempts
+                or not info.retryable
+                or bool(getattr(exc, "partial_output_received", False))
+                or isinstance(exc, (StructuredOutputError, IncompleteOutputError))
+            ):
+                raise
+            retry_after = getattr(exc, "retry_after_seconds", None)
+            delay = min(
+                30.0,
+                max(
+                    0.5 * (2 ** (attempt - 1)),
+                    float(retry_after) if isinstance(retry_after, (int, float)) else 0.0,
+                ),
+            )
+            observation = record_model_retry_scheduled(
+                exc,
+                category="transport_retry",
+                retry_number=attempt,
+                max_attempts=attempts,
+                provider=provider,
+                model=model,
+                from_model=model,
+                to_model=model,
+                from_protocol=protocol,
+                to_protocol=protocol,
+                budget_scope="run_model_call",
+                budget_charged=True,
+                decision_source="shared_same_route_transport_retry",
+            )
+            _cancellable_retry_sleep(delay)
+            record_model_retry_started(observation)
+    raise AssertionError("unreachable transport retry state")
 
 
 def _result_execution_reference(result: LLMResult | None) -> tuple[str, str]:
@@ -777,14 +860,19 @@ class OpenAICompatibleClient:
         block_reason = context_plan_block_reason(context_plan, enforce_budget=enforce_context_budget)
         if block_reason:
             raise LLMError(block_reason)
-        result = self._chat_json_once(
-            messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            thinking=thinking,
-            timeout=timeout,
-            use_response_format=False,
+        result = _same_route_transport_request(
+            lambda: self._chat_json_once(
+                messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                thinking=thinking,
+                timeout=timeout,
+                use_response_format=False,
+            ),
+            provider=self.config.name,
+            model=target_model,
+            protocol=_model_api_protocol(self.config, target_model),
         )
         if isinstance(result.raw, dict):
             result.raw.setdefault("_request", {})["context_plan"] = context_plan
@@ -875,11 +963,16 @@ class OpenAICompatibleClient:
             payload["reasoning_effort"] = reasoning_effort
             payload["top_p"] = 0.95
 
-        raw = self._post_json(
-            f"{self.config.base_url}/chat/completions",
-            payload,
-            timeout=timeout,
-            purpose="chat_tools",
+        raw = _same_route_transport_request(
+            lambda: self._post_json(
+                f"{self.config.base_url}/chat/completions",
+                payload,
+                timeout=timeout,
+                purpose="chat_tools",
+            ),
+            provider=self.config.name,
+            model=target_model,
+            protocol="chat_completions",
         )
         raw.setdefault("_request", {}).update(
             {
@@ -1105,7 +1198,11 @@ class OpenAICompatibleClient:
                     )
                 if _finish_reason(result) == "length":
                     detail = _provider_response_detail(result)
-                    raise LLMError(f"Model JSON output reached max_tokens; {detail}" if detail else "Model JSON output reached max_tokens")
+                    raise IncompleteOutputError(
+                        f"Model JSON output reached max_tokens; {detail}"
+                        if detail
+                        else "Model JSON output reached max_tokens"
+                    )
                 value = parse_json_content_with_result(result)
                 report = self._json_attempt_report(plan, result=result)
                 self.last_json_retry_report["attempts"].append(report)
@@ -1132,7 +1229,7 @@ class OpenAICompatibleClient:
                     # output-boundary repair.  Transport/service failures may
                     # also be retried.  Deterministic configuration, route,
                     # content and ambiguous-request failures stop here.
-                    if result is None and not error_info.retryable:
+                    if isinstance(exc, IncompleteOutputError) or (result is None and not error_info.retryable):
                         break
                     next_plan = plans[plan_index + 1]
                     source_invocation_id, source_call_id = _result_execution_reference(result)
@@ -1153,6 +1250,15 @@ class OpenAICompatibleClient:
                         budget_charged=True,
                         decision_source="existing_json_retry_plan",
                     )
+                    retry_after = getattr(exc, "retry_after_seconds", None)
+                    delay = min(
+                        30.0,
+                        max(
+                            0.5 * (2 ** plan_index),
+                            float(retry_after) if isinstance(retry_after, (int, float)) else 0.0,
+                        ),
+                    )
+                    _cancellable_retry_sleep(delay)
                     record_model_retry_started(observation)
         raise last_error or LLMError("Model JSON task failed")
 
@@ -1771,11 +1877,19 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         reasoning_effort = _responses_reasoning_effort(thinking_mode)
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
-        if bool(getattr(self.config, "responses_streaming", True)):
-            return self._post_responses_stream(
-                f"{self.config.base_url}/responses", payload, timeout=timeout
-            )
-        return self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
+        def request() -> dict[str, Any]:
+            if bool(getattr(self.config, "responses_streaming", True)):
+                return self._post_responses_stream(
+                    f"{self.config.base_url}/responses", payload, timeout=timeout
+                )
+            return self._post_json(f"{self.config.base_url}/responses", payload, timeout=timeout)
+
+        return _same_route_transport_request(
+            request,
+            provider=self.config.name,
+            model=target_model,
+            protocol="responses",
+        )
 
     def _chat_json_once(
         self,
@@ -2501,10 +2615,16 @@ def parse_json_content(content: str) -> dict[str, Any]:
                 value = json.loads(extracted)
             except json.JSONDecodeError:
                 preview = str(content).replace("\n", "\\n")[:200]
-                raise LLMError(f"Model did not return valid JSON: {exc}; content preview: {preview}") from exc
+                raise StructuredOutputError(
+                    f"Model did not return valid JSON: {exc}; content preview: {preview}",
+                    content=content,
+                ) from exc
         else:
             preview = str(content).replace("\n", "\\n")[:200]
-            raise LLMError(f"Model did not return valid JSON: {exc}; content preview: {preview}") from exc
+            raise StructuredOutputError(
+                f"Model did not return valid JSON: {exc}; content preview: {preview}",
+                content=content,
+            ) from exc
     if not isinstance(value, dict):
         raise LLMError("Model JSON output must be an object")
     return value

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from docx import Document
 from docx.oxml import parse_xml
 
-from app.omml_input import clear_omml_input_caches, mixed_text_with_structured_math
+from app.omml_input import clear_omml_input_caches, find_omml2mathml_xsl, mixed_text_with_structured_math
 from app.practice_inputs import _docx_content
 
 
@@ -73,3 +73,21 @@ def test_omml_uses_configured_structural_xslt_adapter() -> None:
     assert result.degraded_formula_count == 0
     assert "MATHML" in result.text
     assert "alpha" in result.text
+
+
+def test_windows_office_omml_stylesheet_is_discovered_without_manual_environment_override(tmp_path: Path) -> None:
+    office_root = tmp_path / "Microsoft Office" / "root" / "Office16"
+    office_root.mkdir(parents=True)
+    stylesheet = office_root / "OMML2MML.XSL"
+    stylesheet.write_text("fixture", encoding="utf-8")
+
+    with patch.dict(
+        "os.environ",
+        {"ProgramFiles(x86)": str(tmp_path), "ProgramFiles": "", "OMML2MATHML_XSL": ""},
+        clear=False,
+    ), patch("app.omml_input.platform.system", return_value="Windows"):
+        clear_omml_input_caches()
+        discovered = find_omml2mathml_xsl()
+        clear_omml_input_caches()
+
+    assert discovered == stylesheet.resolve()

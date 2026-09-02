@@ -121,6 +121,58 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertIsInstance(client, OpenAICompatibleClient)
         self.assertEqual("chat_completions", client.config.api_protocol)
 
+    def test_chat_text_retries_transient_failure_on_identical_route_and_payload(self):
+        from app.llm_client import LLMError, LLMResult, OpenAICompatibleClient
+
+        client = OpenAICompatibleClient(self._provider())
+        calls = []
+
+        def request(messages, **kwargs):
+            calls.append((json.loads(json.dumps(messages)), dict(kwargs)))
+            if len(calls) == 1:
+                raise LLMError("Provider HTTP 503: temporary unavailable", status_code=503)
+            return LLMResult(provider="test", model="test-model", content="ok", raw={})
+
+        with patch.object(client, "_chat_json_once", side_effect=request), patch(
+            "app.llm_client._cancellable_retry_sleep"
+        ):
+            result = client.chat_text(
+                [{"role": "user", "content": "same request"}],
+                model="test-model",
+                thinking="medium",
+                max_tokens=321,
+            )
+
+        self.assertEqual("ok", result.content)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(calls[0], calls[1])
+
+    def test_chat_text_does_not_replay_after_partial_output(self):
+        from app.llm_client import LLMError, OpenAICompatibleClient
+
+        client = OpenAICompatibleClient(self._provider())
+        with patch.object(
+            client,
+            "_chat_json_once",
+            side_effect=LLMError(
+                "Provider HTTP 503 after stream data",
+                status_code=503,
+                partial_output_received=True,
+            ),
+        ) as request:
+            with self.assertRaises(LLMError):
+                client.chat_text([{"role": "user", "content": "request"}], model="test-model")
+
+        request.assert_called_once()
+
+    def test_invalid_json_preserves_completed_output_for_schema_repair_only(self):
+        from app.llm_client import StructuredOutputError, parse_json_content
+
+        with self.assertRaises(StructuredOutputError) as raised:
+            parse_json_content("not-json-but-completed")
+
+        self.assertEqual("not-json-but-completed", raised.exception.content)
+
     def test_configured_text_providers_use_their_verified_protocol(self):
         from app.llm_client import AnthropicMessagesClient, OpenAICompatibleClient, ResponsesAPIClient
         from app.settings import (
@@ -526,8 +578,8 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertEqual("input_image", user_input["content"][1]["type"])
         self.assertEqual("data:image/png;base64,abc", user_input["content"][1]["image_url"])
 
-    def test_responses_incomplete_output_retries_and_reports_usage(self):
-        from app.llm_client import ResponsesAPIClient
+    def test_responses_incomplete_output_is_terminal_and_reports_usage(self):
+        from app.llm_client import IncompleteOutputError, ResponsesAPIClient
 
         client = ResponsesAPIClient(self._provider(api_protocol="responses"))
         responses = [
@@ -562,21 +614,21 @@ class LLMProtocolAdapterTests(unittest.TestCase):
             return _FakeResponse(responses.pop(0))
 
         client._urlopen = fake_urlopen
-        value = client.chat_json_object(
-            [{"role": "user", "content": "return JSON"}],
-            model="test-model",
-            max_tokens=512,
-            attempts=2,
-        )
+        with self.assertRaises(IncompleteOutputError):
+            client.chat_json_object(
+                [{"role": "user", "content": "return JSON"}],
+                model="test-model",
+                max_tokens=512,
+                attempts=2,
+            )
 
-        self.assertTrue(value["ok"])
         attempts = client.last_json_retry_report["attempts"]
-        self.assertEqual(2, len(attempts))
+        self.assertEqual(1, len(attempts))
         self.assertEqual("length", attempts[0]["finish_reason"])
         self.assertEqual(10, attempts[0]["prompt_tokens"])
         self.assertEqual(512, attempts[0]["completion_tokens"])
         self.assertEqual(200, attempts[0]["reasoning_tokens"])
-        self.assertEqual("stop", attempts[1]["finish_reason"])
+        self.assertEqual(1, len(responses))
 
     def test_generic_json_retry_stops_after_ambiguous_400(self):
         from app.llm_client import LLMError, OpenAICompatibleClient

@@ -972,7 +972,11 @@ def review_selective_quality(
         "remote_model_calls_this_run": 0,
         "request_budget": {
             "max_batches": max(0, int(max_batches)),
-            "max_attempts_per_batch": max(1, min(2, int(max_attempts_per_batch))),
+            # A second attempt used to reduce evidence and output budget.  The
+            # report keeps the field for schema compatibility, but the quality-
+            # preserving policy now permits exactly one complete request.
+            "max_attempts_per_batch": 1,
+            "lossy_retry_enabled": False,
         },
         "cache": {"hit": False, "content_addressed": True},
         "issues": [],
@@ -1139,84 +1143,17 @@ def review_selective_quality(
                     "remote_model_calls": 1,
                 }
             except Exception as exc:
-                # Some models become verbose on a rich integrated question and
-                # exhaust the JSON budget. Retry that batch once with only the
-                # authoritative scope, final answer ledger, visual facts, and
-                # the most relevant evidence. This is a degraded input shape,
-                # not a relaxed correctness standard.
-                if max(1, min(2, int(max_attempts_per_batch))) < 2:
-                    return {
-                        "decisions": [],
-                        "error": str(exc)[:500],
-                        "candidate_ids": [str(candidate.get("candidate_id") or "") for candidate in batch],
-                        "remote_model_calls": 1,
-                    }
-                compact_answers = []
-                for item in batch_fragments:
-                    compact_answers.append(
-                        {
-                            "question_id": item.get("question_id"),
-                            "answer": item.get("answer"),
-                            "answer_summary": item.get("answer_summary"),
-                            "calculation_contract": item.get("calculation_contract"),
-                            "coverage_manifest": [
-                                {
-                                    "number": unit.get("number"),
-                                    "answer": unit.get("answer"),
-                                    "step_texts": unit.get("step_texts"),
-                                    "has_figure_spec": unit.get("has_figure_spec"),
-                                }
-                                for unit in item.get("coverage_manifest", []) or []
-                            ],
-                        }
-                    )
-                compact_payload = {
-                    "task": "compact_retry_review_selected_academic_quality_risks",
-                    "candidates": batch,
-                    "questions": batch_questions,
-                    "current_answers": compact_answers,
-                    "confirmed_textbook_evidence_by_question": {
-                        qid: rows[:6] for qid, rows in batch_evidence.items()
-                    },
-                    "output_schema": payload["output_schema"],
-                    "hard_rules": payload["hard_rules"],
+                # Never trade academic evidence for a successful retry. Shared
+                # transport recovery happens below the provider boundary; an
+                # exhausted rich review remains visibly unavailable.
+                return {
+                    "decisions": [],
+                    "error": str(exc)[:500],
+                    "candidate_ids": [str(candidate.get("candidate_id") or "") for candidate in batch],
+                    "remote_model_calls": 1,
+                    "quality_preserving": True,
+                    "retry_input_reduced": False,
                 }
-                try:
-                    with prompt_contract("exam.selective_review"):
-                        with model_request_slot(provider):
-                            response = review_client.chat_json_object(
-                                [
-                                    {"role": "system", "content": "你是跨学科学术正确性复核器。只输出最短合法 JSON，不写检查过程。"},
-                                    {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
-                                ],
-                                model=selected_model,
-                                max_tokens=4096,
-                                attempts=1,
-                                thinking="disabled",
-                                timeout=90,
-                                task_stage="review",
-                                item_ids=sorted(batch_qids),
-                                enforce_context_budget=True,
-                            )
-                    return {
-                        "decisions": _normalized_decisions(
-                            response,
-                            {str(candidate["candidate_id"]) for candidate in batch},
-                            _decision_validation_context(batch, batch_questions, batch_fragments, batch_evidence),
-                        ),
-                        "error": "",
-                        "compact_retry": True,
-                        "initial_error": str(exc)[:500],
-                        "remote_model_calls": 2,
-                    }
-                except Exception as retry_exc:
-                    return {
-                        "decisions": [],
-                        "error": str(retry_exc)[:500],
-                        "initial_error": str(exc)[:500],
-                        "candidate_ids": [str(candidate.get("candidate_id") or "") for candidate in batch],
-                        "remote_model_calls": 2,
-                    }
 
         decision_groups = run_limited_concurrent(batches, review_batch, max_workers=min(2, len(batches)))
         decisions = [decision for group in decision_groups for decision in group.get("decisions", [])]

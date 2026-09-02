@@ -4804,7 +4804,12 @@ def repair_figures_with_model_for_visual_qa(
                     *(question.get("image_refs") or []),
                 ],
             )
-            tool_loop = ModelToolLoop(candidate_client, [image_tool], artifact_store)
+            tool_loop = ModelToolLoop(
+                candidate_client,
+                [image_tool],
+                artifact_store,
+                session_id=f"figure_repair:{qid}",
+            )
             fragment = fragments_by_id.get(qid, {})
             payload = {
                 "task": "Replace exactly one failed answer image while preserving the accepted written answer.",

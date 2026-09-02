@@ -1056,6 +1056,64 @@ class ModelToolLoopTests(unittest.TestCase):
             ]
             self.assertEqual([False, True], [event["cache_hit"] for event in results])
 
+    def test_restart_marks_started_without_result_as_unknown_and_never_replays_tool(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop, ToolEventLog, _tool_call_fingerprint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            tool = _FakeImageTool(store)
+            session_id = "stable-answer-session"
+            arguments = {"prompt": "may already have completed"}
+            ToolEventLog(store.root / "tool_events.jsonl", session_id=session_id).append(
+                "tool/started",
+                call_id="ambiguous_call",
+                tool="generate_image",
+                arguments_sha256=_tool_call_fingerprint("generate_image", arguments),
+            )
+            client = self._client()
+            requests = []
+
+            def create(input_items, **kwargs):
+                requests.append(json.loads(json.dumps(input_items)))
+                if len(requests) == 1:
+                    return {
+                        "output": [{
+                            "type": "function_call",
+                            "call_id": "ambiguous_call",
+                            "name": "generate_image",
+                            "arguments": json.dumps(arguments),
+                        }]
+                    }
+                recovered = json.loads(input_items[-1]["output"][0]["text"])
+                self.assertEqual("TOOL_OUTCOME_UNKNOWN", recovered["error"]["info"]["code"])
+                return {
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": '{"answer":"verify externally","generated_images":[]}',
+                        }],
+                    }]
+                }
+
+            client.create_tool_response = create
+            result = ModelToolLoop(
+                client,
+                [tool],
+                store,
+                session_id=session_id,
+            ).run_json(
+                [{"role": "user", "content": "resume"}],
+                model="fake-vision-model",
+                max_tokens=1000,
+                thinking="medium",
+                timeout=30,
+            )
+
+            self.assertEqual("verify externally", result.value["answer"])
+            self.assertEqual([], tool.calls)
+
     def test_repeat_reminder_is_advisory_and_appended_after_the_third_call(self):
         from app.image_artifacts import ImageArtifactStore
         from app.model_tool_loop import ModelToolLoop

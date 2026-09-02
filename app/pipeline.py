@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 import traceback
@@ -246,7 +249,15 @@ def reset_transient_progress(stage_output_dir: Path) -> None:
 
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(raw_tmp, path)
+    finally:
+        Path(raw_tmp).unlink(missing_ok=True)
 
 
 def _mark_unresolved_correctness_review_flags(
@@ -787,6 +798,52 @@ def _filter_docx_issues_for_model_repair(issues: list[str]) -> list[str]:
     return [issue for issue in issues if _docx_issue_code(issue) in DOCX_MODEL_REPAIR_CODES]
 
 
+def _revalidate_content_after_docx_fragment_change(
+    fragments_json: Path,
+    structured_exam: dict,
+    selection_data: dict,
+    sdir: Path,
+) -> dict:
+    """Invalidate stale semantic acceptance after any Word-side fragment edit."""
+
+    fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
+    drafts_path = sdir / "answer_drafts.json"
+    drafts_data = (
+        json.loads(drafts_path.read_text(encoding="utf-8"))
+        if drafts_path.exists()
+        else {"drafts": []}
+    )
+    reconciliation_path = sdir / "answer_checkpoint_reconciliation.json"
+    reconciliation = (
+        json.loads(reconciliation_path.read_text(encoding="utf-8"))
+        if reconciliation_path.exists()
+        else {}
+    )
+    figure_specs_path = sdir / "figure_specs.json"
+    figure_specs_data = (
+        json.loads(figure_specs_path.read_text(encoding="utf-8"))
+        if figure_specs_path.exists()
+        else {"figures": []}
+    )
+    report = audit_content_quality(
+        structured_exam,
+        fragments_data,
+        drafts_data,
+        selection_data,
+        sdir / "content_quality_audit.json",
+        draft_optional_question_ids={
+            str(question_id).strip()
+            for question_id in reconciliation.get("reusable_question_ids", [])
+            if str(question_id).strip()
+        },
+        active_figure_specs_data=figure_specs_data,
+    )
+    report["candidate_sha256"] = hashlib.sha256(fragments_json.read_bytes()).hexdigest()
+    report["revalidated_after_docx_fragment_change"] = True
+    write_json(sdir / "content_quality_audit.json", report)
+    return report
+
+
 def build_and_audit_docx_with_repair(
     task_id: str,
     fragments_json: Path,
@@ -802,6 +859,7 @@ def build_and_audit_docx_with_repair(
     use_model: bool = False,
 ) -> dict:
     attempts: list[dict] = []
+    content_changed = False
 
     def attempt(label: str) -> list[str]:
         try:
@@ -818,7 +876,12 @@ def build_and_audit_docx_with_repair(
     issues = attempt("initial")
     if not issues:
         write_json(sdir / "docx_repair.json", {"needed": False, "attempts": attempts})
-        return {"ok": True, "issues": [], "repair": {"needed": False, "attempts": attempts}}
+        return {
+            "ok": True,
+            "issues": [],
+            "repair": {"needed": False, "attempts": attempts},
+            "content_changed": False,
+        }
 
     repair_payload = {"needed": True, "attempts": attempts, "strategy": "local_first_then_bounded_model"}
     mark(
@@ -842,13 +905,30 @@ def build_and_audit_docx_with_repair(
     repair_payload["repair"] = repair_report
     repair_payload["local_repair"] = repair_report
     if repair_report.get("changed"):
+        content_changed = True
         mark("docx_repair", "applied", repair_report)
         issues = attempt("after_local_repair")
         if not issues:
+            refreshed_quality = (
+                _revalidate_content_after_docx_fragment_change(
+                    fragments_json,
+                    structured_exam,
+                    selection_data or {},
+                    sdir,
+                )
+                if structured_exam is not None
+                else {}
+            )
             repair_payload["attempts"] = attempts
             repair_payload["ok"] = True
             write_json(sdir / "docx_repair.json", repair_payload)
-            return {"ok": True, "issues": [], "repair": repair_payload}
+            return {
+                "ok": True,
+                "issues": [],
+                "repair": repair_payload,
+                "content_changed": content_changed,
+                "content_quality": refreshed_quality,
+            }
     else:
         mark("docx_repair", "skipped", repair_report)
 
@@ -883,6 +963,7 @@ def build_and_audit_docx_with_repair(
         repair_payload["model_repair"] = model_repair_report
         mark("docx_model_repair", "applied" if model_repair_report.get("changed") else "skipped", model_repair_report)
         if model_repair_report.get("changed"):
+            content_changed = True
             issues = attempt("after_model_repair")
             if issues:
                 try:
@@ -905,6 +986,7 @@ def build_and_audit_docx_with_repair(
                     {**final_local_repair, "phase": "after_model_repair"},
                 )
                 if final_local_repair.get("ok") and final_local_repair.get("changed"):
+                    content_changed = True
                     issues = attempt("after_model_local_repair")
     else:
         reason = (
@@ -923,8 +1005,24 @@ def build_and_audit_docx_with_repair(
         }
     repair_payload["attempts"] = attempts
     repair_payload["ok"] = not issues
+    refreshed_quality = (
+        _revalidate_content_after_docx_fragment_change(
+            fragments_json,
+            structured_exam,
+            selection_data or {},
+            sdir,
+        )
+        if content_changed and structured_exam is not None
+        else {}
+    )
     write_json(sdir / "docx_repair.json", repair_payload)
-    return {"ok": not issues, "issues": issues, "repair": repair_payload}
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "repair": repair_payload,
+        "content_changed": content_changed,
+        "content_quality": refreshed_quality,
+    }
 
 
 def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, run_id: str = "") -> dict:
@@ -1371,7 +1469,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             plan_detail = asdict(plan_result)
             mark("knowledge_planning", "passed" if plan_result.ok else "failed", plan_detail)
             if not plan_result.ok:
-                raise RuntimeError("Knowledge planning failed")
+                raise RuntimeError(plan_result.failure_message or "考点定位模型连续失败，请从当前步骤重试。")
             knowledge_plans = load_knowledge_plans(plans_json)
             _write_upstream_checkpoint_contract(sdir, checkpoint_contract)
 

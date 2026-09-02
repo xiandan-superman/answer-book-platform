@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -492,7 +494,13 @@ def figure_delivery_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str]
     return {"ok": not issues, "question_count": len(items), "issue_count": len(issues), "items": items}, issues, warnings
 
 
-def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_render: bool = True) -> dict[str, Any]:
+def build_final_acceptance_report(
+    stage_dir: Path,
+    output_dir: Path,
+    require_render: bool = True,
+    *,
+    candidate_docx: Path | None = None,
+) -> dict[str, Any]:
     acceptance = read_json(stage_dir / "acceptance_report.json")
     pipeline = read_json(stage_dir / "pipeline_status.json")
     document_delivery_skip = document_delivery_skip_record(stage_dir)
@@ -529,12 +537,22 @@ def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_ren
             issues.extend(gate_issues)
         warnings.extend(gate_warnings)
 
-    docx = output_dir / "answer_book.docx"
+    formal_docx = output_dir / "answer_book.docx"
+    review_candidate_docx = output_dir / "answer_book_review_candidate.docx"
+    docx = (
+        Path(candidate_docx)
+        if candidate_docx is not None
+        else review_candidate_docx
+        if not formal_docx.exists() and review_candidate_docx.exists()
+        else formal_docx
+    )
     pdf = output_dir / "word_rendered" / "answer_book.pdf"
     if not document_delivery_skipped and not docx.exists():
         issues.append(f"output missing: {docx}")
     if effective_require_render and not pdf.exists():
         issues.append(f"rendered PDF missing: {pdf}")
+    if not document_delivery_skipped and not require_render:
+        formal_issues.append("Word page rendering was not verified for this candidate")
 
     if not acceptance or acceptance.get("status") not in {
         "passed",
@@ -642,5 +660,15 @@ def build_final_acceptance_report(stage_dir: Path, output_dir: Path, require_ren
         },
         "acceptance_report": acceptance,
     }
-    (stage_dir / "final_acceptance_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path = stage_dir / "final_acceptance_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(prefix=".final-acceptance-", suffix=".tmp", dir=str(report_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(raw_tmp, report_path)
+    finally:
+        Path(raw_tmp).unlink(missing_ok=True)
     return report

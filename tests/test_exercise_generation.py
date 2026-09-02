@@ -1740,6 +1740,51 @@ def test_source_analysis_sends_all_nine_images_without_eight_image_truncation(mo
     assert context_plan["too_many_images"] is False
 
 
+def test_source_analysis_batches_twenty_five_images_without_omission(monkeypatch):
+    captured_image_counts: list[int] = []
+    images = [f"data:image/png;base64,image{index}" for index in range(1, 26)]
+    monkeypatch.setattr(
+        exercise_generation,
+        "parse_practice_sources",
+        lambda _payload: {
+            "text": "请按页面顺序完整分析这组材料。",
+            "images": images,
+            "reference_images": images,
+            "file_names": ["连续页面.pdf"],
+            "file_diagnostics": [],
+            "analysis_mode": "mixed",
+        },
+    )
+    monkeypatch.setattr(exercise_generation, "OpenAICompatibleClient", lambda _provider: object())
+    monkeypatch.setattr(
+        exercise_generation,
+        "_model_runtime",
+        lambda _payload, _has_images: (SimpleNamespace(name="vision-test"), "vision-model"),
+    )
+    monkeypatch.setattr(exercise_generation, "_model_route", lambda *_args: "primary_multimodal")
+
+    def fake_call(_client, messages, **_kwargs):
+        content = messages[-1]["content"]
+        captured_image_counts.append(sum(
+            1
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ))
+        return {
+            "source_scope": {"mode": "single", "title": "连续页面", "questions": []},
+            "source_analysis": {"subject": "材料科学"},
+        }
+
+    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
+
+    result = exercise_generation.analyze_practice_source({"source_mode": "exam"})
+
+    assert captured_image_counts == [24, 1]
+    assert result["generation"]["reference_image_count"] == 25
+    assert result["generation"]["analysis_chunk_count"] == 2
+    assert sum(plan["input_modalities"]["images"] for plan in result["generation"]["context_plans"]) == 25
+
+
 def test_source_analysis_repairs_empty_constraints_per_question_without_global_leakage(monkeypatch):
     calls: list[str] = []
 

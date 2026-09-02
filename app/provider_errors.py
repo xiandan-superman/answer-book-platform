@@ -204,6 +204,24 @@ def classify_provider_error(
             failure_state="route_blocked",
         )
 
+    # Some aggregation gateways use model_not_found when the model exists but
+    # no account in the selected account group can currently serve it.  That
+    # condition was observed to recover on the exact same route, so it is a
+    # transient route-pool failure rather than a user configuration error.
+    if _contains(
+        lowered,
+        "not supported by any configured account in this group",
+        "no configured account in this group supports",
+    ):
+        return result(
+            "provider_route_pool_unavailable",
+            "模型路由暂时不可用",
+            "服务商当前没有可用账号承接所选模型，但同一模型稍后可能恢复。",
+            "平台会在原服务商、原模型和原协议上有限重试；仍失败时请从当前步骤重试。",
+            retryable=True,
+            failure_state="service_degraded",
+        )
+
     if (
         status == 404
         or _contains(

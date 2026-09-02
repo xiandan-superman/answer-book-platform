@@ -32,6 +32,12 @@ from .practice_document_contracts import (
     PRACTICE_PAGE_CONTRACT,
     PRACTICE_TEXT_CONTRACT,
 )
+from .rich_text_math import (
+    DELIMITED_MATH_RE,
+    collapse_delimited_math_newlines,
+    delimited_math_span,
+    iter_delimited_math,
+)
 
 BLUE = RGBColor(37, 99, 235)
 DARK_BLUE = RGBColor(31, 77, 120)
@@ -216,8 +222,6 @@ def validate_practice_export(data: dict[str, Any]) -> dict[str, Any]:
         for formula_index, formula in enumerate(item.get("formulas") or [], start=1):
             if not isinstance(formula, dict):
                 blocking_issues.append(f"第 {question_number} 题第 {formula_index} 个公式不是有效对象。")
-                continue
-            if not _question_formula_visible(formula):
                 continue
             latex = _normalize_standard_state_latex(_text(formula.get("latex"), 3000))
             plan = build_expression_render_plan(
@@ -700,10 +704,7 @@ def _add_title_block(doc: Document, data: dict[str, Any], *, document_kind: str 
     title.paragraph_format.first_line_indent = Pt(0)
 
 
-_INLINE_MATH_RE = re.compile(
-    r"(?<!\\)\$\$(.+?)(?<!\\)\$\$|\\\[(.+?)\\\]|(?<!\\)\$(.+?)(?<!\\)\$|\\\((.+?)\\\)",
-    re.DOTALL,
-)
+_INLINE_MATH_RE = DELIMITED_MATH_RE
 _BARE_LATEX_RE = re.compile(
     r"\\(?:frac|sqrt|mathrm|mathbf|mathit|text|operatorname|Delta|sum|int|theta|alpha|beta|gamma|"
     r"partial|approx|times|cdot|left|right|begin|end)\b"
@@ -723,17 +724,11 @@ _MATH_FILL_BLANK_RE = re.compile(r"(?<![\\_])_{2,}(?!_)")
 def _normalize_inline_math_fill_blanks(match: re.Match[str]) -> str:
     """Keep answer blanks visible without treating underscores as subscripts."""
 
-    original_latex = next((group for group in match.groups() if group is not None), "")
+    span = delimited_math_span(match)
+    original_latex = span.latex
     latex = repair_json_escaped_latex(original_latex)
 
-    if match.group(1) is not None:
-        opening, closing = "$$", "$$"
-    elif match.group(2) is not None:
-        opening, closing = r"\[", r"\]"
-    elif match.group(3) is not None:
-        opening, closing = "$", "$"
-    else:
-        opening, closing = r"\(", r"\)"
+    opening, closing = span.opening, span.closing
 
     blanks = list(_MATH_FILL_BLANK_RE.finditer(latex))
     if not blanks:
@@ -756,6 +751,43 @@ def _normalize_inline_math_fill_blanks(match: re.Match[str]) -> str:
     return f"{opening}{normalized}{closing}"
 
 
+def _practice_visible_text_fields(item: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Enumerate every text field that can reach a practice Word artifact."""
+
+    fields: list[tuple[str, Any]] = [
+        ("题干", item.get("stem")),
+        ("答案", item.get("answer")),
+    ]
+    fields.extend(
+        (f"解析第 {step_index} 步", step)
+        for step_index, step in enumerate(item.get("solution_steps") or [], start=1)
+    )
+    fields.extend(
+        (f"知识点 {point_index}", point)
+        for point_index, point in enumerate(item.get("knowledge_points") or [], start=1)
+    )
+    fields.extend(
+        (f"选项 {option_index}", option.get("text") if isinstance(option, dict) else option)
+        for option_index, option in enumerate(item.get("options") or [], start=1)
+    )
+    for formula_index, formula in enumerate(item.get("formulas") or [], start=1):
+        if isinstance(formula, dict):
+            fields.append((f"公式 {formula_index} 标题", formula.get("caption")))
+    for table_index, table in enumerate(item.get("tables") or [], start=1):
+        if not isinstance(table, dict):
+            continue
+        fields.append((f"表格 {table_index} 标题", table.get("title")))
+        fields.extend((f"表格 {table_index} 表头", value) for value in table.get("headers") or [])
+        for row_index, row in enumerate(table.get("rows") or [], start=1):
+            if isinstance(row, list):
+                fields.extend((f"表格 {table_index} 第 {row_index} 行", value) for value in row)
+    for figure_index, figure in enumerate(item.get("figures") or [], start=1):
+        if isinstance(figure, dict):
+            fields.append((f"图 {figure_index} 标题", figure.get("title")))
+            fields.append((f"图 {figure_index} 说明", figure.get("description")))
+    return fields
+
+
 def preflight_practice_inline_expressions(data: dict[str, Any]) -> list[str]:
     """Fail before Word generation when visible inline math cannot become OMML."""
 
@@ -764,22 +796,10 @@ def preflight_practice_inline_expressions(data: dict[str, Any]) -> list[str]:
         if not isinstance(item, dict) or item.get("generation_status") == "failed":
             continue
         number = str(item.get("number") or index)
-        fields: list[tuple[str, Any]] = [("题干", item.get("stem"))]
-        fields.extend(
-            (f"选项 {option_index}", option.get("text") if isinstance(option, dict) else option)
-            for option_index, option in enumerate(item.get("options") or [], start=1)
-        )
-        for table_index, table in enumerate(item.get("tables") or [], start=1):
-            if not isinstance(table, dict):
-                continue
-            fields.extend((f"表格 {table_index} 表头", value) for value in table.get("headers") or [])
-            for row_index, row in enumerate(table.get("rows") or [], start=1):
-                if isinstance(row, list):
-                    fields.extend((f"表格 {table_index} 第 {row_index} 行", value) for value in row)
-        for field, value in fields:
+        for field, value in _practice_visible_text_fields(item):
             text = normalize_practice_markup(value, limit=12000)
-            for match in _INLINE_MATH_RE.finditer(text):
-                latex = next((group for group in match.groups() if group is not None), "").strip()
+            for span in iter_delimited_math(text):
+                latex = span.latex
                 if not latex:
                     continue
                 plan = build_expression_render_plan(
@@ -787,7 +807,7 @@ def preflight_practice_inline_expressions(data: dict[str, Any]) -> list[str]:
                     question_id=str(item.get("exercise_id") or item.get("question_id") or number),
                     location=f"practice_{field}",
                     role="relation",
-                    display=False,
+                    display=span.display,
                 )
                 if error := preflight_expression_render(plan):
                     issues.append(f"第 {number} 题{field}包含无法生成 Word 公式对象的行内公式：{error}")
@@ -896,7 +916,7 @@ def normalize_practice_markup(value: Any, *, limit: int = 12000) -> str:
         parts.append(_normalize_inline_math_fill_blanks(match))
         cursor = match.end()
     parts.append(_repair_bare_latex_segment(text[cursor:]))
-    return "".join(parts)
+    return collapse_delimited_math_newlines("".join(parts))
 
 
 _PRACTICE_QUESTION_TITLE_PREFIX_RE = re.compile(
@@ -979,21 +999,7 @@ def audit_practice_export_data(data: dict[str, Any]) -> list[str]:
             issues.append(f"第{index}题不是有效题目对象")
             continue
         question_number = str(item.get("number") or index)
-        fields: list[tuple[str, Any]] = [
-            ("stem", item.get("stem")),
-            ("target_skill", item.get("target_skill")),
-        ]
-        for option_index, option in enumerate(item.get("options") or [], start=1):
-            option_text = option.get("text") if isinstance(option, dict) else option
-            fields.append((f"选项 {option_index}", option_text))
-        for table_index, table in enumerate(item.get("tables") or [], start=1):
-            if not isinstance(table, dict):
-                continue
-            fields.append((f"表格 {table_index} 标题", table.get("title")))
-            fields.extend((f"表格 {table_index} 表头", header) for header in table.get("headers") or [])
-            for row_index, row in enumerate(table.get("rows") or [], start=1):
-                if isinstance(row, list):
-                    fields.extend((f"表格 {table_index} 第 {row_index} 行", cell) for cell in row)
+        fields = [("target_skill", item.get("target_skill")), *_practice_visible_text_fields(item)]
         for field, raw_value in fields:
             value = _text(raw_value, 12000)
             if _has_unrenderable_markup(value):
@@ -1015,14 +1021,21 @@ def _inline_export_text(value: Any, limit: int = 10000) -> str:
     return " ".join(_split_export_paragraphs(value, limit))
 
 
-def _add_rich_text(paragraph, value: Any, *, limit: int = 10000) -> None:
+def _add_rich_text(
+    paragraph,
+    value: Any,
+    *,
+    limit: int = 10000,
+    location: str = "practice_text",
+) -> None:
     """Write text and inline LaTeX without leaking raw dollar delimiters."""
     text = normalize_practice_markup(_inline_export_text(value, limit), limit=limit)
     cursor = 0
     for match in _INLINE_MATH_RE.finditer(text):
+        span = delimited_math_span(match)
         plain = text[cursor : match.start()]
         latex = _normalize_standard_state_latex(
-            next((group for group in match.groups() if group is not None), "").strip()
+            span.latex
         )
         # Generated scientific units are often written as mol$^{-1}$ or
         # cm$^3$. A script without its adjacent base becomes an empty-box
@@ -1034,15 +1047,16 @@ def _add_rich_text(paragraph, value: Any, *, limit: int = 10000) -> None:
                 plain = plain[:base_match.start()]
                 latex = rf"\mathrm{{{base}}}{latex}"
         if plain:
-            _add_plain_with_equations(paragraph, plain)
+            _add_plain_with_equations(paragraph, plain, location=location)
         try:
-            paragraph._p.append(render_expression_omml(latex, display=False, location="practice_inline"))
-        except Exception:
-            run = paragraph.add_run(latex)
-            _set_run(run, color=DARK_BLUE)
+            paragraph._p.append(
+                render_expression_omml(latex, display=span.display, location=location)
+            )
+        except Exception as exc:
+            raise ValueError(f"{location} 无法转换为 Word 公式对象：{exc}") from exc
         cursor = match.end()
     if text[cursor:]:
-        _add_plain_with_equations(paragraph, text[cursor:])
+        _add_plain_with_equations(paragraph, text[cursor:], location=location)
 
 
 def _set_body_paragraph(paragraph, *, option: bool = False) -> None:
@@ -1069,7 +1083,7 @@ def _set_table_paragraph(paragraph) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
 
-def _add_plain_with_equations(paragraph, text: str) -> None:
+def _add_plain_with_equations(paragraph, text: str, *, location: str = "practice_text") -> None:
     """Convert un-delimited equations and domain notation without touching prose."""
     cursor = 0
     for plan in build_text_expression_render_plans(text):
@@ -1082,12 +1096,12 @@ def _add_plain_with_equations(paragraph, text: str) -> None:
                 render_expression_omml(
                     plan.render_latex,
                     display=False,
-                    location="practice_domain_notation",
+                    location=location,
                     expression_kind=plan.expression_kind,
                 )
             )
-        except Exception:
-            _add_markdown_runs(paragraph, plan.raw)
+        except Exception as exc:
+            raise ValueError(f"{location} 无法转换为 Word 公式对象：{exc}") from exc
         if plan.preserve_parentheses:
             _add_markdown_runs(paragraph, "）")
         cursor = plan.end
@@ -1132,12 +1146,13 @@ def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
         spacer.paragraph_format.space_after = Pt(4)
         return
     stem_parts = _split_export_paragraphs(normalize_practice_question_text(item.get("stem"))) or [""]
-    _add_rich_text(stem, stem_parts[0])
+    question_id = practice_export_exercise_id(item, index - 1)
+    _add_rich_text(stem, stem_parts[0], location=f"exercise={question_id} field=stem")
     for part in stem_parts[1:]:
         continuation = doc.add_paragraph()
         _set_body_paragraph(continuation)
-        _add_rich_text(continuation, part)
-    _add_question_structured_assets(doc, item)
+        _add_rich_text(continuation, part, location=f"exercise={question_id} field=stem")
+    _add_question_structured_assets(doc, item, question_id=question_id)
     for option_index, option in enumerate(item.get("options") or []):
         if not isinstance(option, dict):
             continue
@@ -1146,11 +1161,12 @@ def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
         _set_body_paragraph(paragraph, option=True)
         label = paragraph.add_run(f"{chr(65 + option_index)}. ")
         _set_run(label, bold=False, color=INK)
-        _add_rich_text(paragraph, option_parts[0], limit=3000)
+        option_location = f"exercise={question_id} field=options[{option_index}].text"
+        _add_rich_text(paragraph, option_parts[0], limit=3000, location=option_location)
         for part in option_parts[1:]:
             continuation = doc.add_paragraph()
             _set_body_paragraph(continuation, option=True)
-            _add_rich_text(continuation, part, limit=3000)
+            _add_rich_text(continuation, part, limit=3000, location=option_location)
 
 
 def _add_answer(doc: Document, item: dict[str, Any], index: int) -> None:
@@ -1160,27 +1176,38 @@ def _add_answer(doc: Document, item: dict[str, Any], index: int) -> None:
     _set_body_paragraph(answer)
     label = answer.add_run("参考答案：")
     _set_run(label, bold=True, color=BLUE)
-    answer_parts = _split_export_paragraphs(item.get("answer")) or [""]
-    _add_rich_text(answer, answer_parts[0])
+    question_id = practice_export_exercise_id(item, index - 1)
+    answer_parts = _split_export_paragraphs(normalize_practice_markup(item.get("answer"))) or [""]
+    _add_rich_text(answer, answer_parts[0], location=f"exercise={question_id} field=answer")
     for part in answer_parts[1:]:
         continuation = doc.add_paragraph()
         _set_body_paragraph(continuation)
-        _add_rich_text(continuation, part)
-    _add_structured_assets(doc, item, "solution")
+        _add_rich_text(continuation, part, location=f"exercise={question_id} field=answer")
+    _add_structured_assets(doc, item, "solution", question_id=question_id)
     steps = item.get("solution_steps") if isinstance(item.get("solution_steps"), list) else []
     if steps:
         subheading = doc.add_paragraph(style="Heading 3")
         subheading.add_run("解析")
         number_id = _new_solution_step_numbering(doc)
-        for step in steps:
+        for step_index, step in enumerate(steps):
             paragraph = doc.add_paragraph(style="List Number")
             _assign_solution_step_numbering(paragraph, number_id)
-            _add_rich_text(paragraph, step, limit=3000)
+            _add_rich_text(
+                paragraph,
+                step,
+                limit=3000,
+                location=f"exercise={question_id} field=solution_steps[{step_index}]",
+            )
     points = [_text(value, 100) for value in (item.get("knowledge_points") or []) if _text(value, 100)]
     if points:
         paragraph = doc.add_paragraph()
-        run = paragraph.add_run("涉及知识点：" + "、".join(points))
+        run = paragraph.add_run("涉及知识点：")
         _set_run(run, size=9.5, color=MUTED)
+        _add_rich_text(
+            paragraph,
+            "、".join(points),
+            location=f"exercise={question_id} field=knowledge_points",
+        )
 
 
 def _new_solution_step_numbering(doc: Document) -> int:
@@ -1205,13 +1232,12 @@ def _matches_location(value: Any, location: str) -> bool:
     return location in (_text(value, 30) or "stem")
 
 
-def _add_formula(doc: Document, formula: dict[str, Any]) -> None:
+def _add_formula(doc: Document, formula: dict[str, Any], *, location: str) -> None:
     caption = _inline_export_text(formula.get("caption"), 300)
     if caption:
         paragraph = doc.add_paragraph()
         paragraph.paragraph_format.keep_with_next = True
-        run = paragraph.add_run(caption)
-        _set_run(run, size=9.5, color=MUTED)
+        _add_rich_text(paragraph, caption, limit=300, location=f"{location}.caption")
     paragraph = doc.add_paragraph()
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     try:
@@ -1219,20 +1245,18 @@ def _add_formula(doc: Document, formula: dict[str, Any]) -> None:
             render_expression_omml(
                 _normalize_standard_state_latex(_text(formula.get("latex"), 3000)),
                 display=True,
-                location="practice_formula",
+                location=location,
             )
         )
-    except Exception:
-        run = paragraph.add_run(_text(formula.get("latex"), 3000))
-        _set_run(run, size=11, color=DARK_BLUE)
+    except Exception as exc:
+        raise ValueError(f"{location} 无法转换为 Word 公式对象：{exc}") from exc
 
 
-def _add_data_table(doc: Document, spec: dict[str, Any]) -> None:
+def _add_data_table(doc: Document, spec: dict[str, Any], *, location: str) -> None:
     title = _inline_export_text(spec.get("title"), 300)
     if title:
         paragraph = doc.add_paragraph()
-        run = paragraph.add_run(title)
-        _set_run(run, size=9.5, bold=True, color=DARK_BLUE)
+        _add_rich_text(paragraph, title, limit=300, location=f"{location}.title")
     headers = spec.get("headers") if isinstance(spec.get("headers"), list) else []
     rows = spec.get("rows") if isinstance(spec.get("rows"), list) else []
     columns = max(len(headers), max((len(row) for row in rows if isinstance(row, list)), default=0))
@@ -1249,7 +1273,12 @@ def _add_data_table(doc: Document, spec: dict[str, Any]) -> None:
             cell.width = width
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             _set_table_paragraph(cell.paragraphs[0])
-            _add_rich_text(cell.paragraphs[0], value, limit=500)
+            _add_rich_text(
+                cell.paragraphs[0],
+                value,
+                limit=500,
+                location=f"{location}.headers[{index}]",
+            )
     for raw in rows:
         if not isinstance(raw, list):
             continue
@@ -1258,7 +1287,12 @@ def _add_data_table(doc: Document, spec: dict[str, Any]) -> None:
             cells[index].width = width
             cells[index].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             _set_table_paragraph(cells[index].paragraphs[0])
-            _add_rich_text(cells[index].paragraphs[0], raw[index] if index < len(raw) else "", limit=500)
+            _add_rich_text(
+                cells[index].paragraphs[0],
+                raw[index] if index < len(raw) else "",
+                limit=500,
+                location=f"{location}.rows[{len(table.rows) - (1 if headers else 0) - 1}][{index}]",
+            )
     doc.add_paragraph()
 
 
@@ -1384,7 +1418,7 @@ def _chart_png(spec: dict[str, Any]) -> BytesIO | None:
     return buffer
 
 
-def _add_figure(doc: Document, spec: dict[str, Any]) -> None:
+def _add_figure(doc: Document, spec: dict[str, Any], *, location: str) -> None:
     title = _inline_export_text(spec.get("title"), 300)
     if title:
         paragraph = doc.add_paragraph()
@@ -1393,8 +1427,7 @@ def _add_figure(doc: Document, spec: dict[str, Any]) -> None:
         # is visually misleading. Keep the title attached to the following
         # image paragraph while still allowing the description to flow.
         paragraph.paragraph_format.keep_with_next = True
-        run = paragraph.add_run(title)
-        _set_run(run, size=9.5, bold=True, color=DARK_BLUE)
+        _add_rich_text(paragraph, title, limit=300, location=f"{location}.title")
     image_path = _figure_image_path(spec) if _valid_figure_image(spec) else None
     image = str(image_path) if image_path is not None else _chart_png(spec)
     if image is not None:
@@ -1414,23 +1447,50 @@ def _add_figure(doc: Document, spec: dict[str, Any]) -> None:
     description = _inline_export_text(spec.get("description"), 1500)
     if description:
         paragraph = doc.add_paragraph()
-        run = paragraph.add_run(description)
-        _set_run(run, size=9.5, color=MUTED)
+        _add_rich_text(
+            paragraph,
+            description,
+            limit=1500,
+            location=f"{location}.description",
+        )
 
 
-def _add_structured_assets(doc: Document, item: dict[str, Any], location: str) -> None:
-    for formula in item.get("formulas") or []:
+def _add_structured_assets(
+    doc: Document,
+    item: dict[str, Any],
+    location: str,
+    *,
+    question_id: str,
+) -> None:
+    for formula_index, formula in enumerate(item.get("formulas") or []):
         if isinstance(formula, dict) and _matches_location(formula.get("location"), location):
-            _add_formula(doc, formula)
-    for table in item.get("tables") or []:
+            _add_formula(
+                doc,
+                formula,
+                location=f"exercise={question_id} field=formulas[{formula_index}].latex",
+            )
+    for table_index, table in enumerate(item.get("tables") or []):
         if isinstance(table, dict) and _matches_location(table.get("location"), location):
-            _add_data_table(doc, table)
-    for figure in item.get("figures") or []:
+            _add_data_table(
+                doc,
+                table,
+                location=f"exercise={question_id} field=tables[{table_index}]",
+            )
+    for figure_index, figure in enumerate(item.get("figures") or []):
         if isinstance(figure, dict) and _matches_location(figure.get("location"), location):
-            _add_figure(doc, figure)
+            _add_figure(
+                doc,
+                figure,
+                location=f"exercise={question_id} field=figures[{figure_index}]",
+            )
 
 
-def _add_question_structured_assets(doc: Document, item: dict[str, Any]) -> None:
+def _add_question_structured_assets(
+    doc: Document,
+    item: dict[str, Any],
+    *,
+    question_id: str,
+) -> None:
     """Render only assets that are safe to expose on the student question sheet.
 
     The generation contract reserves ``role=given`` for formulas explicitly
@@ -1440,15 +1500,27 @@ def _add_question_structured_assets(doc: Document, item: dict[str, Any]) -> None
     and figures keep their existing location contract.
     """
 
-    for formula in item.get("formulas") or []:
+    for formula_index, formula in enumerate(item.get("formulas") or []):
         if _question_formula_visible(formula):
-            _add_formula(doc, formula)
-    for table in item.get("tables") or []:
+            _add_formula(
+                doc,
+                formula,
+                location=f"exercise={question_id} field=formulas[{formula_index}].latex",
+            )
+    for table_index, table in enumerate(item.get("tables") or []):
         if isinstance(table, dict) and _matches_location(table.get("location"), "stem"):
-            _add_data_table(doc, table)
-    for figure in item.get("figures") or []:
+            _add_data_table(
+                doc,
+                table,
+                location=f"exercise={question_id} field=tables[{table_index}]",
+            )
+    for figure_index, figure in enumerate(item.get("figures") or []):
         if isinstance(figure, dict) and _matches_location(figure.get("location"), "stem"):
-            _add_figure(doc, figure)
+            _add_figure(
+                doc,
+                figure,
+                location=f"exercise={question_id} field=figures[{figure_index}]",
+            )
 
 
 def _apply_run_fonts(doc: Document) -> None:

@@ -27,11 +27,12 @@ from .image_orchestration import (
     DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
     ensure_generation_image_label_language_requirement,
 )
-from .llm_client import LLMError, OpenAICompatibleClient
+from .llm_client import LLMError, OpenAICompatibleClient, StructuredOutputError
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .omml_input import strip_structured_math_metadata
 from .prompt_registry import prompt_contract
 from .prompts import build_answer_depth_profile, build_answer_draft_prompt
+from .provider_errors import classify_provider_error
 from .question_requirements import answer_figure_required
 from .question_types import (
     infer_question_type,
@@ -208,20 +209,10 @@ def answer_generation_attempt_thinking_mode(
     question: dict[str, Any] | None,
     attempt: int,
 ) -> str:
-    """Escalate only a failed automatic complex-answer retry to low reasoning."""
+    """Keep every retry on the user-selected reasoning contract."""
 
-    base = answer_generation_thinking_mode(provider)
-    selected = str(getattr(provider, "thinking_mode", "auto") or "auto").strip().lower()
-    if (
-        attempt > 0
-        and selected == "auto"
-        and question
-        and (question_has_type(question, "计算题") or question_has_type(question, "作图题"))
-    ):
-        configured = str(os.environ.get("ANSWER_GENERATION_COMPLEX_RETRY_THINKING_MODE", "low") or "low").strip().lower()
-        if configured in {"auto", "enabled", "disabled", "low", "medium", "high", "xhigh"}:
-            return configured
-    return base
+    _ = question, attempt
+    return answer_generation_thinking_mode(provider)
 
 
 def answer_generation_timeout_seconds(
@@ -319,7 +310,7 @@ def _answer_batch_kind(question: dict[str, Any]) -> str:
 
 
 def _is_microbatch_candidate(question: dict[str, Any]) -> bool:
-    if question.get("image_refs") or needs_vision_model(question) or is_drawing_question(question):
+    if question.get("image_refs") or question.get("page_visual_refs") or needs_vision_model(question) or is_drawing_question(question):
         return False
     return _answer_batch_kind(question) in {"choice", "fill", "judge"}
 
@@ -2926,8 +2917,11 @@ def generate_one_fragment(
                         enforce_context_budget=True,
                     )
             assistant_content = json.dumps(data, ensure_ascii=False)
-        except LLMError as exc:
+        except StructuredOutputError as exc:
             last_issues = [str(exc)]
+            if attempt >= retries:
+                break
+            assistant_content = exc.content
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append(
                 {
@@ -2948,6 +2942,17 @@ def generate_one_fragment(
                     ),
                 }
             )
+            continue
+        except LLMError as exc:
+            last_issues = [str(exc)]
+            error_info = classify_provider_error(
+                exc,
+                status_code=getattr(exc, "status_code", None),
+                transport_phase=str(getattr(exc, "transport_phase", "") or ""),
+                retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+            )
+            if not error_info.retryable or bool(getattr(exc, "partial_output_received", False)):
+                break
             continue
         data = fragment_from_analysis_draft(data, question, evidence, evidence_selection)
         data = promote_inline_reactions(data)
@@ -3433,7 +3438,12 @@ def generate_answer_fragments(
                         artifact_store,
                         reference_images=question.get("image_refs") or [],
                     )
-                    tool_loop = ModelToolLoop(local_client, [image_tool], artifact_store)
+                    tool_loop = ModelToolLoop(
+                        local_client,
+                        [image_tool],
+                        artifact_store,
+                        session_id=f"answer_generation:{qid}",
+                    )
 
                 def attempt_callback(status: str, report: dict[str, Any]) -> None:
                     record_progress_event(question, status, report)
@@ -3565,7 +3575,12 @@ def generate_answer_fragments(
                 artifact_store,
                 reference_images=batch_reference_images,
             )
-            batch_tool_loop = ModelToolLoop(local_client, [image_tool], artifact_store)
+            batch_tool_loop = ModelToolLoop(
+                local_client,
+                [image_tool],
+                artifact_store,
+                session_id="answer_generation:batch",
+            )
         try:
             def attempt_callback(status: str, report: dict[str, Any]) -> None:
                 question = batch_items[0]["question"] if batch_items else {}

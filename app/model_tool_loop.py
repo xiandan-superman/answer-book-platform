@@ -121,6 +121,57 @@ class ToolEventLog:
                 handle.flush()
                 os.fsync(handle.fileno())
 
+    def recover_call_cache(self) -> dict[str, dict[str, Any]]:
+        """Recover completed and ambiguous calls so restarts never replay them blindly."""
+
+        if not self.path.exists():
+            return {}
+        recovered: dict[str, dict[str, Any]] = {}
+        started: dict[str, str] = {}
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return {}
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("session_id") or "") != self.session_id:
+                continue
+            try:
+                self._sequence = max(self._sequence, int(event.get("sequence") or 0))
+            except (TypeError, ValueError):
+                pass
+            call_id = str(event.get("call_id") or "")
+            fingerprint = str(event.get("arguments_sha256") or "")
+            if not call_id or not fingerprint:
+                continue
+            event_type = str(event.get("type") or "")
+            if event_type == "tool/started":
+                started[call_id] = fingerprint
+            elif event_type == "tool/result" and isinstance(event.get("result"), dict):
+                recovered[call_id] = {
+                    "fingerprint": fingerprint,
+                    "result": event["result"],
+                }
+                started.pop(call_id, None)
+        for call_id, fingerprint in started.items():
+            recovered.setdefault(
+                call_id,
+                {
+                    "fingerprint": fingerprint,
+                    "result": _tool_failure(
+                        "TOOL_OUTCOME_UNKNOWN",
+                        "the prior process stopped after this external tool started; explicit retry is required",
+                        name="ToolOutcomeUnknown",
+                    ),
+                },
+            )
+        return recovered
+
 
 def _function_calls(raw: dict[str, Any]) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
@@ -505,6 +556,7 @@ class ModelToolLoop:
         *,
         max_steps: int = 6,
         max_tool_calls: int = 4,
+        session_id: str | None = None,
     ) -> None:
         if isinstance(client, AnthropicMessagesClient) or not isinstance(client, OpenAICompatibleClient):
             raise ValueError("model tool loop requires a registered Responses or Chat Completions client")
@@ -513,7 +565,7 @@ class ModelToolLoop:
         self.artifact_store = artifact_store
         self.max_steps = max(1, int(max_steps))
         self.max_tool_calls = max(1, int(max_tool_calls))
-        self.session_id = str(uuid.uuid4())
+        self.session_id = str(session_id or uuid.uuid4())
         self._event_log = ToolEventLog(
             self.artifact_store.root / "tool_events.jsonl",
             session_id=self.session_id,
@@ -523,7 +575,7 @@ class ModelToolLoop:
         # generated and shown in that same transaction remain eligible, but are
         # re-delivered below so the next model request actually sees them.
         self._session_artifacts: dict[str, ImageArtifact] = {}
-        self._session_call_cache: dict[str, dict[str, Any]] = {}
+        self._session_call_cache: dict[str, dict[str, Any]] = self._event_log.recover_call_cache()
         self._repeat_signature = ""
         self._repeat_count = 0
 
@@ -636,12 +688,36 @@ class ModelToolLoop:
                         name="ToolArgumentsError",
                     )
                 else:
+                    self._event_log.append(
+                        "tool/started",
+                        call_id=call_id,
+                        tool=tool_name,
+                        model=model,
+                        protocol=protocol,
+                        step=step,
+                        call_index=call_index,
+                        arguments_sha256=fingerprint,
+                    )
                     try:
                         result = tool.execute(arguments, call_id=call_id)
                     except Exception as exc:
+                        self._event_log.append(
+                            "tool/outcome_unknown",
+                            call_id=call_id,
+                            tool=tool_name,
+                            model=model,
+                            protocol=protocol,
+                            step=step,
+                            call_index=call_index,
+                            arguments_sha256=fingerprint,
+                            error={"name": type(exc).__name__, "message": str(exc)},
+                        )
                         result = _tool_failure(
-                            "TOOL_EXECUTION_FAILED",
-                            f"{type(exc).__name__}: {exc}",
+                            "TOOL_OUTCOME_UNKNOWN",
+                            (
+                                f"{type(exc).__name__}: {exc}; the external operation may have completed, "
+                                "so this call_id will not be replayed automatically"
+                            ),
                             name=type(exc).__name__,
                         )
             self._session_call_cache[call_id] = {

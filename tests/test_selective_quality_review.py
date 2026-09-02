@@ -489,7 +489,7 @@ class SelectiveQualityReviewTests(unittest.TestCase):
         self.assertEqual([], failed["decisions"])
         self.assertTrue(all(row["code"] == "reviewer_unavailable" for row in failed["warnings"]))
 
-    def test_compact_retry_is_opt_in_and_counts_both_real_requests(self) -> None:
+    def test_review_failure_never_retries_with_reduced_evidence(self) -> None:
         from app.capabilities.selective_review import review_selective_quality
 
         exam, fragments = _exam_and_fragments(1)
@@ -507,8 +507,8 @@ class SelectiveQualityReviewTests(unittest.TestCase):
                 client=client,
             )
 
-        self.assertEqual(2, client.calls)
-        self.assertEqual(2, report["remote_model_calls_this_run"])
+        self.assertEqual(1, client.calls)
+        self.assertEqual(1, report["remote_model_calls_this_run"])
 
     def test_shadow_only_review_never_calls_provider_or_emits_service_warning(self) -> None:
         from app.capabilities.selective_review import review_selective_quality

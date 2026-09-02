@@ -151,7 +151,7 @@ def is_drawing_question(question: dict[str, Any]) -> bool:
 
 
 def needs_vision_model(question: dict[str, Any]) -> bool:
-    if question.get("image_refs"):
+    if question.get("image_refs") or question.get("page_visual_refs"):
         return True
     return any(is_complex_table(table) for table in question_tables(question))
 
@@ -177,12 +177,18 @@ def _local_understanding(question: dict[str, Any], output_dir: Path) -> dict[str
         tables.append(item)
 
     images: list[dict[str, Any]] = []
-    for index, raw in enumerate(question.get("image_refs") or [], start=1):
+    source_visuals = [
+        *(question.get("image_refs") or []),
+        *(question.get("page_visual_refs") or []),
+    ]
+    original_count = len(question.get("image_refs") or [])
+    for index, raw in enumerate(source_visuals, start=1):
         path = Path(str(raw))
         images.append(
             {
                 "image_id": f"{qid}_image_{index:02d}" if qid else f"image_{index:02d}",
                 "path": str(path),
+                "source_kind": "original_image" if index <= original_count else "page_visual_compensation",
                 "exists": path.exists(),
                 "ocr_text": "",
                 "visual_description": "",
@@ -244,6 +250,7 @@ def question_visual_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
     understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
     paths: list[Path] = []
     paths.extend(Path(str(raw)) for raw in question.get("image_refs") or [] if str(raw).strip())
+    paths.extend(Path(str(raw)) for raw in question.get("page_visual_refs") or [] if str(raw).strip())
     paths.extend(
         Path(str(item.get("path") or ""))
         for item in understanding.get("images") or []

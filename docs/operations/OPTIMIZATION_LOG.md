@@ -33,6 +33,46 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260903-03｜公式富文本跨业务统一与影响面强制审查
+
+- status: verified
+- scope: 真题解析、按题出题、知识点出题的公式分隔解析、生题题干/选项/答案/解析/表格/图示 Word 预检与渲染、项目协作规则
+- changed: 抽取共享的 `$...$`/`$$...$$`/`\(...\)`/`\[...\]` 分隔公式解析器，在分段前保持跨行显示公式完整；生题 Word 预检扩展到所有可见文本与结构公式，渲染失败改为带题目/字段位置的明确失败，不再静默回写原始 LaTeX；`AGENTS.md` 新增三条业务线、恢复、交付与共享设施的强制影响矩阵及逐入口回归要求。
+- trigger: 真题解析的多行公式修复后，全平台复查发现生题独立导出器仍会在答案分段时拆碎同类公式，预检又未覆盖答案和解析；单一业务入口的补丁不能解决平台级同类风险。
+- invariants: 不改写题干、答案、解析语义和题目顺序；不增加模型请求或路由切换；公式不能转为原生 Word 对象时禁止伪装成成功交付；旧任务文本仍可在导出边界确定性归一。
+- do_not_regress: 不得在识别完整公式前按换行拆分；不得只预检题干和选项而漏掉答案、解析或附属可见文本；不得在 Word 公式转换失败后输出原始 LaTeX；不得仅凭单一任务样本宣称平台级修复完成。
+- verification: 共享解析器、真题公式链与生题 Word 定向回归 71 passed；生题导出/后台导出/生成门扩大回归 283 passed；`python3 scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 复跑均为 1965 passed、16 deselected，分支覆盖率 70%，py_compile、版本一致性、公式 OMML、第三方声明、项目完整度、Ruff 和 Mypy 全部通过；未发起真实模型请求。
+
+### OPT-20260903-02｜答案摘要公式结构化后再导出 Word
+
+- status: verified
+- scope: 真题解析、按题/知识点生题共用答案片段、历史任务 Word 修复、DOCX 渲染与公式审计
+- changed: 为 `answer_summary` 增加耐久的文字/公式引用段；多行 `$$...$$` 整体提升为公式对象；生成、检查点迁移和 Word 本地修复共用同一幂等归一；渲染优先消费结构段，转换失败定位到题目和字段。
+- trigger: 用户任务的 `answer_summary` 含跨行显示公式，旧单行 `$...$` 渲染正则误将公式内容留在普通文本，导致全部题目已成功后在 DOCX 阶段失败。
+- invariants: 不改写答案语义、题目顺序、公式 LaTeX 与已成功题；不增加模型请求、重试或路由切换；旧任务保持可恢复；未通过 Word 审计和渲染的候选不交付。
+- do_not_regress: 不得恢复到 DOCX 末端才用单行正则猜测摘要公式；不得将多行显示公式拆碎；不得丢弃摘要普通文字或只为通过审计而关闭严格公式门禁。
+- verification: 2026-09-03 动态核对 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `fc953e5234f2452e393310b2be2b29a482c4d907`，阅读 `core-plugins/src/artifact_operation.rs` 和结构化输出合同；核对 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `49a606bc5b5934603f22a26957a07dc799ab0291`，阅读工具 schema/结果校验与持久化合同；两个上游均无 DOCX/OMML 转换层。最终公式结构定向回归 40 passed，生成/检查点/DOCX/流水线扩大回归 93 passed；最后一版 `python3 scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 复跑均为 1961 passed、16 deselected，覆盖率 70%，py_compile、版本一致性、公式链、第三方声明、项目完整度、Ruff 和 Mypy 全部通过；未发起真实模型请求，未部署、未发布。
+
+### OPT-20260903-01｜全平台 Harness 恢复与交付语义补齐
+
+- status: verified
+- scope: 真题解析、按题/知识点生题、教材与练习的共用模型请求、多页文件、工具恢复、Word/ZIP 交付
+- changed: 将普通文本与工具模型请求收敛为原服务商/模型/协议/思考深度的可取消传输重试，分离传输失败、完整但结构无效和输出上限；删除选择性复核的缩减证据再试；工具增加稳定会话、`started/result` 恢复和结果不确定防重放；文件表示最多保留 600 张页图并按 24 张顺序分批；Word 修复后重跑内容门并绑定哈希，最终候选验收、发布和 ZIP 均使用可恢复的原子替换。
+- trigger: 全平台与官方 Harness 对照发现，旧链路会把网络失败误当内容修复、复核重试丢失证据、工具进程中断后缺少结果不确定语义，且 Word 候选曾在最终验收前占用正式文件名。
+- invariants: 不换服务商、模型、协议或思考深度；不压缩题干、答案、用户要求、教材/真题证据或成功工具结果；不盲目重放可能已产生外部副作用的调用；不将未渲染候选件标为正式交付。
+- do_not_regress: 不得把传输错误文字加入 JSON 内容修复上下文；不得通过减少证据、输出上限或思考深度换取复核成功；不得重放 `TOOL_OUTCOME_UNKNOWN`；不得静默省略第 25 张以后页图；不得在修复后沿用旧内容验收结果或先覆盖已有正式交付。
+- verification: 2026-09-03 动态核对 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `8e3b180d49951c3e53140710b2baad09791cc999`，阅读 `responses_retry.rs`、`mcp_openai_file.rs`、`retained_context.rs`；核对 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `49a606bc5b5934603f22a26957a07dc799ab0291`，阅读 `llm-retry`、`agent-loop`、`session-persistence`、`output-retention`。新增/受影响专项回归 367 passed；`python3 scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 复跑均为 1956 passed、16 deselected，覆盖率 70%，py_compile、版本一致性、公式、第三方声明、项目完整度、Ruff 和 Mypy 均通过；未发起真实计费模型请求，未部署、未发布。
+
+### OPT-20260902-01｜临时模型故障原路由恢复与文件多表示输入
+
+- status: verified
+- scope: 真题解析、按题/知识点出题、教材库的模型重试、路由熔断、PDF/Word/图片/文本输入与 Word 公式转译
+- changed: 可重试故障增加有界指数退避，考查内容规划改为原路由最多 3 次尝试，全题失败时不再把关键词兜底伪装成成功；灵算“当前账号组无支持模型的账号”404 改为可恢复路由池故障，熔断维度收紧为服务商+模型+协议。输入端保留原文件、结构化文本和页面视觉的独立状态；PDF 保留页文本与页图，Word 保留 OMML/表格/内嵌图并对结构退化题加原页视觉补偿，直接教材 PDF/Word 也纳入同一表示合同；Windows 自动发现 Office OMML2MML 转换表。
+- trigger: 实际任务的灵算 Gemini 3.7 在账号池短时无可用账号时返回 404，后续同模型又可用；真题 Word 的化学公式在 Windows 未发现已安装的 Office XSL，且旧文件链路存在某一表示失败后静默缺失局部内容的风险。
+- invariants: 重试不改服务商、模型、协议、消息、思考深度或证据；不压缩真题/教材必要内容；局部表示失败只在同源等价表示足够时继续，否则明确停止；补偿页图仅供模型理解，不写入最终 Word 当作原题配图。
+- do_not_regress: 不得把代理账号池暂时无可用账号判为模型永久不存在；不得用某一模型/协议故障熔断整个服务商；不得静默忽略 Word 公式、图表、PDF 扫描页或非法 UTF-8 字节；不得将页面补偿图泄漏到成品文档。
+- verification: 2026-09-02 动态核对 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `50fffd5ed367aa99491d9ec58575626fce4e9dd4`，阅读 `codex-rs/core/src/mcp_openai_file.rs`、`codex-rs/protocol/src/user_input.rs`、`codex-rs/core/src/responses_retry.rs`；核对 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `49a606bc5b5934603f22a26957a07dc799ab0291`，阅读 `packages/attachment/attachment-local/README.md`、`packages/llm/llm-deepseek/README.md`、`packages/llm/llm-retry/src/index.ts`。定向回归 94 passed 和新增教材/熔断回归 64 passed；`python3 scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 复跑均为 1950 passed、16 deselected，覆盖率 70%，py_compile、版本一致性、公式、第三方声明、项目完整度、Ruff 和 Mypy 均通过；未发起真实计费模型请求，未部署、未发布。
+
 ### OPT-20260901-04｜v0.9.39 源码发布准备
 
 - status: verified

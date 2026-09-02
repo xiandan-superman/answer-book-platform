@@ -107,7 +107,7 @@ def extraction_cache_key(payload: dict[str, Any]) -> str:
     if not files or any(not item["resource_id"] for item in files):
         return ""
     encoded = json.dumps({
-        "schema": 1,
+        "schema": 2,
         "question_text": str(payload.get("question_text") or ""),
         "image_data_url_sha256": hashlib.sha256(str(payload.get("image_data_url") or "").encode("utf-8")).hexdigest(),
         "files": files,

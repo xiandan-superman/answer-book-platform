@@ -299,17 +299,52 @@ def test_provider_circuit_allows_one_recovery_probe_and_resets_after_success(tmp
 
     with runtime_monitor.model_call_context(task_id="circuit-task", run_id="circuit-run"):
         for _ in range(3):
-            with pytest.raises(RuntimeError, match="temporary failure"):
+            with pytest.raises(RuntimeError, match="503"):
                 with runtime_monitor.track_model_call(provider="lingsuan_google", model="gemini", purpose="chat", timeout=10):
-                    raise RuntimeError("temporary failure")
+                    raise RuntimeError("Provider HTTP 503: temporary failure")
         with runtime_monitor.track_model_call(provider="lingsuan_google", model="gemini", purpose="probe", timeout=10) as probe:
             assert probe["circuit_probe"] is True
         with runtime_monitor.track_model_call(provider="lingsuan_google", model="gemini", purpose="next", timeout=10) as next_call:
             assert next_call["circuit_probe"] is False
 
     state = runtime_monitor._RUN_MODEL_BUDGETS[("circuit-task", "circuit-run")]
-    assert state["provider_failures"]["lingsuan_google"] == 0
-    assert "lingsuan_google" not in state["provider_circuits"]
+    route_key = "lingsuan_google|gemini|default"
+    assert state["provider_failures"][route_key] == 0
+    assert route_key not in state["provider_circuits"]
+
+
+def test_provider_circuit_isolated_by_provider_model_and_protocol(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "route-circuit.jsonl")
+    monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "30")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="route-task", run_id="route-run"):
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="503"):
+                with runtime_monitor.track_model_call(
+                    provider="lingsuan_google",
+                    model="gemini-a",
+                    protocol="responses",
+                    purpose="chat",
+                    timeout=10,
+                ):
+                    raise RuntimeError("Provider HTTP 503: temporary failure")
+        with runtime_monitor.track_model_call(
+            provider="lingsuan_google",
+            model="gemini-b",
+            protocol="responses",
+            purpose="other-model",
+            timeout=10,
+        ):
+            pass
+        with runtime_monitor.track_model_call(
+            provider="lingsuan_google",
+            model="gemini-a",
+            protocol="chat",
+            purpose="other-protocol",
+            timeout=10,
+        ):
+            pass
 
 
 def test_practice_generation_gets_its_own_long_task_wall_clock_budget(monkeypatch) -> None:
