@@ -292,6 +292,26 @@ def test_run_level_model_call_budget_stops_unbounded_retries(tmp_path, monkeypat
             raise AssertionError("run-level model budget did not stop the 11th call")
 
 
+def test_run_level_model_call_budget_uses_confirmed_task_shape(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "dynamic-budget.jsonl")
+    monkeypatch.delenv("QUALITY_MAX_MODEL_CALLS_PER_RUN", raising=False)
+    monkeypatch.delenv("QUALITY_MODEL_CALL_HEADROOM_PERCENT", raising=False)
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="dynamic-task", run_id="dynamic-run"):
+        runtime_monitor.configure_model_call_task_shape(
+            question_count=33,
+            task_kind="exam",
+            textbook_evidence_enabled=True,
+        )
+        with runtime_monitor.track_model_call(provider="p", model="m", purpose="chat", timeout=1):
+            pass
+
+    state = runtime_monitor._RUN_MODEL_BUDGETS[("dynamic-task", "dynamic-run")]
+    assert state["budget"].estimated_model_calls_per_run == 122
+    assert state["budget"].max_model_calls_per_run == 220
+
+
 def test_provider_circuit_allows_one_recovery_probe_and_resets_after_success(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "circuit.jsonl")
     monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "0")

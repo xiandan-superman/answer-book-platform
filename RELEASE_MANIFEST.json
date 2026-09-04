@@ -1,19 +1,19 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.40",
+  "version": "0.9.41",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.40",
+  "source_revision": "release-v0.9.41",
   "build_kind": "stable-source-release",
-  "created_at": "2026-09-03T01:17:48+08:00",
+  "created_at": "2026-09-04T16:47:23+08:00",
   "validation": {
-    "pytest": "the locked Python 3.11 full local test suite passed with 1965 tests and 16 configured deselections",
-    "platform_quality_gate": "local compilation, full pytest and 70 percent branch coverage, version consistency, formula conversion, third-party notices, project completeness, Ruff and Mypy passed; locked Python 3.9/3.11, Chromium and macOS/Windows source-lock gates must still pass on main before the release tag is created",
+    "pytest": "the locked Python 3.11 full local test suite passed with 1991 tests, 1 skip and 16 configured deselections",
+    "platform_quality_gate": "local compilation, full pytest and 70 percent branch coverage, version consistency, formula conversion, third-party notices, project completeness, Ruff and Mypy passed; locked Python 3.11, Chromium and macOS/Windows source-lock gates must still pass on main before the release tag is created",
     "version_consistency": "passed",
-    "saved_real_task_replay": "anonymized durable model-call diagnostics were inspected read-only to measure context, retry, compaction and protocol-fallback triggers; no task, textbook, output, log or user configuration is bundled",
-    "cross_subject_regressions": "true-exam, per-question generation and knowledge-generation share the release candidate's delimiter-aware formula normalization and strict Word conversion boundary; input, retry, recovery and final-delivery contracts have deterministic regressions",
-    "paid_model_regression": "no paid model or image-generation request was made for this release candidate; the routing decision is based on existing anonymized runtime diagnostics plus deterministic transport and protocol tests",
-    "cost_model_routing": "generic retries preserve provider, model, protocol, messages, output ceiling and thinking depth; ambiguous HTTP 400 is scoped to existing Lingsuan item compensation, and protocol fallback is off by default except explicit same-model text-only endpoint incompatibility",
+    "saved_real_task_replay": "anonymized durable model-call diagnostics were inspected read-only to size the dynamic 180 percent call budget and classify provider, harness, deterministic document and delivery failures; no task, textbook, output, log or user configuration is bundled",
+    "cross_subject_regressions": "true-exam, per-question generation and knowledge-generation share the release candidate's structured output contracts, mathematical equivalence checks, OfficeCLI document boundary and deterministic final-delivery gates",
+    "paid_model_regression": "no paid model, LiteLLM shadow or image-generation request was made for this release candidate; routing and shadow isolation are covered by deterministic tests",
+    "cost_model_routing": "the task call ceiling is frozen near 180 percent of estimated work with hard bounds; Instructor repair remains on the same route and budget, while the Lingsuan-only LiteLLM shadow is bounded, non-retrying and never affects the primary result",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

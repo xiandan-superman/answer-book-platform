@@ -11,6 +11,7 @@ from zipfile import ZipFile
 from docx import Document
 from lxml import etree
 
+from .adapters.mineru_runtime import MINERU_VERSION, paragraph_lines, parse_document
 from .capabilities.catalog import capability_policy_contributions
 from .formula_audit import looks_like_formula
 from .input_representations import REPRESENTATION_SCHEMA, render_page_representation
@@ -1048,12 +1049,28 @@ def _combine_shared_composite_section(section: dict, items: list[dict]) -> list[
 
 def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
     image_dir = output_json.parent / "source_images"
-    paragraphs = _docx_paragraph_lines(exam_file, image_dir=image_dir)
+    package = parse_document(exam_file)
+    paragraphs = paragraph_lines(
+        package,
+        image_dir=image_dir,
+        image_marker_prefix=IMAGE_MARKER_PREFIX,
+        table_marker_prefix=TABLE_MARKER_PREFIX,
+    )
+    if not paragraphs:
+        raise ValueError(f"MinerU 未从试卷中提取到可用内容：{exam_file.name}")
     items: list[dict] = []
     for section in split_sections(paragraphs):
         items.extend(question_items(section))
     _ensure_unique_question_ids(items)
-    input_representations = _attach_page_visual_compensation(exam_file, items, output_json)
+    input_representations = {
+        "schema": REPRESENTATION_SCHEMA,
+        "source_file": str(exam_file),
+        "parser": "mineru",
+        "parser_version": MINERU_VERSION,
+        "content_list": str(package.content_list or ""),
+        "audit_path": str(package.audit_path),
+        "fallback_used": False,
+    }
     _attach_question_snapshots(items, output_json)
     source_paragraphs = [line for line in paragraphs if not str(line).startswith(IMAGE_MARKER_PREFIX)]
     source_paragraphs = [text for line in source_paragraphs if (text := _source_line_text(str(line)))]

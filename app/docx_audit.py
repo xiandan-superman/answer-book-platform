@@ -187,7 +187,8 @@ def _answer_book_contract_issues(zf: zipfile.ZipFile, root) -> list[str]:
             if _contract_attribute(size, "val") != _half_points(HEADER_FOOTER_CONTRACT.footer_size_pt):
                 issues.append("document contract footer size mismatch")
         page_fields = footer.xpath("//w:p/w:fldSimple[@w:instr=' PAGE ']", namespaces=NS)
-        if len(page_fields) != 1:
+        complex_page_fields = footer.xpath("//w:p//w:instrText[normalize-space(.)='PAGE']", namespaces=NS)
+        if len(page_fields) + len(complex_page_fields) != 1:
             issues.append("document contract page field missing or invalid")
     return issues
 

@@ -493,6 +493,17 @@ def formula_numeric_consistency_issues(formulas: list[dict[str, Any]]) -> list[s
         expected = _last_numeric_value(parts[-1])
         actual = _eval_simple_expression(parts[-2])
         if expected is None or actual is None:
+            # The existing numeric checker is faster and understands the
+            # platform's unit/percentage conventions.  Delegate only symbolic
+            # equalities it cannot decide to the isolated OSS math stack.
+            left_symbols = set(re.findall(r"(?<!\\)\b[A-Za-z]\b", parts[0]))
+            right_symbols = set(re.findall(r"(?<!\\)\b[A-Za-z]\b", parts[1]))
+            if len(parts) == 2 and left_symbols and left_symbols == right_symbols:
+                from .adapters.math_verifier import verify_math_equivalence
+
+                verification = verify_math_equivalence(f"${parts[0]}$", f"${parts[1]}$")
+                if verification.available and verification.equivalent is False:
+                    issues.append(f"formula_{index}_symbolic_equality_mismatch")
             continue
         if not _close_with_percent_equivalence(actual, expected):
             issues.append(

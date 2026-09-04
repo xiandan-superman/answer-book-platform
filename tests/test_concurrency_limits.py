@@ -6,7 +6,11 @@ from contextvars import ContextVar
 from unittest.mock import patch
 
 from app.answer_generation import answer_generation_worker_count
-from app.audit_model_repair import audit_model_repair_timeout_seconds, audit_model_repair_worker_count
+from app.audit_model_repair import (
+    audit_model_repair_max_attempts,
+    audit_model_repair_timeout_seconds,
+    audit_model_repair_worker_count,
+)
 from app.concurrency import _model_request_limit, run_limited_concurrent
 from app.docx_model_repair import docx_model_repair_worker_count
 from app.evidence_selection import evidence_selection_worker_count
@@ -89,6 +93,14 @@ class ConcurrencyLimitTests(unittest.TestCase):
         ):
             self.assertEqual(30, audit_model_repair_timeout_seconds({"question_type": "简答题"}))
             self.assertEqual(900, audit_model_repair_timeout_seconds({"question_type": "计算题"}))
+
+    def test_audit_repair_has_bounded_validate_and_correct_turns(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(3, audit_model_repair_max_attempts())
+        with patch.dict(os.environ, {"AUDIT_MODEL_REPAIR_MAX_ATTEMPTS": "99"}, clear=True):
+            self.assertEqual(4, audit_model_repair_max_attempts())
+        with patch.dict(os.environ, {"AUDIT_MODEL_REPAIR_MAX_ATTEMPTS": "1"}, clear=True):
+            self.assertEqual(2, audit_model_repair_max_attempts())
 
 
 if __name__ == "__main__":

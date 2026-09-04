@@ -1,0 +1,4 @@
+# MinerU runs in an isolated managed Python 3.11 environment.  Keeping it out
+# of the web process prevents its large OCR/ML dependency graph from changing
+# the deterministic document-generation runtime.
+mineru==3.4.5

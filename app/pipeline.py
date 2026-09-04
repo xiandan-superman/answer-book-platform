@@ -39,6 +39,7 @@ from .capabilities.selective_review import review_selective_quality
 from .capabilities.shadow_quality import build_shadow_quality_report
 from .content_quality_audit import audit_content_quality
 from .content_quality_repair import repair_content_quality_locally
+from .document_tool import DocumentToolFailure, DocumentToolSession
 from .docx_audit import audit_docx_v4
 from .docx_model_repair import repair_fragments_with_model_for_docx
 from .docx_v4 import build_docx_from_fragments
@@ -104,7 +105,7 @@ from .question_understanding import QUESTION_UNDERSTANDING_POLICY_VERSION, build
 from .resource_ids import bounded_resource_path
 from .retrieval import build_candidates, candidates_for_question
 from .review_notes import build_answer_review_notes
-from .runtime_monitor import model_call_context
+from .runtime_monitor import configure_model_call_task_shape, model_call_context
 from .settings import get_provider, provider_model_supports_vision, provider_supports_image_generation
 from .task_control import TaskCancelled, checkpoint
 from .task_store import load_task, task_dir, update_task
@@ -860,18 +861,65 @@ def build_and_audit_docx_with_repair(
 ) -> dict:
     attempts: list[dict] = []
     content_changed = False
-
+    document_tool = DocumentToolSession(
+        sdir / "document_tool_events.jsonl",
+        session_id=task_id,
+    )
     def attempt(label: str) -> list[str]:
-        try:
+        def build_and_validate() -> dict:
+            from .officecli_word import officecli_runtime_info, selected_word_tool_variant
+
+            word_tool_variant = selected_word_tool_variant()
             build_docx_from_fragments(fragments_json, docx_path)
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
             expected_formula_count = sum(len(x.get("formulas", [])) for x in fragments_data.get("fragments", []))
             issues = audit_docx_v4(docx_path, min_formulas=expected_formula_count)
-            attempts.append({"attempt": label, "ok": not issues, "issues": issues[:30]})
-            return issues
-        except Exception as exc:
-            attempts.append({"attempt": label, "ok": False, "error": str(exc), "traceback": traceback.format_exc()})
-            return [str(exc)]
+            if issues:
+                raise DocumentToolFailure(
+                    code="DOCX_CONTRACT_VALIDATION_FAILED",
+                    message="生成的 Word 未通过文档合同校验。",
+                    suggestion="保留当前候选件，先执行本地无损修复；仅将确认的内容语义问题交给原模型有界修复。",
+                    responsibility="document_contract",
+                    details={"issues": issues[:30], "expected_formula_count": expected_formula_count},
+                )
+            return {
+                "issues": [],
+                "expected_formula_count": expected_formula_count,
+                "word_tool_variant": word_tool_variant,
+                "word_tool_runtime": officecli_runtime_info() if word_tool_variant == "B" else {"variant": "A", "engine": "Python/OMML"},
+            }
+
+        tool_result = document_tool.run(
+            f"build_validate_docx:{label}",
+            build_and_validate,
+            artifact_path=docx_path,
+            input_revision=hashlib.sha256(fragments_json.read_bytes()).hexdigest(),
+        )
+        if tool_result["ok"]:
+            attempts.append(
+                {
+                    "attempt": label,
+                    "ok": True,
+                    "issues": [],
+                    "tool_result": tool_result,
+                }
+            )
+            return []
+        error = tool_result.get("error") or {}
+        details = error.get("details") if isinstance(error.get("details"), dict) else {}
+        issues = [str(item) for item in details.get("issues", []) if str(item).strip()]
+        if not issues:
+            issues = [str(error.get("message") or "Word 文档工具执行失败。")]
+        attempts.append(
+            {
+                "attempt": label,
+                "ok": False,
+                "error": str(error.get("message") or issues[0]),
+                "issues": issues[:30],
+                "tool_result": tool_result,
+            }
+        )
+        return issues
 
     issues = attempt("initial")
     if not issues:
@@ -1265,6 +1313,19 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 "preprocessed_input": options.preprocessed_input,
             },
         )
+
+        question_count = len(structured_exam.get("items", []))
+        quality_budget = QualityExecutionBudget.from_environment(
+            question_count=question_count,
+            task_kind="exam",
+            textbook_evidence_enabled=textbook_evidence_enabled,
+        )
+        configure_model_call_task_shape(
+            question_count=question_count,
+            task_kind="exam",
+            textbook_evidence_enabled=textbook_evidence_enabled,
+        )
+        telemetry.update_quality_budget(quality_budget.to_dict())
 
         # A schema plan depends only on the confirmed structured question and
         # the model route used for planning. Both are part of the early

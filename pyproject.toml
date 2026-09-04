@@ -16,7 +16,7 @@ skip_covered = true
 fail_under = 60
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 140
 extend-exclude = ["archive", "build", "dist", "docs/archive", "tools/legacy"]
 
@@ -25,7 +25,7 @@ select = ["E4", "E7", "E9", "F", "I", "B"]
 ignore = ["E501", "B008", "B905"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 check_untyped_defs = true
 follow_imports = "skip"
 ignore_missing_imports = true

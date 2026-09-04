@@ -57,6 +57,12 @@ def test_ordinary_fraction_outside_coordinate_tuple_remains_formula_like():
     assert symbolic_formula_like_matches("计算结果为1/2。") == ["1/2"]
 
 
+def test_decimal_division_match_keeps_complete_operands_instead_of_fake_zero_division():
+    text = "因此 1.264 / 0.63212 ≈ 2.0。"
+
+    assert symbolic_formula_like_matches(text) == ["1.264 / 0.63212", "≈"]
+
+
 def test_answer_prompt_requires_latex_overbar_for_negative_crystal_indices():
     messages = build_answer_draft_prompt(
         {"question_id": "q_index", "question_type": "简答题", "stem": "写出晶面族{10-10}和晶向族<11-20>的规范表示。"},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import posixpath
 import re
 from io import BytesIO
 from pathlib import Path
@@ -328,8 +329,23 @@ def _practice_document_contract_issues(archive: ZipFile, root, namespaces: dict[
         nodes = styles.xpath(f".//w:style[@w:styleId='{style_id}']", namespaces=namespaces)
         return nodes[0] if nodes else None
 
+    officecli_b = "word/fontTable.xml" not in archive.namelist()
     normal = style("Normal")
-    if normal is None:
+    if officecli_b:
+        defaults = styles.find("w:docDefaults/w:rPrDefault/w:rPr", namespaces=namespaces)
+        fonts = defaults.find("w:rFonts", namespaces=namespaces) if defaults is not None else None
+        size = defaults.find("w:sz", namespaces=namespaces) if defaults is not None else None
+        paragraph_defaults = styles.find("w:docDefaults/w:pPrDefault/w:pPr", namespaces=namespaces)
+        spacing = paragraph_defaults.find("w:spacing", namespaces=namespaces) if paragraph_defaults is not None else None
+        if _word_attr(fonts, "eastAsia", word_ns) != CJK_FONT:
+            issues.append("练习 Word 契约：B 版默认中文字体发生变化。")
+        if _word_attr(fonts, "ascii", word_ns) != ASCII_FONT or _word_attr(fonts, "hAnsi", word_ns) != ASCII_FONT:
+            issues.append("练习 Word 契约：B 版默认西文字体发生变化。")
+        if _word_attr(size, "val", word_ns) != _practice_half_points(PRACTICE_TEXT_CONTRACT.body_size_pt):
+            issues.append("练习 Word 契约：B 版默认正文字号发生变化。")
+        if _word_attr(spacing, "line", word_ns) != str(round(PRACTICE_TEXT_CONTRACT.line_spacing * 240)):
+            issues.append("练习 Word 契约：B 版默认行距发生变化。")
+    elif normal is None:
         issues.append("练习 Word 契约：缺少 Normal 样式。")
     else:
         fonts = normal.find("w:rPr/w:rFonts", namespaces=namespaces)
@@ -350,9 +366,9 @@ def _practice_document_contract_issues(archive: ZipFile, root, namespaces: dict[
             issues.append("练习 Word 契约：Normal 首行缩进发生变化。")
 
     list_number = style("ListNumber")
-    if list_number is None:
+    if list_number is None and not officecli_b:
         issues.append("练习 Word 契约：缺少编号列表样式。")
-    else:
+    elif list_number is not None:
         indent = list_number.find("w:pPr/w:ind", namespaces=namespaces)
         if _word_attr(indent, "left", word_ns) != str(round(PRACTICE_TEXT_CONTRACT.list_left_indent_pt * 20)):
             issues.append("练习 Word 契约：解析步骤列表左缩进发生变化。")
@@ -378,12 +394,13 @@ def _practice_document_contract_issues(archive: ZipFile, root, namespaces: dict[
         if any(value not in restarting_ids for value in explicit_list_ids if value):
             issues.append("练习 Word 契约：每道题的解析步骤必须从 1 重新编号。")
 
-    font_table_text = archive.read("word/fontTable.xml").decode("utf-8", errors="ignore")
-    if CJK_FONT not in font_table_text or CJK_FONT_FALLBACK not in font_table_text:
-        issues.append("练习 Word 契约：中文字体或兼容字体声明缺失。")
+    if not officecli_b:
+        font_table_text = archive.read("word/fontTable.xml").decode("utf-8", errors="ignore")
+        if CJK_FONT not in font_table_text or CJK_FONT_FALLBACK not in font_table_text:
+            issues.append("练习 Word 契约：中文字体或兼容字体声明缺失。")
     settings = etree.fromstring(archive.read("word/settings.xml"))
     math_fonts = settings.xpath(".//m:mathFont/@m:val", namespaces=namespaces)
-    if PRACTICE_TEXT_CONTRACT.math_font not in math_fonts:
+    if not officecli_b and PRACTICE_TEXT_CONTRACT.math_font not in math_fonts:
         issues.append("练习 Word 契约：数学字体发生变化。")
 
     titles = [
@@ -406,9 +423,10 @@ def _practice_document_contract_issues(archive: ZipFile, root, namespaces: dict[
     else:
         footer = etree.fromstring(archive.read(sorted(footer_parts)[0]))
         page_fields = footer.xpath(".//w:p/w:fldSimple[contains(@w:instr, 'PAGE')]", namespaces=namespaces)
+        complex_page_fields = footer.xpath(".//w:instrText[contains(., 'PAGE')]", namespaces=namespaces)
         footer_text = "".join(footer.xpath(".//w:t/text()", namespaces=namespaces))
         alignment = footer.find(".//w:p/w:pPr/w:jc", namespaces=namespaces)
-        if len(page_fields) != 1 or "第 " not in footer_text or " 页" not in footer_text:
+        if len(page_fields) + len(complex_page_fields) != 1 or "第 " not in footer_text or " 页" not in footer_text:
             issues.append("练习 Word 契约：页码必须保持“第 {PAGE} 页”。")
         if _word_attr(alignment, "val", word_ns) != "right":
             issues.append("练习 Word 契约：页码对齐方式发生变化。")
@@ -522,7 +540,9 @@ def validate_docx_output(content: bytes, data: dict[str, Any]) -> dict[str, Any]
                 )
 
             media_names = sorted(
-                name for name in names if name.startswith("word/media/") and not name.endswith("/")
+                name
+                for name in names
+                if re.search(r"(?:^|/)media/[^/]+$", name)
             )
             metrics["media_count"] = len(media_names)
             if metrics["media_count"] < expected_figures:
@@ -541,7 +561,11 @@ def validate_docx_output(content: bytes, data: dict[str, Any]) -> dict[str, Any]
             }
             for embed_id in root.xpath(".//a:blip/@r:embed", namespaces=namespaces):
                 target = relationship_targets.get(str(embed_id), "")
-                package_target = "word/" + target.lstrip("/")
+                package_target = (
+                    posixpath.normpath(target.lstrip("/"))
+                    if target.startswith("/")
+                    else posixpath.normpath(posixpath.join("word", target))
+                )
                 if not target or package_target not in names:
                     issues.append(f"DOCX 图片关系 {embed_id} 未指向有效媒体文件。")
 
@@ -1557,7 +1581,7 @@ def _new_practice_document(data: dict[str, Any], *, document_kind: str) -> Docum
     return doc
 
 
-def build_practice_question_docx(
+def _build_practice_question_docx_a(
     data: dict[str, Any],
     *,
     progress_callback: Callable[[int, int], None] | None = None,
@@ -1573,7 +1597,7 @@ def build_practice_question_docx(
     return _save_document(doc)
 
 
-def build_practice_solution_docx(data: dict[str, Any]) -> bytes:
+def _build_practice_solution_docx_a(data: dict[str, Any]) -> bytes:
     doc = _new_practice_document(data, document_kind="solutions")
     doc.add_paragraph("参考答案与解析", style="Heading 1")
     for index, item in enumerate(data["exercises"], start=1):
@@ -1582,7 +1606,7 @@ def build_practice_solution_docx(data: dict[str, Any]) -> bytes:
     return _save_document(doc)
 
 
-def build_practice_docx(data: dict[str, Any]) -> bytes:
+def _build_practice_docx_a(data: dict[str, Any]) -> bytes:
     """Backward-compatible combined export for older callers."""
     if not isinstance(data, dict) or not isinstance(data.get("exercises"), list) or not data["exercises"]:
         raise ValueError("没有可导出的专项练习。")
@@ -1599,3 +1623,36 @@ def build_practice_docx(data: dict[str, Any]) -> bytes:
         if isinstance(item, dict):
             _add_answer(doc, item, index)
     return _save_document(doc)
+
+
+def build_practice_question_docx(
+    data: dict[str, Any],
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> bytes:
+    from .officecli_word import build_practice_with_officecli, selected_word_tool_variant
+
+    if selected_word_tool_variant() == "B":
+        return build_practice_with_officecli(
+            data,
+            document_kind="questions",
+            progress_callback=progress_callback,
+        )
+    return _build_practice_question_docx_a(data, progress_callback=progress_callback)
+
+
+def build_practice_solution_docx(data: dict[str, Any]) -> bytes:
+    from .officecli_word import build_practice_with_officecli, selected_word_tool_variant
+
+    if selected_word_tool_variant() == "B":
+        return build_practice_with_officecli(data, document_kind="solutions")
+    return _build_practice_solution_docx_a(data)
+
+
+def build_practice_docx(data: dict[str, Any]) -> bytes:
+    """Backward-compatible combined export using the configured A/B engine."""
+    from .officecli_word import build_practice_with_officecli, selected_word_tool_variant
+
+    if selected_word_tool_variant() == "B":
+        return build_practice_with_officecli(data, document_kind="combined")
+    return _build_practice_docx_a(data)

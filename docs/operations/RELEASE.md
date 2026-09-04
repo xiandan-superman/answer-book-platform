@@ -19,7 +19,7 @@
 
 ## 3. 门禁与容易遗漏的测试契约
 
-1. 快速检查可先运行 `python scripts/run_quality_gates.py`，但提交正式版本元数据前，必须在锁定 Python 3.11 完整开发依赖环境运行 `python scripts/run_quality_gates.py --full` 并通过。推送后 GitHub 还会独立运行 Python 3.9、3.11 和 Chromium 门禁；定向测试、普通门禁或“交给 CI 再发现”均不能代替本地完整门禁。
+1. 快速检查可先运行 `python scripts/run_quality_gates.py`，但提交正式版本元数据前，必须在锁定 Python 3.11 完整开发依赖环境运行 `python scripts/run_quality_gates.py --full` 并通过。推送后 GitHub 还会独立运行 Python 3.11 和 Chromium 门禁；定向测试、普通门禁或“交给 CI 再发现”均不能代替本地完整门禁。
 2. 必须实际运行仓库锁定版本的 `ruff check .`（或确认质量门禁已执行到 Ruff 且通过）；不能用 `py_compile`、`git diff --check` 或功能测试替代 import/格式检查。
 3. 新增持久化任务字段或函数参数时，不仅要修改数据类和调用方，还要更新恢复路径、历史数据默认值以及 mock/精确字典断言。否则定向测试可能通过，整库恢复测试仍会失败。
 4. 质量门禁中的文件路径必须统一为 POSIX 形式后再和排除清单比较；Windows 的反斜杠会让冻结发布脚本意外进入平台门禁。
@@ -48,7 +48,7 @@
 ## 6. GitHub 自动发布顺序
 
 1. 提交全部源码、测试、文档和版本元数据，只推送 `main`，禁止人工创建或推送正式标签。
-2. `.github/workflows/quality.yml` 自动运行 Python 3.9、Python 3.11 完整门禁和 Chromium 冒烟；任一失败都只算预检失败，不创建标签、不上传附件。
+2. `.github/workflows/quality.yml` 自动运行 Python 3.11 完整门禁和 Chromium 冒烟；任一失败都只算预检失败，不创建标签、不上传附件。
 3. 质量工作流全部成功后，`.github/workflows/source-release.yml` 比较 `APP_VERSION` 与公开 Release：已发布版本安全跳过，新版本才继续。
 4. 发布工作流先打包、反向验证并实际启动源码 ZIP，全部成功后才自动创建标签、上传 Release 和更新 `update-stable-v2.json`。
 5. 工作流重新下载公开 ZIP 和清单，核对大小、SHA256 及稳定源；网络步骤有限重试。若 Release 已建立但稳定源更新中断，下次运行从已发布清单自动恢复，不重建版本。

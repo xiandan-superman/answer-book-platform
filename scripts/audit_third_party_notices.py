@@ -9,12 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTICE = ROOT / "THIRD_PARTY_NOTICES.md"
 DEPENDENCY_FILES = (
     "requirements.txt",
+    "requirements-mineru.txt",
     "requirements-windows.txt",
-    "constraints-py39.txt",
     "constraints-py311.txt",
-    "constraints-source-macos-py39.txt",
     "constraints-source-macos-py311.txt",
-    "constraints-source-windows-py39.txt",
     "constraints-source-windows-py311.txt",
 )
 VENDORED_COMPONENTS = ("MathJax", "Lucide", "GSAP")

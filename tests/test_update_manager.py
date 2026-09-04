@@ -197,11 +197,7 @@ def test_source_manifest_records_all_supported_dependency_profiles(tmp_path) -> 
     manifest = build_manifest(version="1.0.0", assets=[("source", asset)])
 
     fingerprints = manifest["platforms"]["source"]["dependency_fingerprints"]
-    assert {
-        "py39", "py39-macos", "py39-linux", "py39-windows",
-        "py310", "py310-macos", "py310-linux", "py310-windows",
-        "py311", "py311-macos", "py311-linux", "py311-windows",
-    } <= set(fingerprints)
+    assert set(fingerprints) == {"py311", "py311-macos", "py311-linux", "py311-windows"}
     assert all(len(value) == 64 for value in fingerprints.values())
 
 

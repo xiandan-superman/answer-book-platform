@@ -67,10 +67,12 @@ def dependency_version_report(
                 "installed": installed or "not_installed",
                 "recommended": expected,
             })
+    profile = dependency_profile_key(current_version, platform_name=current_platform)
+    unsupported = profile.startswith("unsupported")
     return {
-        "profile": dependency_profile_key(current_version, platform_name=current_platform),
+        "profile": profile,
         "constraint_files": constraint_files,
-        "status": "matched" if recommended and not mismatches else "drift" if recommended else "bounded",
+        "status": "unsupported" if unsupported else "matched" if recommended and not mismatches else "drift" if recommended else "bounded",
         "non_blocking": True,
         "recommended_count": len(recommended),
         "installed_versions": installed_versions,

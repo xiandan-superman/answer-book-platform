@@ -10,11 +10,9 @@ def python_dependency_profile(version_info: Iterable[int] | None = None) -> str:
     parts = tuple(version_info or sys.version_info[:2])
     major = int(parts[0]) if parts else 3
     minor = int(parts[1]) if len(parts) > 1 else 0
-    if (major, minor) == (3, 9):
-        return "py39"
     if (major, minor) >= (3, 11):
         return "py311"
-    return "py310"
+    return "unsupported"
 
 
 def dependency_profile_key(
@@ -35,10 +33,7 @@ def dependency_profile_key(
 
 def constraint_filename(version_info: Iterable[int] | None = None) -> str:
     profile = python_dependency_profile(version_info)
-    return {
-        "py39": "constraints-py39.txt",
-        "py311": "constraints-py311.txt",
-    }.get(profile, "")
+    return "constraints-py311.txt" if profile == "py311" else ""
 
 
 def platform_constraint_filename(
@@ -47,7 +42,7 @@ def platform_constraint_filename(
     platform_name: str | None = None,
 ) -> str:
     profile = python_dependency_profile(version_info)
-    if profile not in {"py39", "py311"}:
+    if profile != "py311":
         return ""
     platform_value = str(platform_name or sys.platform).lower()
     if platform_value == "darwin":
@@ -98,9 +93,7 @@ def runtime_dependency_fingerprint(
 
 def release_dependency_fingerprints(project_root: Path) -> dict[str, str]:
     profiles: dict[str, str] = {}
-    for version_info in ((3, 9), (3, 10), (3, 11)):
-        # Keep the legacy generic profile for older source launchers, while
-        # publishing exact profiles for every currently understood platform.
+    for version_info in ((3, 11),):
         generic = python_dependency_profile(version_info)
         profiles[generic] = runtime_dependency_fingerprint(
             project_root,

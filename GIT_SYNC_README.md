@@ -49,7 +49,7 @@ git push gitee-material codex/v6.8-material-figure-schema-flow
 git clone <你的 Gitee 仓库地址>
 cd <仓库目录>
 git switch codex/v6.8-material-figure-schema-flow
-python3 -m pip install -r requirements.txt -c constraints.txt
+python3.11 -m pip install -r requirements.txt -c constraints-py311.txt
 python3 scripts/check_environment.py
 python3 scripts/start_platform.py
 ```

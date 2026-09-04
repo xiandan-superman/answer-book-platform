@@ -21,10 +21,10 @@
 
 所有模型调用相关的实现、故障和设计，优先对照以下两个官方开源上游；同名项目、Fork、镜像、包管理器页面、搜索摘要和第三方解读都不能替代官方源码：
 
-| 上游 | 唯一认可的官方 Git 地址 | 2026-09-03 核验快照 |
+| 上游 | 唯一认可的官方 Git 地址 | 2026-09-04 核验快照 |
 |---|---|---|
-| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`fc953e5234f2452e393310b2be2b29a482c4d907` |
-| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`49a606bc5b5934603f22a26957a07dc799ab0291` |
+| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`f46671b14aa3bc37d4ee9a67c06385cb9ec8e2d3` |
+| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`76fda729799fe9b3848dbe2c211d4b231032b81e` |
 
 快照只用于判断参考是否过期，不代表永久锁定分支或提交。每次相关排障或修改开始前必须查询官方远端 `HEAD`，动态取得默认分支和最新提交；使用本地检出时还必须确认 `origin` 精确匹配上表 Git 地址并取得最新远端引用。实际结论必须记录仓库 URL、默认分支、完整提交 SHA、核对时间和阅读文件，不能只写“参考 Codex/DeepSeek”。
 
@@ -67,6 +67,12 @@
 遇到新问题时必须先形成“Codex 直接实现、DeepSeek 通用合同、本项目教学约束”三列对照，再决定最小完整修改。若上游源码已经变化，以当前官方实现为准并更新本节查阅日期、能力登记、回归和变更账本；禁止用关键词、题型规则、第三方分类器或代理主观判断取代主模型调用决策。
 
 ### 1.3 Token 计量与上下文压缩边界
+
+2026-09-03 针对任务调用预算再次动态核验：OpenAI Codex `728cb12fe5794b0c3a8e776fb4994b1650b973a8` 的 `codex-rs/core/src/responses_retry.rs` 将传输重试限制、指数退避、`Retry-After` 和回退作为独立策略，`codex-rs/core/src/rollout_budget.rs` 另以加权 token 消耗控制 rollout；DeepSeek Harness `76fda729799fe9b3848dbe2c211d4b231032b81e` 的 `packages/llm/llm-retry/src/index.ts`、`packages/llm/llm/src/retry-policy.ts` 和 `packages/llm/llm-retry/README.md` 同样采用服务商归属的有限重试、瞬时错误分类、指数退避/抖动、可取消等待和耐久重试事件，并明确重试会重复计费、多个有限预算会叠加。两者都没有按教学题量和教材证据阶段估算整项任务调用次数，因此本平台保留独立的任务级硬预算，并作以下必要扩展：
+
+- 题目结构确认后再按任务类型、实际题量及教材证据链计算正常调用预估；默认上限为预估量的 180% 并向上取整，同时保持 120 次下限和 500 次硬上限。小任务不降低原保护边界，大任务可容纳逐题规划、证据选择、答案生成和有限瞬时失败。
+- `QUALITY_MODEL_CALL_HEADROOM_PERCENT` 可在 100%–200% 内调整默认余量；显式设置 `QUALITY_MAX_MODEL_CALLS_PER_RUN` 时视为运维固定上限并优先于动态计算。最终预算和预估量写入任务遥测，且同一运行首次模型请求后冻结，不随中途环境或阶段变化漂移。
+- 调用次数、token、总耗时和服务商熔断继续是彼此独立的硬边界；放宽调用次数不等于允许无限重试、无限费用或绕过不稳定通道的冷却。失败请求仍计入调用次数，避免供应商故障形成无界计费循环。
 
 2026-09-03 重新对照 OpenAI Codex `fc953e5234f2452e393310b2be2b29a482c4d907` 的 [`responses_retry.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/responses_retry.rs)、[`retained_context.rs`](https://github.com/openai/codex/blob/main/codex-rs/history/src/retained_context.rs)，以及 DeepSeek Harness `49a606bc5b5934603f22a26957a07dc799ab0291` 的 [`llm-retry`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm-retry/src/index.ts)、[`agent-loop`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/README.md) 和 [`session-persistence`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session/session-persistence/README.md) 后，平台采用以下边界：
 
@@ -113,6 +119,31 @@
 - 多行 `$$...$$` 是一个完整显示公式，内部换行只作排版空白；不得按行或按 `\text{}` 内容拆成普通文本。
 - 结构校验同时检查摘要段类型、原始 LaTeX 分隔符残留和公式引用完整性；DOCX 转换错误必须包含题目 ID 与 `answer_summary` 字段。
 - 旧检查点在 Word 本地修复阶段升级为同一结构合同，再重建、审计和渲染；不增加模型请求，不改写已确认的答案语义。
+
+### 1.8 文档工具的 Harness 执行与纠错合同
+
+2026-09-03 实施前动态核验了四个上游。OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `6d7f6dcd2285de70a3892d4f05b2a8ff44aa3350`，实际阅读 `codex-rs/core/src/tools/parallel.rs`、`context.rs` 和 `orchestrator.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `76fda729799fe9b3848dbe2c211d4b231032b81e`，实际阅读 `packages/core/agent-loop/src/tool-calls.ts`。两者共同要点是：工具调用和结果以同一 `call_id` 配对，失败也作为正式结果回到上下文，已开始的调用在取消或异常时不能无结果消失。
+
+文档执行层另外核验了两个 MIT 许可的社区项目：AIOffice `https://github.com/onecer/AIOffice.git` 默认分支 `main`、提交 `5159cb743193fc445862c1bd450cc65686946bbf`，阅读 `AIOffice.Core/Envelope.cs`、`AIOffice.Cli/Program.cs`、`AIOffice.Core/Equations/LatexParser.cs` 和 Word 公式测试；docx-mcp-server `https://github.com/knorq-ai/docx-mcp-server.git` 默认分支 `main`、提交 `9b36ea3e5aaa71af0acb13328d05e439ebeb7e1c`，阅读 `src/engine/docx-io.ts`、`file-lock.ts`、`anchors.ts` 和结构编辑测试。本项目未复制上游源码、未增加 .NET/Node 运行依赖，只采用其稳定合同思路：
+
+- 所有文档操作统一返回 `ok/data/error/meta`；错误必须有稳定代码、主责层、是否可重试和可执行的下一步建议。事件只保存位置、合同问题和内容哈希，不保存题目或答案正文。
+- 真题 Word 的“构建 → 校验 → 本地无损修复 → 有界模型修复 → 重建”每次尝试都产生可耐久配对的工具结果；练习 Word 的构建、合同校验和原子落盘作为一个文档事务。
+- Word 到 PDF/PNG 的渲染和一致性审计同样是结构化工具操作；候选件、页图和失败结果保留到同一任务证据链，未通过不发布。
+- `cases/aligned/matrix/array` 等环境必须先作为完整公式语法树处理，不允许按内部箭头分割。普通长反应式的视觉换行必须先验证所有候选段都可独立转为 OMML，任一失败则原子回退为未拆分公式。这是本项目试题排版规则，不交给模型猜测。
+- 只有确认属于模型内容的问题才能进入原模型有界修复；程序在排版阶段改坏正确公式时，必须本地修复或回退，不增加模型调用来掩盖缺陷。
+- 内容修复不再只收到“计算存在矛盾”这类泛化结论：首轮请求同时携带程序重算的具体公式索引、正确值和被拒绝值；候选验收失败后返回 `ok/error/meta` 结构化校验结果、候选哈希和可执行建议，下一轮必须基于最新完整候选继续。默认最多 3 轮、硬上限 4 轮，每轮均重跑确定性合同，未通过的候选不落盘。
+
+### 1.9 Word 工具 A/B 执行基线
+
+2026-09-04 再次动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `f46671b14aa3bc37d4ee9a67c06385cb9ec8e2d3`，阅读 `codex-rs/core/src/tools/context.rs`、`parallel.rs`、`orchestrator.rs` 和 `executed_tool_calls.rs`；核验 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `76fda729799fe9b3848dbe2c211d4b231032b81e`，阅读 `packages/core/agent-loop/src/tool-calls.ts` 与 `agent.ts`。两者仍要求工具调用/结果配对、失败结构化返回、并发受控及恢复时不盲目重放结果不确定的变更。
+
+Word B 版直接核验 `https://github.com/iOfficeAI/OfficeCLI.git` 默认分支 `main`、提交 `b94f3906fd52d450c64f8e40370e376b9e15079e`，采用 1.0.147 运行时；阅读 `sdk/python/officecli.py`、`src/officecli/CommandBuilder.Batch.cs`、`CommandBuilder.Check.cs`、`Handlers/WordHandler.cs`、`ResidentServer.cs` 和 `skills/officecli-docx/SKILL.md`。本平台对应关系如下：
+
+- A 保留当前 Python/OMML 工具链；B 使用 OfficeCLI 实际执行 DOCX `create/batch/save/validate/close`，不是先生成 A 再用 OfficeCLI 做一次验证。
+- B 的命令计划直接包含段落、run、equation、picture、table、section、header、footer 和 field；试题、答案、题图可见性、公式全斜体、中文字体、页面尺寸及题号区块仍由平台教学合同决定。
+- 批处理采用 OfficeCLI 默认原子模式并启用 `--stop-on-error`；resident 变更显式 `save` 后再 schema 校验，最后 `close`，失败候选删除且不自动回退 A。
+- 上游安装脚本会修改 PATH/shell 和安装 Agent skills，超出平台运行时边界；因此平台只按需下载固定版本二进制，校验官方发布 SHA-256 后保存到用户数据缓存。这是必要差异，不复制安装脚本副作用。
+- 默认选择 B，`config/word_tool.json`、用户数据覆盖文件或 `ANSWER_BOOK_WORD_TOOL_VARIANT` 可明确切换 A/B；练习缓存键包含版本。完整实验记录见 `docs/operations/WORD_TOOL_AB_TEST.md`。
 
 ## 2. 强制登记字段
 
@@ -212,6 +243,13 @@
 - 免费池或动态上游模型不能作为唯一的最终复核模型。
 - 所有服务商原始错误只写入脱敏诊断信息；用户只看到可理解的原因、影响范围和下一步操作。
 - 自动降级、模型切换、输入转换、截断或分批必须写入任务诊断记录。
+
+### 7.1 结构化纠错与 LiteLLM 影子边界
+
+- 正式结构输出以 Pydantic 模型为真源；Instructor 只负责 schema 注入、把确定性校验错误回给同一模型，以及最多一次有预算的纠错，不负责判断答案语义正确。
+- Instructor 的底层请求必须继续调用平台 `LLMClientProtocol`，不得自行创建绕过调用次数、Token、超时、取消、并发和用量账本的第二套客户端。
+- LiteLLM 当前只用于灵算影子对照，不参与主路由、重试、降级或结果选择。默认 10% 样本、单 worker、最多 4 个待处理、零重试；队列满、图片内嵌或影子失败时直接跳过/记录，正式响应不受影响。
+- 影子调用仍是实际付费调用并计入平台账本；影子日志只能保存服务商/模型、耗时、用量、状态、JSON 可解析性和内容摘要，不保存提示词、原始响应或密钥。
 
 ## 8. 配置与代码要求
 

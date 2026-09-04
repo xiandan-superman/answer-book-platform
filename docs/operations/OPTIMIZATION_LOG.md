@@ -27,11 +27,66 @@
 
 - 优先提高最终 Word/PDF/题目质量和任务完成率；不得以降低质量换速度，不得提高任务失败率。
 - 用户通过源码 ZIP 更新；macOS 双击 `start_platform.command`，Windows 双击 `启动平台.bat`，启动本地服务并打开网页前端。不要把桌面安装包设为必需品。
-- Pydantic 影子观察不得增加模型调用、Token、网络请求、重试、修复、降级或任务阻断。
-- Pydantic 从影子模式转为警告或阻断必须取得用户明确确认；即使启用，也只有确定性结构错误可阻断，语义风险继续由现有质量门判断。
+- 旧版 Pydantic 影子观察不得增加模型调用、Token、网络请求、重试、修复、降级或任务阻断；已获用户明确确认的正式输出合同由 Pydantic 阻断确定性结构错误，并允许 Instructor 做一次有预算的同路由纠错，语义风险继续由现有质量门判断。
 - 用户数据位于系统用户数据目录；源码更新可替换代码目录，不得覆盖任务、教材、配置、日志和输出。
 
 ## 变更记录（最新在上）
+
+### OPT-20260904-03｜v0.9.41 源码发布准备
+- status: verified
+- scope: 版本元数据、用户更新日志、本地源码候选包、GitHub 自动源码发布与稳定更新源
+- changed: 将 `APP_VERSION`、`VERSION` 和发布清单统一升级为 0.9.41，新增用户可见版本记录，汇总 OfficeCLI 默认 B、MinerU 主解析、Pydantic/Instructor 结构纠错、数学判等、LiteLLM 灵算影子、动态 180% 调用预算和 Python 3.11 运行基线。
+- trigger: 用户要求将本轮完备项目推送并更新正式版本。
+- invariants: 正式源码包只从 Git 索引生成，不包含 API Key、任务、教材、日志、输出或本机配置；必须先通过锁定 Python 3.11 完整门禁和本地源码包反向验证，只推送 `main`，标签、公开附件和稳定更新源只能由受保护工作流创建。
+- do_not_regress: 不得手工创建或推送正式标签；不得把 Git push、本地 ZIP、公开源码更新版和桌面安装包混为同一状态；不得用真实付费模型或影子请求作为发布门禁。
+- verification: 锁定 Python 3.11.15 独立环境按 `requirements.txt`、`requirements-dev.txt` 和 `constraints-py311.txt` 安装 107 个包且无冲突；`python scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 两轮均为 1991 passed、1 skipped、16 deselected，整库分支覆盖率 70%，py_compile、版本一致性、公式 OMML、第三方声明、项目完整度、Ruff 和 Mypy 全部通过；从 Git 索引生成 401 文件的本地源码 ZIP，反向验证 0 问题，并以独立数据目录启动压缩包，`/api/version` 返回 0.9.41、首页 HTTP 200；Git 推送与公开更新源状态在发布汇报中另行记录，未发起真实模型、LiteLLM 影子或图片请求。
+
+### OPT-20260904-02｜Python 3.11 与四类开源引擎接入
+- status: verified
+- scope: 源码启动/依赖/发布矩阵、真题与教材 PDF/DOCX 解析、真题答案和练习生成结构合同、计算公式一致性、灵算模型影子流量、环境诊断；按题与知识点出题共用练习链，历史产物和 Word/PDF 交付合同保持不变
+- changed: 运行时最低版本和唯一 CI/发布依赖档升级为 Python 3.11，用户数据目录新建 `python-env-py311` 而不原地改坏旧 3.9 环境；MinerU 3.4.5 作为 PDF/DOCX 唯一主解析器，在用户数据目录的隔离环境按需安装并输出既有 `TextbookPackage/content_list` 合同，失败显式终止且不回退旧解析；新增正式 Pydantic 输出合同，Instructor 1.16.0 在真题单题/批量答案及练习生成、规划、来源分析、语义审查、题图修复中负责 schema 注入、错误回灌和最多一次同路由纠错，所有请求继续走平台预算/并发/账本；SymPy 1.14.0 + latex2sympy2_extended 1.11.0 + Math-Verify 0.9.0 仅对原数值规则无法判定且两侧符号集合一致的等式做隔离进程判等，进程间只传 JSON；LiteLLM 1.99.0 只对灵算做默认 10% 影子样本，单个 daemon worker、最多 4 个待处理、无重试、失败不影响主结果，日志只留摘要/耗时/JSON 可解析性/用量。实施前核验 Codex `https://github.com/openai/codex.git` 默认分支 `main@8e6a44b428e31f91b21edc97904fcdf4f0931ade` 的 `codex-rs/protocol/src/mcp.rs` 结构化工具结果合同，及 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master@76fda729799fe9b3848dbe2c211d4b231032b81e` 的会话事件、结构化错误、重试与 `packages/session/session-checkpoint-policy/tests/crash-recovery.e2e.ts`；本项目保留确定性教学规则和既有运输层，不复制 Harness。
+- trigger: 用户确认统一升级到 Python 3.11，MinerU 无需 A/B，LiteLLM 先接灵算影子对照，其余按建议将结构化纠错和数学判等正式接入；目标是把模型结构错误变成可回灌错误、把解析/OCR 和数学判等交给成熟开源引擎，同时不让影子实验影响正式结果。
+- invariants: MinerU 不静默切换旧解析器；Instructor 的每次纠错仍计入动态 180% 调用预算、Token、墙钟与服务商并发；LiteLLM 不参与主结果、不重试、不携带内嵌图片、不突破灵算并发且队列满时直接跳过；Math-Verify 必须按 `gold, answer` 顺序调用，SymPy 对象不得跨进程 pickle；原有分区守恒、单位/百分数规则、V4 公式链、Word A/B 和最终验收继续权威；日志不保存题目正文、模型内容或密钥。
+- do_not_regress: 不得重新支持 Python 3.10 及以下或恢复多套依赖指纹；不得把 MinerU 重型依赖装进 Web 主进程；不得把 Pydantic 类型通过当作语义正确；不得让 Instructor 形成无界自修或绕过现有调用账本；不得让 LiteLLM 影子失败阻断/替换主响应或把影子量伪装成主调用；不得用符号判等替代已有单位和业务守恒规则。
+- verification: Python 3.11.15 干净环境通过 `uv pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt`，共解算并安装 107 个包且依赖无冲突；开源适配器、依赖档、源码工作流、教材索引和计算定向回归 68 passed；第一次全量回归的 4 个旧测试兼容问题修正后，`python scripts/run_quality_gates.py --full` 最终通过：pytest 与 coverage 两轮均为 1990 passed、1 skipped、16 deselected，整库分支覆盖率 70%，py_compile、版本一致性、公式 OMML、第三方声明（101 个声明包无缺项）、项目完整性（80 个文件、0 问题）、Ruff 和 Mypy 全部通过；随后对影子 daemon、消息快照/脱敏、Python 3.11 独立运行环境与回滚隔离的最终调整完成定向回归 94 passed，Ruff、Mypy、shell 语法和 `git diff --check` 通过；未安装真实 MinerU 模型、未发起真实模型/影子请求，未部署、未发布。
+
+### OPT-20260904-01｜OfficeCLI Word 工具 A/B 直连接入
+- status: verified
+- scope: 真题解析 Word、按题/知识点出题的题目卷/答案卷/合并卷、历史重建、练习缓存、文档工具遥测、DOCX/OMML/图片/表格/页码审计与最终交付
+- changed: 完整保留 A 版 Python/OMML 工具链；新增 B 版，直接以固定且校验的 iOfficeAI/OfficeCLI 1.0.147 执行 `create → atomic batch --stop-on-error → save → validate → close`，命令计划覆盖段落、run、公式、图片、表格、分节、页眉页脚和页码并叠加现有教学排版合同；源码与用户配置默认 B，环境变量或用户数据配置可明确切回 A，不做静默回退；运行时按官方发布 SHA-256 校验后保存在用户数据缓存，不执行会修改 PATH/shell/Agent skills 的上游安装脚本；练习缓存键隔离 A/B，工具结果记录版本、引擎、运行时版本和摘要；新增完整 A/B 回顾文档。实施前核验 Codex `main@f46671b14aa3bc37d4ee9a67c06385cb9ec8e2d3`、DeepSeek Harness `master@76fda729799fe9b3848dbe2c211d4b231032b81e` 和 OfficeCLI `main@b94f3906fd52d450c64f8e40370e376b9e15079e`。
+- trigger: 用户要求把现有优化工具保留为 A，以 OfficeCLI 的真实文档执行实现作为 B 并默认启用，同时保留平台独有的试题、答案、公式、图片和排版规则，形成可回顾、可明确回滚而不掩盖 B 缺陷的实验。
+- invariants: 不用“先由 A 生成、再由 OfficeCLI 验证”冒充 B；不丢题目、答案、公式、表格或图片，不把非 `given` 公式泄露到题目卷；公式内可见字符继续全斜体；B 失败不自动切 A，未通过现有 DOCX/渲染/最终验收不交付；运行时下载必须固定版本、校验摘要且不修改源码或用户系统配置；事件不保存用户正文或密钥。
+- do_not_regress: 不得删除 A 或把回滚改成隐式；不得让 A/B 共用同一练习缓存键；不得省略 resident 的显式保存/关闭；不得恢复负 `firstLine` 生成非法 OOXML；不得只认 `word/media/` 而误报 OfficeCLI 合法的包根 `media/` 图片；升级 OfficeCLI 前必须重新核验源码、版本、各平台 SHA-256、命令合同和真实文档回归。
+- verification: A/B 定向回归最终 73 passed、1 skipped（无外部运行时的普通测试显式跳过 B 真实集成）；`OFFICECLI_TEST_BINARY=/tmp/.../officecli python3 -m pytest -q tests/test_word_tool_ab.py::test_officecli_b_real_integration` 1 passed，覆盖真题和练习的原生公式、图片、表格、页码及现有合同；固定运行时自动下载实测返回 1.0.147 且 SHA-256 为发布清单值；OfficeCLI `validate` 对真题、题目卷和答案卷均为 no errors，HTML contact-sheet 截图人工检查通过；`python3 scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 两轮均为 1986 passed、1 skipped、16 deselected，整库分支覆盖率 70%，py_compile、版本一致性、公式 OMML、第三方声明、项目完整性、Ruff 和 Mypy 全部通过；未发起模型请求，未部署用户机，未发布。
+
+### OPT-20260903-06｜文档工具合同与候选验收纠错闭环
+- status: verified
+- scope: 真题/练习 Word 构建、OMML 公式排版、Word→PDF/PNG 验收、内容质量模型回修、运行诊断证据
+- changed: 新增不含正文的文档工具 `call/result` 持久事件与 `ok/data/error/meta` 结果合同，真题 Word、练习 Word 和渲染验收都返回稳定错误码、主责层、候选/产物哈希与下一步建议；保护 `cases/aligned/matrix/array` 等复合环境不在内部箭头处分割，普通长反应式拆分前逐段预验证并可原子回退；小数除法不再截成伪除零，答案摘要的除法与科学计数法提升为公式对象；内容修复首轮加入确定性算术详情，后续轮以最新完整候选和结构化验收结果继续，默认 3 轮、硬上限 4 轮。实施前动态核验 Codex `main@6d7f6dcd2285de70a3892d4f05b2a8ff44aa3350`、DeepSeek Harness `master@76fda729799fe9b3848dbe2c211d4b231032b81e`、AIOffice `main@5159cb743193fc445862c1bd450cc65686946bbf` 和 docx-mcp-server `main@9b36ea3e5aaa71af0acb13328d05e439ebeb7e1c`；未复制上游源码，未增加 .NET/Node 运行依赖。
+- trigger: 完整复合 LaTeX 本可转换，但本地排版函数在内部箭头处拆成不完整环境，导致 Word 硬失败；同任务还显示内容修复首轮只收到泛化算术错误，候选失败又没有形成统一、可行动的 Harness 工具结果。
+- invariants: 程序后处理不得改坏模型的正确完整公式；确定性错误不得通过增加模型调用掩盖；只有模型内容问题进入有界纠错，每轮失败调用仍受任务调用、token、耗时和服务商并发上限约束；未通过硬验收的候选不发布；诊断日志不保存题目、答案或密钥正文。
+- do_not_regress: 不得恢复对复合公式的字符级盲分割；不得把文档工具失败压成不带位置/建议的单一异常；不得在内容修复重试时回到原始错误答案或只传“再试一次”；不得把未重跑的历史任务标记为已修复。
+- verification: `python3 -m pytest -q tests/test_audit_model_repair_regression.py tests/test_generation_image_label_language.py tests/test_calculation_consistency.py tests/test_concurrency_limits.py tests/test_document_tool.py tests/test_docx_contracts.py tests/test_formula_notation_policy.py tests/test_pipeline_quality_routing.py tests/test_practice_export_jobs.py tests/test_zero_usable_answer_delivery.py tests/test_hybrid_local_delivery.py` 最终 128 passed；`python3 scripts/run_quality_gates.py --full` 通过（py_compile、版本一致性、全量 pytest、公式 OMML、第三方声明、项目完整性、ruff、mypy 和覆盖率门禁全部通过）；未重跑历史任务，未部署，未发布。
+
+### OPT-20260903-05｜模型故障强制做 Harness 分层归因
+
+- status: verified
+- scope: AI 代理协作规则、模型任务故障诊断、待授权问题记录
+- changed: `AGENTS.md` 增加强制诊断流程，要求按模型输入、模型输出、供应商传输、Harness 编排、本地确定性后处理和交付环境分层归因，并回答 Codex Harness + 相应模型/工具是否可完成及本项目差距；新增待授权问题记录，保存复合公式被本地拆分破坏、工具错误未形成模型可见闭环、独立内容质量问题及计划修复/验证边界。
+- trigger: 已定位的 Word 失败虽然找到了异常位置，但初次汇报没有先判断原始模型输入输出是否正确，也没有清楚说明 Codex/DeepSeek Harness 如何通过工具结果回灌和继续执行避免固定流水线失去修复机会。
+- invariants: 不把模型参与等同于模型责任；不让 Harness 对照替代本项目教学质量与 DOCX/OMML 确定性合同；不因诊断自动修改、重跑、部署或发布；问题记录不保存用户材料、任务标识、凭据或完整模型内容。
+- do_not_regress: 后续不得只凭异常栈下结论；不得混淆供应商失败率、调用预算、内容质量和最终交付故障；模型输入输出问题必须写出当前官方 Harness 的具体处理与本项目差距；确定性程序改坏正确输出时不得通过增加模型重试掩盖。
+- verification: `git diff --check` 通过；`docs/operations/KNOWN_ISSUES.md` 存在，`AGENTS.md` 的流程引用、待实施状态与账本编号检索通过。仅修改协作规则和脱敏问题记录；未修改业务代码，未重跑任务，未部署或发布。
+
+### OPT-20260903-04｜按题量动态分配模型调用预算
+
+- status: verified
+- scope: 真题解析、教材证据链、按题/知识点生题、恢复运行、模型调用账本与流水线遥测
+- changed: 题目结构确认后按任务类型、实际题量和教材证据链估算正常模型调用量，默认以预估量的 180% 生成动态上限，保留 120 下限、500 硬上限和显式环境固定值优先；预算在本次运行首次请求后冻结并写入遥测，生题链优先采用已确认练习计划题数。
+- trigger: 大型教材证据任务的逐题规划、证据选择、答案生成及瞬时失败合计触达固定 120 次上限，导致后续修复和 Word 交付阶段无法继续。
+- invariants: 失败请求继续计入调用量；调用、token、墙钟时间和按服务商/模型/协议熔断保持独立硬边界；不因放宽预算降低内容质量、切换模型/协议或压缩题目及教材证据；任务恢复不重复放大已完成工作。
+- do_not_regress: 不得按 180% 无硬上限扩张；不得让中途环境变化重算同一运行预算；不得让小任务低于原 120 次保护值；不得用提高调用阈值代替灵算通道降并发、冷却和错误分类。
+- verification: 2026-09-03 动态核对 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、提交 `728cb12fe5794b0c3a8e776fb4994b1650b973a8`，阅读 `responses_retry.rs` 与 `rollout_budget.rs`；核对 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、提交 `76fda729799fe9b3848dbe2c211d4b231032b81e`，阅读 `llm-retry/src/index.ts`、`llm/src/retry-policy.ts` 与 `llm-retry/README.md`。动态预算、调用账本、遥测和生题定向回归 46 passed，跨真题恢复、教材证据、答案生成、生题运行、重试预算、任务准入和交付扩大回归 96 passed；`python3 scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 复跑均为 1971 passed、16 deselected，分支覆盖率 70%，py_compile、版本一致性、公式 OMML、第三方声明、项目完整度、Ruff 和 Mypy 全部通过；未发起真实模型请求，未部署、未发布。
 
 ### OPT-20260903-03｜公式富文本跨业务统一与影响面强制审查
 

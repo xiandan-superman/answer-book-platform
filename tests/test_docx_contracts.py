@@ -182,6 +182,49 @@ def test_long_outer_upright_reaction_keeps_valid_groups_when_split() -> None:
     assert lines[1].startswith(r"{}\longrightarrow\mathrm{") and lines[1].endswith("}")
 
 
+@pytest.mark.parametrize(
+    "latex",
+    [
+        r"f(x)=\begin{cases}a\longrightarrow b,&x>0\\c,&x\leq0\end{cases}"
+        + r"\quad\text{with a deliberately long explanatory tail}",
+        r"\begin{aligned}a&=b\longrightarrow c\\d&=e+f\end{aligned}"
+        + r"\quad\text{with a deliberately long explanatory tail}",
+        r"A=\begin{pmatrix}a&b\longrightarrow c\\d&e\end{pmatrix}"
+        + r"\quad\text{with a deliberately long explanatory tail}",
+    ],
+)
+def test_structured_formula_environment_is_never_split_at_internal_arrow(latex: str) -> None:
+    assert len(latex) > 64
+    assert _display_formula_lines(latex) == [latex]
+
+
+def test_reaction_split_falls_back_atomically_when_one_candidate_is_invalid(monkeypatch) -> None:
+    latex = (
+        r"n\,\mathrm{H_2N-(CH_2)_6-NH_2}+n\,\mathrm{HOOC-(CH_2)_8-COOH}"
+        r"\xrightarrow{\text{缩聚}}"
+        r"\left[\mathrm{-NH-(CH_2)_6-NH-CO-(CH_2)_8-CO-}\right]_n+2n\,\mathrm{H_2O}"
+    )
+
+    def reject_split(value: str, **_kwargs):
+        if value != latex:
+            raise ValueError("split candidate rejected")
+        return object()
+
+    monkeypatch.setattr("app.docx_v4.render_expression_omml", reject_split)
+
+    assert _display_formula_lines(latex) == [latex]
+
+
+def test_decimal_division_and_scientific_result_are_promoted_without_truncation() -> None:
+    from app.docx_v4 import _answer_summary_formula_candidates
+
+    text = "，因此 1.264 / 0.63212 ≈ 2.0，结果应准确表示为 2×10^8 Pa。"
+    candidates = _answer_summary_formula_candidates(text)
+
+    assert any(latex == r"\frac{1.264}{0.63212}\approx2.0" for _start, _end, latex in candidates)
+    assert any(latex == r"2\times 10^{8}" for _start, _end, latex in candidates)
+
+
 def test_promoted_long_inline_reaction_is_laid_out_as_two_display_lines() -> None:
     document = Document()
     latex = (

@@ -8,6 +8,7 @@ from typing import Any, Callable
 from .audit_review_gate import enforce_unattended_audit_report
 from .capabilities.shadow_quality import build_shadow_quality_report
 from .document_contracts import DOCUMENT_CONTRACT_VERSION
+from .document_tool import DocumentToolFailure, DocumentToolSession
 from .figure_size_audit import audit_docx_figure_sizes
 from .final_acceptance import (
     answer_fragment_blocking_findings,
@@ -380,27 +381,72 @@ def complete_pipeline_delivery(
         mark("render", "started", {"message": "开始生成 PDF/PNG 并进行渲染复核。"})
         rendered = output_dir / "word_rendered"
         pdf = rendered / "answer_book.pdf"
-        export_docx_to_pdf(docx_path, pdf)
-        pngs = render_pdf_to_png(pdf, rendered)
-        rendered_page_audit = audit_rendered_pages_report(rendered, min_pages=1)
-        render_issues = list(rendered_page_audit["issues"])
-        delivery_consistency = audit_docx_pdf_consistency(docx_path, pdf)
-        render_issues.extend(delivery_consistency["issues"])
+        render_state: dict[str, Any] = {}
+        document_tool = DocumentToolSession(
+            stage_dir / "document_tool_events.jsonl",
+            session_id=task_id,
+        )
+
+        def render_validate_document() -> dict[str, Any]:
+            export_docx_to_pdf(docx_path, pdf)
+            pngs = render_pdf_to_png(pdf, rendered)
+            rendered_page_audit = audit_rendered_pages_report(rendered, min_pages=1)
+            render_issues = list(rendered_page_audit["issues"])
+            delivery_consistency = audit_docx_pdf_consistency(docx_path, pdf)
+            render_issues.extend(delivery_consistency["issues"])
+            render_state.update(
+                {
+                    "pngs": pngs,
+                    "issues": render_issues,
+                    "rendered_page_audit": rendered_page_audit,
+                    "delivery_consistency": delivery_consistency,
+                }
+            )
+            if render_issues:
+                raise DocumentToolFailure(
+                    code="RENDERED_DOCUMENT_VALIDATION_FAILED",
+                    message="Word 渲染结果未通过页面或内容一致性校验。",
+                    suggestion="保留 Word 候选件和渲染页，根据结构化问题修复布局或内容后重新渲染验收。",
+                    responsibility="delivery_environment",
+                    details={"issues": render_issues[:30]},
+                )
+            return {"pdf": pdf.name, "png_count": len(pngs), "issues": []}
+
+        render_tool_result = document_tool.run(
+            "render_validate_docx",
+            render_validate_document,
+            artifact_path=pdf,
+            input_revision=_artifact_integrity(docx_path)["sha256"],
+        )
+        render_issues = list(render_state.get("issues") or [])
+        if not render_tool_result.get("ok") and not render_issues:
+            raw_error = render_tool_result.get("error")
+            error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
+            raw_details = error.get("details")
+            details: dict[str, Any] = raw_details if isinstance(raw_details, dict) else {}
+            render_issues = [str(item) for item in details.get("issues") or [] if str(item).strip()]
+            if not render_issues:
+                render_issues = [str(error.get("message") or "Word 渲染工具执行失败。")]
         write_json(
             stage_dir / "render_audit.json",
             {
                 "ok": not render_issues,
                 "issues": render_issues,
-                "rendered_page_audit": rendered_page_audit,
-                "delivery_consistency": delivery_consistency,
+                "rendered_page_audit": render_state.get("rendered_page_audit", {}),
+                "delivery_consistency": render_state.get("delivery_consistency", {}),
                 "project_fonts": project_font_diagnostics(),
+                "tool_result": render_tool_result,
             },
         )
         build_shadow_quality_report(stage_dir)
         if render_issues:
             mark("render", "failed", {"issues": render_issues[:30]})
             raise RuntimeError("Rendered page audit failed")
-        mark("render", "passed", {"pdf": str(pdf), "png_count": len(pngs)})
+        mark(
+            "render",
+            "passed",
+            {"pdf": str(pdf), "png_count": len(render_state.get("pngs") or [])},
+        )
 
     shadow_quality = build_shadow_quality_report(stage_dir)
     mark(

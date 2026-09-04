@@ -67,6 +67,14 @@ class PipelineRunTelemetry:
         )
         _write_json(self.status_path, self.summary)
 
+    def update_quality_budget(self, budget: dict[str, Any]) -> None:
+        """Record the final task-shaped budget once question extraction completes."""
+
+        governance = self.summary.setdefault("quality_governance", {})
+        governance["budget"] = dict(budget)
+        self.summary["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        _write_json(self.status_path, self.summary)
+
     def _heartbeat(self) -> None:
         while not self._heartbeat_finished.wait(self.heartbeat_seconds):
             try:

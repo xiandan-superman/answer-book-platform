@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11"]
+        python-version: ["3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,17 +29,11 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          constraint="constraints-py311.txt"
-          if [[ "${{ matrix.python-version }}" == "3.9" ]]; then constraint="constraints-py39.txt"; fi
-          python -m pip install -r requirements.txt -r requirements-dev.txt -c "$constraint"
+          python -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt
       - name: Run supported-version quality gate
         shell: bash
         run: |
-          if [[ "${{ matrix.python-version }}" == "3.11" ]]; then
-            python scripts/run_quality_gates.py --full
-          else
-            python scripts/run_quality_gates.py
-          fi
+          python scripts/run_quality_gates.py --full
 
   browser-smoke:
     runs-on: ubuntu-latest
@@ -66,17 +60,9 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            python-version: "3.9"
-            base-constraint: constraints-py39.txt
-            platform-constraint: constraints-source-macos-py39.txt
-          - os: macos-14
             python-version: "3.11"
             base-constraint: constraints-py311.txt
             platform-constraint: constraints-source-macos-py311.txt
-          - os: windows-latest
-            python-version: "3.9"
-            base-constraint: constraints-py39.txt
-            platform-constraint: constraints-source-windows-py39.txt
           - os: windows-latest
             python-version: "3.11"
             base-constraint: constraints-py311.txt

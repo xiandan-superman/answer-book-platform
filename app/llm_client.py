@@ -38,6 +38,23 @@ from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
 _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
+def _shadow_lingsuan_result(config: ProviderConfig, messages: list[dict[str, Any]], result: "LLMResult", max_tokens: int) -> "LLMResult":
+    """Fire-and-forget comparison; shadow failure can never change the primary result."""
+    try:
+        from .adapters.litellm_shadow import submit_litellm_shadow
+
+        submit_litellm_shadow(
+            config,
+            messages,
+            model=result.model,
+            max_tokens=max_tokens,
+            primary_content=result.content,
+        )
+    except Exception:
+        pass
+    return result
+
+
 def _execution_protocol(url: str, purpose: str) -> str:
     path = urllib.parse.urlsplit(str(url or "")).path.lower()
     normalized_purpose = str(purpose or "").lower()
@@ -1145,11 +1162,16 @@ class OpenAICompatibleClient:
             content = _separate_gateway_final_json(content)
         if bool(_model_profile(self.config, target_model).get("strip_think_blocks")):
             content = _strip_think_blocks(content)
-        return LLMResult(
-            provider=self.config.name,
-            model=str(payload["model"]),
-            content=content,
-            raw=raw,
+        return _shadow_lingsuan_result(
+            self.config,
+            messages,
+            LLMResult(
+                provider=self.config.name,
+                model=str(payload["model"]),
+                content=content,
+                raw=raw,
+            ),
+            int(payload["max_tokens"]),
         )
 
     def chat_json_object(
@@ -1167,7 +1189,30 @@ class OpenAICompatibleClient:
         delivered_evidence_refs: Any = (),
         item_ids: Any = (),
         enforce_context_budget: bool = False,
+        response_model: Any | None = None,
+        validation_retries: int = 1,
     ) -> dict[str, Any]:
+        if response_model is not None:
+            from .adapters.structured_completion import structured_completion
+
+            validated = structured_completion(
+                self,
+                messages,
+                response_model=response_model,
+                model=str(model or self.config.default_model),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                thinking=thinking,
+                max_validation_retries=validation_retries,
+                task_stage=task_stage,
+                required_evidence_refs=required_evidence_refs,
+                delivered_evidence_refs=delivered_evidence_refs,
+                item_ids=item_ids,
+                enforce_context_budget=enforce_context_budget,
+                attempt_callback=attempt_callback,
+            )
+            return validated.model_dump(mode="python", exclude_none=True)
         last_error: LLMError | None = None
         self.last_json_retry_report = {
             "ok": False,
@@ -2001,11 +2046,16 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         if not content:
             detail = _responses_response_detail(raw)
             raise LLMError(f"Model returned empty response content; {detail}" if detail else "Model returned empty response content")
-        return LLMResult(
-            provider=self.config.name,
-            model=str(payload["model"]),
-            content=content,
-            raw=raw,
+        return _shadow_lingsuan_result(
+            self.config,
+            messages,
+            LLMResult(
+                provider=self.config.name,
+                model=str(payload["model"]),
+                content=content,
+                raw=raw,
+            ),
+            int(payload["max_output_tokens"]),
         )
 
 
@@ -2136,7 +2186,12 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
             "thinking": thinking_mode,
             "max_tokens": payload["max_tokens"],
         }
-        return LLMResult(provider=self.config.name, model=target_model, content=content, raw=raw)
+        return _shadow_lingsuan_result(
+            self.config,
+            messages,
+            LLMResult(provider=self.config.name, model=target_model, content=content, raw=raw),
+            int(payload["max_tokens"]),
+        )
 
 
 def create_llm_client(config: ProviderConfig) -> LLMClientProtocol:

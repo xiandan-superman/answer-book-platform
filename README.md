@@ -6,7 +6,7 @@
 
 ## 普通用户安装与使用
 
-不需要安装 Git，也不要直接双击 `web/index.html`。程序需要 Python 3.9 或更高版本，并通过本地启动文件打开网页服务。
+不需要安装 Git，也不要直接双击 `web/index.html`。程序需要 Python 3.11 或更高版本，并通过本地启动文件打开网页服务。
 
 ### 1. 下载正确的程序包
 
@@ -17,14 +17,14 @@
 
 ### 2. macOS 首次启动
 
-1. 如果电脑没有 Python 3.9+，先从 [Python macOS 下载页](https://www.python.org/downloads/macos/) 安装，然后重新打开程序文件夹。
+1. 如果电脑没有 Python 3.11+，先从 [Python macOS 下载页](https://www.python.org/downloads/macos/) 安装，然后重新打开程序文件夹。
 2. 在程序文件夹中双击 `start_platform.command`。如果 macOS 首次阻止打开，请右键该文件，选择“打开”，再确认一次。
 3. 在轻量桌面启动器中选择“仅本机使用”或“局域网监控”。第一次运行会自动创建本平台专用的 Python 环境并安装依赖，所需时间取决于网络速度，启动器会持续显示准备状态。
 4. 准备完成后，程序会自动打开浏览器并访问 `http://127.0.0.1:8766`。macOS 可能短暂显示终端窗口，图形启动窗口出现后无需操作终端。
 
 ### 3. Windows 首次启动
 
-1. 如果电脑没有 Python 3.9+，先从 [Python Windows 下载页](https://www.python.org/downloads/windows/) 安装。安装时建议启用 `Add python.exe to PATH`，完成后重新打开程序文件夹。
+1. 如果电脑没有 Python 3.11+，先从 [Python Windows 下载页](https://www.python.org/downloads/windows/) 安装。安装时建议启用 `Add python.exe to PATH`，完成后重新打开程序文件夹。
 2. 双击根目录里显眼的 `启动平台.bat`；`start_platform_windows.bat` 是完全相同的英文兼容入口。无需再区分普通启动脚本和局域网启动脚本。
 3. 在轻量桌面启动器中选择“仅本机使用”或“局域网监控”。第一次运行会自动创建本平台专用的 Python 环境并安装依赖，启动器会持续显示准备状态，正常情况下不会保留命令行黑窗。
 4. 准备完成后，程序会自动打开浏览器并访问 `http://127.0.0.1:8766`。
@@ -35,6 +35,10 @@
 2. 选择使用的服务商，填写 API Key，并先执行连接测试。
 3. 测试成功后保存。API Key 只保存在本机用户数据目录，不会上传到 GitHub，也不会在程序更新时被覆盖。
 4. 返回首页后，即可上传题目或教材并使用真题解析、按题生题和知识点生题功能。
+
+首次解析 PDF/DOCX 时，平台会在用户数据目录另建 MinerU 3.4.5 隔离环境；这一步下载量和等待时间明显高于普通启动。MinerU 是正式主解析器，安装或解析失败会明确报错，不会悄悄切回旧解析器。
+
+灵算文本请求默认抽取 10% 通过 LiteLLM 再发一份单并发影子请求，只比较成功率、耗时、用量和 JSON 可解析性，不参与正式答案。该样本会产生额外模型费用；可在 `config/open_source_components.json` 调整 `sample_rate` 或关闭 `litellm_shadow.enabled`。
 
 ### 5. 日常启动、关闭与更新
 
@@ -88,7 +92,7 @@ python3 scripts/start_platform.py
 - 网页启动后静默检查稳定更新；发现版本时显示可稍后关闭的更新提醒，不会未经用户确认修改本机。
 - 用户确认前，程序会检查是否有运行中或排队任务；存在时停止更新并提示任务完成后重试，避免重启中断任务。
 - 用户确认后，页面显示真实下载字节与校验进度；服务退出后由独立的“安全更新”窗口继续显示解压、备份、覆盖、依赖检查和新版启动状态，原网页自动等待恢复，不会重复打开新标签页。
-- 发布者只需同步新版本号、清单和变更记录并推送 `main`；Python 3.9、3.11 与 Chromium 门禁全部成功后，GitHub 才会自动创建与 `APP_VERSION` 一致的标签并发布。版本号未增加的普通 `main` push 不会下发，禁止人工提前打正式标签。
+- 发布者只需同步新版本号、清单和变更记录并推送 `main`；Python 3.11 与 Chromium 门禁全部成功后，GitHub 才会自动创建与 `APP_VERSION` 一致的标签并发布。版本号未增加的普通 `main` push 不会下发，禁止人工提前打正式标签。
 - 用户确认后，程序下载源码 ZIP、校验大小和 SHA256、退出旧服务，在安装目录旁完整准备新源码，备份旧源码后原位覆盖并自动重启；不会在跨磁盘复制期间留下空程序目录。
 - Git clone 用户使用安全的 `fetch + fast-forward merge`；本地有源码修改、分支不符或历史分叉时会拒绝自动更新。
 - 新版本若改变依赖清单，确认框会提前说明；重启时检查并安装缺失依赖。依赖没有变化时不会重复安装。
@@ -196,6 +200,14 @@ python3 scripts/run_task.py "<task_id>" --render
 formula_conversion.preferred_chain_ready = true
 ```
 
+Word 执行工具默认使用 B 版 `iOfficeAI/OfficeCLI`。平台会在首次生成时把固定的 1.0.147 原生二进制下载到用户数据缓存，校验 SHA-256 后启用；不会运行会修改 PATH 或 shell 配置的上游安装脚本。需要明确切回保留的 A 版 Python/OMML 工具链时，可在启动前设置：
+
+```bash
+export ANSWER_BOOK_WORD_TOOL_VARIANT=A
+```
+
+也可在系统用户数据目录的 `config/word_tool.json` 写入 `{"variant":"A"}` 作持久配置。完整 A/B 定义、指标和回滚方法见 [`docs/operations/WORD_TOOL_AB_TEST.md`](docs/operations/WORD_TOOL_AB_TEST.md)。
+
 如果只验证程序主控流程，不调用模型：
 
 ```bash
@@ -254,12 +266,11 @@ python3 scripts/run_quality_gates.py
 安装当前 Python 对应的锁定运行依赖和 `requirements-dev.txt` 后，可运行包含 lint、类型检查和覆盖率的完整门禁：
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py39.txt   # Python 3.9
-# Python 3.11+ 改用 constraints-py311.txt
+python3.11 -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt
 python3 scripts/run_quality_gates.py --full
 ```
 
-普通用户仍然只需下载源码 ZIP 并双击启动器。启动器会在 Python 3.9 或 3.11+ 的通用约束上，自动叠加 macOS/Windows 对应的源码运行约束；环境页会非阻塞地提示实际版本偏差。第三方依赖、用途和许可证记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+普通用户仍然只需下载源码 ZIP 并双击启动器。启动器统一使用 Python 3.11+ 约束，并自动叠加 macOS/Windows 对应的源码运行约束；环境页会提示不受支持的旧版本。第三方依赖、用途和许可证记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 跨任务查看 Shadow 质量规则的样本量、影响范围和无人值守动作上限：
 

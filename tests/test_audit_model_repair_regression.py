@@ -320,6 +320,31 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(36.52968, diagnostic["computed_percentage"])
         self.assertEqual("50.0", diagnostic["rejected_declared_values"])
 
+    def test_repair_context_computes_detailed_diagnostics_from_generic_audit_issue(self) -> None:
+        from app.audit_model_repair import _repair_context
+
+        context = _repair_context(
+            {
+                "question_id": "q1",
+                "_draft": {
+                    "formulas": [
+                        {"latex": r"r=1.264/0.63212", "role": "substitution"},
+                        {"latex": r"r=3", "role": "result"},
+                    ]
+                },
+            },
+            [
+                {
+                    "code": "calculation_internal_inconsistency",
+                    "message": "计算题的公式等式、代入结果或步骤结论存在数值矛盾。",
+                }
+            ],
+        )
+
+        self.assertTrue(context["deterministic_validation_issues"])
+        self.assertTrue(context["deterministic_numeric_diagnostics"])
+        self.assertAlmostEqual(1.264 / 0.63212, context["deterministic_numeric_diagnostics"][0]["computed_decimal"], places=6)
+
     def test_retry_prompt_keeps_candidate_and_deterministic_failures(self) -> None:
         import json
 
@@ -336,6 +361,10 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
         retry = json.loads(messages[-1]["content"])
         self.assertEqual(["calculation_contract_mixed_partition_basis:1"], retry["deterministic_validation_issues"])
         self.assertIn("previous_candidate", retry)
+        self.assertEqual("answer_book.repair_validation_result.v1", retry["validation_tool_result"]["schema_version"])
+        self.assertEqual("model_output", retry["validation_tool_result"]["error"]["responsibility"])
+        self.assertTrue(retry["validation_tool_result"]["error"]["suggestion"])
+        self.assertEqual(64, len(retry["validation_tool_result"]["meta"]["candidate_sha256"]))
 
     def test_retry_prompt_exposes_parsed_authoritative_arithmetic(self) -> None:
         import json

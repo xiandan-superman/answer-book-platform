@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -23,6 +24,7 @@ from .document_contracts import (
     TEXT_CONTRACT,
 )
 from .document_presentation import plan_ordered_answer_units, question_unit_rows
+from .document_tool import DocumentToolFailure
 from .formula_audit import looks_like_formula, looks_like_symbolic_formula
 from .omml_input import strip_structured_math_metadata
 from .question_types import (
@@ -106,6 +108,15 @@ RATIO_EQUIVALENCE_SUMMARY_RE = re.compile(
     r"(?<![\d.])([-+]?\d+(?:\.\d+)?(?:\s*:\s*[-+]?\d+(?:\.\d+)?)+)"
     r"\s*(≈|=)\s*"
     r"([-+]?\d+(?:\.\d+)?(?:\s*:\s*[-+]?\d+(?:\.\d+)?)+)(?![\d.])"
+)
+NUMERIC_DIVISION_RELATION_RE = re.compile(
+    r"(?<![\d.])(?P<numerator>[-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*/\s*"
+    r"(?P<denominator>[-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*"
+    r"(?P<operator>≈|=)\s*(?P<result>[-+]?(?:\d+(?:\.\d*)?|\.\d+))(?![\d.])"
+)
+SCIENTIFIC_NOTATION_SUMMARY_RE = re.compile(
+    r"(?<![\d.])(?P<coefficient>[-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*[×·]\s*"
+    r"10\s*\^\s*\{?\s*(?P<exponent>[-+]?\d+)\s*\}?"
 )
 ARROW_SUMMARY_RE = re.compile(r"[→⇌↔]")
 AUDIT_PROMPT_FILL = "FFF2CC"
@@ -435,6 +446,14 @@ def _latex_ratio_equivalence(match: re.Match[str]) -> str:
     return f"{left}{operator}{right}"
 
 
+def _latex_numeric_division_relation(match: re.Match[str]) -> str:
+    operator = r"\approx" if match.group("operator") == "≈" else "="
+    return (
+        rf"\frac{{{match.group('numerator')}}}{{{match.group('denominator')}}}"
+        rf"{operator}{match.group('result')}"
+    )
+
+
 def _latex_crystallographic_index(value: str) -> str:
     """Normalize a prose crystallographic index into renderable LaTeX."""
 
@@ -491,6 +510,16 @@ def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
         )
     for match in RATIO_EQUIVALENCE_SUMMARY_RE.finditer(text):
         candidates.append((match.start(), match.end(), _latex_ratio_equivalence(match)))
+    for match in NUMERIC_DIVISION_RELATION_RE.finditer(text):
+        candidates.append((match.start(), match.end(), _latex_numeric_division_relation(match)))
+    for match in SCIENTIFIC_NOTATION_SUMMARY_RE.finditer(text):
+        candidates.append(
+            (
+                match.start(),
+                match.end(),
+                rf"{match.group('coefficient')}\times 10^{{{match.group('exponent')}}}",
+            )
+        )
     for match in REACTION_SUMMARY_RE.finditer(text):
         candidates.append((match.start(), match.end(), _latex_reaction(match.group(0))))
     for match in SQRT_SUMMARY_RE.finditer(text):
@@ -721,12 +750,12 @@ def add_mixed_paragraph(
             if render_inline_formula(seg, formula):
                 if len(_display_formula_lines(latex)) > 1:
                     break_text_paragraph()
-                    add_formula_paragraph(doc, latex)
+                    add_formula_paragraph(doc, latex, location=f"formula_ref:{fid}")
                 else:
                     ensure_text_paragraph()._p.append(render_expression_omml(latex, display=False, location="formula_ref"))
             elif bool(formula.get("display", True)) and not skip_formula_text_audit:
                 break_text_paragraph()
-                add_formula_paragraph(doc, latex)
+                add_formula_paragraph(doc, latex, location=f"formula_ref:{fid}")
             else:
                 ensure_text_paragraph()._p.append(render_expression_omml(latex, display=False, location="formula_ref"))
         elif typ == "image_ref":
@@ -792,7 +821,11 @@ def add_split_block(doc: Document, segments: list[dict], formulas: dict[str, dic
                 # student-facing result.  Older checkpoints only carry the
                 # source_note marker, so keep that migration path deterministic.
                 continue
-            add_formula_paragraph(doc, str(formula.get("latex", "")))
+            add_formula_paragraph(
+                doc,
+                str(formula.get("latex", "")),
+                location=f"formula_ref:{fid}",
+            )
             previous_was_formula = True
         elif typ == "image_ref":
             image_path = Path(str(seg.get("path") or ""))
@@ -814,6 +847,10 @@ LONG_DISPLAY_FORMULA_SPLIT_THRESHOLD = 64
 DISPLAY_REACTION_ARROW_RE = re.compile(
     r"(\\xrightarrow(?:\[[^\]]*\])?\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\\(?:long)?rightarrow)"
 )
+STRUCTURED_DISPLAY_ENVIRONMENT_RE = re.compile(
+    r"\\begin\{(?:aligned|alignedat|align\*?|gathered|gather\*?|cases|rcases|split|multline\*?|"
+    r"matrix|[pbBvV]matrix|array)\}"
+)
 
 
 def _display_formula_lines(latex: str) -> list[str]:
@@ -830,6 +867,13 @@ def _display_formula_lines(latex: str) -> list[str]:
     visible_length = len(re.sub(r"\\[A-Za-z]+|[{}\\,]", "", value))
     if visible_length <= LONG_DISPLAY_FORMULA_SPLIT_THRESHOLD:
         return [value]
+    # Structured environments are one semantic math object.  An arrow inside
+    # cases/aligned/matrix is not a safe visual line-break point; splitting it
+    # would separate \begin from \end and corrupt a formula that already
+    # renders correctly.  AIOffice likewise parses these as a complete equation
+    # array before emitting OMML.
+    if STRUCTURED_DISPLAY_ENVIRONMENT_RE.search(value):
+        return [value]
     outer_upright = value.startswith(r"\mathrm{") and value.endswith("}")
     search_value = value[len(r"\mathrm{") : -1] if outer_upright else value
     match = DISPLAY_REACTION_ARROW_RE.search(search_value)
@@ -841,16 +885,46 @@ def _display_formula_lines(latex: str) -> list[str]:
         return [value]
     arrow = r"\rightarrow" if match.group(1).startswith(r"\xrightarrow") else match.group(1)
     if outer_upright:
-        return [rf"\mathrm{{{left}}}", rf"{{}}{arrow}\mathrm{{{right}}}"]
-    return [left, rf"{{}}{arrow}{right}"]
+        candidates = [rf"\mathrm{{{left}}}", rf"{{}}{arrow}\mathrm{{{right}}}"]
+    else:
+        candidates = [left, rf"{{}}{arrow}{right}"]
+    # Treat a layout rewrite as an atomic document edit: validate every output
+    # before accepting any of it.  If either half is not independently valid,
+    # keep the untouched source formula instead of manufacturing a later Word
+    # failure or asking the model to repair correct content.
+    try:
+        for candidate in candidates:
+            render_expression_omml(
+                candidate,
+                display=True,
+                location="display_formula_split_preflight",
+            )
+    except Exception:
+        return [value]
+    return candidates
 
 
-def add_formula_paragraph(doc: Document, latex: str):
+def add_formula_paragraph(doc: Document, latex: str, *, location: str = "formula_paragraph"):
     paragraphs = []
-    for line in _display_formula_lines(latex):
+    lines = _display_formula_lines(latex)
+    for line_index, line in enumerate(lines):
         p = doc.add_paragraph()
         set_para(p, WD_ALIGN_PARAGRAPH.CENTER)
-        p._p.append(render_expression_omml(line, display=True, location="formula_paragraph"))
+        try:
+            p._p.append(render_expression_omml(line, display=True, location=location))
+        except Exception as exc:
+            raise DocumentToolFailure(
+                code="FORMULA_RENDER_FAILED",
+                message=f"{location} 无法转换为 Word 公式对象：{exc}",
+                suggestion="先检查公式布局变换是否保持完整环境；确认是语义或语法问题后再将精确位置交给模型修复。",
+                details={
+                    "location": location,
+                    "formula_sha256": hashlib.sha256(str(latex or "").encode("utf-8")).hexdigest(),
+                    "layout_line_index": line_index,
+                    "layout_line_count": len(lines),
+                    "exception_type": exc.__class__.__name__,
+                },
+            ) from exc
         paragraphs.append(p)
     return paragraphs[-1]
 
@@ -1271,7 +1345,7 @@ def _add_indented_answer_text(
     append_domain_text_runs(p, text)
 
 
-def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
+def _build_docx_from_fragments_a(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
     data = json.loads(fragments_json.read_text(encoding="utf-8"))
     doc = setup_document()
     add_text_paragraph(
@@ -1473,3 +1547,22 @@ def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict
     output_docx.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_docx)
     return output_docx
+
+
+def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
+    """Build the answer book with the selected A/B Word execution engine.
+
+    A preserves the current Python/OMML renderer. B is the product default and
+    creates the document through the pinned iOfficeAI/OfficeCLI runtime. There
+    is deliberately no automatic B-to-A fallback: silent fallback would make
+    the experiment data untrustworthy and could hide a B-only document defect.
+    """
+    from .officecli_word import build_answer_book_with_officecli, selected_word_tool_variant
+
+    if selected_word_tool_variant() == "B":
+        return build_answer_book_with_officecli(fragments_json, output_docx)
+    return _build_docx_from_fragments_a(
+        fragments_json,
+        output_docx,
+        strict_answer_summary_formula_audit=strict_answer_summary_formula_audit,
+    )

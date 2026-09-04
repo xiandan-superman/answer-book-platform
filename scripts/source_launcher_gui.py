@@ -59,7 +59,13 @@ def run_with_shell_runtime(executable: Path) -> NoReturn:
 
 
 try:
-    from scripts.source_launcher import ensure_dependencies, local_service_url, runtime_python, user_data_root  # noqa: E402
+    from scripts.source_launcher import (  # noqa: E402
+        RUNTIME_ENV_NAME,
+        ensure_dependencies,
+        local_service_url,
+        runtime_python,
+        user_data_root,
+    )
 except Exception:
     record_launcher_failure("import")
     raise
@@ -392,7 +398,7 @@ def ensure_shell_runtime() -> None:
     if not (sys.platform.startswith("win") or sys.platform == "darwin"):
         return
     data_root = user_data_root().resolve()
-    target = runtime_python(data_root / "runtime" / "python-env")
+    target = runtime_python(data_root / "runtime" / RUNTIME_ENV_NAME)
     shell_target = target.with_name("pythonw.exe") if sys.platform.startswith("win") else target
     if not shell_target.is_file():
         shell_target = target

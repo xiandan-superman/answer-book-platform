@@ -14,7 +14,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .concurrency import ModelRequestAborted, model_request_slot
+from .adapters.structured_completion import structured_completion
+from .concurrency import ModelRequestAborted
 from .image_artifacts import ImageArtifactStore
 from .image_orchestration import (
     DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
@@ -24,6 +25,14 @@ from .image_orchestration import (
     image_orchestration_from_payload,
 )
 from .llm_client import LLMError, OpenAICompatibleClient
+from .model_output_contracts import (
+    GenericJsonObjectOutput,
+    PracticeFigureRepairOutput,
+    PracticeGenerationOutput,
+    PracticePlanningOutput,
+    PracticeSemanticReviewOutput,
+    PracticeSourceAnalysisOutput,
+)
 from .model_tool_loop import (
     ImageGenerationTool,
     ModelToolLoop,
@@ -5261,90 +5270,33 @@ def _call_practice_json(
         if ensure_active is not None:
             ensure_active()
         return raw
+    response_contract = {
+        "practice.generation": PracticeGenerationOutput,
+        "practice.figure_repair": PracticeFigureRepairOutput,
+        "practice.semantic_review": PracticeSemanticReviewOutput,
+        "practice.source_analysis": PracticeSourceAnalysisOutput,
+        "practice.planning": PracticePlanningOutput,
+    }.get(contract_id, GenericJsonObjectOutput)
     with prompt_contract(contract_id):
-        with model_request_slot(getattr(client, "config", None)):
-            result = client.chat_json(
-                messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=output_token_budget,
-                thinking=thinking,
-                timeout=timeout_seconds,
-                task_stage=task_stage,
-                required_evidence_refs=required_evidence_refs,
-                delivered_evidence_refs=delivered_evidence_refs,
-                item_ids=item_ids,
-                enforce_context_budget=enforce_context_budget,
-            )
+        validated = structured_completion(
+            client,
+            messages,
+            response_model=response_contract,
+            model=model,
+            temperature=temperature,
+            max_tokens=output_token_budget,
+            thinking=thinking,
+            timeout=timeout_seconds,
+            max_validation_retries=1 if repair_invalid_json else 0,
+            task_stage=task_stage,
+            required_evidence_refs=required_evidence_refs,
+            delivered_evidence_refs=delivered_evidence_refs,
+            item_ids=item_ids,
+            enforce_context_budget=enforce_context_budget,
+        )
     if ensure_active is not None:
         ensure_active()
-    try:
-        raw = _parse_safe_practice_json(result.content)
-    except LLMError as first_error:
-        if not repair_invalid_json:
-            raise
-        repair_client = client
-        repair_messages = [
-            *messages,
-            {"role": "assistant", "content": result.content},
-            {
-                "role": "user",
-                "content": (
-                    "上一个回答不是可解析的最终 JSON。停止解释、分析、复述要求或输出思考过程。"
-                    "你的第一个字符必须是 {，最后一个字符必须是 }。"
-                    "只修复上一个回答的 JSON 语法和字符串转义，不改变题目内容。"
-                    "LaTeX 命令的反斜杠必须在 JSON 字符串中正确双写；"
-                    "不得将 \\beta、\\frac、\\theta、\\rm 等命令转成退格、换页、制表或回车字符。"
-                    "只输出一个合法 JSON 对象，不要 Markdown 代码围栏。"
-                ),
-            },
-        ]
-        if ensure_active is not None:
-            ensure_active()
-        source_config = getattr(client, "config", None)
-        repair_config = getattr(repair_client, "config", None)
-        observation = record_model_retry_scheduled(
-            first_error,
-            category="json_structure_repair",
-            retry_number=1,
-            max_attempts=2,
-            provider=str(getattr(repair_config, "name", "") or ""),
-            model=model,
-            failure_kind="generation_response_invalid",
-            failure_retryable=True,
-            from_protocol=str(getattr(source_config, "api_protocol", "") or client.__class__.__name__),
-            to_protocol=str(getattr(repair_config, "api_protocol", "") or repair_client.__class__.__name__),
-            from_model=model,
-            to_model=model,
-            from_strategy="practice_json_generation",
-            to_strategy="syntax_only_json_repair",
-            budget_scope="run_model_call",
-            budget_charged=True,
-            decision_source="existing_practice_json_repair",
-        )
-        record_model_retry_started(observation)
-        with prompt_contract(contract_id):
-            with model_request_slot(getattr(repair_client, "config", None)):
-                repaired = repair_client.chat_json(
-                    repair_messages,
-                    model=model,
-                    temperature=0,
-                    max_tokens=output_token_budget,
-                    thinking=thinking,
-                    timeout=timeout_seconds,
-                    task_stage=task_stage,
-                    required_evidence_refs=required_evidence_refs,
-                    delivered_evidence_refs=delivered_evidence_refs,
-                    item_ids=item_ids,
-                    enforce_context_budget=enforce_context_budget,
-                )
-        if ensure_active is not None:
-            ensure_active()
-        try:
-            raw = _parse_safe_practice_json(repaired.content)
-        except LLMError as repair_error:
-            raise LLMError(f"{first_error}；同路由 JSON 修复后仍失败：{repair_error}") from repair_error
-    return raw
+    return validated.model_dump(mode="python", exclude_none=True)
 
 
 def _practice_stage_timeout(stage: str, default: int) -> int:

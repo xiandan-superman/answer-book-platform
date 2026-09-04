@@ -14,7 +14,8 @@ FORMULA_TEXT_RE = re.compile(
     r"[A-Za-z]\s*=\s*[^。；，,\u4e00-\u9fff]{2,}|"
     r"\b(?:ln|log|exp|sin|cos|tan)\s*[\(\w]|"
     r"\b(?:RT|nRT|nF|zF|pV|Kp|Ksp|Ka|Kb)\b|"
-    r"[A-Za-z0-9]\s*/\s*[A-Za-z0-9]"
+    r"(?<![A-Za-z0-9.])(?:[A-Za-z]|\d+(?:\.\d+)?)\s*/\s*"
+    r"(?:[A-Za-z]|\d+(?:\.\d+)?)(?![A-Za-z0-9.])"
     r")"
 )
 

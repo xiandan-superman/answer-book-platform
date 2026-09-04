@@ -22,7 +22,8 @@ if str(ROOT) not in sys.path:
 
 from app.dependency_profiles import runtime_dependency_files, runtime_dependency_fingerprint  # noqa: E402
 
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 11)
+RUNTIME_ENV_NAME = "python-env-py311"
 RESTART_EXIT_CODE = 75
 
 
@@ -143,7 +144,10 @@ def gui_subprocess_kwargs() -> dict[str, Any]:
 
 
 def dependencies_healthy(python: Path) -> bool:
-    probe = "import docx,lxml,latex2mathml,PIL,pydantic,pypdfium2,bm25s,huey,matplotlib,numpy"
+    probe = (
+        "import docx,lxml,latex2mathml,PIL,pydantic,instructor,litellm,sympy,"
+        "latex2sympy2_extended,math_verify,pypdfium2,bm25s,huey,matplotlib,numpy"
+    )
     if sys.platform.startswith("win") or sys.platform == "darwin":
         probe += ",webview,pystray"
     result = subprocess.run([str(python), "-c", probe], capture_output=True, timeout=30)
@@ -177,14 +181,16 @@ def ensure_dependencies(
     approved: bool,
     progress: Callable[..., Any] | None = None,
 ) -> Path:
-    env_dir = data_root / "runtime" / "python-env"
+    # Use a new path instead of mutating the legacy Python 3.9 environment in
+    # place.  Existing user data stays intact and rollback can still run it.
+    env_dir = data_root / "runtime" / RUNTIME_ENV_NAME
     python = runtime_python(env_dir)
     first_install = not python.is_file()
     if first_install:
         env_dir.parent.mkdir(parents=True, exist_ok=True)
         venv.EnvBuilder(with_pip=True, clear=False).create(env_dir)
     fingerprint = dependency_fingerprint(project_root)
-    state_path = data_root / "runtime" / "dependencies.json"
+    state_path = data_root / "runtime" / "dependencies-py311.json"
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -476,7 +482,7 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
     args = parser.parse_args()
     if sys.version_info < MIN_PYTHON:
-        print("需要 Python 3.9 或更高版本。", file=sys.stderr)
+        print("需要 Python 3.11 或更高版本。", file=sys.stderr)
         return 2
     project_root = Path(args.project_root).resolve()
     data_root = user_data_root().resolve()

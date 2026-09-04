@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from .answer_generation import (
     semantic_generation_issues,
     structured_answer_max_tokens,
 )
+from .calculation_consistency import calculation_draft_consistency_issues
 from .concurrency import model_request_slot, run_limited_concurrent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
@@ -47,6 +49,16 @@ def audit_model_repair_worker_count() -> int:
         return max(1, min(6, int(raw)))
     except ValueError:
         return 6
+
+
+def audit_model_repair_max_attempts() -> int:
+    """Bound semantic correction turns while allowing a real validate/repair loop."""
+
+    raw = os.environ.get("AUDIT_MODEL_REPAIR_MAX_ATTEMPTS", "3")
+    try:
+        return max(2, min(4, int(raw)))
+    except ValueError:
+        return 3
 
 
 def _bounded_timeout_env(name: str, default: int) -> int:
@@ -277,6 +289,18 @@ def _repair_context(fragment: dict[str, Any] | None, issues: list[dict[str, Any]
         blocks.append({"label": label, "text": _segments_text(block.get("segments"))})
     stored_draft = fragment.get("_draft")
     draft = stored_draft if isinstance(stored_draft, dict) else fragment
+    deterministic_validation_issues = list(dict.fromkeys(calculation_draft_consistency_issues(draft)))
+    diagnostic_issues = [
+        *issues,
+        *(
+            {
+                "code": "calculation_deterministic_validation",
+                "message": message,
+                "severity": "issue",
+            }
+            for message in deterministic_validation_issues
+        ),
+    ]
     return {
         "question_id": _qid(fragment),
         "section": fragment.get("section", ""),
@@ -290,8 +314,9 @@ def _repair_context(fragment: dict[str, Any] | None, issues: list[dict[str, Any]
         "drawing_code_specs": fragment.get("drawing_code_specs", []),
         "figure_specs": fragment.get("figure_specs", []),
         "repair_scope": [str(issue.get("code") or issue.get("message") or "") for issue in issues],
-        "deterministic_numeric_diagnostics": _deterministic_numeric_diagnostics(fragment, issues),
-        "deterministic_contract_diagnostics": _deterministic_contract_diagnostics(draft, issues),
+        "deterministic_validation_issues": deterministic_validation_issues,
+        "deterministic_numeric_diagnostics": _deterministic_numeric_diagnostics(fragment, diagnostic_issues),
+        "deterministic_contract_diagnostics": _deterministic_contract_diagnostics(draft, diagnostic_issues),
         "note": "已移除程序生成的教材依据块；不要补写教材页码或教材依据。",
     }
 
@@ -440,9 +465,11 @@ def _repair_retry_prompt(
                     "rejected_result_values": match.group(3),
                 }
             )
+    validation_tool_result = _repair_validation_tool_result(candidate, validation_issues)
     retry_instruction = {
         "task": "repair_previous_candidate_validation_only",
         "previous_candidate": candidate,
+        "validation_tool_result": validation_tool_result,
         "deterministic_validation_issues": validation_issues,
         "authoritative_arithmetic_diagnostics": arithmetic_diagnostics,
         "authoritative_contract_diagnostics": _deterministic_contract_diagnostics(candidate, validation_issues),
@@ -463,6 +490,33 @@ def _repair_retry_prompt(
         {"role": "assistant", "content": json.dumps(candidate, ensure_ascii=False)},
         {"role": "user", "content": json.dumps(retry_instruction, ensure_ascii=False)},
     ])
+
+
+def _repair_validation_tool_result(
+    candidate: dict[str, Any], validation_issues: list[str]
+) -> dict[str, Any]:
+    """Return a stable, actionable validator envelope for the next model turn."""
+
+    candidate_json = json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    suggestion = "根据确定性校验结果修改上一版候选，并同步答案、公式、步骤、数值账本和图示字段。"
+    if any("missing_required" in str(issue) or "required_figure" in str(issue) for issue in validation_issues):
+        suggestion = "保留上一版内容，按原题要求补齐可渲染的 drawing_code_specs 或 figure_specs，不能只写‘见图’。"
+    return {
+        "schema_version": "answer_book.repair_validation_result.v1",
+        "ok": False,
+        "error": {
+            "code": "ANSWER_REPAIR_VALIDATION_FAILED",
+            "message": "上一版候选未通过确定性验收。",
+            "suggestion": suggestion,
+            "responsibility": "model_output",
+            "retryable": True,
+            "details": {"issues": validation_issues},
+        },
+        "meta": {
+            "candidate_sha256": hashlib.sha256(candidate_json.encode("utf-8")).hexdigest(),
+            "issue_count": len(validation_issues),
+        },
+    }
 
 
 def _block_has_payload(fragment: dict[str, Any], label: str) -> bool:
@@ -729,16 +783,19 @@ def repair_fragments_with_model_for_audit(
     target_rows = list(targets.items())[:max_repairs]
     max_workers = 1 if client is not None else audit_model_repair_worker_count()
 
-    def repair_one(target: tuple[str, list[dict[str, Any]]]) -> tuple[str, dict[str, Any] | None, list[str]]:
+    def repair_one(
+        target: tuple[str, list[dict[str, Any]]]
+    ) -> tuple[str, dict[str, Any] | None, list[str], list[dict[str, Any]]]:
         qid, issues = target
         question = questions.get(qid)
         if not question:
-            return qid, None, ["缺少题目结构，无法模型修复。"]
+            return qid, None, ["缺少题目结构，无法模型修复。"], []
         evidence_selection = selections.get(qid)
         evidence = evidence_for_answer_generation(candidates, qid, evidence_selection)
         fragment = fragments_by_qid.get(qid)
         if isinstance(fragment, dict) and not isinstance(fragment.get("_draft"), dict) and qid in stored_drafts:
             fragment = {**fragment, "_draft": copy.deepcopy(stored_drafts[qid])}
+        validation_history: list[dict[str, Any]] = []
         try:
             repair_client = client or OpenAICompatibleClient(provider)
             artifact_store = ImageArtifactStore(fragments_json.parent / "agent_images" / qid)
@@ -780,7 +837,8 @@ def repair_fragments_with_model_for_audit(
             draft: dict[str, Any] = {}
             repaired: dict[str, Any] | None = None
             candidate_issues: list[str] = []
-            for attempt in range(2):
+            max_attempts = audit_model_repair_max_attempts()
+            for attempt in range(max_attempts):
                 messages = base_messages if attempt == 0 else _repair_retry_prompt(base_messages, draft, candidate_issues)
                 agent_result = None
                 with prompt_contract("exam.answer_audit_repair"):
@@ -822,14 +880,23 @@ def repair_fragments_with_model_for_audit(
                 if not candidate_issues:
                     repaired = candidate
                     break
-                # Keep one retry inside this transaction when a scoped edit
-                # accidentally omits a valid sibling unit or block. The second
-                # candidate still has to pass every deterministic postcondition.
-                if attempt == 0:
+                validation_result = _repair_validation_tool_result(draft, candidate_issues)
+                validation_result["meta"].update(
+                    {
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "question_id": qid,
+                    }
+                )
+                validation_history.append(validation_result)
+                # Each retry receives the latest full candidate plus the exact
+                # deterministic tool result. No retry starts again from the
+                # original answer, and no failed candidate is persisted.
+                if attempt + 1 < max_attempts:
                     continue
-                return qid, None, candidate_issues
+                return qid, None, candidate_issues, validation_history
             if repaired is None:
-                return qid, None, candidate_issues or ["repair_candidate_not_accepted"]
+                return qid, None, candidate_issues or ["repair_candidate_not_accepted"], validation_history
             repaired.pop("_review_candidate_issues", None)
             repaired["_review_flags"] = [
                 flag
@@ -849,15 +916,19 @@ def repair_fragments_with_model_for_audit(
                     "recovered_by": f"{audit_stage}_model_repair",
                     "audit_repair_issues": issues[:10],
                     "llm_retry": getattr(repair_client, "last_json_retry_report", {}),
+                    "repair_validation_history": validation_history,
                 }
             )
             repaired["_meta"] = meta
         except Exception as exc:
-            return qid, None, [str(exc)]
-        return qid, repaired, []
+            return qid, None, [str(exc)], validation_history
+        return qid, repaired, [], validation_history
 
     repair_results = run_limited_concurrent(target_rows, repair_one, max_workers=max_workers)
-    for qid, repaired, issues in repair_results:
+    validation_results: dict[str, list[dict[str, Any]]] = {}
+    for qid, repaired, issues, validation_history in repair_results:
+        if validation_history:
+            validation_results[qid] = validation_history
         if issues:
             repair_issues.append({"question_id": qid, "issues": issues})
             continue
@@ -882,6 +953,7 @@ def repair_fragments_with_model_for_audit(
         "repaired_question_ids": repaired_qids,
         "issue_count": len(repair_issues),
         "issues": repair_issues[:30],
+        "validation_tool_results": validation_results,
         "targets": targets,
         "budget": {
             "max_repairs": max_repairs,

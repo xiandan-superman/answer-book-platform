@@ -116,9 +116,14 @@ def test_practice_generation_and_figure_repair_are_covered_but_planning_is_not()
 
         def chat_json(self, messages, **_kwargs):
             calls.append(messages)
-            return SimpleNamespace(content='{"ok":true}')
+            return SimpleNamespace(content=json.dumps(response))
 
     for contract_id in ("practice.generation", "practice.figure_repair", "practice.planning"):
+        response = {
+            "practice.generation": {"exercises": [{"stem": "题目"}]},
+            "practice.figure_repair": {"figures": []},
+            "practice.planning": {"plan_items": [{"plan_item_id": "p1"}]},
+        }[contract_id]
         result = exercise_generation._call_practice_json(
             FakeClient(),
             [{"role": "user", "content": '{"task":"test"}'}],
@@ -128,7 +133,7 @@ def test_practice_generation_and_figure_repair_are_covered_but_planning_is_not()
             repair_invalid_json=False,
             prompt_contract_id=contract_id,
         )
-        assert result == {"ok": True}
+        assert result == response
 
     assert _serialized(calls[0]).count(GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT) == 1
     assert _serialized(calls[1]).count(GENERATION_IMAGE_LABEL_LANGUAGE_REQUIREMENT) == 1

@@ -70,6 +70,28 @@ def test_pipeline_telemetry_ignores_non_progress_health_updates(tmp_path: Path) 
     update_health.assert_not_called()
 
 
+def test_pipeline_telemetry_updates_task_shaped_quality_budget(tmp_path: Path) -> None:
+    status_path = tmp_path / "pipeline_status.json"
+    telemetry = PipelineRunTelemetry(
+        task_id="task-budget",
+        status_path=status_path,
+        quality_governance={"budget": {"max_model_calls_per_run": 120}},
+    )
+
+    telemetry.update_quality_budget(
+        {
+            "max_model_calls_per_run": 220,
+            "estimated_model_calls_per_run": 122,
+            "model_call_headroom_percent": 180,
+            "model_call_budget_dynamic": True,
+        }
+    )
+
+    saved = json.loads(status_path.read_text(encoding="utf-8"))
+    assert saved["quality_governance"]["budget"]["max_model_calls_per_run"] == 220
+    assert saved["quality_governance"]["budget"]["model_call_budget_dynamic"] is True
+
+
 def test_pipeline_telemetry_does_not_mix_domain_specific_counters(tmp_path: Path) -> None:
     telemetry = PipelineRunTelemetry(
         task_id="task-3",

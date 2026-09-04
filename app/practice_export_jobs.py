@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .document_tool import DocumentToolFailure, DocumentToolSession
+from .officecli_word import officecli_runtime_info, selected_word_tool_variant
 from .paths import CACHE_DIR
 from .practice_document_contracts import PRACTICE_DOCUMENT_CONTRACT_VERSION
 from .practice_export import build_practice_question_docx, validate_docx_output, validate_practice_export
@@ -36,6 +38,7 @@ def _cache_key(data: dict[str, Any]) -> str:
     # question edit changes the exercises and therefore produces a new key.
     document_data = {
         "cache_version": EXPORT_CACHE_VERSION,
+        "word_tool_variant": selected_word_tool_variant(),
         "source_mode": data.get("source_mode"),
         "title": data.get("title"),
         "goal": data.get("goal"),
@@ -140,6 +143,7 @@ def _queue_automatic_failure_report(record: dict[str, Any]) -> None:
 
 def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
     started = time.perf_counter()
+    document_tool_result: dict[str, Any] = {}
     with _LOCK:
         _ACTIVE.add(job_id)
     try:
@@ -153,19 +157,58 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
                 current_operation=f"正在处理第 {completed}/{total} 题",
             )
 
-        build_started = time.perf_counter()
-        content = build_practice_question_docx(data, progress_callback=report_progress)
-        build_seconds = time.perf_counter() - build_started
-        docx_report = validate_docx_output(content, data)
-        if not docx_report.get("ok"):
-            issues = list(dict.fromkeys(str(issue) for issue in docx_report.get("issues") or [] if str(issue).strip()))
-            raise ValueError("生成的 Word 未通过完整性校验：" + "；".join(issues[:8]))
         with _LOCK:
             cache_path = Path(str(_JOBS[job_id]["cache_path"]))
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = cache_path.with_suffix(".docx.tmp")
-        temporary.write_bytes(content)
-        temporary.replace(cache_path)
+        document_tool = DocumentToolSession(
+            _job_record_path(job_id).with_suffix(".document_tool_events.jsonl"),
+            session_id=job_id,
+        )
+        output: dict[str, Any] = {}
+        build_started = time.perf_counter()
+
+        def build_validate_and_persist() -> dict[str, Any]:
+            word_tool_variant = selected_word_tool_variant()
+            content = build_practice_question_docx(data, progress_callback=report_progress)
+            docx_report = validate_docx_output(content, data)
+            if not docx_report.get("ok"):
+                issues = list(
+                    dict.fromkeys(
+                        str(issue)
+                        for issue in docx_report.get("issues") or []
+                        if str(issue).strip()
+                    )
+                )
+                raise DocumentToolFailure(
+                    code="PRACTICE_DOCX_CONTRACT_VALIDATION_FAILED",
+                    message="生成的练习 Word 未通过完整性校验。",
+                    suggestion="保留题目数据，按题号和字段位置修复文档转换问题后重新导出。",
+                    responsibility="document_contract",
+                    details={"issues": issues[:30]},
+                )
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_suffix(".docx.tmp")
+            temporary.write_bytes(content)
+            temporary.replace(cache_path)
+            output["content"] = content
+            return {
+                "validation": docx_report,
+                "size_bytes": len(content),
+                "question_count": len(data.get("exercises") or []),
+                "word_tool_variant": word_tool_variant,
+                "word_tool_runtime": officecli_runtime_info() if word_tool_variant == "B" else {"variant": "A", "engine": "Python/OMML"},
+            }
+
+        document_tool_result = document_tool.run(
+            "build_validate_persist_practice_docx",
+            build_validate_and_persist,
+            artifact_path=cache_path,
+            input_revision=_cache_key(data),
+        )
+        build_seconds = time.perf_counter() - build_started
+        if not document_tool_result.get("ok"):
+            error = document_tool_result.get("error") or {}
+            raise ValueError(str(error.get("message") or "练习 Word 文档工具执行失败。"))
+        content = output["content"]
         elapsed = time.perf_counter() - started
         _update_job(
             job_id,
@@ -178,6 +221,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             elapsed_seconds=round(elapsed, 3),
             cached=False,
             document_contract_version=PRACTICE_DOCUMENT_CONTRACT_VERSION,
+            word_tool_variant=selected_word_tool_variant(),
         )
         append_runtime_log(
             "practice_export",
@@ -186,6 +230,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
                 "job_id": job_id,
                 "build_seconds": round(build_seconds, 3),
                 "size_bytes": len(content),
+                "word_tool_variant": selected_word_tool_variant(),
             },
         )
     except Exception as exc:
@@ -198,6 +243,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             diagnostic_context={
                 "exception_type": exc.__class__.__name__,
                 "traceback": traceback.format_exc(),
+                "document_tool_result": document_tool_result,
             },
             elapsed_seconds=round(elapsed, 3),
         )

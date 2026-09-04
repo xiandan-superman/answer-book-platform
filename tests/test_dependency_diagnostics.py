@@ -36,7 +36,7 @@ def test_dependency_report_is_non_blocking_and_reports_exact_drift(monkeypatch, 
     }]
 
 
-def test_dependency_report_marks_unlocked_python_profile_as_bounded(tmp_path) -> None:
+def test_dependency_report_marks_old_python_profile_as_unsupported(tmp_path) -> None:
     (tmp_path / "requirements.txt").write_text("example>=1\n", encoding="utf-8")
 
     report = dependency_diagnostics.dependency_version_report(
@@ -45,6 +45,6 @@ def test_dependency_report_marks_unlocked_python_profile_as_bounded(tmp_path) ->
         platform_name="darwin",
     )
 
-    assert report["profile"] == "py310-macos"
-    assert report["status"] == "bounded"
+    assert report["profile"] == "unsupported-macos"
+    assert report["status"] == "unsupported"
     assert report["recommended_count"] == 0

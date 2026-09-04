@@ -13,8 +13,7 @@ python3 scripts/run_quality_gates.py
 ## 完整门禁
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py39.txt   # Python 3.9
-# Python 3.11+ 改用 constraints-py311.txt
+python3.11 -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt
 python3 scripts/run_quality_gates.py --full
 ```
 
@@ -22,4 +21,4 @@ python3 scripts/run_quality_gates.py --full
 
 浏览器端端到端测试放在 `tests/e2e/`，默认测试集不启动真实浏览器；验收环境显式设置地址后单独运行。
 
-GitHub CI 对 Python 3.9 和 3.11 运行平台门禁，在 Chromium 中执行关键用户流程，并在 macOS/Windows 的 Python 3.9/3.11 环境实际解析源码运行锁、执行 `pip check` 和关键导入冒烟。正式源码标签还会再次执行完整门禁，并从生成后的源码 ZIP 使用独立数据目录启动服务；CI 使用固定响应和本地测试材料，不调用真实付费模型。
+GitHub CI 对 Python 3.11 运行平台门禁，在 Chromium 中执行关键用户流程，并在 macOS/Windows 的 Python 3.11 环境实际解析源码运行锁、执行 `pip check` 和关键导入冒烟。正式源码标签还会再次执行完整门禁，并从生成后的源码 ZIP 使用独立数据目录启动服务；CI 使用固定响应和本地测试材料，不调用真实付费模型。

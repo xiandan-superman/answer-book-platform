@@ -212,6 +212,9 @@ def model_call_context(
     operation: str = "",
     active_item: str = "",
     lease_epoch: int | None = None,
+    question_count: int | None = None,
+    task_kind: str = "",
+    textbook_evidence_enabled: bool | None = None,
 ) -> Iterator[None]:
     current = dict(_MODEL_CALL_CONTEXT.get() or {})
     execution_run_id = str(current.get("execution_run_id") or "")
@@ -230,6 +233,13 @@ def model_call_context(
                 "operation": operation,
                 "active_item": active_item,
                 "lease_epoch": lease_epoch,
+                "question_count": str(max(0, int(question_count or 0))) if question_count is not None else None,
+                "task_kind": task_kind,
+                "textbook_evidence_enabled": (
+                    "1" if textbook_evidence_enabled else "0"
+                )
+                if textbook_evidence_enabled is not None
+                else None,
             }.items()
             if value is not None and value != ""
         }
@@ -746,8 +756,31 @@ def _provider_circuit_cooldown_seconds() -> float:
         return 20.0
 
 
+def configure_model_call_task_shape(
+    *,
+    question_count: int,
+    task_kind: str,
+    textbook_evidence_enabled: bool = False,
+) -> None:
+    """Attach the confirmed task shape to the current run before its first model call."""
+
+    current = dict(_MODEL_CALL_CONTEXT.get() or {})
+    current.update(
+        {
+            "question_count": str(max(0, int(question_count or 0))),
+            "task_kind": str(task_kind or ""),
+            "textbook_evidence_enabled": "1" if textbook_evidence_enabled else "0",
+        }
+    )
+    _MODEL_CALL_CONTEXT.set(current)
+
+
 def _model_execution_budget(context: dict[str, str]) -> QualityExecutionBudget:
-    budget = QualityExecutionBudget.from_environment()
+    budget = QualityExecutionBudget.from_environment(
+        question_count=int(context.get("question_count") or 0),
+        task_kind=str(context.get("task_kind") or ""),
+        textbook_evidence_enabled=str(context.get("textbook_evidence_enabled") or "") == "1",
+    )
     if (
         str(context.get("task_id") or "").startswith("generation_")
         and str(context.get("stage") or "") == "generating"
@@ -838,9 +871,9 @@ def track_model_call(
     budget: QualityExecutionBudget | None = None
     circuit_probe = False
     if all(budget_key):
-        budget = _model_execution_budget(context)
+        proposed_budget = _model_execution_budget(context)
         with _MODEL_LOCK:
-            _RUN_MODEL_BUDGETS.setdefault(
+            state = _RUN_MODEL_BUDGETS.setdefault(
                 budget_key,
                 {
                     "started_monotonic": time.monotonic(),
@@ -848,8 +881,13 @@ def track_model_call(
                     "token_count": 0,
                     "provider_failures": {},
                     "provider_circuits": {},
+                    "budget": proposed_budget,
                 },
             )
+            budget = state.get("budget")
+            if not isinstance(budget, QualityExecutionBudget):
+                budget = proposed_budget
+                state["budget"] = budget
         circuit_probe = _wait_for_provider_circuit_probe(budget_key, route_key, provider, budget)
     with _MODEL_LOCK:
         if all(budget_key):

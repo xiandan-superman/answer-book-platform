@@ -90,6 +90,50 @@ class QualityGovernanceTests(unittest.TestCase):
         self.assertFalse(budget.post_content_selective_review_enabled)
         self.assertEqual(1, budget.max_prefigure_correctness_repair_rounds)
 
+    def test_quality_budget_scales_exam_calls_to_180_percent_of_estimate(self) -> None:
+        from app.capabilities.quality_budget import QualityExecutionBudget
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QUALITY_MAX_MODEL_CALLS_PER_RUN", None)
+            os.environ.pop("QUALITY_MODEL_CALL_HEADROOM_PERCENT", None)
+            budget = QualityExecutionBudget.from_environment(
+                question_count=33,
+                task_kind="exam",
+                textbook_evidence_enabled=True,
+            )
+
+        self.assertEqual(122, budget.estimated_model_calls_per_run)
+        self.assertEqual(220, budget.max_model_calls_per_run)
+        self.assertEqual(180, budget.model_call_headroom_percent)
+        self.assertTrue(budget.model_call_budget_dynamic)
+
+    def test_quality_budget_keeps_floor_for_small_tasks(self) -> None:
+        from app.capabilities.quality_budget import QualityExecutionBudget
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QUALITY_MAX_MODEL_CALLS_PER_RUN", None)
+            budget = QualityExecutionBudget.from_environment(
+                question_count=10,
+                task_kind="exam",
+                textbook_evidence_enabled=False,
+            )
+
+        self.assertEqual(16, budget.estimated_model_calls_per_run)
+        self.assertEqual(120, budget.max_model_calls_per_run)
+
+    def test_explicit_model_call_limit_overrides_dynamic_budget(self) -> None:
+        from app.capabilities.quality_budget import QualityExecutionBudget
+
+        with patch.dict(os.environ, {"QUALITY_MAX_MODEL_CALLS_PER_RUN": "140"}):
+            budget = QualityExecutionBudget.from_environment(
+                question_count=100,
+                task_kind="exam",
+                textbook_evidence_enabled=True,
+            )
+
+        self.assertEqual(140, budget.max_model_calls_per_run)
+        self.assertFalse(budget.model_call_budget_dynamic)
+
 
 if __name__ == "__main__":
     unittest.main()

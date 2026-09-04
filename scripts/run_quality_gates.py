@@ -68,8 +68,8 @@ def main() -> int:
                 "ok": False,
                 "missing_dev_tools": missing,
                 "install": (
-                    "python3 -m pip install -r requirements.txt -r requirements-dev.txt "
-                    "-c constraints-py39.txt  # Python 3.11+ use constraints-py311.txt"
+                    "python3.11 -m pip install -r requirements.txt -r requirements-dev.txt "
+                    "-c constraints-py311.txt"
                 ),
             }, ensure_ascii=False, indent=2))
             return 2

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .adapters.mineru_runtime import runtime_status as mineru_runtime_status
 from .dependency_diagnostics import dependency_version_report
 from .drawing_code import run_drawing_code
 from .omml import clear_omml_caches, find_mathml2omml_xsl
@@ -236,7 +237,7 @@ def environment_repair_actions(env: dict[str, Any]) -> list[dict[str, Any]]:
     packages = env.get("python_packages", {})
     missing_core = [
         name
-        for name in ("python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "pydantic", "pypdfium2", "bm25s", "huey")
+        for name in ("python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "pydantic", "instructor", "litellm", "sympy", "latex2sympy2_extended", "math-verify", "pypdfium2", "bm25s", "huey")
         if not packages.get(name)
     ]
     if missing_core:
@@ -277,7 +278,19 @@ def environment_repair_actions(env: dict[str, Any]) -> list[dict[str, Any]]:
 
 def repair_environment(action: str) -> dict[str, Any]:
     if action == "install_python_dependencies":
-        result = _run_command([sys.executable, "-m", "pip", "install", "-r", str(PROJECT_ROOT / "requirements.txt")], timeout=600)
+        result = _run_command(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(PROJECT_ROOT / "requirements.txt"),
+                "-c",
+                str(PROJECT_ROOT / "constraints-py311.txt"),
+            ],
+            timeout=600,
+        )
     elif action == "install_windows_word_com":
         if platform.system() != "Windows":
             raise ValueError("此修复仅适用于 Windows")
@@ -327,6 +340,11 @@ def check_environment() -> dict[str, Any]:
         "matplotlib": bool(find_spec("matplotlib")),
         "numpy": bool(find_spec("numpy")),
         "pydantic": bool(find_spec("pydantic")),
+        "instructor": bool(find_spec("instructor")),
+        "litellm": bool(find_spec("litellm")),
+        "sympy": bool(find_spec("sympy")),
+        "latex2sympy2_extended": bool(find_spec("latex2sympy2_extended")),
+        "math-verify": bool(find_spec("math_verify")),
         "pypdfium2": bool(find_spec("pypdfium2")),
         "bm25s": bool(find_spec("bm25s")),
         "huey": bool(find_spec("huey")),
@@ -335,6 +353,7 @@ def check_environment() -> dict[str, Any]:
     env: dict[str, Any] = {
         "platform": platform.platform(),
         "python": platform.python_version(),
+        "python_supported": sys.version_info >= (3, 11),
         "dependency_versions": dependency_version_report(PROJECT_ROOT),
         "executables": {
             "python3": shutil.which("python3"),
@@ -388,6 +407,17 @@ def check_environment() -> dict[str, Any]:
             "payload_policy": "job_id_only",
         },
         "drawing_runtime": drawing_runtime,
+        "mineru_runtime": mineru_runtime_status(),
+        "structured_output_runtime": {
+            "pydantic": python_packages["pydantic"],
+            "instructor": python_packages["instructor"],
+        },
+        "math_validation_runtime": {
+            "sympy": python_packages["sympy"],
+            "latex2sympy2_extended": python_packages["latex2sympy2_extended"],
+            "math_verify": python_packages["math-verify"],
+            "isolated_process": True,
+        },
         "providers": providers,
         "network": _check_network(providers),
     }

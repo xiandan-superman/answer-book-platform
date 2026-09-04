@@ -40,6 +40,26 @@ _MISSING_API_KEY_ERROR = re.compile(
 )
 
 
+def _practice_job_question_count(record: dict[str, Any]) -> int:
+    raw_payload = record.get("payload")
+    payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+    raw_plan = payload.get("plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    raw_blueprint = plan.get("blueprint")
+    blueprint: dict[str, Any] = raw_blueprint if isinstance(raw_blueprint, dict) else plan
+    exercise_plan = blueprint.get("exercise_plan")
+    if isinstance(exercise_plan, list) and exercise_plan:
+        return len(exercise_plan)
+    for value in (record.get("total_count"), payload.get("count")):
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            return count
+    return 0
+
+
 def _terminal_model_usage(job_id: str) -> dict[str, Any]:
     """Use the model-call ledger as the terminal source of truth for call counts."""
     usage = model_call_cost_summary(job_id)
@@ -743,6 +763,9 @@ def run_practice_job(job_id: str, worker: Callable[[str, dict[str, Any]], dict[s
             stage=str(record.get("current_stage") or ""),
             operation="出题任务",
             lease_epoch=lease_epoch,
+            question_count=_practice_job_question_count(record),
+            task_kind=str(record.get("task_kind") or "practice"),
+            textbook_evidence_enabled=False,
         ):
             outcome = worker(str(record["operation"]), {
                 **(record.get("payload") or {}),

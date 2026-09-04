@@ -12,6 +12,7 @@ from typing import Any
 
 from docx import Document
 
+from .adapters.mineru_runtime import MINERU_VERSION, parse_document
 from .input_representations import REPRESENTATION_SCHEMA, render_page_representation
 from .mineru_content import rows_from_mineru_content_list
 from .omml_input import mixed_text_with_structured_math
@@ -918,41 +919,26 @@ def build_textbook_index_for_files(
                     pass
         elif path.suffix.lower() == ".json":
             rows.extend(rows_from_json(name, path))
-        elif path.suffix.lower() == ".docx":
-            docx_rows = rows_from_docx(name, path)
-            document = Document(path)
-            formula_count = len(document.element.findall(".//{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"))
-            visual_count = len(document.element.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"))
-            diagnostic: dict[str, Any] = {
-                "schema": REPRESENTATION_SCHEMA,
-                "source_file": str(path),
-                "source_format": "docx",
-                "raw_retained": True,
-                "structured_text_status": "ready" if docx_rows else "failed",
-                "formula_count": formula_count,
-                "embedded_visual_count": visual_count,
-            }
-            if formula_count or visual_count:
-                page_representation = render_page_representation(
-                    path,
-                    _representation_dir(stage_dir, path),
-                    source_format="docx",
-                    max_pages=10000,
-                )
-                docx_rows.extend(_page_visual_rows(name, path, page_representation, logical_page=True))
-                diagnostic["page_visual_status"] = page_representation.get("status")
-                diagnostic["page_count_total"] = page_representation.get("page_count_total", 0)
-                diagnostic["page_visual_error"] = page_representation.get("error", "")
-            else:
-                diagnostic["page_visual_status"] = "not_required"
-            if not docx_rows:
-                raise ValueError(f"教材 Word 未提取到可用文本或页面表示：{path.name}")
-            rows.extend(docx_rows)
-            input_representations.append(diagnostic)
-        elif path.suffix.lower() == ".pdf":
-            pdf_rows, diagnostic = rows_from_pdf(name, path, stage_dir)
-            rows.extend(pdf_rows)
-            input_representations.append(diagnostic)
+        elif path.suffix.lower() in {".docx", ".pdf"}:
+            package = parse_document(path)
+            parsed_rows = rows_from_mineru_content_list(name, package)
+            if not parsed_rows:
+                raise ValueError(f"MinerU 未从教材中提取到可用内容：{path.name}")
+            rows.extend(parsed_rows)
+            input_representations.append(
+                {
+                    "schema": REPRESENTATION_SCHEMA,
+                    "source_file": str(path),
+                    "source_format": path.suffix.lower().lstrip("."),
+                    "raw_retained": True,
+                    "structured_text_status": "ready",
+                    "parser": "mineru",
+                    "parser_version": MINERU_VERSION,
+                    "content_list": str(package.content_list or ""),
+                    "audit_path": str(package.audit_path),
+                    "fallback_used": False,
+                }
+            )
         else:
             rows.extend(rows_from_text(name, path))
     rows = enrich_rows_with_sections(rows)

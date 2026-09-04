@@ -16,7 +16,7 @@ answer_book_platform_v1/
 
 必须安装：
 
-- Python 3.9+
+- Python 3.11+
 - Microsoft Word
 - `pdftoppm`
 - Python 包依赖：见 `requirements.txt`
@@ -35,7 +35,7 @@ brew install poppler libreoffice
 Windows 要求：
 
 - 安装 Microsoft Word。
-- 安装 Python 3.9+。
+- 安装 Python 3.11+。
 - 安装 Poppler，并确保 `pdftoppm.exe` 在 PATH 中。
 - 安装脚本会额外安装 `requirements-windows.txt` 中的 `pywin32`，用于 Microsoft Word COM 自动化。
 - 执行：

@@ -16,6 +16,9 @@ from app.dependency_profiles import runtime_dependency_files  # noqa: E402
 
 
 def main() -> int:
+    if sys.version_info < (3, 11):
+        print(json.dumps({"ok": False, "issues": ["Python 3.11 or newer is required"]}, ensure_ascii=False, indent=2))
+        return 2
     dependency_files = runtime_dependency_files(ROOT, sys.version_info[:2], platform_name=sys.platform)
     requirements = ROOT / "requirements.txt"
     if not requirements.exists():

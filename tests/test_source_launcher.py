@@ -8,6 +8,11 @@ import pytest
 from scripts import source_launcher
 
 
+def test_python_311_uses_a_separate_managed_runtime() -> None:
+    assert source_launcher.MIN_PYTHON == (3, 11)
+    assert source_launcher.RUNTIME_ENV_NAME == "python-env-py311"
+
+
 def test_dependency_fingerprint_changes_with_requirements(tmp_path) -> None:
     (tmp_path / "requirements.txt").write_text("huey>=3\n", encoding="utf-8")
     first = source_launcher.dependency_fingerprint(tmp_path)

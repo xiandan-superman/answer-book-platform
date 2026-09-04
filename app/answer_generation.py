@@ -28,6 +28,7 @@ from .image_orchestration import (
     ensure_generation_image_label_language_requirement,
 )
 from .llm_client import LLMError, OpenAICompatibleClient, StructuredOutputError
+from .model_output_contracts import AnswerDraftBatchOutput, AnswerDraftOutput
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .omml_input import strip_structured_math_metadata
 from .prompt_registry import prompt_contract
@@ -2915,6 +2916,8 @@ def generate_one_fragment(
                         delivered_evidence_refs=[str(item.get("evidence_id") or "") for item in (prompt_evidence if prompt_evidence is not None else evidence) if item.get("evidence_id")],
                         item_ids=[str(question.get("question_id") or question.get("number") or "")],
                         enforce_context_budget=True,
+                        response_model=AnswerDraftOutput,
+                        validation_retries=1,
                     )
             assistant_content = json.dumps(data, ensure_ascii=False)
         except StructuredOutputError as exc:
@@ -3227,6 +3230,8 @@ def generate_batch_fragments(
                 task_stage="answer_generation",
                 item_ids=[str(item["question"].get("question_id") or "") for item in batch_items],
                 enforce_context_budget=True,
+                response_model=AnswerDraftBatchOutput,
+                validation_retries=1,
             )
     drafts = _extract_batch_drafts(raw)
     drafts_by_qid = {str(item.get("question_id") or "").strip(): item for item in drafts if str(item.get("question_id") or "").strip()}

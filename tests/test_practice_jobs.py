@@ -5,6 +5,26 @@ import threading
 from app import practice_jobs, practice_worker
 
 
+def test_practice_job_question_count_prefers_confirmed_plan() -> None:
+    record = {
+        "total_count": 0,
+        "payload": {
+            "count": 9,
+            "plan": {
+                "blueprint": {
+                    "exercise_plan": [
+                        {"plan_item_id": "p1"},
+                        {"plan_item_id": "p2"},
+                        {"plan_item_id": "p3"},
+                    ]
+                }
+            },
+        },
+    }
+
+    assert practice_jobs._practice_job_question_count(record) == 3
+
+
 def test_practice_job_is_visible_while_running_and_persists_result(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_jobs, "PRACTICE_JOB_DIR", tmp_path / "jobs")
     created = practice_jobs.create_practice_job(

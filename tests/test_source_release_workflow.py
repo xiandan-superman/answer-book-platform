@@ -59,15 +59,15 @@ def test_release_workflows_require_version_specific_changelog_notes() -> None:
 
 
 def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> None:
-    assert 'python-version: ["3.9", "3.11"]' in QUALITY
-    assert "constraints-py39.txt" in QUALITY
+    assert 'python-version: ["3.11"]' in QUALITY
+    assert "constraints-py39.txt" not in QUALITY
     assert "constraints-py311.txt" in QUALITY
     assert "playwright install --with-deps chromium" in QUALITY
     assert "tests/e2e/test_platform_smoke.py" in QUALITY
     assert "source-dependency-locks:" in QUALITY
-    assert "constraints-source-macos-py39.txt" in QUALITY
+    assert "constraints-source-macos-py39.txt" not in QUALITY
     assert "constraints-source-macos-py311.txt" in QUALITY
-    assert "constraints-source-windows-py39.txt" in QUALITY
+    assert "constraints-source-windows-py39.txt" not in QUALITY
     assert "constraints-source-windows-py311.txt" in QUALITY
     assert "python -m pip check" in QUALITY
 
