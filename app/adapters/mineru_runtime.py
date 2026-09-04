@@ -17,6 +17,7 @@ from ..text_utils import clean_text
 from ..textbook_package import TextbookPackage, resolve_package_asset
 
 MINERU_VERSION = "3.4.5"
+MINERU_PROFILE = "pipeline"
 _INSTALL_LOCK = threading.Lock()
 
 
@@ -33,12 +34,57 @@ def _sha256_file(path: Path) -> str:
 
 
 def _managed_python() -> Path:
-    root = DATA_ROOT / "runtime" / f"mineru-{MINERU_VERSION}-py311"
+    root = DATA_ROOT / "runtime" / f"mineru-{MINERU_VERSION}-{MINERU_PROFILE}-py311"
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def _managed_cli(python: Path) -> Path:
     return python.parent / ("mineru.exe" if os.name == "nt" else "mineru")
+
+
+def _runtime_marker(python: Path) -> Path:
+    return python.parent.parent / ".answer-book-runtime.json"
+
+
+def _runtime_fingerprint() -> dict[str, str]:
+    requirements = PROJECT_ROOT / "requirements-mineru.txt"
+    return {
+        "engine": "mineru",
+        "version": MINERU_VERSION,
+        "profile": MINERU_PROFILE,
+        "python": "3.11",
+        "requirements_sha256": _sha256_file(requirements),
+    }
+
+
+def _probe_runtime(python: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import torch; import mineru.backend.pipeline.model_init",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _runtime_ready(python: Path) -> bool:
+    if not python.is_file() or not _managed_cli(python).is_file():
+        return False
+    marker = _runtime_marker(python)
+    try:
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if recorded != _runtime_fingerprint():
+        return False
+    try:
+        return _probe_runtime(python).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _install_runtime(python: Path) -> None:
@@ -49,7 +95,7 @@ def _install_runtime(python: Path) -> None:
                 f"MinerU {MINERU_VERSION} 必须由 Python 3.11 运行；当前平台使用 Python {current}。"
                 "请安装 Python 3.11，完全退出平台后重新启动。"
             )
-        if python.is_file() and _managed_cli(python).is_file():
+        if _runtime_ready(python):
             return
         if os.environ.get("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1").strip().lower() in {"0", "false", "no"}:
             raise MinerURuntimeError("MinerU 运行时尚未安装，且 ANSWER_BOOK_MINERU_AUTO_INSTALL 已关闭")
@@ -68,8 +114,17 @@ def _install_runtime(python: Path) -> None:
             if "No matching distribution found" in detail or "Requires-Python" in detail:
                 detail = "当前 Python 或操作系统没有兼容的 MinerU 安装包。请确认平台由 Python 3.11 启动。"
             raise MinerURuntimeError(f"MinerU {MINERU_VERSION} 安装失败：{detail}")
-
-
+        try:
+            probe = _probe_runtime(python)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MinerURuntimeError(f"MinerU {MINERU_VERSION} pipeline 引擎自检无法执行：{exc}") from exc
+        if probe.returncode != 0:
+            detail = (probe.stderr or probe.stdout or "")[-1200:].strip()
+            raise MinerURuntimeError(f"MinerU {MINERU_VERSION} 安装未通过 pipeline 引擎自检：{detail}")
+        _runtime_marker(python).write_text(
+            json.dumps(_runtime_fingerprint(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 def mineru_command() -> list[str]:
     override = os.environ.get("ANSWER_BOOK_MINERU_COMMAND", "").strip()
     if override:
@@ -88,10 +143,12 @@ def mineru_command() -> list[str]:
 def runtime_status() -> dict[str, object]:
     override = os.environ.get("ANSWER_BOOK_MINERU_COMMAND", "").strip()
     command = Path(override).expanduser() if override else _managed_cli(_managed_python())
+    installed = command.is_file() if override else command.is_file() and _runtime_marker(_managed_python()).is_file()
     return {
         "engine": "mineru",
         "version": MINERU_VERSION,
-        "installed": command.is_file(),
+        "installed": installed,
+        "profile": MINERU_PROFILE,
         "python_requirement": "3.11.x",
         "python_compatible": runtime_python_supported(),
         "command": str(command),
@@ -113,7 +170,7 @@ def parse_document(path: Path) -> TextbookPackage:
     if not existing:
         root.mkdir(parents=True, exist_ok=True)
         completed = subprocess.run(
-            [*mineru_command(), "-p", str(source), "-o", str(root)],
+            [*mineru_command(), "-p", str(source), "-o", str(root), "-b", MINERU_PROFILE],
             capture_output=True,
             text=True,
             timeout=max(60, int(os.environ.get("ANSWER_BOOK_MINERU_TIMEOUT_SECONDS", "1800"))),
@@ -132,7 +189,7 @@ def parse_document(path: Path) -> TextbookPackage:
                     "mineru_version": MINERU_VERSION,
                     "source_file": str(source),
                     "source_sha256": _sha256_file(source),
-                    "command": "mineru -p <source> -o <cache>",
+                    "command": f"mineru -p <source> -o <cache> -b {MINERU_PROFILE}",
                     "stdout_tail": (completed.stdout or "")[-2000:],
                     "stderr_tail": (completed.stderr or "")[-2000:],
                 },

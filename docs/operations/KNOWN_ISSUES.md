@@ -2,6 +2,15 @@
 
 > 本文件记录已经有证据定位、但尚未取得实施指令的问题。它不是完成清单；只有代码、回归、部署或发布分别完成后，才能更新对应状态。
 
+## 2026-09-04｜MinerU 基础包通过命令检查但默认 hybrid 后端缺本地依赖
+
+- status: implementing; v0.9.44_candidate; user_task_verification_pending
+- affected_flow: 真题与教材 PDF/DOCX 的 MinerU 主解析；故障发生在模型请求前，生题、模型输出和 Word 工具未进入执行。
+- observed: Python 3.11 与 `mineru==3.4.5` 基础 CLI 安装成功后，真实 DOCX 解析仍在 6% 失败；上游 CLI 默认选择 `hybrid-engine`，其本地执行要求 `mineru[pipeline]` 与 `torch`。
+- attribution: 确定性依赖配置和安装验收缺陷；不是模型输入、模型输出、供应商波动或 Word 文档工具错误。
+- implemented_repairs: 依赖改为固定 `mineru[pipeline]==3.4.5`；隔离运行目录加入 pipeline 身份；执行命令显式传入 `-b pipeline`；安装标记绑定依赖 SHA-256，并在复用环境前实际导入 torch 和 MinerU pipeline 模块。
+- required_verification: 定向、全量、发布包和公开发布门禁；用受影响用户原 DOCX 完成真实 MinerU 解析、整任务交付验收和重启后复跑。
+
 ## 2026-09-04｜Python 3.14 被误用为平台运行时导致 MinerU 安装失败
 
 - status: resolved; v0.9.43_released_and_deployed; failed_task_preserved_not_rerun

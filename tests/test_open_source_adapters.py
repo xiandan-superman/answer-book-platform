@@ -85,7 +85,38 @@ def test_mineru_managed_runtime_path_is_python_311_specific(tmp_path: Path, monk
 
     monkeypatch.setattr(mineru_runtime, "DATA_ROOT", tmp_path)
 
-    assert "mineru-3.4.5-py311" in str(mineru_runtime._managed_python())
+    assert "mineru-3.4.5-pipeline-py311" in str(mineru_runtime._managed_python())
+
+
+def test_mineru_requirement_installs_pipeline_extra() -> None:
+    from app.adapters import mineru_runtime
+
+    requirements = (mineru_runtime.PROJECT_ROOT / "requirements-mineru.txt").read_text(encoding="utf-8")
+
+    assert "mineru[pipeline]==3.4.5" in requirements
+
+
+def test_mineru_invocation_pins_pipeline_backend(tmp_path: Path, monkeypatch) -> None:
+    from app.adapters import mineru_runtime
+
+    source = tmp_path / "exam.docx"
+    source.write_bytes(b"fake-docx")
+    captured: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        captured.extend(command)
+        output = Path(command[command.index("-o") + 1]) / "exam"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "exam_content_list.json").write_text("[]", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mineru_runtime, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(mineru_runtime, "mineru_command", lambda: ["mineru"])
+    monkeypatch.setattr(mineru_runtime.subprocess, "run", fake_run)
+
+    mineru_runtime.parse_document(source)
+
+    assert captured[-2:] == ["-b", "pipeline"]
 
 
 def test_litellm_shadow_records_comparison_without_exposing_content(tmp_path: Path, monkeypatch) -> None:
