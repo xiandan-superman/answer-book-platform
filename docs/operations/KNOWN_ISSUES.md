@@ -4,11 +4,12 @@
 
 ## 2026-09-04｜MinerU 基础包通过命令检查但默认 hybrid 后端缺本地依赖
 
-- status: implementing; v0.9.44_candidate; user_task_verification_pending
-- affected_flow: 真题与教材 PDF/DOCX 的 MinerU 主解析；故障发生在模型请求前，生题、模型输出和 Word 工具未进入执行。
-- observed: Python 3.11 与 `mineru==3.4.5` 基础 CLI 安装成功后，真实 DOCX 解析仍在 6% 失败；上游 CLI 默认选择 `hybrid-engine`，其本地执行要求 `mineru[pipeline]` 与 `torch`。
-- attribution: 确定性依赖配置和安装验收缺陷；不是模型输入、模型输出、供应商波动或 Word 文档工具错误。
-- implemented_repairs: 依赖改为固定 `mineru[pipeline]==3.4.5`；隔离运行目录加入 pipeline 身份；执行命令显式传入 `-b pipeline`；安装标记绑定依赖 SHA-256，并在复用环境前实际导入 torch 和 MinerU pipeline 模块。
+- status: implementing; v0.9.45_candidate; user_task_verification_in_progress
+- affected_flow: 真题与教材 PDF/DOCX 的 MinerU 主解析及其到题目结构的桥接；最初安装故障发生在模型请求前，图片归属故障会让后续模型收到缺失视觉输入的空题。
+- observed: Python 3.11 与 `mineru==3.4.5` 基础 CLI 安装成功后，真实 DOCX 解析仍在 6% 失败；补齐 pipeline 后又发现上游 OCR 导入缺少 `six`。环境修复后，真实试卷的浮动图片被 MinerU 排在纯题号 `2、` 之前，平台按线性顺序把该图误挂到第 1 题，导致第 2 题进入知识规划时题干、图片和检索词全空，随后以“无检索候选”停止；同一 MinerU 结果还给大题标题包了 Markdown 加粗符号，旧分节器因而把多个大题误并到第一大题。
+- attribution: 前两项是确定性依赖配置和安装验收缺陷；第三项是 MinerU 输出到本项目题目结构之间的确定性桥接缺陷，直接造成模型输入不完整。模型对空输入返回结构合法的空计划不是根因，供应商波动和 Word 文档工具也不是本次失败原因。
+- harness_comparison: 优质 Harness 仍要求调用前保留完整用户输入和工具资产身份，并把不可执行的缺失输入作为显式错误；参考 Harness 不能凭空恢复未提供给模型的图片。本项目应在解析边界恢复图片锚点归属并使旧检查点失效，而不是要求模型猜题或在检索阶段重试。
+- implemented_repairs: 依赖改为固定 `mineru[pipeline]==3.4.5` 及上游 OCR 代码漏声明的 `six==1.17.0`；隔离运行目录加入 pipeline 身份；执行命令显式传入 `-b pipeline`；安装标记绑定依赖 SHA-256，并在复用环境前实际导入 torch 和 MinerU pipeline 模块。桥接层识别“连续图片后紧跟纯题号”的 Word 浮动锚点顺序并把题号移到图片之前，同时清除完整大题标题外层的 Markdown 强调符号；题目分组策略升至 v10，旧的错误结构不会被复用；完全无题干、图、表或子题的条目在模型调用前阻断。
 - required_verification: 定向、全量、发布包和公开发布门禁；用受影响用户原 DOCX 完成真实 MinerU 解析、整任务交付验收和重启后复跑。
 
 ## 2026-09-04｜Python 3.14 被误用为平台运行时导致 MinerU 安装失败

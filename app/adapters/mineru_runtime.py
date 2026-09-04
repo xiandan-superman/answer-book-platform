@@ -19,10 +19,17 @@ from ..textbook_package import TextbookPackage, resolve_package_asset
 MINERU_VERSION = "3.4.5"
 MINERU_PROFILE = "pipeline"
 _INSTALL_LOCK = threading.Lock()
+_BARE_NUMBERED_ITEM_RE = re.compile(r"^\s*\d{1,3}[、.．]\s*$")
+_OUTER_MARKDOWN_EMPHASIS_RE = re.compile(r"^(?P<marker>\*\*|__)(?P<body>.+)(?P=marker)$", re.S)
 
 
 class MinerURuntimeError(RuntimeError):
     pass
+
+
+def _strip_outer_markdown_emphasis(text: str) -> str:
+    match = _OUTER_MARKDOWN_EMPHASIS_RE.fullmatch(text.strip())
+    return clean_text(match.group("body")) if match else text
 
 
 def _sha256_file(path: Path) -> str:
@@ -247,7 +254,9 @@ def paragraph_lines(
             if body or caption:
                 lines.append(f"{table_marker_prefix}{json.dumps([[caption, body]], ensure_ascii=False)}")
         else:
-            text = clean_text(str(item.get("text") or item.get("content") or ""))
+            text = _strip_outer_markdown_emphasis(
+                clean_text(str(item.get("text") or item.get("content") or ""))
+            )
             caption = item.get("image_caption") or item.get("chart_caption") or []
             if isinstance(caption, list):
                 text = clean_text(" ".join([text, *map(str, caption)]))
@@ -262,4 +271,21 @@ def paragraph_lines(
                 target = image_dir / f"source_image_{image_index:03d}{asset.suffix or '.png'}"
                 shutil.copy2(asset, target)
                 lines.append(f"{image_marker_prefix}{target}")
+    # DOCX floating pictures can be emitted immediately before their bare
+    # numbered anchor (for example: image, then ``2、``). The downstream
+    # question parser assigns media to the current item, so restore logical
+    # reading order and keep the picture with the following item.
+    index = 0
+    while index < len(lines):
+        if not _BARE_NUMBERED_ITEM_RE.fullmatch(lines[index]):
+            index += 1
+            continue
+        first_image = index
+        while first_image > 0 and lines[first_image - 1].startswith(image_marker_prefix):
+            first_image -= 1
+        if first_image < index:
+            number = lines.pop(index)
+            lines.insert(first_image, number)
+            index += 1
+        index += 1
     return lines

@@ -2,3 +2,6 @@
 # of the web process prevents its large OCR/ML dependency graph from changing
 # the deterministic document-generation runtime.
 mineru[pipeline]==3.4.5
+# MinerU 3.4.5 pipeline imports six from its bundled OCR implementation but
+# does not declare it in the upstream extra.
+six==1.17.0

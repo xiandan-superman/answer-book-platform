@@ -57,6 +57,22 @@ def test_answer_below_cue_is_normal_inside_short_answer_section(tmp_path) -> Non
     assert not any("stem says 回答下列问题" in warning for warning in report["warnings"])
 
 
+def test_empty_question_is_blocked_before_model_planning_but_image_only_question_is_valid(tmp_path) -> None:
+    output = tmp_path / "audit.json"
+    issues = audit_exam_structure(
+        {
+            "items": [
+                {"question_id": "empty", "stem": "", "image_refs": []},
+                {"question_id": "image_only", "stem": "", "image_refs": ["reaction.png"]},
+            ]
+        },
+        output,
+    )
+
+    assert any(issue.startswith("empty: question has no stem") for issue in issues)
+    assert not any(issue.startswith("image_only:") for issue in issues)
+
+
 def test_mixed_section_unanimous_short_answer_children_do_not_warn(tmp_path) -> None:
     output = tmp_path / "audit.json"
     audit_exam_structure(

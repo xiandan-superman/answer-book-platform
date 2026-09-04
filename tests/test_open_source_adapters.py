@@ -11,6 +11,7 @@ from app.adapters.math_verifier import verify_math_equivalence
 from app.adapters.structured_completion import structured_completion
 from app.llm_client import LLMResult
 from app.model_output_contracts import PracticeGenerationOutput
+from app.textbook_package import TextbookPackage
 
 
 class _FakeStructuredClient:
@@ -94,6 +95,7 @@ def test_mineru_requirement_installs_pipeline_extra() -> None:
     requirements = (mineru_runtime.PROJECT_ROOT / "requirements-mineru.txt").read_text(encoding="utf-8")
 
     assert "mineru[pipeline]==3.4.5" in requirements
+    assert "six==1.17.0" in requirements
 
 
 def test_mineru_invocation_pins_pipeline_backend(tmp_path: Path, monkeypatch) -> None:
@@ -117,6 +119,102 @@ def test_mineru_invocation_pins_pipeline_backend(tmp_path: Path, monkeypatch) ->
     mineru_runtime.parse_document(source)
 
     assert captured[-2:] == ["-b", "pipeline"]
+
+
+def test_mineru_moves_floating_image_after_following_bare_question_number(tmp_path: Path) -> None:
+    from app.adapters.mineru_runtime import paragraph_lines
+    from app.exam_extract import IMAGE_MARKER_PREFIX, TABLE_MARKER_PREFIX, question_items, split_sections
+
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "reaction-1.png").write_bytes(b"first")
+    (images / "reaction-2.png").write_bytes(b"second")
+    content_list = tmp_path / "exam_content_list.json"
+    content_list.write_text(
+        json.dumps(
+            [
+                {"type": "text", "text": "二、完成下列反应式（共3题）"},
+                {"type": "text", "text": "1、 S2O8 →"},
+                {"type": "image", "img_path": "images/reaction-1.png"},
+                {"type": "image", "img_path": "images/reaction-2.png"},
+                {"type": "text", "text": "2、"},
+                {"type": "text", "text": "3、 Fe2+ →"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package = TextbookPackage(
+        package_id="test",
+        root=tmp_path,
+        title="exam",
+        citation_name="exam",
+        content_list=content_list,
+        content_list_v2=None,
+        layout_json=None,
+        markdown=None,
+        origin_pdf=None,
+        images_root=images,
+        audit_path=tmp_path / "audit.json",
+    )
+
+    lines = paragraph_lines(
+        package,
+        image_dir=tmp_path / "copied",
+        image_marker_prefix=IMAGE_MARKER_PREFIX,
+        table_marker_prefix=TABLE_MARKER_PREFIX,
+    )
+
+    assert lines[1] == "1、 S2O8 →"
+    assert lines[2] == "2、"
+    assert lines[3].startswith(IMAGE_MARKER_PREFIX)
+    assert lines[4].startswith(IMAGE_MARKER_PREFIX)
+    assert lines[5] == "3、 Fe2+ →"
+
+    parsed = [item for section in split_sections(lines) for item in question_items(section)]
+    assert parsed[0]["image_refs"] == []
+    assert len(parsed[1]["image_refs"]) == 2
+    assert parsed[2]["image_refs"] == []
+
+
+def test_mineru_removes_outer_markdown_from_section_headings(tmp_path: Path) -> None:
+    from app.adapters.mineru_runtime import paragraph_lines
+    from app.exam_extract import IMAGE_MARKER_PREFIX, TABLE_MARKER_PREFIX, split_sections
+
+    content_list = tmp_path / "exam_content_list.json"
+    content_list.write_text(
+        json.dumps(
+            [
+                {"type": "text", "text": "**一、填空题（共1题）**"},
+                {"type": "text", "text": "1、第一题"},
+                {"type": "text", "text": "**二、简答题（共1题）**"},
+                {"type": "text", "text": "1、第二题"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package = TextbookPackage(
+        package_id="headings",
+        root=tmp_path,
+        title="exam",
+        citation_name="exam",
+        content_list=content_list,
+        content_list_v2=None,
+        layout_json=None,
+        markdown=None,
+        origin_pdf=None,
+        images_root=None,
+        audit_path=tmp_path / "audit.json",
+    )
+
+    lines = paragraph_lines(
+        package,
+        image_dir=tmp_path / "copied",
+        image_marker_prefix=IMAGE_MARKER_PREFIX,
+        table_marker_prefix=TABLE_MARKER_PREFIX,
+    )
+
+    assert lines == ["一、填空题（共1题）", "1、第一题", "二、简答题（共1题）", "1、第二题"]
+    assert [section["major_no"] for section in split_sections(lines)] == [1, 2]
 
 
 def test_litellm_shadow_records_comparison_without_exposing_content(tmp_path: Path, monkeypatch) -> None:

@@ -43,7 +43,7 @@ NS = {
 }
 IMAGE_MARKER_PREFIX = "__ANSWER_BOOK_IMAGE__:"
 TABLE_MARKER_PREFIX = "__ANSWER_BOOK_TABLE__:"
-EXAM_GROUPING_POLICY_VERSION = "answer_book.exam_grouping.v9"
+EXAM_GROUPING_POLICY_VERSION = "answer_book.exam_grouping.v10"
 RESPONSE_CONSTRAINT_RE = re.compile(
     r"(?:"
     r"(?:计算|作答|答案|结果|数值)[^。；;？?]{0,30}(?:取|保留|精确到|写成|表示为)[^。；;？?]{0,24}(?:有效数字|小数|位|形式)?|"

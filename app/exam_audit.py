@@ -58,6 +58,11 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
     for item in items:
         qid = str(item.get("question_id", ""))
         stem = str(item.get("stem", "")).strip()
+        attachments = item.get("attachments") if isinstance(item.get("attachments"), dict) else {}
+        has_media = bool(item.get("image_refs") or attachments.get("tables"))
+        has_subquestions = any(isinstance(row, dict) for row in (item.get("subquestions") or []))
+        if not stem and not has_media and not has_subquestions:
+            issues.append(f"{qid}: question has no stem, image, table, or subquestion; source input is incomplete")
         if len(stem) < 4:
             warnings.append(f"{qid}: very short stem")
         section = str(item.get("section", ""))

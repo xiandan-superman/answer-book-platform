@@ -34,12 +34,12 @@
 
 ### OPT-20260904-05｜MinerU pipeline 依赖与引擎级自检
 - status: implementing
-- scope: 真题/教材 PDF/DOCX 的 MinerU 隔离运行时、安装复用判定、解析后端和用户任务恢复
-- changed: 从 MinerU 基础包改为固定 `mineru[pipeline]==3.4.5`，显式使用 pipeline 后端；新运行目录包含 pipeline 身份，安装指纹绑定依赖摘要，并在每次复用前实际导入 torch 和 MinerU pipeline 模块自检。
-- trigger: v0.9.43 用户机已使用 Python 3.11 并安装 MinerU 基础 CLI，但真实 DOCX 任务仍因默认 `hybrid-engine` 缺少 `mineru[pipeline]`/torch 在模型调用前失败；原安装检查只验证 CLI 文件存在。
-- invariants: MinerU 仍是唯一主解析器，不回退旧解析链；重型依赖仍隔离在用户数据目录；不覆盖 Key、任务、教材、日志和历史输出；确定性环境失败不通过模型重试掩盖。
-- do_not_regress: 不得再用 `mineru --version` 或 CLI 文件存在代替实际后端可用性；不得依赖上游可变的默认后端；依赖档变更后不得静默复用旧环境。
-- verification: 锁定 Python 3.11.15 定向回归 17 passed，完整门禁的 pytest 与 coverage 两轮均为 2002 passed、1 skipped、16 deselected，分支覆盖率 69%，编译、版本一致性、公式、第三方声明、项目完整度、Ruff 和 Mypy 全部通过；401 文件源码 ZIP 反向验证 0 问题，独立数据目录启动返回 0.9.44 且首页 HTTP 200；Windows 真实 pipeline 安装、用户 DOCX 解析、整任务交付及重启复跑待发布部署后执行。
+- scope: 真题/教材 PDF/DOCX 的 MinerU 隔离运行时、安装复用判定、解析后端、图片锚点到题目结构的桥接和用户任务恢复
+- changed: 从 MinerU 基础包改为固定 `mineru[pipeline]==3.4.5`，并显式补齐上游内置 OCR 代码漏声明的 `six==1.17.0`；显式使用 pipeline 后端；新运行目录包含 pipeline 身份，安装指纹绑定依赖摘要，并在每次复用前实际导入 torch 和 MinerU pipeline 模块自检。对 MinerU 将 Word 浮动图片排在纯题号之前的结果恢复逻辑阅读顺序，清除完整大题标题外层的 Markdown 强调符号，增加空题输入前置阻断，并把题目分组策略升级为 v10 以拒绝旧错误检查点。
+- trigger: v0.9.43 用户机已使用 Python 3.11 并安装 MinerU 基础 CLI，但真实 DOCX 任务仍因默认 `hybrid-engine` 缺少 `mineru[pipeline]`/torch 在模型调用前失败；原安装检查只验证 CLI 文件存在。环境修复后，用户原卷第 2 道图片题的图片被误挂到第 1 题，模型收到空题并生成空知识计划，最终在检索阶段失败。
+- invariants: MinerU 仍是唯一主解析器，不回退旧解析链；重型依赖仍隔离在用户数据目录；不覆盖 Key、任务、教材、日志和历史输出；确定性环境或输入完整性失败不通过模型猜测、重试或检索兜底掩盖。
+- do_not_regress: 不得再用 `mineru --version` 或 CLI 文件存在代替实际后端可用性；不得依赖上游可变的默认后端；依赖档变更后不得静默复用旧环境；不得让纯题号图片题以空模型输入继续进入规划和检索；不得把带 Markdown 外壳的大题标题当作普通题干。
+- verification: 首轮依赖修复的锁定 Python 3.11.15 定向回归 17 passed，0.9.44 完整门禁的 pytest 与 coverage 两轮均为 2002 passed、1 skipped、16 deselected，分支覆盖率 69%，编译、版本一致性、公式、第三方声明、项目完整度、Ruff 和 Mypy全部通过；401 文件源码 ZIP 反向验证 0 问题，独立数据目录启动返回 0.9.44 且首页 HTTP 200。补齐 six 后 Windows 真实 pipeline 已通过安装与用户 DOCX 解析；v0.9.45 桥接与门禁修复定向回归 35 passed，并用用户原 MinerU 内容离线回放得到 8 个正确大题、33 道题且图片归属第 2 道反应式；冻结修改后的完整门禁 pytest 与 coverage 两轮均为 2005 passed、1 skipped、16 deselected，分支覆盖率 70%，其余编译、版本、公式、第三方声明、项目完整度、Ruff 和 Mypy 全部通过。整任务交付及重启复跑待完成。
 
 ### OPT-20260904-04｜固定 Python 3.11 并前置拦截 MinerU 不兼容环境
 - status: verified
