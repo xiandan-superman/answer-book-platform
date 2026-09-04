@@ -5,6 +5,7 @@ from app.dependency_profiles import (
     python_dependency_profile,
     runtime_dependency_files,
     runtime_dependency_fingerprint,
+    runtime_python_supported,
 )
 
 
@@ -12,7 +13,11 @@ def test_python_versions_select_explicit_dependency_profiles() -> None:
     assert python_dependency_profile((3, 9)) == "unsupported"
     assert python_dependency_profile((3, 10)) == "unsupported"
     assert python_dependency_profile((3, 11)) == "py311"
-    assert python_dependency_profile((3, 13)) == "py311"
+    assert python_dependency_profile((3, 12)) == "unsupported"
+    assert python_dependency_profile((3, 13)) == "unsupported"
+    assert python_dependency_profile((3, 14)) == "unsupported"
+    assert runtime_python_supported((3, 11)) is True
+    assert runtime_python_supported((3, 14)) is False
     assert dependency_profile_key((3, 11), platform_name="win32") == "py311-windows"
     assert dependency_profile_key((3, 11), platform_name="darwin") == "py311-macos"
     assert dependency_profile_key((3, 11), platform_name="linux") == "py311-linux"

@@ -12,12 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.dependency_profiles import runtime_dependency_files  # noqa: E402
+from app.dependency_profiles import runtime_dependency_files, runtime_python_supported  # noqa: E402
 
 
 def main() -> int:
-    if sys.version_info < (3, 11):
-        print(json.dumps({"ok": False, "issues": ["Python 3.11 or newer is required"]}, ensure_ascii=False, indent=2))
+    if not runtime_python_supported():
+        print(json.dumps({"ok": False, "issues": ["Python 3.11 is required"]}, ensure_ascii=False, indent=2))
         return 2
     dependency_files = runtime_dependency_files(ROOT, sys.version_info[:2], platform_name=sys.platform)
     requirements = ROOT / "requirements.txt"

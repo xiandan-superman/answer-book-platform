@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from .adapters.mineru_runtime import runtime_status as mineru_runtime_status
 from .dependency_diagnostics import dependency_version_report
+from .dependency_profiles import runtime_python_supported
 from .drawing_code import run_drawing_code
 from .omml import clear_omml_caches, find_mathml2omml_xsl
 from .omml_input import clear_omml_input_caches, find_omml2mathml_xsl
@@ -353,7 +354,8 @@ def check_environment() -> dict[str, Any]:
     env: dict[str, Any] = {
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "python_supported": sys.version_info >= (3, 11),
+        "python_supported": runtime_python_supported(),
+        "python_requirement": "3.11.x",
         "dependency_versions": dependency_version_report(PROJECT_ROOT),
         "executables": {
             "python3": shutil.which("python3"),

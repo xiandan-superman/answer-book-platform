@@ -2,6 +2,16 @@
 
 > 本文件记录已经有证据定位、但尚未取得实施指令的问题。它不是完成清单；只有代码、回归、部署或发布分别完成后，才能更新对应状态。
 
+## 2026-09-04｜Python 3.14 被误用为平台运行时导致 MinerU 安装失败
+
+- status: implemented_locally; verification_in_progress; python_311_installed_on_affected_machine; not_deployed; not_released
+- affected_flow: 源码启动器、环境检查、真题与教材 PDF/DOCX 的 MinerU 主解析；按题出题、知识点出题和 Word/PDF 交付不直接触发该次失败，但共享同一平台运行环境。
+- observed: Windows 用户机只有 Python 3.14 时，0.9.41 的“3.11 或更高”检查错误放行，并由 3.14 创建运行环境；新任务环境阶段显示通过，随后在 `extract_exam` 按需安装 MinerU 3.4.5 时因上游要求 `>=3.10,<3.14` 失败。任务在模型调用前终止，原材料与配置保留。
+- attribution: 主因是 `delivery_environment` 和启动/依赖管理的确定性程序缺陷；模型输入、模型输出、供应商传输和模型 Harness 未参与，不应通过模型重试处理。
+- implemented_repairs: 所有用户启动入口、bootstrap、监督器、环境页和流水线统一固定 Python 3.11；错误版本创建的同名运行环境改为先隔离保留再重建；MinerU 改用带 `py311` 身份的独立目录，并在 pip 前校验解释器，安装失败只返回简短可操作提示。
+- required_verification: Python 3.11 定向与完整门禁；Windows 同时安装 3.11/3.14 时入口必须选择 3.11；从正式入口创建两个隔离环境、安装 MinerU、运行失败任务到越过解析阶段；确认无用户数据覆盖、无失败前模型调用。
+- authorization_boundary: 用户已授权处理；受影响用户机已并排安装 Python 3.11，3.14 保留，代码尚待完整门禁、部署和发布。
+
 ## 2026-09-03｜复合 LaTeX 公式被排版拆分后导致 Word 生成失败
 
 - status: implemented_locally; verification_in_progress; not_deployed; not_released

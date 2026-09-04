@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.adapters.math_verifier import verify_math_equivalence
 from app.adapters.structured_completion import structured_completion
 from app.llm_client import LLMResult
@@ -66,6 +68,24 @@ def test_mineru_runtime_discovers_native_content_list(tmp_path: Path, monkeypatc
     assert package.content_list is not None
     assert json.loads(package.content_list.read_text(encoding="utf-8"))[0]["text"] == "第一题"
     assert json.loads(package.audit_path.read_text(encoding="utf-8"))["mineru_version"] == "3.4.5"
+
+
+def test_mineru_rejects_incompatible_python_before_running_pip(tmp_path: Path, monkeypatch) -> None:
+    from app.adapters import mineru_runtime
+
+    monkeypatch.setattr(mineru_runtime, "runtime_python_supported", lambda: False)
+    monkeypatch.setattr(mineru_runtime.sys, "version_info", (3, 14, 6))
+    monkeypatch.setattr(mineru_runtime.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("pip must not run"))
+
+    with pytest.raises(mineru_runtime.MinerURuntimeError, match="必须由 Python 3.11 运行"):
+        mineru_runtime._install_runtime(tmp_path / "mineru" / "Scripts" / "python.exe")
+
+def test_mineru_managed_runtime_path_is_python_311_specific(tmp_path: Path, monkeypatch) -> None:
+    from app.adapters import mineru_runtime
+
+    monkeypatch.setattr(mineru_runtime, "DATA_ROOT", tmp_path)
+
+    assert "mineru-3.4.5-py311" in str(mineru_runtime._managed_python())
 
 
 def test_litellm_shadow_records_comparison_without_exposing_content(tmp_path: Path, monkeypatch) -> None:

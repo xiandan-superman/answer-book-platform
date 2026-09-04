@@ -9,7 +9,7 @@ if not exist "scripts\windows_launcher_bootstrap.py" (
 )
 where pyw >nul 2>nul
 if %errorlevel%==0 (
-  py -3.11 -c "import sys" >nul 2>nul
+  py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >nul 2>nul
   if !errorlevel! equ 0 (
     start "" pyw -3.11 scripts\windows_launcher_bootstrap.py %*
     exit /b 0
@@ -17,7 +17,7 @@ if %errorlevel%==0 (
 )
 where pythonw >nul 2>nul
 if %errorlevel%==0 (
-  python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+  python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >nul 2>nul
   if !errorlevel! equ 0 (
     start "" pythonw scripts\windows_launcher_bootstrap.py %*
     exit /b 0
@@ -32,7 +32,7 @@ if %errorlevel%==0 (
 )
 where python >nul 2>nul
 if %errorlevel%==0 (
-  python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+  python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >nul 2>nul
   if !errorlevel! equ 0 (
     python scripts\windows_launcher_bootstrap.py %*
     set "launcher_rc=!errorlevel!"
@@ -40,7 +40,7 @@ if %errorlevel%==0 (
     exit /b !launcher_rc!
   )
 )
-echo Python 3.11 or newer is required.
+echo Python 3.11 is required. Other Python versions can remain installed.
 start "" "https://www.python.org/downloads/windows/"
 pause
 exit /b 2

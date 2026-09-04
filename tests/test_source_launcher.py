@@ -5,12 +5,38 @@ import zipfile
 
 import pytest
 
+from app.dependency_profiles import SUPPORTED_RUNTIME_PYTHON
 from scripts import source_launcher
 
 
 def test_python_311_uses_a_separate_managed_runtime() -> None:
-    assert source_launcher.MIN_PYTHON == (3, 11)
+    assert SUPPORTED_RUNTIME_PYTHON == (3, 11)
     assert source_launcher.RUNTIME_ENV_NAME == "python-env-py311"
+
+
+def test_incompatible_managed_runtime_is_preserved_before_rebuild(tmp_path) -> None:
+    env_dir = tmp_path / "runtime" / source_launcher.RUNTIME_ENV_NAME
+    env_dir.mkdir(parents=True)
+    (env_dir / "marker.txt").write_text("Python 3.14 environment", encoding="utf-8")
+
+    quarantined = source_launcher.quarantine_incompatible_runtime(env_dir)
+
+    assert not env_dir.exists()
+    assert quarantined.name.startswith("python-env-py311-incompatible-")
+    assert (quarantined / "marker.txt").read_text(encoding="utf-8") == "Python 3.14 environment"
+
+
+def test_source_launch_entries_require_python_311_exactly() -> None:
+    root = source_launcher.ROOT
+    mac = (root / "start_platform.command").read_text(encoding="utf-8")
+    lan = (root / "start_platform_lan.command").read_text(encoding="utf-8")
+    windows = (root / "start_platform_windows.bat").read_text(encoding="utf-8")
+
+    expected = "sys.version_info[:2] == (3, 11)"
+    assert expected in mac
+    assert expected in lan
+    assert windows.count(expected) == 3
+    assert "sys.version_info >= (3, 11)" not in mac + lan + windows
 
 
 def test_dependency_fingerprint_changes_with_requirements(tmp_path) -> None:

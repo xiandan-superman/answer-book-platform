@@ -874,6 +874,11 @@ def test_environment_distinguishes_network_configuration_and_actual_model_call()
     assert 'id="testExamModelRoutesBtn"' in INDEX_HTML
     assert "async function testExamModelRoutes()" in APP_JS
     assert 'api("/api/provider-test"' in APP_JS
+
+
+def test_environment_requires_the_exact_supported_python_runtime() -> None:
+    assert "env?.python_supported" in APP_JS
+    assert '需要 Python ${env?.python_requirement || "3.11.x"}' in APP_JS
     assert 'rememberModelConnectionTest(route.provider' in APP_JS
     assert "function syncExamModelTestAvailability()" in APP_JS
 

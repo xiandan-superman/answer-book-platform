@@ -58,3 +58,18 @@ def test_bootstrap_log_uses_windows_user_data(monkeypatch, tmp_path: Path) -> No
     assert windows_launcher_bootstrap.bootstrap_log_path() == (
         tmp_path / "Answer Book Platform" / "runtime" / "launcher-bootstrap.log"
     )
+
+
+def test_bootstrap_rejects_python_314_before_starting_gui(monkeypatch) -> None:
+    errors = []
+    monkeypatch.setattr(windows_launcher_bootstrap.sys, "version_info", (3, 14, 6))
+    monkeypatch.setattr(windows_launcher_bootstrap, "show_bootstrap_error", errors.append)
+    monkeypatch.setattr(
+        windows_launcher_bootstrap,
+        "supervise_launcher",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("GUI must not start")),
+    )
+
+    assert windows_launcher_bootstrap.main([]) == 2
+    assert errors and "Python 3.11" in errors[0]
+    assert "Python 3.14.6" in errors[0]

@@ -1726,7 +1726,7 @@ function updateEnvironmentSummary(env) {
   const packageReady = ["python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "numpy"].every((name) => Boolean(packages[name]));
   const renderReady = Boolean(env?.document_tools?.pdf_render_available);
   const drawingRuntimeReady = Boolean(env?.drawing_runtime?.ok);
-  const runtimeReady = Boolean(Object.keys(packages).length);
+  const runtimeReady = Boolean(env?.python_supported && Object.keys(packages).length);
   const toolsReady = formulaReady && packageReady && renderReady && drawingRuntimeReady;
   const hasNetworkCheck = Boolean(env && Object.prototype.hasOwnProperty.call(env, "network"));
   const requiredRoutes = examRequiredTextRoutes();
@@ -1752,7 +1752,13 @@ function updateEnvironmentSummary(env) {
             ? "当前模型连接测试失败，请修复后继续"
             : "环境检查通过后即可继续";
   setEnvNextEnabled(ready, readyHint);
-  setCheckState("runtimeCheckIcon", "environmentSummary", runtimeReady);
+  setCheckState(
+    "runtimeCheckIcon",
+    "environmentSummary",
+    runtimeReady,
+    `Python ${env?.python || "3.11"}`,
+    env?.python_supported === false ? `需要 Python ${env?.python_requirement || "3.11.x"}` : "运行环境不可用"
+  );
   setCheckState(
     "toolsCheckIcon",
     "environmentHint",

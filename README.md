@@ -6,7 +6,7 @@
 
 ## 普通用户安装与使用
 
-不需要安装 Git，也不要直接双击 `web/index.html`。程序需要 Python 3.11 或更高版本，并通过本地启动文件打开网页服务。
+不需要安装 Git，也不要直接双击 `web/index.html`。程序固定使用 Python 3.11（可与其他 Python 版本并排安装），并通过本地启动文件打开网页服务。
 
 ### 1. 下载正确的程序包
 
@@ -17,14 +17,14 @@
 
 ### 2. macOS 首次启动
 
-1. 如果电脑没有 Python 3.11+，先从 [Python macOS 下载页](https://www.python.org/downloads/macos/) 安装，然后重新打开程序文件夹。
+1. 如果电脑没有 Python 3.11，先从 [Python macOS 下载页](https://www.python.org/downloads/macos/) 并排安装 3.11，然后重新打开程序文件夹；不需要卸载其他版本。
 2. 在程序文件夹中双击 `start_platform.command`。如果 macOS 首次阻止打开，请右键该文件，选择“打开”，再确认一次。
 3. 在轻量桌面启动器中选择“仅本机使用”或“局域网监控”。第一次运行会自动创建本平台专用的 Python 环境并安装依赖，所需时间取决于网络速度，启动器会持续显示准备状态。
 4. 准备完成后，程序会自动打开浏览器并访问 `http://127.0.0.1:8766`。macOS 可能短暂显示终端窗口，图形启动窗口出现后无需操作终端。
 
 ### 3. Windows 首次启动
 
-1. 如果电脑没有 Python 3.11+，先从 [Python Windows 下载页](https://www.python.org/downloads/windows/) 安装。安装时建议启用 `Add python.exe to PATH`，完成后重新打开程序文件夹。
+1. 如果电脑没有 Python 3.11，先从 [Python Windows 下载页](https://www.python.org/downloads/windows/) 并排安装 3.11。安装时建议启用 `Add python.exe to PATH`，不需要卸载其他版本，完成后重新打开程序文件夹。
 2. 双击根目录里显眼的 `启动平台.bat`；`start_platform_windows.bat` 是完全相同的英文兼容入口。无需再区分普通启动脚本和局域网启动脚本。
 3. 在轻量桌面启动器中选择“仅本机使用”或“局域网监控”。第一次运行会自动创建本平台专用的 Python 环境并安装依赖，启动器会持续显示准备状态，正常情况下不会保留命令行黑窗。
 4. 准备完成后，程序会自动打开浏览器并访问 `http://127.0.0.1:8766`。
@@ -270,7 +270,7 @@ python3.11 -m pip install -r requirements.txt -r requirements-dev.txt -c constra
 python3 scripts/run_quality_gates.py --full
 ```
 
-普通用户仍然只需下载源码 ZIP 并双击启动器。启动器统一使用 Python 3.11+ 约束，并自动叠加 macOS/Windows 对应的源码运行约束；环境页会提示不受支持的旧版本。第三方依赖、用途和许可证记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+普通用户仍然只需下载源码 ZIP 并双击启动器。启动器固定选择 Python 3.11，并自动叠加 macOS/Windows 对应的源码运行约束；3.10 及以下或 3.12 及以上不会被误用来创建名为 `python-env-py311` 的环境。第三方依赖、用途和许可证记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 跨任务查看 Shadow 质量规则的样本量、影响范围和无人值守动作上限：
 

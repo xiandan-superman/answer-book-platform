@@ -11,6 +11,7 @@ import sys
 import threading
 from pathlib import Path
 
+from ..dependency_profiles import runtime_python_supported
 from ..paths import CACHE_DIR, DATA_ROOT, PROJECT_ROOT
 from ..text_utils import clean_text
 from ..textbook_package import TextbookPackage, resolve_package_asset
@@ -32,7 +33,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _managed_python() -> Path:
-    root = DATA_ROOT / "runtime" / f"mineru-{MINERU_VERSION}"
+    root = DATA_ROOT / "runtime" / f"mineru-{MINERU_VERSION}-py311"
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
@@ -42,12 +43,16 @@ def _managed_cli(python: Path) -> Path:
 
 def _install_runtime(python: Path) -> None:
     with _INSTALL_LOCK:
+        if not runtime_python_supported():
+            current = ".".join(str(part) for part in sys.version_info[:3])
+            raise MinerURuntimeError(
+                f"MinerU {MINERU_VERSION} 必须由 Python 3.11 运行；当前平台使用 Python {current}。"
+                "请安装 Python 3.11，完全退出平台后重新启动。"
+            )
         if python.is_file() and _managed_cli(python).is_file():
             return
         if os.environ.get("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1").strip().lower() in {"0", "false", "no"}:
             raise MinerURuntimeError("MinerU 运行时尚未安装，且 ANSWER_BOOK_MINERU_AUTO_INSTALL 已关闭")
-        if sys.version_info < (3, 11):
-            raise MinerURuntimeError("MinerU 主解析链要求 Python 3.11+")
         python.parent.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, "-m", "venv", str(python.parent.parent)], check=True, timeout=180)
         requirements = PROJECT_ROOT / "requirements-mineru.txt"
@@ -59,7 +64,9 @@ def _install_runtime(python: Path) -> None:
             check=False,
         )
         if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "")[-3000:]
+            detail = (completed.stderr or completed.stdout or "")[-1200:].strip()
+            if "No matching distribution found" in detail or "Requires-Python" in detail:
+                detail = "当前 Python 或操作系统没有兼容的 MinerU 安装包。请确认平台由 Python 3.11 启动。"
             raise MinerURuntimeError(f"MinerU {MINERU_VERSION} 安装失败：{detail}")
 
 
@@ -85,6 +92,8 @@ def runtime_status() -> dict[str, object]:
         "engine": "mineru",
         "version": MINERU_VERSION,
         "installed": command.is_file(),
+        "python_requirement": "3.11.x",
+        "python_compatible": runtime_python_supported(),
         "command": str(command),
         "auto_install": os.environ.get("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no"},
         "fallback": False,

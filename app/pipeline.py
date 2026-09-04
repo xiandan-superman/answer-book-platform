@@ -1073,6 +1073,15 @@ def build_and_audit_docx_with_repair(
     }
 
 
+def runtime_environment_issue(env: dict) -> str:
+    if env.get("python_supported", True):
+        return ""
+    return (
+        f"平台必须使用 Python 3.11，当前为 Python {env.get('python') or '未知版本'}。"
+        "可以保留其他 Python 版本；请并排安装 Python 3.11，完全退出平台后重新启动。"
+    )
+
+
 def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, run_id: str = "") -> dict:
     options = options or PipelineOptions()
     quality_budget = QualityExecutionBudget.from_environment()
@@ -1111,6 +1120,17 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         telemetry.start_heartbeat()
         env = check_environment()
         write_json(sdir / "environment_check.json", env)
+        runtime_issue = runtime_environment_issue(env)
+        if runtime_issue:
+            mark(
+                "environment",
+                "failed",
+                {
+                    "python": env.get("python"),
+                    "python_requirement": env.get("python_requirement", "3.11.x"),
+                },
+            )
+            raise RuntimeError(runtime_issue)
         if options.require_preferred_formula_chain and not env.get("formula_conversion", {}).get("preferred_chain_ready"):
             mark("environment", "failed", {"formula_conversion": env.get("formula_conversion", {})})
             raise RuntimeError("Preferred formula conversion chain is not ready")

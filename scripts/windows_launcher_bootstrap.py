@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LAUNCHER_PORT = 18876
+SUPPORTED_PYTHON = (3, 11)
 
 
 def user_data_root() -> Path:
@@ -110,6 +111,13 @@ def supervise_launcher(
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info[:2] != SUPPORTED_PYTHON:
+        current = ".".join(str(part) for part in sys.version_info[:3])
+        show_bootstrap_error(
+            f"平台必须使用 Python 3.11，当前启动器使用的是 Python {current}。\n\n"
+            "可以保留其他 Python 版本；请并排安装 Python 3.11 后重新双击启动。"
+        )
+        return 2
     forwarded = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--launcher-port", type=int, default=DEFAULT_LAUNCHER_PORT)

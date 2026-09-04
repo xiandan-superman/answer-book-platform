@@ -31,6 +31,36 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(font_report, result["document_tools"]["project_fonts"])
 
+    def test_environment_reports_exact_python_311_requirement(self) -> None:
+        from app.environment import check_environment
+
+        with patch("app.environment.ensure_project_dirs"), patch(
+            "app.environment.list_providers", return_value={}
+        ), patch("app.environment.find_mathml2omml_xsl", return_value=None), patch(
+            "app.environment.find_omml2mathml_xsl", return_value=None
+        ), patch("app.environment._check_word_mac", return_value={"applicable": False}), patch(
+            "app.environment._check_word_windows", return_value={"applicable": False}
+        ), patch("app.environment._check_drawing_runtime", return_value={"ok": True}), patch(
+            "app.environment._check_network", return_value={"ok": False}
+        ), patch("app.environment.project_font_diagnostics", return_value={}), patch(
+            "app.environment.find_spec", return_value=None
+        ), patch("app.environment.shutil.which", return_value=None), patch(
+            "app.environment.platform.system", return_value="Linux"
+        ), patch("app.environment.runtime_python_supported", return_value=False):
+            result = check_environment()
+
+        self.assertFalse(result["python_supported"])
+        self.assertEqual("3.11.x", result["python_requirement"])
+
+    def test_pipeline_rejects_unsupported_python_before_document_or_model_work(self) -> None:
+        from app.pipeline import runtime_environment_issue
+
+        issue = runtime_environment_issue({"python_supported": False, "python": "3.14.6", "python_requirement": "3.11.x"})
+
+        self.assertIn("Python 3.11", issue)
+        self.assertIn("Python 3.14.6", issue)
+        self.assertIn("完全退出平台", issue)
+
     def test_packaged_formula_backend_is_preferred_chain_ready_without_office(self) -> None:
         from app.environment import check_environment
 

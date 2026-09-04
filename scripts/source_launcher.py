@@ -20,9 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.dependency_profiles import runtime_dependency_files, runtime_dependency_fingerprint  # noqa: E402
+from app.dependency_profiles import (  # noqa: E402
+    runtime_dependency_files,
+    runtime_dependency_fingerprint,
+    runtime_python_supported,
+)
 
-MIN_PYTHON = (3, 11)
 RUNTIME_ENV_NAME = "python-env-py311"
 RESTART_EXIT_CODE = 75
 
@@ -129,6 +132,31 @@ def runtime_python(env_dir: Path) -> Path:
     return env_dir / ("Scripts/python.exe" if sys.platform.startswith("win") else "bin/python")
 
 
+def python_executable_supported(python: Path) -> bool:
+    if not python.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(python), "-c", "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def quarantine_incompatible_runtime(env_dir: Path) -> Path:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    candidate = env_dir.with_name(f"{env_dir.name}-incompatible-{stamp}")
+    suffix = 1
+    while candidate.exists():
+        candidate = env_dir.with_name(f"{env_dir.name}-incompatible-{stamp}-{suffix}")
+        suffix += 1
+    env_dir.replace(candidate)
+    return candidate
+
+
 def dependency_files(project_root: Path) -> list[Path]:
     return runtime_dependency_files(project_root, sys.version_info[:2], platform_name=sys.platform)
 
@@ -181,10 +209,16 @@ def ensure_dependencies(
     approved: bool,
     progress: Callable[..., Any] | None = None,
 ) -> Path:
+    if not runtime_python_supported():
+        current = ".".join(str(part) for part in sys.version_info[:3])
+        raise RuntimeError(f"平台运行环境必须使用 Python 3.11；当前为 Python {current}。其他 Python 版本可以保留，但不能用于启动平台。")
     # Use a new path instead of mutating the legacy Python 3.9 environment in
     # place.  Existing user data stays intact and rollback can still run it.
     env_dir = data_root / "runtime" / RUNTIME_ENV_NAME
     python = runtime_python(env_dir)
+    if python.is_file() and not python_executable_supported(python):
+        quarantined = quarantine_incompatible_runtime(env_dir)
+        print(f"检测到非 Python 3.11 的旧运行环境，已保留到：{quarantined}", flush=True)
     first_install = not python.is_file()
     if first_install:
         env_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -481,8 +515,8 @@ def main() -> int:
     parser.add_argument("--port", default=8766, type=int)
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
     args = parser.parse_args()
-    if sys.version_info < MIN_PYTHON:
-        print("需要 Python 3.11 或更高版本。", file=sys.stderr)
+    if not runtime_python_supported():
+        print("平台必须使用 Python 3.11。其他 Python 版本可以保留，但不能用于启动平台。", file=sys.stderr)
         return 2
     project_root = Path(args.project_root).resolve()
     data_root = user_data_root().resolve()

@@ -4,7 +4,7 @@
 
 普通用户应从 [最新正式版本发布页](https://github.com/xiandan-superman/answer-book-platform-releases/releases/latest) 的 **Assets** 下载 `answer-book-platform-<版本号>-source.zip`。不要下载 `update-manifest.json`，也不要把 GitHub 自动附加的 `Source code (zip)` 当作程序包。
 
-下载后解压整个目录：macOS 双击 `start_platform.command`，Windows 双击 `启动平台.bat`（英文兼容名为 `start_platform_windows.bat`）。两个系统都进入同一个轻量桌面壳，由用户选择“仅本机使用”或“开启局域网监控”。启动器检查 Python 3.11+，首次运行创建专用虚拟环境、安装依赖、启动本地服务并打开 `http://127.0.0.1:8766`。API 配置、日常启动、停止服务和旧 ZIP 版迁移的完整用户步骤以仓库根目录 `README.md` 为准。Windows 入口先由纯标准库 bootstrap 启动图形壳；显示窗口前如发生异常，必须写入用户数据目录下的 `runtime/launcher-bootstrap.log` 并弹出错误，不得因 `pythonw` 无控制台而静默失败。
+下载后解压整个目录：macOS 双击 `start_platform.command`，Windows 双击 `启动平台.bat`（英文兼容名为 `start_platform_windows.bat`）。两个系统都进入同一个轻量桌面壳，由用户选择“仅本机使用”或“开启局域网监控”。启动器固定检查并选择 Python 3.11；其他 Python 版本可以并排保留，但不能用于创建平台运行环境。首次运行创建专用虚拟环境、安装依赖、启动本地服务并打开 `http://127.0.0.1:8766`。API 配置、日常启动、停止服务和旧 ZIP 版迁移的完整用户步骤以仓库根目录 `README.md` 为准。Windows 入口先由纯标准库 bootstrap 启动图形壳；显示窗口前如发生异常，必须写入用户数据目录下的 `runtime/launcher-bootstrap.log` 并弹出错误，不得因 `pythonw` 无控制台而静默失败。
 
 0.9.18 及更早的无 Git ZIP 版必须手动安装 0.9.19 一次。旧替换器会先把程序目录移动到用户数据备份区；程序目录与用户数据目录跨磁盘时，这个移动实际是慢速复制，用户在空目录窗口期间关闭启动器会中断替换。旧版固定读取的 `update-stable.json` 保持暂停状态。0.9.19 起改读 `update-stable-v2.json`，进入不会先移走可见程序目录的安全替换链路。
 
@@ -12,7 +12,7 @@
 
 - 普通用户主渠道是 GitHub 源码 ZIP，不要求安装 Git，也不要求安装 DMG/EXE。
 - 正式更新由 `main` 完整门禁成功后自动生成的版本标签触发；版本号未增加的普通 push 只检查、不重复发布，禁止人工提前创建正式标签。
-- 用户电脑缺少 Python 时只提示安装 Python 3.11+；程序不下载或捆绑 Python。
+- 用户电脑缺少 Python 3.11 时只提示并排安装 3.11；程序不下载或捆绑 Python，也不要求卸载其他版本。
 - 首次启动自动创建用户级虚拟环境并安装依赖。后续静默核对依赖指纹和关键模块；发生变化或缺失时提示，用户确认更新后再安装。
 - 用户数据永远位于系统用户数据目录，源码目录视为可以整体替换的只读程序材料。
 
@@ -22,7 +22,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 
 1. 应用待处理的已校验源码更新。
 2. 在用户数据目录创建 Python 3.11 专用的 `runtime/python-env-py311`，并使用独立的 `runtime/dependencies-py311.json` 记录依赖指纹；旧版 `runtime/python-env` 与 `runtime/dependencies.json` 保留用于回滚，不在原地改造成新解释器。
-3. 运行时基线统一为 Python 3.11+，使用 `constraints-py311.txt`；macOS 额外叠加 `constraints-source-macos-py311.txt`，Windows 额外叠加 `constraints-source-windows-py311.txt`，并比较运行依赖、Windows 补充依赖和全部所选约束的联合指纹。Python 3.10 及以下不再是受支持运行时。
+3. 运行时固定为 Python 3.11.x，使用 `constraints-py311.txt`；macOS 额外叠加 `constraints-source-macos-py311.txt`，Windows 额外叠加 `constraints-source-windows-py311.txt`，并比较运行依赖、Windows 补充依赖和全部所选约束的联合指纹。Python 3.10 及以下或 3.12 及以上不得用于平台运行环境；检测到错误版本创建的同名环境时先保留为带时间戳的隔离备份，再重建正确环境。
 4. 首次运行自动安装依赖；已安装环境异常或指纹变化时请求用户确认。
 5. 启动 `scripts/start_platform.py`，等待 `/api/version` 健康检查通过。
 6. 持续等待 `/api/version` 就绪后只打开一次默认浏览器，不设置会导致慢启动漏开网页的固定 30 秒截止时间；默认浏览器调用失败时使用系统打开命令兜底。如果服务已运行，则只打开页面，不启动第二个工作器。

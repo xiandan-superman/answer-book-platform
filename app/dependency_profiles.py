@@ -5,12 +5,21 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+SUPPORTED_RUNTIME_PYTHON = (3, 11)
+
+
+def runtime_python_supported(version_info: Iterable[int] | None = None) -> bool:
+    parts = tuple(version_info or sys.version_info[:2])
+    if len(parts) < 2:
+        return False
+    return (int(parts[0]), int(parts[1])) == SUPPORTED_RUNTIME_PYTHON
+
 
 def python_dependency_profile(version_info: Iterable[int] | None = None) -> str:
     parts = tuple(version_info or sys.version_info[:2])
     major = int(parts[0]) if parts else 3
     minor = int(parts[1]) if len(parts) > 1 else 0
-    if (major, minor) >= (3, 11):
+    if (major, minor) == SUPPORTED_RUNTIME_PYTHON:
         return "py311"
     return "unsupported"
 

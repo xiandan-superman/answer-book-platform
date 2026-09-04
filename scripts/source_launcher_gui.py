@@ -63,6 +63,7 @@ try:
         RUNTIME_ENV_NAME,
         ensure_dependencies,
         local_service_url,
+        python_executable_supported,
         runtime_python,
         user_data_root,
     )
@@ -413,7 +414,7 @@ def ensure_shell_runtime() -> None:
             return
         except ImportError:
             pass
-    if target.is_file():
+    if target.is_file() and python_executable_supported(target):
         probe = subprocess.run([str(target), "-c", "import webview,pystray"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if probe.returncode == 0:
             run_with_shell_runtime(shell_target)
