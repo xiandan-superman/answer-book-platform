@@ -1,13 +1,13 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.42",
+  "version": "0.9.43",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.42",
+  "source_revision": "release-v0.9.43",
   "build_kind": "stable-source-release",
-  "created_at": "2026-09-04T22:00:00+08:00",
+  "created_at": "2026-09-04T23:10:00+08:00",
   "validation": {
-    "pytest": "the locked Python 3.11 full local test suite passed with 1999 tests, 1 skip and 16 configured deselections",
+    "pytest": "the locked Python 3.11 full local test suite passed with 2000 tests, 1 skip and 16 configured deselections",
     "platform_quality_gate": "local compilation, full pytest and 70 percent branch coverage, version consistency, formula conversion, third-party notices, project completeness, Ruff and Mypy passed; locked Python 3.11, Chromium and macOS/Windows source-lock gates must still pass on main before the release tag is created",
     "version_consistency": "passed",
     "saved_real_task_replay": "anonymized durable model-call diagnostics were inspected read-only to size the dynamic 180 percent call budget and classify provider, harness, deterministic document and delivery failures; no task, textbook, output, log or user configuration is bundled",

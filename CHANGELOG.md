@@ -2,6 +2,12 @@
 
 本文件记录普通用户可见的正式版本变化。每次发布必须先增加与 `APP_VERSION` 一致的条目；GitHub Release 和应用内更新说明均从对应条目生成。
 
+## [0.9.43] - 2026-09-04
+
+### Windows 首次启动修复
+
+- Python 3.11 虚拟环境如果因 Windows `pythonw.exe` 启动而缺少 pip，启动器现在会自动调用 Python 自带的 `ensurepip` 修复并复核，再安装锁定依赖；不需要删除其他 Python 版本或用户数据。
+
 ## [0.9.42] - 2026-09-04
 
 ### Python 3.11 与 MinerU 安装修复

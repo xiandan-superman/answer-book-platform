@@ -35,11 +35,11 @@
 ### OPT-20260904-04｜固定 Python 3.11 并前置拦截 MinerU 不兼容环境
 - status: implementing
 - scope: Windows/macOS 源码入口、桌面 bootstrap、运行环境创建与隔离、环境页、真题/教材 MinerU 主解析、任务失败恢复；两类生题共享运行时但不改变其生成与交付合同
-- changed: 把“Python 3.11 或更高”收紧为精确 3.11；错误版本创建的 `python-env-py311` 先改名隔离保留再重建；MinerU 运行目录增加 `py311` 身份并在 pip 前检查解释器；环境页和流水线在文档解析及模型调用前阻止不兼容版本，用户错误改为简短修复指引。
+- changed: 把“Python 3.11 或更高”收紧为精确 3.11；错误版本创建的 `python-env-py311` 先改名隔离保留再重建；MinerU 运行目录增加 `py311` 身份并在 pip 前检查解释器；环境页和流水线在文档解析及模型调用前阻止不兼容版本，用户错误改为简短修复指引。Windows 首次环境若缺少 pip，现会通过 `ensurepip` 自动修复并复核后继续安装。
 - trigger: 0.9.41 Windows 用户机仅安装 Python 3.14，启动器错误放行并创建 3.14 环境，MinerU 3.4.5 因要求 `<3.14` 在新任务的 `extract_exam` 阶段安装失败；环境检查此前错误显示通过。
 - invariants: 其他 Python 版本可并排保留；不得原地破坏旧环境，不得覆盖 API Key、任务、教材、日志或输出；不回退 MinerU 主解析，不用模型重试掩盖本地依赖错误；失败必须在模型调用前可读地停止。
 - do_not_regress: 不得用目录名推断解释器版本；不得恢复 `>=3.11` 的宽松入口；不得在环境检查通过后才发现确定性的 Python/MinerU 不兼容；不得把完整 pip 候选版本列表暴露为用户主错误。
-- verification: Python 3.11.15 定向回归 159 passed，扩大启动、更新、环境、解析、流水线和前端回归 217 passed，Ruff 与 `git diff --check` 通过；锁定 Python 3.11.15 的 `python scripts/run_quality_gates.py --full` 通过，pytest 与 coverage 两轮均为 1999 passed、1 skipped、16 deselected，门禁要求的编译、版本一致性、公式、第三方声明、项目完整度、Ruff、Mypy 和分支覆盖率全部通过；从 Git 索引生成 401 文件的 0.9.42 源码 ZIP，反向验证 0 问题，用独立数据目录从该 ZIP 启动后 `/api/version` 返回 0.9.42 且首页 HTTP 200；额外扫描非正式 Mypy 范围的 `app/pipeline.py` 命中 11 个既有类型提示，本次新增函数无新增提示；受影响 Windows 用户机无运行中/排队任务，已通过官方 winget 并排安装并实测 Python 3.11.9 与保留的 3.14.6 均可调用。部署、MinerU 安装与任务恢复待完成。
+- verification: Python 3.11.15 首轮定向回归 159 passed，扩大启动、更新、环境、解析、流水线和前端回归 217 passed；0.9.42 完整门禁 1999 passed、1 skipped、16 deselected，401 文件源码 ZIP 反向验证 0 问题且独立启动 `/api/version` 返回 0.9.42、首页 HTTP 200，GitHub 质量、Windows/macOS 依赖锁、Chromium 冒烟、公开发布包及稳定源复核均成功；Windows 缺 pip 追加修复定向回归 21 passed，完整门禁 2000 passed、1 skipped、16 deselected，编译、版本一致性、公式、第三方声明、项目完整度、Ruff、Mypy 和分支覆盖率全部通过，0.9.43 的 401 文件源码 ZIP 反向验证 0 问题且独立启动返回 0.9.43/首页 HTTP 200；受影响 Windows 用户机在无运行/排队任务后已通过官方 winget 并排安装 Python 3.11.9 并保留 3.14.6，0.9.42 正式源码更新器报告备份可用且更新完成，平台和服务进程均实测为 `python-env-py311`/Python 3.11.9，`/api/version` 返回 0.9.42，MinerU 3.4.5 及其 `mineru-3.4.5-py311` 环境安装成功并通过 `mineru --version`；未重跑会产生付费模型调用的失败任务。0.9.43 正式发布与用户机追加更新待完成。
 
 ### OPT-20260904-03｜v0.9.41 源码发布准备
 - status: verified

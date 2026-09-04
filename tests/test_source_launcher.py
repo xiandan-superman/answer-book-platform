@@ -26,6 +26,31 @@ def test_incompatible_managed_runtime_is_preserved_before_rebuild(tmp_path) -> N
     assert (quarantined / "marker.txt").read_text(encoding="utf-8") == "Python 3.14 environment"
 
 
+def test_missing_runtime_pip_is_repaired(monkeypatch, tmp_path) -> None:
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int) -> None:
+            self.returncode = returncode
+
+    results = iter((Result(1), Result(0), Result(0)))
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return next(results)
+
+    monkeypatch.setattr(source_launcher.subprocess, "run", fake_run)
+    source_launcher.ensure_runtime_pip(python)
+
+    assert commands == [
+        [str(python), "-m", "pip", "--version"],
+        [str(python), "-m", "ensurepip", "--upgrade"],
+        [str(python), "-m", "pip", "--version"],
+    ]
+
+
 def test_source_launch_entries_require_python_311_exactly() -> None:
     root = source_launcher.ROOT
     mac = (root / "start_platform.command").read_text(encoding="utf-8")

@@ -157,6 +157,28 @@ def quarantine_incompatible_runtime(env_dir: Path) -> Path:
     return candidate
 
 
+def ensure_runtime_pip(python: Path) -> None:
+    probe = subprocess.run(
+        [str(python), "-m", "pip", "--version"],
+        capture_output=True,
+        timeout=30,
+    )
+    if probe.returncode == 0:
+        return
+    repaired = subprocess.run(
+        [str(python), "-m", "ensurepip", "--upgrade"],
+        capture_output=True,
+        timeout=180,
+    )
+    verified = subprocess.run(
+        [str(python), "-m", "pip", "--version"],
+        capture_output=True,
+        timeout=30,
+    )
+    if repaired.returncode != 0 or verified.returncode != 0:
+        raise RuntimeError("Python 3.11 运行环境缺少 pip，自动修复失败。请重新安装 Python 3.11 后再启动平台。")
+
+
 def dependency_files(project_root: Path) -> list[Path]:
     return runtime_dependency_files(project_root, sys.version_info[:2], platform_name=sys.platform)
 
@@ -223,6 +245,7 @@ def ensure_dependencies(
     if first_install:
         env_dir.parent.mkdir(parents=True, exist_ok=True)
         venv.EnvBuilder(with_pip=True, clear=False).create(env_dir)
+    ensure_runtime_pip(python)
     fingerprint = dependency_fingerprint(project_root)
     state_path = data_root / "runtime" / "dependencies-py311.json"
     try:
