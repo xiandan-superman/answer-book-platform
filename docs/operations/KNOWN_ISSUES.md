@@ -4,7 +4,7 @@
 
 ## 2026-09-04｜Python 3.14 被误用为平台运行时导致 MinerU 安装失败
 
-- status: repaired_and_verified_on_affected_machine; v0.9.42_deployed; v0.9.43_pip_bootstrap_followup_pending_release; failed_task_preserved_not_rerun
+- status: resolved; v0.9.43_released_and_deployed; failed_task_preserved_not_rerun
 - affected_flow: 源码启动器、环境检查、真题与教材 PDF/DOCX 的 MinerU 主解析；按题出题、知识点出题和 Word/PDF 交付不直接触发该次失败，但共享同一平台运行环境。
 - observed: Windows 用户机只有 Python 3.14 时，0.9.41 的“3.11 或更高”检查错误放行，并由 3.14 创建运行环境；新任务环境阶段显示通过，随后在 `extract_exam` 按需安装 MinerU 3.4.5 时因上游要求 `>=3.10,<3.14` 失败。任务在模型调用前终止，原材料与配置保留。
 - attribution: 主因是 `delivery_environment` 和启动/依赖管理的确定性程序缺陷；模型输入、模型输出、供应商传输和模型 Harness 未参与，不应通过模型重试处理。
