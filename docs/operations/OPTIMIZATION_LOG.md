@@ -32,6 +32,15 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260905-18｜按发布状态分级并行质量门禁
+- status: verified
+- scope: 本地日常/完整质量门禁、GitHub main push 与拉取请求、源码发布前 Python/Chromium/macOS/Windows 验证编排。
+- changed: 完整门禁不再先跑普通 pytest 再由 Coverage 重跑全库，改为 Coverage 唯一执行一次全量测试；GitHub 先查询当前 `APP_VERSION` 的源码标签，已有标签的普通提交运行日常门禁，尚无标签的发布候选运行完整 Python 门禁，并行启动 Chromium 和 macOS/Windows 依赖锁检查；最终汇总任务按发布状态强制核对所需结果。保留原质量工作流名和 `python-quality` 作业名以兼容既有触发与分支保护。
+- trigger: 每次普通 push 都串行执行完整发布矩阵，且 `--full` 重复运行两遍 2000 余项测试；本机实测旧完整路径约 4.6 分钟，其中普通 pytest 约 125 秒，浏览器此前还需等待 Python 作业结束。
+- invariants: 尚无版本标签的提交、发布失败后的同版本修复提交都必须重新通过完整 Python、Chromium 和双平台依赖矩阵；任何发布必需作业失败时汇总任务必须失败，源码发布工作流仍只接受整个质量工作流成功事件；不降低覆盖率阈值、测试范围、制品反向验证、隔离启动或公开附件校验。
+- do_not_regress: 不得仅按“本次是否改 APP_VERSION”判断发布候选，否则首次发布失败后的修复提交会误走快速门禁；不得让跳过的浏览器或依赖锁作业满足未发布版本的汇总条件；不得恢复完整模式中普通 pytest 与 Coverage 的重复全量执行。
+- verification: 工作流、门禁和发布契约定向回归 34 passed，YAML 解析得到 5 个预期作业，修改文件 Ruff、Mypy 与 `git diff --check` 通过；新日常门禁完整通过，pytest 2045 passed、16 deselected；新完整门禁一次 Coverage-backed pytest 2045 passed、16 deselected，分支覆盖率 71%，全部编译、版本、公式、第三方声明、项目完整度、Ruff、Mypy 与覆盖率门槛通过，总耗时约 159 秒，相比旧流程减少约 2 分钟。GitHub Actions 完整发布矩阵与源码发布均已通过，`v0.9.47` 已公开发布。
+
 ### OPT-20260905-17｜准备 0.9.47 请求级结构与任务稳定性正式更新
 - status: implementing
 - scope: 当前共享工作树全部 0.9.47 改动、版本元数据、任务清理、启动依赖进度、源码 ZIP、GitHub 自动发布与稳定更新源。
