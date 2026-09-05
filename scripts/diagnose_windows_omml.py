@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture the exact production MathML-to-OMML failure for one practice history.
+"""Capture the exact production Pandoc-to-OMML failure for one practice history.
 
 Run this script through the installed frozen Windows executable so imports and
 dependencies are identical to the affected desktop application.
@@ -15,7 +15,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_HISTORY_ID = "practice_20260823115404_1412e328"
 
@@ -55,35 +54,24 @@ def main() -> int:
 
     try:
         from app import omml
+        from app.pandoc_word import runtime_info
         from app.practice_export import _normalize_standard_state_latex
         from app.practice_store import load_practice_record
 
-        xsl_path = omml.find_mathml2omml_xsl()
-        xsl_info: dict[str, Any] = {
-            "path": str(xsl_path) if xsl_path else None,
-            "exists": bool(xsl_path and xsl_path.is_file()),
-        }
-        if xsl_path and xsl_path.is_file():
-            xsl_bytes = xsl_path.read_bytes()
-            xsl_info.update(
-                {
-                    "size_bytes": len(xsl_bytes),
-                    "sha256": _sha256_bytes(xsl_bytes),
-                    "last_modified_ns": xsl_path.stat().st_mtime_ns,
-                }
-            )
-        report["xsl"] = xsl_info
+        report["word_engine"] = runtime_info()
 
         record = load_practice_record(history_id)
         data = record.get("data") if isinstance(record.get("data"), dict) else {}
-        exercises = data.get("exercises") if isinstance(data.get("exercises"), list) else []
+        raw_exercises = data.get("exercises")
+        exercises = raw_exercises if isinstance(raw_exercises, list) else []
         report["exercise_count"] = len(exercises)
 
         for exercise_index, exercise in enumerate(exercises, start=1):
             if not isinstance(exercise, dict):
                 continue
             question_number = exercise.get("number") or exercise_index
-            formulas = exercise.get("formulas") if isinstance(exercise.get("formulas"), list) else []
+            raw_formulas = exercise.get("formulas")
+            formulas = raw_formulas if isinstance(raw_formulas, list) else []
             for formula_index, formula in enumerate(formulas, start=1):
                 if not isinstance(formula, dict):
                     continue
@@ -110,7 +98,7 @@ def main() -> int:
                     item["latex_to_mathml_error"] = _exception_payload(exc)
 
                 try:
-                    converted = omml.omml_from_latex_via_mathml(normalized_latex)
+                    converted = omml.omml_from_latex(normalized_latex)
                     from lxml import etree
 
                     xml = etree.tostring(converted, encoding="utf-8")

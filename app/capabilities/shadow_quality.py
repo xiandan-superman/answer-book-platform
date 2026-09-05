@@ -9,7 +9,6 @@ from .audit_adapters import (
     deduplicate_findings,
     findings_from_figure_generation,
     findings_from_report,
-    findings_from_visual_qa,
     legacy_issue_code,
 )
 from .quality import PolicyAction, QualityFinding, QualityPolicy
@@ -23,7 +22,6 @@ AUDIT_SOURCES: tuple[tuple[str, str, float, float], ...] = (
     ("content_quality", "content_quality_audit.json", 0.99, 0.75),
     ("docx", "docx_audit.json", 0.99, 0.85),
     ("figure_size", "figure_size_audit.json", 0.99, 0.75),
-    ("render", "render_audit.json", 0.99, 0.75),
 )
 
 DEFAULT_SHADOW_POLICY = build_unattended_policy()
@@ -60,10 +58,6 @@ def collect_stage_findings(stage_dir: Path) -> tuple[list[QualityFinding], list[
     if figure_generation is not None:
         available_sources.append("figure_generation")
         findings.extend(findings_from_figure_generation(figure_generation))
-    visual_qa = _read_json(stage_dir / "figure_visual_qa.json")
-    if visual_qa is not None:
-        available_sources.append("figure_visual_qa")
-        findings.extend(findings_from_visual_qa(visual_qa))
     return deduplicate_findings(findings), available_sources
 
 

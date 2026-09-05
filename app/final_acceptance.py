@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .figure_artifact_audit import audit_figure_artifacts
 from .question_requirements import answer_figure_required, source_image_required
 
 AUDIT_FILES = {
@@ -379,65 +380,11 @@ def referenced_figure_ids(stage_dir: Path) -> set[str]:
 
 
 def figure_visual_qa_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str], list[str]]:
-    data = read_json(stage_dir / "figure_visual_qa.json")
-    if not isinstance(data, dict):
-        return {"available": False, "failed_count": 0, "warning_count": 0, "items": []}, [], []
-    if not data.get("enabled"):
-        return {"available": True, "enabled": False, "failed_count": 0, "warning_count": 0, "items": []}, [], []
-    issues: list[str] = []
-    warnings: list[str] = []
-    failed_items: list[dict[str, Any]] = []
-    ignored_items: list[dict[str, Any]] = []
-    final_figure_ids = referenced_figure_ids(stage_dir)
-    for item in data.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        qa = item.get("qa") if isinstance(item.get("qa"), dict) else {}
-        if qa.get("ok") is True:
-            continue
-        qid = str(item.get("question_id") or "").strip()
-        figure_id = str(item.get("figure_id") or "").strip()
-        summary = str(qa.get("summary") or qa.get("error") or "视觉 QA 未通过").strip()
-        if final_figure_ids and figure_id and figure_id not in final_figure_ids:
-            ignored_items.append({"question_id": qid, "figure_id": figure_id, "summary": summary})
-            warnings.append(f"figure_visual_qa: ignored unreferenced failed figure {qid or 'unknown'} / {figure_id}")
-            continue
-        message = f"figure_visual_qa: {qid or 'unknown'} / {figure_id or 'unknown'} failed: {summary}"
-        # A visual model's judgment is useful repair evidence but is not a
-        # deterministic fact. In unattended mode it may warn, never hard-block.
-        warnings.append(message)
-        failed_items.append({"question_id": qid, "figure_id": figure_id, "summary": summary})
-    if data.get("failed"):
-        for item in data.get("failed", []):
-            if isinstance(item, dict):
-                warnings.append(f"figure_visual_qa: QA request failed for {item.get('question_id') or 'unknown'} / {item.get('figure_id') or 'unknown'}")
-    for item in data.get("skipped", []) if isinstance(data.get("skipped"), list) else []:
-        if not isinstance(item, dict) or str(item.get("reason") or "") != "figure image missing":
-            continue
-        issues.append(
-            f"figure_visual_qa: {item.get('question_id') or 'unknown'} / "
-            f"{item.get('figure_id') or 'unknown'} failed: figure image missing"
-        )
+    """Legacy response field only; retired reviewer files have no authority."""
     return {
-        "available": True,
-        "enabled": True,
-        "failed_count": len(failed_items),
-        "warning_count": len(warnings),
-        "items": failed_items[:50],
-        "referenced_figure_ids": sorted(final_figure_ids)[:100],
-        "ignored_unreferenced_failed_count": len(ignored_items),
-        "ignored_unreferenced_failed_items": ignored_items[:50],
-    }, issues, warnings
-
-
-def visual_qa_has_missing_image(stage_dir: Path) -> bool:
-    data = read_json(stage_dir / "figure_visual_qa.json")
-    if not isinstance(data, dict):
-        return False
-    return any(
-        isinstance(item, dict) and str(item.get("reason") or "") == "figure image missing"
-        for item in data.get("skipped", []) or []
-    )
+        "available": False, "enabled": False, "retired": True,
+        "failed_count": 0, "warning_count": 0, "items": [],
+    }, [], []
 
 
 def figure_delivery_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str], list[str]]:
@@ -497,10 +444,12 @@ def figure_delivery_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str]
 def build_final_acceptance_report(
     stage_dir: Path,
     output_dir: Path,
-    require_render: bool = True,
+    require_render: bool = False,
     *,
     candidate_docx: Path | None = None,
 ) -> dict[str, Any]:
+    # Keep the argument for older clients; PDF is no longer an exam deliverable.
+    require_render = False
     acceptance = read_json(stage_dir / "acceptance_report.json")
     pipeline = read_json(stage_dir / "pipeline_status.json")
     document_delivery_skip = document_delivery_skip_record(stage_dir)
@@ -511,7 +460,7 @@ def build_final_acceptance_report(
     formal_issues: list[str] = []
     warnings: list[str] = []
     for name, filename in AUDIT_FILES.items():
-        if document_delivery_skipped and name in {"docx", "figure_size", "render"}:
+        if name == "render" or (document_delivery_skipped and name in {"docx", "figure_size"}):
             gates[name] = {
                 "ok": True,
                 "skipped": True,
@@ -546,13 +495,8 @@ def build_final_acceptance_report(
         if not formal_docx.exists() and review_candidate_docx.exists()
         else formal_docx
     )
-    pdf = output_dir / "word_rendered" / "answer_book.pdf"
     if not document_delivery_skipped and not docx.exists():
         issues.append(f"output missing: {docx}")
-    if effective_require_render and not pdf.exists():
-        issues.append(f"rendered PDF missing: {pdf}")
-    if not document_delivery_skipped and not require_render:
-        formal_issues.append("Word page rendering was not verified for this candidate")
 
     if not acceptance or acceptance.get("status") not in {
         "passed",
@@ -569,28 +513,33 @@ def build_final_acceptance_report(
         formal_issues.extend(answer_fragment_issues)
     else:
         issues.extend(answer_fragment_issues)
-    figure_qa_summary, figure_qa_issues, figure_qa_warnings = figure_visual_qa_findings(stage_dir)
-    figure_qa_accounted_for = bool(
-        figure_qa_issues
-        or figure_qa_summary.get("failed_count")
-        or figure_qa_summary.get("ignored_unreferenced_failed_count")
-    )
-    if figure_qa_accounted_for and not visual_qa_has_missing_image(stage_dir):
-        pipeline_issues = [issue for issue in pipeline_issues if issue != "pipeline_status.json contains failed stage: figures"]
+    figure_qa_summary, _, _ = figure_visual_qa_findings(stage_dir)
+    artifact_report = audit_figure_artifacts(stage_dir)
+    # Re-evaluate current files, never inherit a retired model's verdict.
+    retired_stages = {
+        "render",
+        "figure_visual_qa", "figure_visual_qa_model_repair",
+        "figure_visual_qa_model_repair_after_content_quality",
+    }
+    if (stage_dir / "figure_visual_qa.json").exists() and artifact_report["ok"]:
+        retired_stages.add("figures")
+    pipeline_issues = [issue for issue in pipeline_issues if issue not in {
+        f"pipeline_status.json contains failed stage: {name}" for name in retired_stages
+    }]
     issues.extend(pipeline_issues)
     warnings.extend(pipeline_warnings)
-    issues.extend(figure_qa_issues)
-    warnings.extend(figure_qa_warnings)
+    issues.extend(
+        f"figure_artifact: {item['question_id']} / {item['figure_id']} {item['reason']}"
+        for item in artifact_report["failures"]
+    )
     figure_delivery_summary, figure_delivery_issues, figure_delivery_warnings = figure_delivery_findings(stage_dir)
     issues.extend(figure_delivery_issues)
     warnings.extend(figure_delivery_warnings)
 
     advisories = diagnostic_advisories(stage_dir)
     delivery_ready = not issues
-    has_referenced_visual_semantic_risk = bool(figure_qa_summary.get("failed_count"))
     requires_review = bool(
         formal_issues
-        or has_referenced_visual_semantic_risk
         or advisories.get("advisory")
         or warnings
     )
@@ -638,9 +587,11 @@ def build_final_acceptance_report(
             "path": str(stage_dir / "quality_shadow_report.json"),
         },
         "figure_visual_qa_summary": figure_qa_summary,
+        "figure_artifact_summary": artifact_report,
         "figure_delivery_summary": figure_delivery_summary,
         "answer_fragment_delivery_summary": answer_delivery_summary,
-        "require_render": require_render,
+        "require_render": False,
+        "delivery_formats": ["docx"],
         "document_delivery_skipped": document_delivery_skipped,
         "document_delivery_skip": document_delivery_skip or {},
         "gates": gates,
@@ -655,8 +606,6 @@ def build_final_acceptance_report(
         "outputs": {
             "docx": str(docx),
             "docx_exists": docx.exists(),
-            "pdf": str(pdf),
-            "pdf_exists": pdf.exists(),
         },
         "acceptance_report": acceptance,
     }

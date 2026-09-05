@@ -255,7 +255,7 @@ class ModelToolLoopTests(unittest.TestCase):
             edit_mock.assert_called_once()
             generate_mock.assert_not_called()
 
-    def test_image_tool_rejects_ambiguous_or_unregistered_reference_selectors(self):
+    def test_image_tool_canonicalizes_both_selectors_by_available_image(self):
         from app.image_artifacts import ImageArtifactStore
         from app.model_tool_loop import ImageGenerationTool
 
@@ -264,20 +264,58 @@ class ModelToolLoopTests(unittest.TestCase):
             source = root / "original.png"
             Image.new("RGB", (128, 96), "white").save(source)
             tool = ImageGenerationTool(
-                SimpleNamespace(image_model="gpt-image-2", image_size=""),
+                SimpleNamespace(
+                    type="openai_compatible",
+                    base_url="https://example.test/v1",
+                    api_key="key",
+                    image_model="gpt-image-2",
+                    image_size="",
+                ),
                 "gpt-image-2",
                 ImageArtifactStore(root / "artifacts"),
                 reference_images=[source],
             )
-            with self.assertRaisesRegex(ValueError, "cannot be used together"):
-                tool.execute(
+            registered_path = str(source.resolve())
+
+            def edit(_prompt, references, output_path, **_kwargs):
+                self.assertEqual([source.resolve()], references)
+                Image.new("RGB", (128, 96), "white").save(output_path)
+                return SimpleNamespace(path=output_path, provider="test", model="image")
+
+            with patch(
+                "app.model_tool_loop.OpenAICompatibleClient.edit_image",
+                side_effect=edit,
+            ):
+                first = tool.execute(
                     {
                         "prompt": "edit",
-                        "referenced_image_paths": [str(source.resolve())],
+                        "referenced_image_paths": [registered_path],
                         "num_last_images_to_include": 1,
                     },
                     call_id="both",
                 )
+            self.assertEqual("ignored_unavailable_recent_image_selector", first["argument_normalization"])
+
+            def edit_recent(_prompt, references, output_path, **_kwargs):
+                self.assertEqual(1, len(references))
+                self.assertNotEqual(source.resolve(), references[0])
+                Image.new("RGB", (128, 96), "white").save(output_path)
+                return SimpleNamespace(path=output_path, provider="test", model="image")
+
+            with patch(
+                "app.model_tool_loop.OpenAICompatibleClient.edit_image",
+                side_effect=edit_recent,
+            ):
+                second = tool.execute(
+                    {
+                        "prompt": "continue editing the recent image",
+                        "referenced_image_paths": [str(root / "truncated-or-stale.png")],
+                        "num_last_images_to_include": 1,
+                    },
+                    call_id="both-real",
+                )
+            self.assertEqual("preferred_recent_image_selector", second["argument_normalization"])
+            self.assertEqual(1, second["reference_image_count"])
             with self.assertRaisesRegex(ValueError, "unregistered"):
                 tool.execute(
                     {
@@ -294,6 +332,44 @@ class ModelToolLoopTests(unittest.TestCase):
                     },
                     call_id="too-many",
                 )
+
+    def test_image_tool_treats_explicit_empty_paths_and_unavailable_recent_as_generate(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ImageGenerationTool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tool = ImageGenerationTool(
+                SimpleNamespace(
+                    type="openai_compatible",
+                    base_url="https://example.test/v1",
+                    api_key="key",
+                    image_model="gpt-image-2",
+                    image_size="",
+                ),
+                "gpt-image-2",
+                ImageArtifactStore(root / "artifacts"),
+            )
+
+            def generate(_prompt, output_path, **_kwargs):
+                Image.new("RGB", (128, 96), "white").save(output_path)
+                return SimpleNamespace(path=output_path, provider="test", model="image")
+
+            with patch(
+                "app.model_tool_loop.OpenAICompatibleClient.generate_image",
+                side_effect=generate,
+            ):
+                result = tool.execute(
+                    {
+                        "prompt": "generate from scratch",
+                        "referenced_image_paths": [],
+                        "num_last_images_to_include": 1,
+                    },
+                    call_id="empty-paths",
+                )
+
+            self.assertEqual("generate", result["operation"])
+            self.assertEqual("ignored_unavailable_recent_image_selector", result["argument_normalization"])
 
     def test_image_tool_can_edit_the_last_generated_image(self):
         from app.image_artifacts import ImageArtifactStore

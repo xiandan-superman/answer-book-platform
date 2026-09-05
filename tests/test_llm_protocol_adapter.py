@@ -655,6 +655,34 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         self.assertEqual(["https://example.test/v1/chat/completions"], urls)
 
+    def test_lingsuan_ambiguous_400_retries_once_on_identical_route(self):
+        from app.llm_client import LLMError, _same_route_transport_request
+
+        calls = []
+
+        def request():
+            calls.append("identical request")
+            if len(calls) == 1:
+                raise LLMError(
+                    'Provider HTTP 400: {"error":"Invalid request"}',
+                    status_code=400,
+                    provider_error_message="Invalid request",
+                )
+            return {"ok": True}
+
+        with patch("app.llm_client._cancellable_retry_sleep"), patch(
+            "app.llm_client.record_model_retry_scheduled", return_value={}
+        ), patch("app.llm_client.record_model_retry_started"):
+            result = _same_route_transport_request(
+                request,
+                provider="lingsuan_google",
+                model="gemini-3.6-flash",
+                protocol="chat_completions",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["identical request", "identical request"], calls)
+
     def test_generic_json_retry_preserves_request_on_retryable_503(self):
         from app.llm_client import OpenAICompatibleClient
 

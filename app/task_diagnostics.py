@@ -253,13 +253,14 @@ def _recommendations(stage: str, error: str, issues: list[dict[str, Any]]) -> li
         messages = "\n".join(str(item.get("message") or "") for item in issues)
         figure_failure = bool(
             "figure_visual_qa" in messages
+            or "figure_artifact" in messages
             or "figure_size" in messages
             or "inline figure images" in messages
             or "failed stage: figures" in messages
             or "图件" in messages
         )
         if figure_failure:
-            recs.append("先按题号检查缺失图件和专业视觉审查失败项，再从配图阶段重跑；不要直接导出当前文档。")
+            recs.append("先按题号检查图片文件是否缺失、损坏或未被主模型采用，再从配图阶段恢复；独立视觉审查已取消。")
         if ("docx" in messages.lower() or "Word" in messages or "公式" in messages) and not figure_failure:
             recs.append("检查 Word 生成审计、公式对象和图片关系，修复后重新执行文档与最终验收。")
         if "render" in messages.lower() or "PDF" in messages or "PNG" in messages:

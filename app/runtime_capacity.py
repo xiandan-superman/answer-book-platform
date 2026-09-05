@@ -22,6 +22,9 @@ def provider_request_max_concurrency(provider: object | None) -> int:
     provider_name = str(
         provider if isinstance(provider, str) else getattr(provider, "name", "") or ""
     ).strip().lower()
+    if provider_name == "lingsuan" or provider_name.startswith("lingsuan_"):
+        lingsuan_limit = bounded_env_int("LINGSUAN_REQUEST_MAX_CONCURRENCY", 6, 1, 8)
+        return min(global_limit, lingsuan_limit) if global_limit > 0 else lingsuan_limit
     if provider_name != "bigmodel":
         return global_limit
     bigmodel_limit = bounded_env_int("BIGMODEL_REQUEST_MAX_CONCURRENCY", 2, 1, 8)
@@ -69,4 +72,5 @@ def runtime_capacity_summary() -> dict[str, int]:
         "theoretical_practice_call_demand": jobs * inner,
         "provider_request_ceiling": provider,
         "bigmodel_request_ceiling": provider_request_max_concurrency("bigmodel"),
+        "lingsuan_request_ceiling": provider_request_max_concurrency("lingsuan"),
     }

@@ -167,7 +167,35 @@ def normalize_thermodynamic_latex(value: str) -> str:
     source = source.replace("∂", r"\partial ").replace("δ", r"\delta ")
     source = source.replace("γ", r"\gamma ")
     source = source.replace(r"d\Delta", r"\mathrm{d}\Delta")
-    source = source.replace("常数", r"\mathrm{常数}")
+    # Keep this normalization idempotent.  The pipeline intentionally runs the
+    # shared boundary more than once (generation, checkpoint recovery and
+    # repair).  A plain ``replace`` used to turn ``\mathrm{常数}`` into
+    # ``\mathrm{\mathrm{常数}}`` on every pass until Word preflight
+    # rejected the deeply nested expression.  Collapse legacy nesting first,
+    # then wrap only a still-bare label.
+    def collapse_constant_wrappers(match: re.Match[str]) -> str:
+        value = match.group(0)
+        opening_count = value.count(r"\mathrm{")
+        closing_count = len(value) - len(value.rstrip("}"))
+        # The greedy closing run can include an enclosing ``\text{...}``
+        # brace. Preserve only closers that do not belong to the repeated
+        # ``\mathrm`` wrappers being collapsed.
+        return r"\mathrm{常数}" + "}" * max(0, closing_count - opening_count)
+
+    source = re.sub(
+        r"(?:\\mathrm\{)+常数(?:\})+",
+        collapse_constant_wrappers,
+        source,
+    )
+    source = re.sub(
+        r"(?<!\\mathrm\{)常数",
+        lambda _match: r"\mathrm{常数}",
+        source,
+    )
+    # A legacy pass can leave a redundant text wrapper outside the normalized
+    # math label.  The production converter accepts either wrapper alone but
+    # intentionally rejects the mixed nesting.
+    source = source.replace(r"\text{\mathrm{常数}}", r"\mathrm{常数}")
     return re.sub(r"\s+", " ", source).strip()
 
 

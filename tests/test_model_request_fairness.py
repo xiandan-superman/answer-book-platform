@@ -42,6 +42,42 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
 
 
 class ModelRequestFairnessTests(unittest.TestCase):
+    def test_lingsuan_six_slots_are_shared_across_workflows_and_protocols(self) -> None:
+        url = "https://lingsuan-six-shared.invalid/v1"
+        providers = [_ProviderIdentity(name, url) for name in ("lingsuan_google", "lingsuan_openai")]
+        release = threading.Event()
+        entered = [threading.Event() for _ in range(7)]
+        owners = ("exam-task", "question-practice-task", "knowledge-practice-task")
+
+        def request(index: int) -> None:
+            with model_request_context(owners[index % 3]):
+                with model_request_slot(providers[index % 2]):
+                    entered[index].set()
+                    self.assertTrue(release.wait(5.0))
+
+        def gate_state():
+            return next(row for row in model_request_snapshot()["providers"] if row["base_url"] == url)
+
+        with patch.dict(os.environ, {}, clear=True):
+            with ThreadPoolExecutor(max_workers=7) as executor:
+                futures = []
+                try:
+                    futures = [executor.submit(request, index) for index in range(6)]
+                    for event in entered[:6]:
+                        self.assertTrue(event.wait(2.0))
+                    futures.append(executor.submit(request, 6))
+                    _wait_until(lambda: gate_state()["waiting"] == 1)
+                    self.assertEqual(6, gate_state()["active"])
+                    self.assertEqual(6, gate_state()["limit"])
+                    self.assertFalse(entered[6].is_set())
+                finally:
+                    release.set()
+                for future in futures:
+                    future.result(timeout=2.0)
+        self.assertTrue(entered[6].is_set())
+        self.assertEqual(0, gate_state()["active"])
+        self.assertEqual(0, gate_state()["waiting"])
+
     def test_bigmodel_default_ceiling_is_shared_across_tasks(self) -> None:
         provider = _ProviderIdentity("bigmodel", "https://bigmodel-concurrency.invalid/v1")
         active = 0

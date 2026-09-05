@@ -48,10 +48,11 @@ from .evidence_audit import audit_retrieval_candidates
 from .evidence_selection import confirm_evidence_selection, filter_candidates_by_selection, load_confirmed_candidates
 from .exam_audit import audit_exam_structure
 from .exam_extract import extract_exam_structure
-from .exam_structure_review import auto_confirm_exam_structure
+from .exam_structure_review import wait_for_exam_structure_review
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
+from .figure_artifact_audit import audit_figure_artifacts
 from .figure_schema_planning import attach_figure_schema_plans, plan_figure_schemas
-from .figures import audit_figures_with_vision, prepare_figures_for_fragments, repair_figures_with_model_for_visual_qa
+from .figures import prepare_figures_for_fragments
 from .fragment_repair import repair_answer_fragments_for_docx
 from .image_orchestration import LEGACY_FIGURE_PIPELINE, MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
 from .knowledge_planning import generate_knowledge_plans, load_knowledge_plans
@@ -222,8 +223,6 @@ class PipelineOptions:
     preserve_document_diagnostics: bool = False
     reuse_fragments: bool = False
     require_preferred_formula_chain: bool = True
-    preprocessed_input: bool = False
-    defer_local_delivery: bool = False
 
 
 def stage_dir(task_id: str) -> Path:
@@ -530,13 +529,8 @@ def attach_figure_generation_audit(content_quality: dict, sdir: Path) -> dict:
             content_quality["figure_generation_audit"] = json.loads(audit_path.read_text(encoding="utf-8"))
         except Exception as exc:
             content_quality["figure_generation_audit"] = {"error": str(exc)[:300]}
-    visual_qa_path = sdir / "figure_visual_qa.json"
-    if visual_qa_path.exists():
-        try:
-            content_quality["figure_visual_qa"] = json.loads(visual_qa_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            content_quality["figure_visual_qa"] = {"error": str(exc)[:300]}
-    if audit_path.exists() or visual_qa_path.exists():
+    content_quality.pop("figure_visual_qa", None)
+    if audit_path.exists():
         write_json(sdir / "content_quality_audit.json", content_quality)
     return content_quality
 
@@ -865,15 +859,33 @@ def build_and_audit_docx_with_repair(
         sdir / "document_tool_events.jsonl",
         session_id=task_id,
     )
+
+    def audit_after_document_close(expected_formula_count: int) -> list[str]:
+        """Tolerate the short Windows lock-release window after the document writer closes.
+
+        This is an execution-layer retry only.  It must not mutate answer
+        fragments or spend a model call because the candidate document has
+        already been written successfully.
+        """
+
+        for retry_index in range(4):
+            try:
+                return audit_docx_v4(docx_path, min_formulas=expected_formula_count)
+            except PermissionError:
+                if retry_index >= 3:
+                    raise
+                time.sleep(0.2 * (retry_index + 1))
+        return []
+
     def attempt(label: str) -> list[str]:
         def build_and_validate() -> dict:
-            from .officecli_word import officecli_runtime_info, selected_word_tool_variant
+            from .officecli_word import selected_word_tool_variant, word_tool_runtime_info
 
             word_tool_variant = selected_word_tool_variant()
             build_docx_from_fragments(fragments_json, docx_path)
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
             expected_formula_count = sum(len(x.get("formulas", [])) for x in fragments_data.get("fragments", []))
-            issues = audit_docx_v4(docx_path, min_formulas=expected_formula_count)
+            issues = audit_after_document_close(expected_formula_count)
             if issues:
                 raise DocumentToolFailure(
                     code="DOCX_CONTRACT_VALIDATION_FAILED",
@@ -886,7 +898,7 @@ def build_and_audit_docx_with_repair(
                 "issues": [],
                 "expected_formula_count": expected_formula_count,
                 "word_tool_variant": word_tool_variant,
-                "word_tool_runtime": officecli_runtime_info() if word_tool_variant == "B" else {"variant": "A", "engine": "Python/OMML"},
+                "word_tool_runtime": word_tool_runtime_info(),
             }
 
         tool_result = document_tool.run(
@@ -1146,11 +1158,10 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         exam_path = Path(record.exam_path).expanduser()
         textbooks_dir = Path(record.textbooks_dir).expanduser()
-        if not options.preprocessed_input:
-            if not exam_path.exists():
-                raise FileNotFoundError(f"Exam file not found: {exam_path}")
-            if textbook_evidence_enabled and not textbooks_dir.exists():
-                raise FileNotFoundError(f"Textbooks dir not found: {textbooks_dir}")
+        if not exam_path.exists():
+            raise FileNotFoundError(f"Exam file not found: {exam_path}")
+        if textbook_evidence_enabled and not textbooks_dir.exists():
+            raise FileNotFoundError(f"Textbooks dir not found: {textbooks_dir}")
         thinking_mode = getattr(record, "model_thinking", "auto") or "auto"
         provider = replace(get_provider(record.provider), thinking_mode=thinking_mode)
         reasoning_provider_name = getattr(record, "reasoning_provider", "") or record.provider
@@ -1228,37 +1239,35 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         # failure above; keeping it after a successful rerun misleads task
         # diagnostics and the UI.
         (sdir / "pipeline_error.json").unlink(missing_ok=True)
-        checkpoint_contract: dict = {}
-        if not options.preprocessed_input:
-            # An empty textbook selection is still a concrete input state.  It
-            # cannot reach retrieval, but writing it explicitly keeps the
-            # checkpoint contract total and avoids a special "never reuse"
-            # case if admission rules change.
-            textbook_cache_key = ""
-            textbook_manifest: list[dict] = []
-            if record.selected_textbooks:
-                textbook_cache_key, textbook_manifest = textbook_index_key(
-                    [Path(path).expanduser().resolve() for path in record.selected_textbooks],
-                    record.textbook_display_names or {},
-                )
-            checkpoint_contract = _upstream_checkpoint_contract(
-                exam_path,
-                textbook_cache_key=textbook_cache_key,
-                textbook_manifest=textbook_manifest,
-                strategy={
-                    "question_understanding_policy_version": QUESTION_UNDERSTANDING_POLICY_VERSION,
-                    "analysis_profile": record.analysis_profile,
-                    "use_model": bool(options.use_model),
-                    "allow_demo_without_key": bool(options.allow_demo_without_key),
-                    "thinking_mode": thinking_mode,
-                    "primary": {"provider": provider.name, "model": record.model},
-                    "reasoning": {"provider": reasoning_provider.name, "model": reasoning_model},
-                    "answer": {"provider": answer_provider.name, "model": answer_model},
-                    "vision": {"provider": vision_provider.name, "model": vision_model},
-                    "direct_answer_multimodal": bool(direct_answer_multimodal),
-                    "figure_schema_routing_policy_version": FIGURE_SCHEMA_POLICY_VERSION,
-                },
+        # An empty textbook selection is still a concrete input state.  It
+        # cannot reach retrieval, but writing it explicitly keeps the
+        # checkpoint contract total and avoids a special "never reuse"
+        # case if admission rules change.
+        textbook_cache_key = ""
+        textbook_manifest: list[dict] = []
+        if record.selected_textbooks:
+            textbook_cache_key, textbook_manifest = textbook_index_key(
+                [Path(path).expanduser().resolve() for path in record.selected_textbooks],
+                record.textbook_display_names or {},
             )
+        checkpoint_contract = _upstream_checkpoint_contract(
+            exam_path,
+            textbook_cache_key=textbook_cache_key,
+            textbook_manifest=textbook_manifest,
+            strategy={
+                "question_understanding_policy_version": QUESTION_UNDERSTANDING_POLICY_VERSION,
+                "analysis_profile": record.analysis_profile,
+                "use_model": bool(options.use_model),
+                "allow_demo_without_key": bool(options.allow_demo_without_key),
+                "thinking_mode": thinking_mode,
+                "primary": {"provider": provider.name, "model": record.model},
+                "reasoning": {"provider": reasoning_provider.name, "model": reasoning_model},
+                "answer": {"provider": answer_provider.name, "model": answer_model},
+                "vision": {"provider": vision_provider.name, "model": vision_model},
+                "direct_answer_multimodal": bool(direct_answer_multimodal),
+                "figure_schema_routing_policy_version": FIGURE_SCHEMA_POLICY_VERSION,
+            },
+        )
         reusable_early_upstream = _early_upstream_checkpoint_reusable(
             sdir,
             requested=options.reuse_fragments,
@@ -1272,24 +1281,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         checkpoint_contract_fingerprint = _upstream_checkpoint_contract_fingerprint(checkpoint_contract)
         checkpoint(task_id)
         update_task(task_id, current_stage="extract_exam")
-        if options.preprocessed_input:
-            structured_exam_path = sdir / "structured_exam.json"
-            if not structured_exam_path.is_file():
-                raise RuntimeError("Hybrid input is missing structured_exam.json")
-            structured_exam = json.loads(structured_exam_path.read_text(encoding="utf-8"))
-            exam_issues = audit_exam_structure(structured_exam, sdir / "exam_structure_audit.json")
-            if exam_issues:
-                mark("extract_exam", "failed", {"issues": exam_issues[:30], "preprocessed_input": True})
-                raise RuntimeError("Preprocessed exam structure audit failed")
-            mark(
-                "extract_exam",
-                "reused",
-                {
-                    "question_count": len(structured_exam.get("items", [])),
-                    "preprocessed_input": True,
-                },
-            )
-        elif reusable_early_upstream:
+        if reusable_early_upstream:
             structured_exam = json.loads((sdir / "structured_exam.json").read_text(encoding="utf-8"))
             # Reuse the expensive extraction result, but always rerun the
             # deterministic audit so policy fixes do not leave stale warnings
@@ -1317,20 +1309,28 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
 
         checkpoint(task_id)
         update_task(task_id, current_stage="exam_structure_review")
-        structure_review_reused = reusable_early_upstream or options.preprocessed_input
+        structure_review_reused = bool(
+            reusable_early_upstream
+            and structured_exam.get("exam_structure_reviewed") is True
+            and structured_exam.get("exam_structure_review_mode") != "unattended"
+        )
         mark("exam_structure_review", "reused" if structure_review_reused else "started", {"question_count": len(structured_exam.get("items", []))})
         if not structure_review_reused:
-            structured_exam = auto_confirm_exam_structure(task_id, structured_exam, sdir / "structured_exam.json")
+            structured_exam = wait_for_exam_structure_review(
+                task_id,
+                structured_exam,
+                sdir,
+                sdir / "structured_exam.json",
+            )
         mark(
             "exam_structure_review",
             "passed",
             {
                 "question_count": len(structured_exam.get("items", [])),
                 "reviewed": True,
-                "review_mode": "unattended",
+                "review_mode": "manual",
                 "human_review_required": False,
                 "checkpoint_reused": structure_review_reused,
-                "preprocessed_input": options.preprocessed_input,
             },
         )
 
@@ -1482,25 +1482,13 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             mark("textbook_index", "skipped", index_detail)
         else:
             update_task(task_id, current_stage="textbook_index")
-            if options.preprocessed_input:
-                required_index_files = (
-                    sdir / "textbook_blocks.csv",
-                    sdir / "textbook_page_map.csv",
-                    sdir / "textbook_index_status.json",
-                )
-                missing_index_files = [path.name for path in required_index_files if not path.is_file()]
-                if missing_index_files:
-                    raise RuntimeError("Hybrid input is missing textbook index files: " + ", ".join(missing_index_files))
-                index_detail = json.loads((sdir / "textbook_index_status.json").read_text(encoding="utf-8"))
-                index_detail = {**index_detail, "preprocessed_input": True, "installed": True}
-            else:
-                if not record.selected_textbooks:
-                    raise RuntimeError("当前任务没有绑定已索引教材。请先在教材管理页选择教材并建立索引，再创建解析任务。")
-                index_detail = install_textbook_index_cache(
-                    record.selected_textbooks,
-                    sdir,
-                    record.textbook_display_names or {},
-                )
+            if not record.selected_textbooks:
+                raise RuntimeError("当前任务没有绑定已索引教材。请先在教材管理页选择教材并建立索引，再创建解析任务。")
+            index_detail = install_textbook_index_cache(
+                record.selected_textbooks,
+                sdir,
+                record.textbook_display_names or {},
+            )
             mark("textbook_index", "passed" if index_detail.get("page_map_ok", True) else "failed", index_detail)
             if not index_detail.get("page_map_ok", True):
                 issues = index_detail.get("page_map_issues") or []
@@ -2638,87 +2626,19 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 code_model=legacy_code_model,
                 progress_callback=figure_progress.emit,
             )
-        with figure_progress.operation("visual_qa", figure_count=len(generated_figures), model=vision_model):
-            figure_qa = audit_figures_with_vision(
-                structured_exam,
-                figure_specs,
-                sdir / "figures",
-                sdir / "figure_visual_qa.json",
-                provider=vision_provider,
-                model=vision_model,
-                reuse_unchanged=quality_budget.reuse_existing_visual_qa,
-                progress_callback=figure_progress.emit,
-            )
-        if figure_visual_qa_issue_count(figure_qa) and options.use_model and vision_provider.api_key:
-            with figure_progress.operation("visual_qa_repair", model=vision_model):
-                figure_repair = repair_figures_with_model_for_visual_qa(
-                    structured_exam,
-                    fragments_json,
-                    figure_specs,
-                    sdir / "figures",
-                    sdir / "figure_visual_qa.json",
-                    sdir / "figure_visual_qa_repair.json",
-                    qa_report=figure_qa,
-                    provider=vision_provider,
-                    model=vision_model,
-                    vision_provider=vision_provider,
-                    vision_model=vision_model,
-                    image_provider=answer_image_provider,
-                    image_model=answer_image_model,
-                    max_rounds=quality_budget.max_figure_repair_rounds,
-                    max_candidates_per_target=quality_budget.max_figure_repair_candidates_per_target,
-                    progress_callback=figure_progress.emit,
-                )
-            figure_qa = figure_repair.get("latest_visual_qa") if isinstance(figure_repair.get("latest_visual_qa"), dict) else figure_qa
-            # Count only artifacts referenced by the current semantic specs.
-            # Historical candidates may intentionally remain for diagnostics,
-            # but they are not current task outputs and must not inflate runtime
-            # telemetry or user-visible progress.
-            current_spec_data = json.loads(figure_specs.read_text(encoding="utf-8")) if figure_specs.exists() else {}
-            generated_figures = [
-                sdir / "figures" / f"{str(spec.get('figure_id') or '').strip()}.png"
-                for spec in current_spec_data.get("figures", []) or []
-                if isinstance(spec, dict)
-                and str(spec.get("figure_id") or "").strip()
-                and (sdir / "figures" / f"{str(spec.get('figure_id') or '').strip()}.png").exists()
-            ]
-            mark(
-                "figure_visual_qa_model_repair",
-                "applied" if figure_repair.get("changed") else "skipped",
-                {
-                    "changed": figure_repair.get("changed"),
-                    "rounds": figure_repair.get("rounds", [])[:5],
-                    "visual_qa_issue_count": figure_visual_qa_issue_count(figure_qa),
-                },
-            )
-        fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
-        figure_qa_issue_count = figure_visual_qa_issue_count(figure_qa)
-        figure_qa_blocking_findings = figure_visual_qa_blocking_findings(figure_qa)
-        figure_stage_status = (
-            "failed"
-            if figure_qa_blocking_findings
-            else ("advisory" if figure_qa_issue_count else "passed")
-        )
-        mark(
-            "figures",
-            figure_stage_status,
-            {
-                "generated_count": len(generated_figures),
-                "visual_qa_enabled": figure_qa.get("enabled"),
-                "visual_qa_count": len(figure_qa.get("items", [])),
-                "visual_qa_issue_count": figure_qa_issue_count,
-                "blocking_artifact_count": len(figure_qa_blocking_findings),
-            },
-        )
-        figure_progress.emit(
-            "stage_completed",
-            {
-                "generated_count": len(generated_figures),
-                "visual_qa_issue_count": figure_qa_issue_count,
-                "blocking_artifact_count": len(figure_qa_blocking_findings),
-                "status": figure_stage_status,
-            },
-        )
+        with figure_progress.operation("artifact_validation"):
+            figure_artifact_report = audit_figure_artifacts(sdir)
+            write_json(sdir / "figure_artifact_audit.json", figure_artifact_report)
+        mark("figures", "passed" if figure_artifact_report["ok"] else "failed", {
+            "generated_count": len(generated_figures),
+            "visual_qa_enabled": False,
+            "blocking_artifact_count": figure_artifact_report["issue_count"],
+        })
+        figure_progress.emit("stage_completed", {
+            "generated_count": len(generated_figures),
+            "blocking_artifact_count": figure_artifact_report["issue_count"],
+            "status": "passed" if figure_artifact_report["ok"] else "failed",
+        })
         build_shadow_quality_report(sdir)
 
         checkpoint(task_id)
@@ -2804,65 +2724,14 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     code_provider=legacy_code_provider,
                     code_model=legacy_code_model,
                 )
-                repaired_figure_qa = audit_figures_with_vision(
-                    structured_exam,
-                    figure_specs,
-                    sdir / "figures",
-                    sdir / "figure_visual_qa.json",
-                    provider=vision_provider,
-                    model=vision_model,
-                    reuse_unchanged=quality_budget.reuse_existing_visual_qa,
-                )
-                if figure_visual_qa_issue_count(repaired_figure_qa) and options.use_model and vision_provider.api_key:
-                    figure_repair = repair_figures_with_model_for_visual_qa(
-                        structured_exam,
-                        fragments_json,
-                        figure_specs,
-                        sdir / "figures",
-                        sdir / "figure_visual_qa.json",
-                        sdir / "figure_visual_qa_repair.after_content_quality.json",
-                        qa_report=repaired_figure_qa,
-                        provider=vision_provider,
-                        model=vision_model,
-                        vision_provider=vision_provider,
-                        vision_model=vision_model,
-                        image_provider=answer_image_provider,
-                        image_model=answer_image_model,
-                        max_rounds=quality_budget.max_figure_repair_rounds,
-                        max_candidates_per_target=quality_budget.max_figure_repair_candidates_per_target,
-                        progress_callback=figure_progress.emit,
-                    )
-                    repaired_figure_qa = figure_repair.get("latest_visual_qa") if isinstance(figure_repair.get("latest_visual_qa"), dict) else repaired_figure_qa
-                    repaired_figures = sorted((sdir / "figures").glob("*.png"))
-                    mark(
-                        "figure_visual_qa_model_repair_after_content_quality",
-                        "applied" if figure_repair.get("changed") else "skipped",
-                        {
-                            "changed": figure_repair.get("changed"),
-                            "rounds": figure_repair.get("rounds", [])[:5],
-                            "visual_qa_issue_count": figure_visual_qa_issue_count(repaired_figure_qa),
-                        },
-                    )
-                mark(
-                    "figures_after_content_quality_model_repair",
-                    (
-                        "failed"
-                        if figure_visual_qa_blocking_findings(repaired_figure_qa)
-                        else ("advisory" if figure_visual_qa_issue_count(repaired_figure_qa) else "passed")
-                    ),
-                    {
-                        "generated_count": len(repaired_figures),
-                        "visual_qa_enabled": repaired_figure_qa.get("enabled"),
-                        "visual_qa_count": len(repaired_figure_qa.get("items", [])),
-                        "visual_qa_issue_count": figure_visual_qa_issue_count(repaired_figure_qa),
-                        "blocking_artifact_count": len(figure_visual_qa_blocking_findings(repaired_figure_qa)),
-                        "paths": [str(path) for path in repaired_figures[:20]],
-                    },
-                )
-                # The content repair may invalidate an earlier figure, but the
-                # refreshed audit above is now authoritative for delivery.
-                figure_qa = repaired_figure_qa
-                figure_qa_issue_count = figure_visual_qa_issue_count(figure_qa)
+                figure_artifact_report = audit_figure_artifacts(sdir)
+                write_json(sdir / "figure_artifact_audit.json", figure_artifact_report)
+                mark("figures_after_content_quality_model_repair",
+                     "passed" if figure_artifact_report["ok"] else "failed", {
+                         "generated_count": len(repaired_figures),
+                         "visual_qa_enabled": False,
+                         "blocking_artifact_count": figure_artifact_report["issue_count"],
+                     })
             elif model_repair.get("changed"):
                 mark(
                     "figures_after_content_quality_model_repair",
@@ -2870,7 +2739,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     {
                         "reason": "repaired_questions_do_not_include_drawing_question",
                         "repaired_question_ids": model_repair.get("repaired_question_ids", []),
-                        "visual_qa_reused": True,
+                        "figure_artifacts_reused": True,
                     },
                 )
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
@@ -2942,49 +2811,59 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     "delivery_policy": "保留可阅读答案并生成待复核候选版；不宣称正式验收通过。",
                 },
             )
-        figure_qa_blocking_findings = figure_visual_qa_blocking_findings(figure_qa)
-        visual_governance = governance_for("figure_visual_qa.review_failed")
-        visual_advisory_report = {
-            "schema_version": "answer_book.figure_visual_quality_advisories.v1",
-            "ok": not figure_qa_blocking_findings,
-            "delivery_blocked": bool(figure_qa_blocking_findings),
-            "repair_round_limit": quality_budget.max_figure_repair_rounds,
-            "evidence_class": visual_governance.evidence_class.value,
-            "action_ceiling": visual_governance.action_ceiling.value,
-            "advisory_count": figure_qa_issue_count if not figure_qa_blocking_findings else 0,
-            "blocking_artifact_count": len(figure_qa_blocking_findings),
-            "blocking_artifacts": figure_qa_blocking_findings,
-            "responsibility_boundary": (
-                "视觉模型对学科标签、科学结论与图面完整性的判断只触发一次有界修复；"
-                "图片缺失、损坏等机器可验证的交付故障仍为硬门禁。"
-            ),
-        }
-        write_json(sdir / "figure_visual_quality_advisories.json", visual_advisory_report)
-        if figure_qa_blocking_findings:
-            mark(
-                "figure_quality_unattended_gate",
-                "failed",
-                {
-                    "human_review_required": False,
-                    "visual_qa_issue_count": figure_qa_issue_count,
-                    "blocking_artifact_count": len(figure_qa_blocking_findings),
-                    "blocking_artifacts": figure_qa_blocking_findings,
-                    "reason": "作图产物在有界修复后仍存在机器可验证的缺失或损坏。",
-                },
-            )
-            raise RuntimeError("Figure artifact validation failed after bounded repairs")
-        mark(
-            "figure_quality_unattended_gate",
-            "advisory" if figure_qa_issue_count else "passed",
-            visual_advisory_report,
-        )
+        figure_artifact_report = audit_figure_artifacts(sdir)
+        write_json(sdir / "figure_artifact_audit.json", figure_artifact_report)
+        mark("figure_quality_unattended_gate",
+             "passed" if figure_artifact_report["ok"] else "failed",
+             figure_artifact_report)
+        if not figure_artifact_report["ok"]:
+            raise RuntimeError("Figure artifact validation failed: missing or unreadable image")
         content_quality = attach_figure_generation_audit(content_quality, sdir)
         academic_expression_report = audit_academic_expressions(
             fragments_data,
             structured_exam=structured_exam,
             output_json=sdir / "academic_expression_audit.json",
-            render_preflight=not options.defer_local_delivery,
+            render_preflight=True,
         )
+        if (
+            not academic_expression_report["ok"]
+            and options.use_model
+            and answer_provider.api_key
+            and quality_budget.max_content_repair_questions > 0
+        ):
+            mark(
+                "academic_expression_model_repair",
+                "started",
+                {
+                    "issues": academic_expression_report.get("issues", [])[:30],
+                    "repair_scope": "failed_questions_only",
+                },
+            )
+            academic_repair = repair_fragments_with_model_for_audit(
+                fragments_json,
+                structured_exam,
+                candidates,
+                selection_data=selection_data,
+                provider=answer_provider,
+                model=answer_model,
+                audit_stage="academic_expression",
+                audit_report=academic_expression_report,
+                backup_path=sdir / "answer_fragments.before_academic_expression_model_repair.json",
+                max_repairs=quality_budget.max_content_repair_questions,
+            )
+            mark(
+                "academic_expression_model_repair",
+                "applied" if academic_repair.get("changed") else "failed",
+                academic_repair,
+            )
+            if academic_repair.get("changed"):
+                fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
+                academic_expression_report = audit_academic_expressions(
+                    fragments_data,
+                    structured_exam=structured_exam,
+                    output_json=sdir / "academic_expression_audit.json",
+                    render_preflight=True,
+                )
         mark(
             "academic_expressions",
             "passed" if academic_expression_report["ok"] else "failed",
@@ -3055,32 +2934,6 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         if final_source_image_delivery.get("missing"):
             raise RuntimeError("Required source question image is missing before document delivery")
 
-        if options.defer_local_delivery:
-            handoff = {
-                "schema_version": "answer_book.hybrid_handoff.v1",
-                "task_id": task_id,
-                "status": "awaiting_local_delivery",
-                "cloud_pipeline_complete": True,
-                "local_delivery_required": True,
-                "content_quality_review_required": not content_quality.get("ok", False),
-                "required_local_inputs": [
-                    "structured_exam.json",
-                    "answer_fragments.json",
-                    "confirmed_evidence_candidates.csv",
-                    "evidence_selection.json",
-                    "content_quality_audit.json",
-                ],
-            }
-            write_json(sdir / "hybrid_handoff.json", handoff)
-            mark("cloud_handoff", "passed", handoff)
-            update_task(
-                task_id,
-                status="awaiting_local_delivery",
-                current_stage="awaiting_local_delivery",
-                error="",
-            )
-            return handoff
-
         return complete_pipeline_delivery(
             task_id=task_id,
             fragments_json=fragments_json,
@@ -3131,11 +2984,6 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         raise
     finally:
         telemetry.stop()
-        if options.defer_local_delivery:
-            pipeline_status = sdir / "pipeline_status.json"
-            cloud_pipeline_status = sdir / "cloud_pipeline_status.json"
-            if pipeline_status.is_file():
-                cloud_pipeline_status.write_bytes(pipeline_status.read_bytes())
         if schema_executor is not None:
             schema_executor.shutdown(wait=False, cancel_futures=True)
 
@@ -3149,6 +2997,8 @@ def run_pipeline(task_id: str, options: PipelineOptions | None = None) -> dict:
     future callers consistent; nested contexts merge safely.
     """
 
+    from .officecli_word import word_tool_selection
+
     run_id = uuid4().hex
-    with model_call_context(task_id=task_id, run_id=run_id, operation="解析任务"):
+    with word_tool_selection(getattr(load_task(task_id), "word_tool_variant", "") or None), model_call_context(task_id=task_id, run_id=run_id, operation="解析任务"):
         return _run_pipeline_impl(task_id, options, run_id=run_id)

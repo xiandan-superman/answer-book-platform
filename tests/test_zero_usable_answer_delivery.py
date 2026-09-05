@@ -61,12 +61,12 @@ class TestZeroUsableAnswerDelivery(unittest.TestCase):
             False,
         ),
         (
-            "existing render failure preserves investigation path",
+            "retired render failure does not force heavy delivery",
             "configured",
             [_all_unusable_fragment()],
             False,
             True,
-            False,
+            True,
         ),
         (
             "missing fragments do not prove answer-stage failure",

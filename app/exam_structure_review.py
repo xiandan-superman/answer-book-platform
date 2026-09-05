@@ -401,73 +401,6 @@ def submit_exam_structure_review(task_id: str, updates: list[dict[str, Any]], de
     return {"ok": True, "response": response}
 
 
-def _automatic_review_row(row: dict[str, Any]) -> dict[str, Any]:
-    update: dict[str, Any] = {
-        key: row[key]
-        for key in ("question_id", "number", "stem", "question_type", "drawing_generation_mode")
-        if key in row
-    }
-    suggested_score = str(row.get("suggested_score") or row.get("score") or "").strip()
-    if suggested_score:
-        update["confirmed_score"] = suggested_score
-        update["score_review_origin"] = "auto"
-    for child_key in ("subquestions", "requirements"):
-        children = row.get(child_key)
-        if isinstance(children, list):
-            update[child_key] = [
-                _automatic_review_row(child)
-                for child in children
-                if isinstance(child, dict)
-            ]
-    return update
-
-
-def auto_confirm_exam_structure(
-    task_id: str,
-    structured_exam: dict[str, Any],
-    output_json: Path,
-) -> dict[str, Any]:
-    """Persist an unattended, rule-derived structure decision without pausing."""
-
-    request = build_exam_structure_review_request(task_id, structured_exam)
-    request["status"] = "auto_confirmed"
-    request["mode"] = "unattended"
-    request["human_review_required"] = False
-    request["message"] = "结构审计通过后，系统已自动确认题干、题型与可确定的分值。"
-    updates = [_automatic_review_row(row) for row in request.get("items", []) if isinstance(row, dict)]
-    reviewed = apply_exam_structure_review_updates(structured_exam, updates)
-    reviewed["exam_structure_review_mode"] = "unattended"
-    reviewed["human_review_required"] = False
-    decided_at = time.strftime("%Y-%m-%d %H:%M:%S")
-    response = {
-        "request_id": request["request_id"],
-        "decision": "auto_confirm",
-        "mode": "unattended",
-        "updates": updates,
-        "updated_at": decided_at,
-    }
-    request["confirmed_at"] = decided_at
-    exam_structure_request_path(task_id).write_text(
-        json.dumps(request, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    exam_structure_response_path(task_id).write_text(
-        json.dumps(response, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    output_json.write_text(json.dumps(reviewed, ensure_ascii=False, indent=2), encoding="utf-8")
-    append_event(
-        task_id,
-        "exam_structure_review_auto_confirmed",
-        {
-            "question_count": len(reviewed.get("items", [])),
-            "request_id": request["request_id"],
-            "human_review_required": False,
-        },
-    )
-    return reviewed
-
-
 def wait_for_exam_structure_review(task_id: str, structured_exam: dict[str, Any], stage_dir: Path, output_json: Path) -> dict[str, Any]:
     request = build_exam_structure_review_request(task_id, structured_exam)
     exam_structure_request_path(task_id).write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -487,8 +420,12 @@ def wait_for_exam_structure_review(task_id: str, structured_exam: dict[str, Any]
                 raise ExamStructureRejected("用户拒绝真题结构确认")
             if response.get("decision") == "confirm":
                 reviewed = apply_exam_structure_review_updates(structured_exam, response.get("updates") or [])
+                reviewed["exam_structure_review_mode"] = "manual"
+                reviewed["human_review_required"] = False
                 output_json.write_text(json.dumps(reviewed, ensure_ascii=False, indent=2), encoding="utf-8")
                 request["status"] = "confirmed"
+                request["mode"] = "manual"
+                request["human_review_required"] = False
                 request["confirmed_at"] = response.get("updated_at")
                 exam_structure_request_path(task_id).write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
                 update_task(task_id, status="running", current_stage="exam_structure_review", error="")

@@ -1671,8 +1671,7 @@
           <h3 id="taskExecutionHeading"><i class="fas fa-wave-square text-green"></i><span id="taskExecutionHeadingText">正在做什么</span></h3>
           <label class="reference-extra">当前任务 ID</label>
           <input id="taskIdInput" class="reference-extra" placeholder="创建任务后自动填入，也可以从任务列表选择">
-          <label class="inline-check reference-extra"><input id="renderCheck" type="checkbox" checked>生成 PDF/PNG 渲染复核</label>
-          <label class="inline-check reference-extra"><input id="documentDiagnosticsCheck" type="checkbox">即使答案均不可用也保留 Word/PDF/PNG 取证（仅用于排查文档或渲染问题）</label>
+          <label class="inline-check reference-extra"><input id="documentDiagnosticsCheck" type="checkbox">即使答案均不可用也保留 Word 取证（仅用于排查文档问题）</label>
           <div class="action-row primary-actions reference-extra">
             <button id="runTaskBtn" type="button"><i class="fas fa-play"></i>开始生成</button>
             <button id="runTaskReuseBtn" class="secondary-button reference-extra" type="button">用已修正结果重新生成</button>
@@ -2039,20 +2038,6 @@
                     <i class="far fa-copy"></i>复制访问信息
                   </button>
                 </div>
-              </article>
-              <article id="hybridExecutionPanel" class="execution-mode-panel local-mode">
-                <div class="execution-mode-copy">
-                  <span class="execution-mode-icon"><i class="fas fa-laptop"></i></span>
-                  <div>
-                    <h3>真题解析执行位置</h3>
-                    <p id="hybridExecutionHint">默认在当前电脑执行，任务材料不上传到混合云服务器。</p>
-                  </div>
-                </div>
-                <label class="execution-mode-switch" for="hybridExecutionEnabled">
-                  <span id="hybridExecutionLabel">本机执行（默认）</span>
-                  <input id="hybridExecutionEnabled" type="checkbox" role="switch" aria-label="启用混合云服务器执行">
-                  <i aria-hidden="true"></i>
-                </label>
               </article>
             </div>
           </details>

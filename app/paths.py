@@ -88,7 +88,7 @@ def _migrate_legacy_source_data() -> None:
     target_config.mkdir(parents=True, exist_ok=True)
     for name in (
         "api_keys.json", "providers.local.json", "support_reporting.json",
-        "support_cloud.json", "hybrid_cloud.json", "remote_monitor.local.json",
+        "support_cloud.json", "remote_monitor.local.json",
     ):
         source = legacy_config / name
         target = target_config / name

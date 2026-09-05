@@ -164,12 +164,10 @@ def test_local_app_exposes_verified_user_initiated_updates() -> None:
     assert "独立更新窗口正在执行备份和安装" in APP_JS
 
 
-def test_runtime_monitor_exposes_an_explicit_default_off_hybrid_switch() -> None:
-    assert 'id="hybridExecutionEnabled"' in INDEX_HTML
-    assert "本机执行（默认）" in INDEX_HTML
-    assert 'api("/api/hybrid/settings")' in APP_JS
-    assert 'body: JSON.stringify({ enabled: requested })' in APP_JS
-    assert "任务材料不上传到混合云服务器" in INDEX_HTML
+def test_runtime_monitor_has_no_cloud_execution_switch() -> None:
+    assert 'id="hybridExecutionEnabled"' not in INDEX_HTML
+    assert '/api/hybrid/settings' not in APP_JS
+    assert 'const executionLabel = "本机执行"' in APP_JS
 
 
 def test_upload_feedback_resets_when_files_or_upload_tabs_change() -> None:

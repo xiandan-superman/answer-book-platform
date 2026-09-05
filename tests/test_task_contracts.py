@@ -15,6 +15,41 @@ from app.task_contracts import (
 from app.task_read_model import build_exam_run, build_practice_runs
 
 
+def test_exam_title_prefers_actual_called_model_over_legacy_default() -> None:
+    run = build_exam_run({
+        "task_id": "exam-real-route",
+        "status": "running",
+        "current_stage": "answer_generation",
+        "exam_path": "/tmp/高分子真题.docx",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "answer_provider": "openai",
+        "answer_model": "gpt-5.6-terra",
+        "actual_provider": "google",
+        "actual_model": "gemini-3.6-flash",
+    })
+
+    assert run["display_title"] == "真题解析 · Gemini · 高分子真题"
+    assert run["model_label"] == "Gemini"
+    assert run["model_source"] == "actual_call"
+
+
+def test_exam_title_uses_configured_answer_model_before_first_call() -> None:
+    run = build_exam_run({
+        "task_id": "exam-before-call",
+        "status": "paused",
+        "current_stage": "exam_structure_review",
+        "exam_path": "/tmp/材料题.docx",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "answer_provider": "openai",
+        "answer_model": "gpt-5.6-sol",
+    })
+
+    assert run["display_title"] == "真题解析 · Sol · 材料题"
+    assert run["model_source"] == "configured_answer"
+
+
 def test_exam_review_rejection_is_action_required_not_technical_failure() -> None:
     run = build_exam_run(
         {

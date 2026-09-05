@@ -54,25 +54,6 @@ else:
     }
 support_config_build.write_text(json.dumps(support_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-hybrid_config = json.loads((ROOT / "config" / "hybrid_cloud.example.json").read_text(encoding="utf-8"))
-hybrid_url = os.environ.get("ANSWER_BOOK_HYBRID_URL", "").strip()
-hybrid_token = os.environ.get("ANSWER_BOOK_HYBRID_TOKEN", "").strip()
-hybrid_enabled = os.environ.get("ANSWER_BOOK_HYBRID_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
-hybrid_config.update(
-    {
-        # Local execution is the safe/default product mode.  A release may
-        # retain server credentials so the local owner can explicitly enable
-        # hybrid execution later, but credentials alone must never enable it.
-        "enabled": bool(hybrid_enabled and hybrid_url and hybrid_token),
-        "base_url": hybrid_url,
-        "tenant_id": os.environ.get("ANSWER_BOOK_HYBRID_TENANT", "default").strip() or "default",
-        "client_id": "",
-        "token": hybrid_token,
-    }
-)
-hybrid_config_build = GENERATED_ROOT / "hybrid_cloud.json"
-hybrid_config_build.write_text(json.dumps(hybrid_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
 datas = [
     (str(ROOT / "web"), "web"),
     (str(ROOT / "assets" / "app-icon" / "app-icon-transparent.png"), "assets/app-icon"),
@@ -82,8 +63,6 @@ datas = [
     (str(ROOT / "config" / "task_defaults.json"), "config"),
     (str(ROOT / "config" / "update.json"), "config"),
     (str(support_config_build), "config"),
-    (str(ROOT / "config" / "hybrid_cloud.example.json"), "config"),
-    (str(hybrid_config_build), "config"),
     (str(ROOT / "APP_VERSION"), "."),
     (str(ROOT / "VERSION"), "."),
     (str(ROOT / "SOFTWARE_LICENSE.md"), "."),

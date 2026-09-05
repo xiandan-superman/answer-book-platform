@@ -179,8 +179,14 @@ def _request_owner() -> str:
 
 
 def _provider_key(provider: object | None) -> tuple[str, str]:
+    provider_name = str(getattr(provider, "name", "") or "default").strip().lower()
+    if provider_name == "lingsuan" or provider_name.startswith("lingsuan_"):
+        # Google/OpenAI protocol adapters point at one upstream platform and
+        # must therefore share one admission gate rather than each consuming
+        # the full platform allowance.
+        provider_name = "lingsuan"
     return (
-        str(getattr(provider, "name", "") or "default"),
+        provider_name,
         str(getattr(provider, "base_url", "") or ""),
     )
 
@@ -191,8 +197,8 @@ def model_request_slot(provider: object | None):
 
     The context is re-entrant for a provider so legacy business-layer guards
     can coexist with the authoritative guard at the network client boundary.
-    BigModel has a conservative default ceiling; other providers remain
-    uncapped unless the global emergency ceiling is configured.
+    BigModel and Lingsuan have conservative default ceilings; other providers
+    remain uncapped unless the global emergency ceiling is configured.
     """
     key = _provider_key(provider)
     held_keys = _MODEL_REQUEST_HELD_KEYS.get()

@@ -45,7 +45,8 @@ class QualityExecutionBudget:
     estimated_model_calls_per_run: int = 0
     model_call_headroom_percent: int = 180
     model_call_budget_dynamic: bool = False
-    max_model_tokens_per_run: int = 2_000_000
+    # Zero disables the task-wide token cap; positive explicit budgets remain supported.
+    max_model_tokens_per_run: int = 0
     max_model_wall_seconds_per_run: int = 1800
     provider_failure_circuit_breaker: int = 3
 
@@ -114,7 +115,7 @@ class QualityExecutionBudget:
             model_call_headroom_percent=headroom_percent,
             model_call_budget_dynamic=bool(estimated_calls and not explicit_call_limit),
             max_model_tokens_per_run=_bounded_env_int(
-                "QUALITY_MAX_MODEL_TOKENS_PER_RUN", 2_000_000, minimum=100_000, maximum=20_000_000
+                "QUALITY_MAX_MODEL_TOKENS_PER_RUN", 0, minimum=0, maximum=20_000_000
             ),
             max_model_wall_seconds_per_run=_bounded_env_int(
                 "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", 1800, minimum=300, maximum=7200

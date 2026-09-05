@@ -32,6 +32,116 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260905-12｜发布 0.9.46 正式源码更新
+- status: implementing
+- scope: 当前共享工作区全部 0.9.46 改动、版本元数据、源码 ZIP、GitHub 自动发布与稳定更新源。
+- changed: 汇总本日多对话已经落盘的 Word C 引擎、公式与图片修复、并发调整、结构人工确认、仅本机执行及真实模型展示改动；将发布清单更新为当前完整门禁和 Chromium 证据，准备通过 `main` 受保护工作流发布 0.9.46。
+- trigger: 用户明确要求将当前累计更新推送 GitHub 并发布新版本；公开最新版仍为 0.9.45，0.9.46 尚未存在远端标签或 Release。
+- invariants: 只推送 `main`，不手工创建或移动标签；源码包仅使用 Git 索引白名单并反向验证，不包含用户数据、Key、日志、缓存或产物；发布状态以 GitHub Actions、公开附件和稳定更新源实际结果为准。
+- do_not_regress: 不把本地提交或 push 写成正式发布完成；自动工作流失败时不得强推、复用标签或绕过门禁；其他对话已经落盘且通过门禁的改动不得遗漏。
+- verification: 当前工作树 Python 3.11 完整门禁通过，pytest 与 coverage 均为 2027 passed、16 deselected、零跳过，覆盖率 71%，编译、版本、公式、第三方声明、项目完整度、Ruff、Mypy 全部通过；隔离数据目录 Chromium 关键流程 13 passed，Playwright 实机预览确认首页、辅助题目解析和任务列表真实模型名称正常。Git 索引白名单源码包包含 391 个文件，反向验证 0 问题；从该 ZIP 解压后使用独立数据目录启动，`/api/version` 返回 0.9.46、首页 HTTP 200。提交推送、自动发布和公开稳定源核验进行中；未调用付费模型或重跑用户任务。
+
+### OPT-20260905-11｜灵算共享请求默认并发提高到 6
+- status: verified
+- scope: 共享模型请求入口 `runtime_capacity` / `model_request_slot`。
+- changed: 用户明确选择 6 后，将 `LINGSUAN_REQUEST_MAX_CONCURRENCY` 缺省值从 2 改为 6；保留显式覆盖范围 1–8、紧急上限优先、BigModel 默认 2、跨任务公平排队与取消检查。
+- trigger: 实际真题任务业务线程数为 10，但灵算请求峰值为 2，答案阶段 1826 秒请求耗时对应 916 秒墙钟时间；共享入口成为可见瓶颈。
+- invariants: 同一平台进程、同一 base_url 的灵算 Google/OpenAI 入口共同使用 6 个名额；不是每任务 6 个，也不是跨进程统一限额。调用记账、重试、工具循环和交付门禁不变。
+- impact_matrix: 真题解析、按题出题、知识点出题均通过共享客户端入口受益，新回归以三类任务 owner 与两协议别名验证合计上限；历史恢复后新发请求同样受该入口限制，已有产物不重写；Word/PDF 确定性交付不经过模型准入，故格式合同不受此默认值影响。
+- upstream: 2026-09-05 15:30 CST 动态核验 origin 与远端 HEAD：`https://github.com/openai/codex.git` 默认 main、`ddf04ad26789d040f9ef6a96736f76602e35a6cc`，阅读 `codex-rs/core/src/tools/parallel.rs`；`https://github.com/deepseek-ai/deepseek-harness.git` 默认 master、`d347e703908d0406b7a7ef80e3a0e594d86b2215`，阅读 `packages/core/agent-loop/src/tool-calls.ts`。提交与上次核验一致。上游工具并行/独占分类与有界调度是分层参考，6 是用户选择的本地供应商请求容量，非上游推荐值；本次不修改工具执行并行语义。
+- do_not_regress: 不得把别名或不同用户任务拆成各自 6 个名额；不能宣称已验证真实服务商提速或容错表现；用户明确不部署，远端不变。
+- verification: Python 3.11 执行 `pytest -q tests/test_runtime_capacity.py tests/test_model_request_fairness.py tests/test_model_call_ledger.py tests/test_llm_protocol_adapter.py`：72 passed（21.92 秒）；新增回归验证六请求同时进入、第七请求排队并在释放后完成。三个修改代码/测试文件 Ruff 通过，`git diff --check` 通过。未调用真实付费模型、未重跑用户任务、未提交推送、未发布或部署；真实供应商耗时与失败率需后续经用户授权实测。
+
+### OPT-20260905-10｜恢复结构人工确认并统一本机执行与真实模型展示
+- status: verified
+- scope: 真题解析、辅助功能题目解析、任务执行位置、桌面打包、远程监控、任务管理模型名称。
+- changed: 删除混合云客户端、服务端、部署脚本、配置、开关和管线分支；两类解析统一在结构抽取后暂停并等待用户确认题型与分值；任务标题优先使用答案生成阶段模型调用账本中的真实成功路由，调用前回退到用户配置的答案模型，并保留实际路由清单。
+- trigger: 结构审查被无人值守自动确认替代，用户不再看到确认弹窗；任务列表固定读取基础 DeepSeek 字段，未反映答案生成的真实模型；用户明确要求只保留普通本地运行。
+- invariants: 不自动接受题型或分值；新任务与被旧无人值守结果污染的恢复任务都必须重新等待确认，已人工确认且检查点有效的任务可复用；模型名称只读取本地持久化调用账本，不新增模型请求；旧任务中的已退休云字段仅在读取时丢弃，不删除用户任务或历史产物。
+- do_not_regress: 题目解析不得绕过共享结构确认门；不得恢复云端开关、上传、队列、下载或构建密钥；不得用基础 provider/model 字段覆盖真实答案调用模型，也不得把图片或视觉模型冒充主答案模型。
+- verification: Python 3.11 临时隔离环境先运行 217 项结构审查、题目解析、任务执行、任务合同、模型账本、前端、远程监控、桌面发布、支持诊断定向测试全部通过；随后 `python scripts/run_quality_gates.py --full` 完整门禁通过：pytest 与 coverage 均为 2027 passed、16 deselected，覆盖率 71%，编译、版本、公式、第三方声明、项目完整度、Ruff、Mypy 全部通过；`node --check web/app.js` 与 `git diff --check` 通过。确认平台无运行中、排队或暂停任务后，已重启本机 18766 服务；`/api/version` 返回 0.9.46、系统健康为 normal、任务接口读取 32 条历史记录、混合云设置接口返回 404，历史真题任务按实际答案调用显示 Gemini/Terra/Sol 等模型。未调用付费模型，未重跑用户任务，未提交推送或正式发布。
+
+### OPT-20260905-09｜统一 Pandoc C 并取消默认整任务 token 硬上限
+- status: verified
+- scope: 真题有/无教材、按题/知识点、历史恢复、混合本机交付、公式转换、练习缓存、运行环境、模型累计预算。
+- changed: 删除 OfficeCLI 生产构建器及 A/B 路由，历史配置只兼容读取并统一 C；共享 Python 模板使用 Pandoc OMML，环境准备受校验官方运行时并保留许可证压缩包；默认任务 token 上限为 0（关闭），仍记账且保留显式正数预算和其他独立防失控机制。
+- trigger: 用户明确要求淘汰 A/B，取消未经其设置的固定整任务 token 上限，并禁止部署用户机；新任务重现旧 B 公式残留且在 200 万 token 后无法修复。
+- invariants: 不降低 Word/公式/内容/图片门禁，不重跑任务、不调用付费模型、不修改用户机；历史文件和原选择作为记录保留，仅新运行使用 C；不改重试次数、修复轮数、工具循环、累计用量或模型输入。
+- do_not_regress: 旧 A/B 环境变量及历史任务不得恢复旧生成路径；缺失或不可信 Pandoc 不得回退；0 预算不得被解释为立即耗尽；源码未发布不得宣称用户机已生效。
+- verification: 最终固定代码以受校验本地 Pandoc 运行 `/tmp/abp-py311-gate/bin/python scripts/run_quality_gates.py --full` 全部通过；pytest 与 coverage 均 2038 passed、16 deselected、无跳过，分支覆盖率 70%，编译/版本/公式/第三方/完整度/Ruff/Mypy 全部通过；新增转换与诊断模块独立 Ruff/Mypy 通过。真实原试卷 388 公式、4 图、零文档问题且源答案哈希不变；按题/知识点六份题目/解析/合并 Word 无标记残留；干净本地目录自动安装、哈希校验、许可证保留与上下箭头条件验证通过。3 类任务超过 200 万仍继续且记账，显式预算与调用次数防失控回归通过。删除旧转换器和 mathml-to-omml 依赖并同步声明；未重新验证 Windows 实机、原生 Word 页面、浏览器或付费模型，未提交、推送、发布或部署用户机。上游身份及必要差异见模型接入标准。
+
+### OPT-20260905-08｜准备 0.9.46 正式源码更新与用户机部署
+- status: implementing
+- scope: 本阶段源码、测试、版本元数据、源码 ZIP 与用户机安全更新。
+- changed: 同步 APP_VERSION、VERSION、RELEASE_MANIFEST 和 CHANGELOG 到 0.9.46；版本说明区分 Word 交付改进、可选 C 引擎及仍保留的内容提示。
+- trigger: 用户明确要求部署新版本。
+- invariants: 保留用户数据、旧输出与配置；默认 B 不变，原任务持久化 C；仅通过受保护自动发布工作流创建正式标签及公开制品。
+- do_not_regress: 不把待复核 Word 写成正式验收通过；不把本地 ZIP 或 Git push 写成已发布；运行/排队任务期间不得重启更新。
+- verification: 上轮完整门禁 2034 passed、1 skipped、16 deselected、70% 覆盖率；本次发布版本检查、完整门禁、Chromium、源码包反向验证、启动、自动发布及用户机更新 pending。
+
+### OPT-20260905-07｜接入可选 Pandoc Word 引擎并恢复失败任务
+- status: verified
+- scope: 真题解析、有/无教材共用 Word 导出、按题/知识点共用导出、缓存身份和文档工具诊断。
+- changed: 增加显式 C 引擎（Pandoc 3.11 OMML + python-docx）；验证官方便携二进制哈希与版本，转换有超时、严格警告、语法预检、独立 XML 缓存；保留箭头条件，移除预处理/长式拆分中的有损替换；引擎信息进入日志，C 合同进入练习缓存；真题持久化引擎选择，普通与混合本机交付按任务作用域选择。
+- trigger: 用户要求用已通过完整 Word 隔离验证的方案完成 Windows 失败任务；取消 PDF 后不再将 PDF 失败作为真题准入条件。
+- invariants: 默认 B 不变；C 显式选择且缺依赖/不支持公式不得静默回退；不增加模型调用；不修改已采用图片或题目内容；保留 Word、公式、图件验收与历史文件。独立二进制不增加 Python requirements/constraints，第三方声明同步。
+- do_not_regress: 不得删除反应条件换取转换成功；不得把单用户任务完成视为全平台默认替换完成；Windows/macOS 以外未准入。
+- verification: 官方 jgm/pandoc 3.11 发布 API 核验 Windows x64 ZIP SHA256 2ab72baf2399450e148ddf7a2a8689806c42e1bba71862b57e220fd9b8456d3d，macOS arm64 ZIP 15806bedf9517bfead72e88fe6a6696635c3691efbb6e152173440e9c5bb50b4。定向 113 passed、1 skipped，补充回归 48 passed；完整门禁 2034 passed、1 skipped、16 deselected，覆盖率 70%，新增模块 Mypy 通过。macOS/Windows 完整真题均 388 公式、4 图、零文档审计问题；Windows 修正显式 -o - 后生成耗时 18.69 秒。用户机原任务从已验证检查点调用现有文档交付流程，完成 33/33、publication committed、公式残留零、答案/图片哈希不变、新增模型记录零；状态为 completed_with_issues，保留原有引用/单位等六条警告，formal_acceptance_passed=false，不宣称正式无问题验收。普通 no-model 全流程曾重做检索并失败，已归档并恢复旧检查点；不得把关闭模型等同仅重建文档。Word COM 对简单控制文件和完整候选都返回空对象，原生打开验证 unavailable。未提交、推送或正式发布，默认 B 不变。
+
+### OPT-20260905-06｜真题解析改为仅交付 Word
+- status: verified
+- scope: 真题生成、续跑、本机交付、最终验收、交付包与网页控制。
+- changed: 删除真题 PDF/页面 PNG 导出分支及强制渲染门禁；旧 render 参数兼容但忽略，默认保存为 false；下载包与主结果栏仅提供 Word 和相关审计；历史渲染报告不影响当前验收。
+- trigger: 用户明确要求取消真题解析 PDF 输出，暂不处理 PDF 渲染问题。
+- invariants: 不删除历史用户文件；保留 Word、公式、图片及内容验收；不影响输入 PDF 解析和其他模块独立渲染工具；不切换默认 Word 引擎。
+- do_not_regress: 旧任务 render=true、文档取证和恢复入口不得重新触发 PDF 导出；缺少 PDF 不得阻断正式 Word，Word 硬错误仍须阻断。
+- verification: 58 项定向测试通过；完整质量门禁通过（2026 passed、1 skipped、16 deselected，覆盖率 70%），JS 语法及差异检查通过。已备份后同步用户机 12 个文件，哈希校验与服务重启通过；Windows 隔离冒烟验证无 PDF 可正式验收、旧渲染失败忽略、旧 PDF 不打包但保留、Word 错误仍阻断、页面无 PDF 选项，健康接口 HTTP 200。未重跑真实模型任务，未切换 Word 引擎。
+
+### OPT-20260905-05｜执行 Pandoc 完整导出隔离验证
+- status: implementing
+- scope: 真题检查点到完整文档、按题/知识点的共享导出入口、文档与资产校验、PDF 渲染及恢复/缓存/下载相关回归。
+- changed: 在非发布 artifacts 建立候选代码副本与可复现实验脚本；保留严格语法预检及全斜体合同，修正副本中删除反应条件的规范化与拆分行为；补充 WORD_ENGINE_EVALUATION.md 实测证据。生产应用及默认引擎不变。
+- trigger: 用户要求实际推进整个平台适配验证；单公式优势不能证明整任务适用。
+- invariants: 已采用资产与答案不变；无付费模型调用；不对候选放宽验收；失败与未覆盖场景保持可见。
+- do_not_regress: Word/PDF 总体锚点匹配通过不能掩盖单个公式条件丢失；语法预检异常必须有非空诊断；未完成 Windows 验证不推广候选。
+- verification: 真实 33 题完整 DOCX 388 个公式、4 图，文档审计零问题；两个业务 source_mode 的题目卷通过，共生成 7 份样本；152 项定向回归与 5 项负例通过。完成四种去重文档的本地渲染，精确标注检查 failed：中文箭头条件在 LibreOffice PDF 丢失，原始 Pandoc 最小样本亦复现，字体声明实验未修复；全部页面视觉验收未完成。Windows SSH 超时，整任务/生产接入/完整门禁 pending；未部署候选、未提交或发布。
+
+### OPT-20260905-04｜明确 Word 候选的平台级验收边界
+- status: implementing
+- scope: 真题有/无教材、按题出题、知识点出题、历史恢复、缓存、下载、Word/PDF、跨平台分发及共享排版。
+- changed: 新增 WORD_ENGINE_EVALUATION.md，固定候选与基线、逐场景证据状态、隔离验证顺序和默认替换条件；未修改引擎实现或默认配置。
+- trigger: 用户明确要求不能从公式转换优势推导整个平台适配；继续检查发现长公式排版拆分也会去掉反应条件。
+- invariants: 未验证场景保持待验证；不降低内容、图件、排版或最终交付门禁；不额外调用模型掩盖确定性问题。
+- do_not_regress: 候选必须覆盖生产者到最终下载和恢复链路；只通过公式微基准不得默认替换或发布。
+- verification: 已检查三类导出入口、共享表达式渲染、长公式拆分和练习缓存身份；形成 14 项平台验收矩阵。候选整任务验证 pending；本条仅文档变更，不将既有测试结果计为候选平台验收。
+
+### OPT-20260905-03｜暂停 OfficeCLI 公式补丁并评估替代转换器
+- status: reverted
+- scope: Word 公式导出边界；真题解析、按题出题、知识点出题共用工具及练习导出缓存。
+- changed: 曾加入 OfficeCLI 箭头/括号写法转换及缓存版本变更；用户要求重新评估工具适配性后，完整撤回本轮生产代码变更，将实验隔离到非发布 artifacts，保留此前已验证工作树。
+- trigger: Windows 实测 Word 校验发现 15 个 LaTeX 残留对象；原 A 版独立复现又确认反应箭头条件被本地 normalize_latex 去除，不能直接作为保真替代。
+- invariants: 不删除公式条件以换取通过；不降低验收；不覆盖用户数据；未验证的工具选型不进入生产或用户机。
+- do_not_regress: 开源工具执行成功、零警告或仅简单公式通过不能替代复杂公式保真与完整 Word/PDF 验证。
+- verification: OfficeCLI 官方 v1.0.147 标签与源码 SHA b94f3906fd52d450c64f8e40370e376b9e15079e 核验；临时适配测试 16 passed、3 failed（标注结构断言，尚未排除文本分段差异），随后撤回。独立 Pandoc 3.11 试验：246 条真实去重公式加 1 条构造式生成 247 个原生 OMML，严格警告模式 exit 0、零命令残留，构造式上下条件保留；尚未完成全量语义核验、三业务整文档及 Windows 渲染。未部署补丁、未提交或发布。
+
+### OPT-20260905-02｜取消历史独立生成图视觉审查
+- status: verified
+- scope: 真题/无教材题目解析首次配图、内容回修后的配图、历史恢复、最终验收和质量观察；按题/知识点生题共用主模型工具回路但原本未调用本次取消的独立审查，保持不变。
+- changed: 取消独立视觉模型审查及其后置修图调用；图件阶段和最终验收直接检查当前图规/答案引用的图片文件，历史视觉报告不再影响当前验收或影子质量；主模型生成后真实像素回灌、明确采用、工具预算、原题识图和内容/Word/PDF 检查保留。
+- trigger: 用户明确认定独立视觉审查为历史遗留并要求取消；该步骤重复判断主模型已采用图片，并导致额外修图调用和等待。
+- invariants: 不替换已采用图片、不伪造主模型同意、不自动恢复或宣称历史失败任务成功；缺失/损坏图片仍阻断；不修改密钥、历史文件、模型选择与付费预算。
+- do_not_regress: 不得在首次生成、内容回修或断点恢复后重新调用独立视觉审查及其修复；历史视觉报告只作档案，不参与新验收；不得取消主模型同会话看图采用。
+- verification: `/tmp/abp-py311-gate/bin/python scripts/run_quality_gates.py --full` exit 0；pytest 与 coverage 均 2021 passed、1 skipped（未配置 OFFICECLI_TEST_BINARY）、16 deselected，分支覆盖率 70%；编译、版本、公式 OMML、第三方声明、完整度、Ruff、Mypy 全部通过；新增模块单独 Mypy 通过。回归覆盖旧审查意见失效、当前有效/缺失/损坏图片、无图规但答案引用缺图、首次/回修入口无独立审查，以及既有跨协议主模型图片采用和三条业务线测试。官方上游 URL、分支、SHA 与实际合同见模型接入标准本日记录。未部署、未调用付费模型、未提交或发布。
+
+### OPT-20260905-01｜撤回未验证的 DMA 程序绘图接管
+- status: reverted
+- scope: 真题答案主模型生图合同、DMA 图件渲染路由、历史任务恢复；按题/知识点出题不适用且未改
+- changed: 撤回 `registered_programmatic_renderer_override`、固定 DMA 曲线 proposal 和专用 renderer，恢复只采用负责内容的主模型实际生成、检查并明确采用的图片；保留公式、OfficeCLI、Windows 持久化与并发等其他独立改动。
+- trigger: 临时分支按题型和关键词把主模型采用的图片替换成本地固定曲线，未证明新资产回到负责内容的主模型并被明确采用，违反当前 Harness 基线；真实用户任务也未通过。
+- invariants: 不把未被主模型检查采用的替代资产交付；不把本次撤回描述为图修复、真实任务通过或发布；不操作远端用户任务；保留其他已验证或待验证修复。
+- do_not_regress: 未经同会话工具结果回灌、主模型明确采用、回归及真实模型证据，不得再次按题型、关键词或本地固定 proposal 接管主模型生图资产。
+- verification: `/tmp/abp-py311-gate/bin/python scripts/run_quality_gates.py --full` 完整通过；pytest 与覆盖率轮次均为 2016 passed、1 skipped、16 deselected，分支覆盖率 70%，py_compile、版本一致性、公式 OMML、第三方声明、项目完整度、Ruff 和 Mypy 全部通过。唯一跳过项为未设置 `OFFICECLI_TEST_BINARY` 的固定 OfficeCLI 真实集成测试；未部署、未重启远端、未重跑真实任务、未提交或发布。
+
 ### OPT-20260904-05｜MinerU pipeline 依赖与引擎级自检
 - status: implementing
 - scope: 真题/教材 PDF/DOCX 的 MinerU 隔离运行时、安装复用判定、解析后端、图片锚点到题目结构的桥接和用户任务恢复

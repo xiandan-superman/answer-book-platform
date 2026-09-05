@@ -11,7 +11,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "logs" / "remote_monitor"
 DEFAULT_CONFIG_PATH = ROOT / "config" / "remote_monitor.local.json"
@@ -154,11 +153,6 @@ def capture(
     base = base_url.rstrip("/")
     status = read_json(f"{base}/api/system/status", timeout, credentials)
     logs = read_json(f"{base}/api/system/logs", timeout, credentials)
-    try:
-        hybrid = read_json(f"{base}/api/hybrid/settings", timeout, credentials)
-    except Exception as exc:
-        # v0.9.9 and earlier do not expose this optional endpoint.
-        hybrid = {"available": False, "error": str(exc), "error_type": exc.__class__.__name__}
     tasks = status.get("tasks", {}).get("recent", [])
     diagnostic_ids = {
         str(task.get("task_id") or "")
@@ -180,7 +174,7 @@ def capture(
         "base_url": base,
         "system": status,
         "logs": logs,
-        "hybrid": hybrid,
+        "execution": {"mode": "local"},
         "diagnostics": diagnostics,
     }
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -203,7 +197,7 @@ def print_summary(snapshot: dict[str, Any]) -> None:
             "base_url": snapshot.get("base_url"),
             "version": system.get("version"),
             "health": system.get("health"),
-            "execution": snapshot.get("hybrid", {}),
+            "execution": snapshot.get("execution", {"mode": "local"}),
             "host": {
                 "name": host.get("name"),
                 "system": host.get("system"),

@@ -109,7 +109,7 @@ REQUIRED_TEXT = {
     ],
     "app/pipeline_delivery.py": [
         "docx_audit.json",
-        "render_audit.json",
+        "figure_size_audit.json",
         "quality_shadow",
         "final_acceptance",
     ],

@@ -2,6 +2,16 @@
 
 > 本文件记录已经有证据定位、但尚未取得实施指令的问题。它不是完成清单；只有代码、回归、部署或发布分别完成后，才能更新对应状态。
 
+## 2026-09-05｜公式后处理改坏模型内容，图片纠错重复提交互斥参数
+
+- status: implementing; local_targeted_tests_passed; full_gate_running; not_deployed; not_released
+- affected_flow: 真题解析的答案片段、学术公式审计、主模型图片工具纠错和 Word 交付；公式规范化与图片工具是共享基础设施，两类生题和历史恢复同样受回归保护。
+- observed: 影响任务 33 题均已生成答案，但最终公式门抦发现 3 条失败：程序每轮把已规范化的“常数”再套一层字体命令，并将正文中成对的 `{t_0}` / `{t_i}` 提取为少左括号的非法公式。另一张生成图将储能模量 `E'` 标为 `E''`；视觉审计正确发现后，修复模型连续提交了同时含本地原图与“最近图片”的互斥选择器，4 次工具调用均未产生新图。
+- attribution: 公式主因是 `deterministic_postprocess`，次要缺口是末端审计直接终止而未进入 `harness_orchestration` 纠错回路；图片错标主因是 `model_output`，重复互斥参数是 `harness_orchestration` 未对可机器确认的唯一有效选择器做无损规范化。
+- harness_comparison: 2026-09-05 10:44 CST 核验 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main` @ `3fde89f628281b9b049376fb0cec4d1577bfeaec`，阅读 `codex-rs/core/src/tools/context.rs` 与 `codex-rs/codex-api/src/provider.rs`；核验 DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master` @ `d347e703908d0406b7a7ef80e3a0e594d86b2215`，阅读 `packages/llm/llm-pi-ai/src/context.ts` 和 `packages/session/session-persistence/README.md`。对应共同合同是保留工具/错误结果并回灌后续回路；Word/OMML 语义门是本项目必要差异。
+- implemented_repairs: 公式规范化改为幂等并折叠历史重复嵌套；行内公式提取吸收可证明成对的外层花括号；公式门拦只将失败题及精确错误回传最新候选，每轮重跑 Word 预检，默认最多 3 轮；图片纠错首次调用无任何最近生成图时，显式登记的本地原图是唯一有效选择器，程序无损忽略不可能的“最近图”；一旦存在最近图则继续返回结构化歧义错误。
+- required_verification: 锁定 Python 3.11 定向与完整门禁；不调模型的历史答案片段回放必须清除 3 条公式失败；只复用已通过结果回修当前图片；最终 Word 验收通过后重启服务再复跑。
+
 ## 2026-09-04｜MinerU 基础包通过命令检查但默认 hybrid 后端缺本地依赖
 
 - status: implementing; v0.9.45_candidate; user_task_verification_in_progress

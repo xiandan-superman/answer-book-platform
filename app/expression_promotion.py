@@ -245,6 +245,7 @@ def promote_inline_reactions(fragment: dict[str, Any]) -> dict[str, Any]:
 def promote_inline_mathematical_expressions(fragment: dict[str, Any]) -> dict[str, Any]:
     """Promote deterministic inline relations before generation validation."""
 
+    _repair_legacy_group_wrapper_boundaries(fragment)
     normalize_fragment_formula_latex(fragment)
     # Preserve cross-segment operator context before the per-text scanner can
     # independently promote a trailing comparison such as ``T>0``.
@@ -566,6 +567,68 @@ def promote_inline_mathematical_expressions(fragment: dict[str, Any]) -> dict[st
     fragment["formulas"] = formulas
     fragment = promote_split_partial_derivatives(fragment)
     return promote_answer_summary_mathematical_expressions(fragment)
+
+
+def _repair_legacy_group_wrapper_boundaries(fragment: dict[str, Any]) -> int:
+    """Restore a grouping brace split by the former inline scanner.
+
+    Old checkpoints can already contain ``text: "...{"`` followed by a
+    program-promoted formula ``t_0}``.  Re-running the improved scanner cannot
+    see the original span because it has already been typed.  This migration
+    rejoins only that exact, provenance-marked boundary and therefore does not
+    guess at model-authored malformed LaTeX.
+    """
+
+    formulas = {
+        str(item.get("formula_id") or ""): item
+        for item in fragment.get("formulas", []) or []
+        if isinstance(item, dict) and str(item.get("formula_id") or "")
+    }
+    changed = 0
+    for block in fragment.get("blocks", []) or []:
+        if not isinstance(block, dict):
+            continue
+        segments = block.get("segments") if isinstance(block.get("segments"), list) else []
+        for index in range(1, len(segments)):
+            previous = segments[index - 1]
+            current = segments[index]
+            if not (
+                isinstance(previous, dict)
+                and previous.get("type") == "text"
+                and str(previous.get("text") or "").endswith("{")
+                and isinstance(current, dict)
+                and current.get("type") == "formula_ref"
+            ):
+                continue
+            formula = formulas.get(str(current.get("formula_id") or ""))
+            if not isinstance(formula, dict) or "程序在结构校验前从解析正文中提升" not in str(
+                formula.get("source_note") or ""
+            ):
+                continue
+            latex = str(formula.get("latex") or "")
+            depth = 0
+            minimum_depth = 0
+            escaped = False
+            for character in latex:
+                if escaped:
+                    escaped = False
+                    continue
+                if character == "\\":
+                    escaped = True
+                elif character == "{":
+                    depth += 1
+                elif character == "}":
+                    depth -= 1
+                    minimum_depth = min(minimum_depth, depth)
+            if depth != -1 or minimum_depth != -1:
+                continue
+            candidate = "{" + latex
+            if candidate.count("{") != candidate.count("}"):
+                continue
+            previous["text"] = str(previous.get("text") or "")[:-1]
+            formula["latex"] = candidate
+            changed += 1
+    return changed
 
 
 def promote_answer_summary_mathematical_expressions(fragment: dict[str, Any]) -> dict[str, Any]:

@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from .final_acceptance import build_final_acceptance_report, read_json
+from .final_acceptance import build_final_acceptance_report
 from .model_usage_report import MODEL_USAGE_REPORT_NAME, build_model_usage_report
 
 STAGE_REPORTS = [
@@ -87,12 +87,11 @@ def build_task_delivery_package(
     stage_dir: Path,
     output_dir: Path,
 ) -> dict[str, Any]:
-    stored_acceptance = read_json(stage_dir / "final_acceptance_report.json") or {}
     stored_candidate = output_dir / "answer_book_review_candidate.docx"
     final = build_final_acceptance_report(
         stage_dir,
         output_dir,
-        require_render=bool(stored_acceptance.get("require_render", True)),
+        require_render=False,
         candidate_docx=stored_candidate if stored_candidate.exists() else None,
     )
     if final["status"] == "failed":
@@ -125,18 +124,6 @@ def build_task_delivery_package(
                     zf.write(path, arcname)
                     added.append(arcname)
                     integrity.append(_integrity_entry(path, arcname))
-            rendered_dir = output_dir / "word_rendered"
-            if rendered_dir.exists():
-                pdf = rendered_dir / "answer_book.pdf"
-                if pdf.exists():
-                    zf.write(pdf, "answer_book.pdf")
-                    added.append("answer_book.pdf")
-                    integrity.append(_integrity_entry(pdf, "answer_book.pdf"))
-                for png in sorted(rendered_dir.glob("page-*.png")):
-                    arcname = f"rendered_pages/{png.name}"
-                    zf.write(png, arcname)
-                    added.append(arcname)
-                    integrity.append(_integrity_entry(png, arcname))
             for name in STAGE_REPORTS:
                 path = stage_dir / name
                 if path.exists():

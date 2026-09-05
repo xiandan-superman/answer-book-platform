@@ -100,6 +100,66 @@ def test_physical_chemistry_mistake_note_equations_are_promoted() -> None:
     assert any("W=-FE" in item.replace(" ", "") for item in latex)
 
 
+def test_grouped_inline_symbol_absorbs_both_prose_braces() -> None:
+    from app.expression_promotion import promote_inline_mathematical_expressions
+
+    fragment = {
+        "question_id": "q_viscometer",
+        "answer_summary": "",
+        "formulas": [],
+        "blocks": [
+            {
+                "label": "解析",
+                "segments": [
+                    {"type": "text", "text": "纯溶剂流经时间 {t_0} 的测定，再测定 {t_i} 。"}
+                ],
+            }
+        ],
+    }
+
+    promoted = promote_inline_mathematical_expressions(fragment)
+
+    assert [item["latex"] for item in promoted["formulas"]] == ["{t_0}", "{t_i}"]
+    visible_text = "".join(
+        str(item.get("text") or "")
+        for item in promoted["blocks"][0]["segments"]
+        if item.get("type") == "text"
+    )
+    assert "{" not in visible_text
+    assert "}" not in visible_text
+
+
+def test_legacy_split_group_wrapper_is_rejoined_from_program_provenance() -> None:
+    from app.expression_promotion import promote_inline_mathematical_expressions
+
+    fragment = {
+        "question_id": "q_legacy_viscometer",
+        "answer_summary": "",
+        "formulas": [
+            {
+                "formula_id": "f1",
+                "latex": "t_0}",
+                "source_note": "程序在结构校验前从解析正文中提升的数学关系。",
+            }
+        ],
+        "blocks": [
+            {
+                "label": "解析",
+                "segments": [
+                    {"type": "text", "text": "流经时间 {"},
+                    {"type": "formula_ref", "formula_id": "f1", "inline": True},
+                    {"type": "text", "text": "的测定"},
+                ],
+            }
+        ],
+    }
+
+    promoted = promote_inline_mathematical_expressions(fragment)
+
+    assert promoted["formulas"][0]["latex"] == "{t_0}"
+    assert promoted["blocks"][0]["segments"][0]["text"] == "流经时间 "
+
+
 def test_legacy_promoted_formula_continuations_are_rejoined_by_notation_class() -> None:
     from app.expression_promotion import promote_inline_mathematical_expressions
 

@@ -107,6 +107,44 @@ def test_docx_audit_uses_local_repair_before_model_and_stops_when_resolved(
     ]
 
 
+def test_docx_audit_retries_transient_windows_file_lock_without_content_repair(
+    tmp_path, monkeypatch
+) -> None:
+    fragments_path = tmp_path / "answer_fragments.json"
+    fragments_path.write_text(json.dumps({"fragments": []}), encoding="utf-8")
+    audit_calls = {"count": 0}
+
+    monkeypatch.setattr(pipeline, "build_docx_from_fragments", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda *_args, **_kwargs: None)
+
+    def transient_audit(*_args, **_kwargs):
+        audit_calls["count"] += 1
+        if audit_calls["count"] < 3:
+            raise PermissionError(32, "file is in use")
+        return []
+
+    monkeypatch.setattr(pipeline, "audit_docx_v4", transient_audit)
+    monkeypatch.setattr(
+        pipeline,
+        "repair_answer_fragments_for_docx",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a transient file lock must not trigger content repair")
+        ),
+    )
+
+    result = pipeline.build_and_audit_docx_with_repair(
+        "task-file-lock",
+        fragments_path,
+        tmp_path / "answer.docx",
+        tmp_path,
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert result["ok"] is True
+    assert result["content_changed"] is False
+    assert audit_calls["count"] == 3
+
+
 def test_docx_local_repair_failure_is_recorded_and_uses_one_bounded_model_fallback(
     tmp_path, monkeypatch
 ) -> None:

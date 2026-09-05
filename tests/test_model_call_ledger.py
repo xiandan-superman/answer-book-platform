@@ -24,6 +24,9 @@ def test_public_pipeline_entry_always_sets_task_call_context(monkeypatch) -> Non
         observed.update(runtime_monitor._MODEL_CALL_CONTEXT.get() or {})
         return {"task_id": task_id, "options": options, "run_id": run_id}
 
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(pipeline, "load_task", lambda task_id: SimpleNamespace(word_tool_variant=""))
     monkeypatch.setattr(pipeline, "_run_pipeline_impl", fake_impl)
 
     result = pipeline.run_pipeline("cli-task")
@@ -392,3 +395,36 @@ def test_explicit_task_wall_clock_override_remains_authoritative(monkeypatch) ->
     })
 
     assert budget.max_model_wall_seconds_per_run == 2100
+
+
+@pytest.mark.parametrize('task_kind', ['exam', 'practice', 'knowledge'])
+def test_default_token_cap_disabled_but_usage_is_preserved(tmp_path, monkeypatch, task_kind):
+    monkeypatch.setattr(runtime_monitor, 'MODEL_CALL_LEDGER', tmp_path / 'calls.jsonl')
+    monkeypatch.setattr(runtime_monitor, 'MODEL_EXECUTION_EVENT_LEDGER', tmp_path / 'events.jsonl')
+    monkeypatch.delenv('QUALITY_MAX_MODEL_TOKENS_PER_RUN', raising=False)
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+    with runtime_monitor.model_call_context(task_id='token-test', run_id='run'):
+        runtime_monitor.configure_model_call_task_shape(question_count=33, task_kind=task_kind, textbook_evidence_enabled=task_kind == 'exam')
+        with runtime_monitor.track_model_call(provider='p', model='m', purpose='chat', timeout=1) as call:
+            runtime_monitor.record_model_call_usage(call, {'usage': {'prompt_tokens': 2_000_001, 'completion_tokens': 100}})
+        with runtime_monitor.track_model_call(provider='p', model='m', purpose='repair', timeout=1):
+            pass
+    state = runtime_monitor._RUN_MODEL_BUDGETS[('token-test', 'run')]
+    assert state['token_count'] == 2_000_101
+    assert state['call_count'] == 2
+    assert state['budget'].max_model_tokens_per_run == 0
+    assert state['budget'].max_model_calls_per_run > 0
+    assert state['budget'].max_model_wall_seconds_per_run > 0
+
+
+def test_explicit_token_budget_still_blocks_only_after_recorded_usage(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_monitor, 'MODEL_CALL_LEDGER', tmp_path / 'calls.jsonl')
+    monkeypatch.setattr(runtime_monitor, 'MODEL_EXECUTION_EVENT_LEDGER', tmp_path / 'events.jsonl')
+    monkeypatch.setenv('QUALITY_MAX_MODEL_TOKENS_PER_RUN', '100000')
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+    with runtime_monitor.model_call_context(task_id='explicit-token-test', run_id='run'):
+        with runtime_monitor.track_model_call(provider='p', model='m', purpose='chat', timeout=1) as call:
+            runtime_monitor.record_model_call_usage(call, {'usage': {'total_tokens': 100000}})
+        with pytest.raises(RuntimeError, match='model token budget exhausted'):
+            with runtime_monitor.track_model_call(provider='p', model='m', purpose='chat', timeout=1):
+                pass

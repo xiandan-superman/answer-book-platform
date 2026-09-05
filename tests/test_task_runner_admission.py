@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import Future
 
-from app import hybrid_client, pipeline, task_runner, task_store
+from app import pipeline, task_runner, task_store
 from app.task_store import TaskRecord
 
 
@@ -70,15 +70,9 @@ def test_cancelled_queued_exam_worker_does_not_enter_pipeline(tmp_path, monkeypa
     task_runner.run_exam_task(record.task_id, use_model=False, render=False, reuse_fragments=False)
 
 
-def test_model_exam_runs_locally_when_hybrid_switch_is_off(tmp_path, monkeypatch) -> None:
+def test_model_exam_always_runs_in_local_pipeline(tmp_path, monkeypatch) -> None:
     record = _record(tmp_path, monkeypatch, "exam_local_mode")
     local_calls = []
-    monkeypatch.setattr(hybrid_client, "hybrid_enabled", lambda: False)
-    monkeypatch.setattr(
-        hybrid_client,
-        "run_hybrid_task",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("hybrid pipeline entered")),
-    )
     monkeypatch.setattr(task_runner, "run_pipeline", lambda task_id, options: local_calls.append((task_id, options)))
 
     task_runner.run_exam_task(record.task_id, use_model=True, render=False, reuse_fragments=False)
@@ -86,26 +80,6 @@ def test_model_exam_runs_locally_when_hybrid_switch_is_off(tmp_path, monkeypatch
     assert len(local_calls) == 1
     assert local_calls[0][0] == record.task_id
     assert local_calls[0][1].use_model is True
-
-
-def test_model_exam_uses_server_only_after_hybrid_switch_is_on(tmp_path, monkeypatch) -> None:
-    record = _record(tmp_path, monkeypatch, "exam_hybrid_mode")
-    hybrid_calls = []
-    monkeypatch.setattr(hybrid_client, "hybrid_enabled", lambda: True)
-    monkeypatch.setattr(
-        hybrid_client,
-        "run_hybrid_task",
-        lambda task_id, *, render_with_word: hybrid_calls.append((task_id, render_with_word)),
-    )
-    monkeypatch.setattr(
-        task_runner,
-        "run_pipeline",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("local pipeline entered")),
-    )
-
-    task_runner.run_exam_task(record.task_id, use_model=True, render=True, reuse_fragments=False)
-
-    assert hybrid_calls == [(record.task_id, True)]
 
 
 def test_pipeline_worker_entry_never_clears_a_new_cancellation() -> None:

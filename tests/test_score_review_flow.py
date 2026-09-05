@@ -1,9 +1,10 @@
 from app.exam_audit import audit_exam_structure
 from app.exam_structure_review import (
     apply_exam_structure_review_updates,
-    auto_confirm_exam_structure,
     build_exam_structure_review_request,
+    submit_exam_structure_review,
     validate_exam_structure_review_updates,
+    wait_for_exam_structure_review,
 )
 from app.prompts import build_answer_depth_profile
 from app.question_scores import infer_suggested_score
@@ -227,13 +228,24 @@ def test_review_update_requires_scores_before_confirming():
     assert "第1题小问1 缺少确认分值" in issues
 
 
-def test_unattended_structure_confirmation_never_waits_for_user(tmp_path, monkeypatch):
+def test_structure_review_waits_for_user_and_persists_manual_confirmation(tmp_path, monkeypatch):
     from app import exam_structure_review, task_store
+    from app.task_store import TaskRecord
 
     tasks = tmp_path / "tasks"
     tasks.mkdir()
     monkeypatch.setattr(task_store, "TASKS_DIR", tasks)
-    task_store.task_dir("auto-review").mkdir()
+    task_store.task_dir("manual-review").mkdir()
+    task_store.save_task(TaskRecord(
+        task_id="manual-review",
+        exam_path="exam.docx",
+        textbooks_dir="textbooks",
+        provider="test",
+        model="test",
+        status="running",
+        created_at="2026-09-05 10:00:00",
+        updated_at="2026-09-05 10:00:00",
+    ))
     exam = {
         "items": [
             {
@@ -248,13 +260,24 @@ def test_unattended_structure_confirmation_never_waits_for_user(tmp_path, monkey
     }
     output = tmp_path / "structured_exam.json"
 
-    reviewed = auto_confirm_exam_structure("auto-review", exam, output)
+    def confirm_after_wait(_seconds):
+        request = exam_structure_review._read_json(
+            exam_structure_review.exam_structure_request_path("manual-review")
+        )
+        updates = request["items"]
+        updates[0]["confirmed_score"] = updates[0]["suggested_score"] or "5"
+        submit_exam_structure_review("manual-review", updates)
 
-    assert reviewed["exam_structure_review_mode"] == "unattended"
+    monkeypatch.setattr(exam_structure_review.time, "sleep", confirm_after_wait)
+    reviewed = wait_for_exam_structure_review("manual-review", exam, tmp_path, output)
+
+    assert reviewed["exam_structure_review_mode"] == "manual"
     assert reviewed["human_review_required"] is False
     assert reviewed["items"][0]["confirmed_question_type"] == "简答题"
     assert reviewed["items"][0]["confirmed_score"] == 5
-    request = exam_structure_review._read_json(exam_structure_review.exam_structure_request_path("auto-review"))
-    response = exam_structure_review._read_json(exam_structure_review.exam_structure_response_path("auto-review"))
-    assert request["status"] == "auto_confirmed"
-    assert response["decision"] == "auto_confirm"
+    request = exam_structure_review._read_json(exam_structure_review.exam_structure_request_path("manual-review"))
+    response = exam_structure_review._read_json(exam_structure_review.exam_structure_response_path("manual-review"))
+    assert request["status"] == "confirmed"
+    assert request["mode"] == "manual"
+    assert response["decision"] == "confirm"
+    assert task_store.load_task("manual-review").status == "running"

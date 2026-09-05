@@ -883,7 +883,7 @@ def _display_formula_lines(latex: str) -> list[str]:
     right = search_value[match.end() :].strip()
     if not left or not right:
         return [value]
-    arrow = r"\rightarrow" if match.group(1).startswith(r"\xrightarrow") else match.group(1)
+    arrow = match.group(1)
     if outer_upright:
         candidates = [rf"\mathrm{{{left}}}", rf"{{}}{arrow}\mathrm{{{right}}}"]
     else:
@@ -1345,7 +1345,7 @@ def _add_indented_answer_text(
     append_domain_text_runs(p, text)
 
 
-def _build_docx_from_fragments_a(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
+def _build_docx_from_fragments_c(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
     data = json.loads(fragments_json.read_text(encoding="utf-8"))
     doc = setup_document()
     add_text_paragraph(
@@ -1550,18 +1550,8 @@ def _build_docx_from_fragments_a(fragments_json: Path, output_docx: Path, *, str
 
 
 def build_docx_from_fragments(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
-    """Build the answer book with the selected A/B Word execution engine.
-
-    A preserves the current Python/OMML renderer. B is the product default and
-    creates the document through the pinned iOfficeAI/OfficeCLI runtime. There
-    is deliberately no automatic B-to-A fallback: silent fallback would make
-    the experiment data untrustworthy and could hide a B-only document defect.
-    """
-    from .officecli_word import build_answer_book_with_officecli, selected_word_tool_variant
-
-    if selected_word_tool_variant() == "B":
-        return build_answer_book_with_officecli(fragments_json, output_docx)
-    return _build_docx_from_fragments_a(
+    """Build with Pandoc C equations and the shared Python document template."""
+    return _build_docx_from_fragments_c(
         fragments_json,
         output_docx,
         strict_answer_summary_formula_audit=strict_answer_summary_formula_audit,

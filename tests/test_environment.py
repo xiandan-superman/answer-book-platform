@@ -16,7 +16,7 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
         font_report = {"enabled": True, "font_file_count": 42, "font_directory_count": 3}
         with patch("app.environment.ensure_project_dirs"), patch(
             "app.environment.list_providers", return_value={}
-        ), patch("app.environment.find_mathml2omml_xsl", return_value=None), patch(
+        ), patch("app.pandoc_word.runtime_info", return_value={"variant": "C"}), patch(
             "app.environment.find_omml2mathml_xsl", return_value=None
         ), patch(
             "app.environment._check_word_mac", return_value={"applicable": False}
@@ -36,7 +36,7 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
 
         with patch("app.environment.ensure_project_dirs"), patch(
             "app.environment.list_providers", return_value={}
-        ), patch("app.environment.find_mathml2omml_xsl", return_value=None), patch(
+        ), patch("app.pandoc_word.runtime_info", return_value={"variant": "C"}), patch(
             "app.environment.find_omml2mathml_xsl", return_value=None
         ), patch("app.environment._check_word_mac", return_value={"applicable": False}), patch(
             "app.environment._check_word_windows", return_value={"applicable": False}
@@ -61,15 +61,15 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
         self.assertIn("Python 3.14.6", issue)
         self.assertIn("完全退出平台", issue)
 
-    def test_packaged_formula_backend_is_preferred_chain_ready_without_office(self) -> None:
+    def test_pandoc_backend_is_preferred_chain_ready_without_office(self) -> None:
         from app.environment import check_environment
 
         def package_spec(name: str):
-            return object() if name in {"latex2mathml", "lxml", "math_ml2omml"} else None
+            return object() if name in {"latex2mathml", "lxml"} else None
 
         with patch("app.environment.ensure_project_dirs"), patch(
             "app.environment.list_providers", return_value={}
-        ), patch("app.environment.find_mathml2omml_xsl", return_value=None), patch(
+        ), patch("app.pandoc_word.runtime_info", return_value={"variant": "C"}), patch(
             "app.environment.find_omml2mathml_xsl", return_value=None
         ), patch(
             "app.environment._package_data_file_exists", return_value=True
@@ -83,7 +83,7 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
             result = check_environment()
 
         self.assertTrue(result["formula_conversion"]["preferred_chain_ready"])
-        self.assertTrue(result["formula_conversion"]["packaged_mathml2omml_available"])
+        self.assertEqual("C", result["formula_conversion"]["variant"])
         self.assertTrue(result["formula_conversion"]["latex2mathml_data_available"])
 
     def test_latex2mathml_runtime_data_probe_checks_symbol_table(self) -> None:
@@ -134,7 +134,7 @@ class DrawingRuntimeEnvironmentTests(unittest.TestCase):
         with patch.dict("os.environ", {"ENVIRONMENT_STATIC_PROBE_CACHE_SECONDS": "30"}), patch(
             "app.environment.ensure_project_dirs"
         ), patch("app.environment.list_providers", side_effect=[{}, {}, {}]) as providers, patch(
-            "app.environment.find_mathml2omml_xsl", return_value=None
+            "app.pandoc_word.runtime_info", return_value={"variant": "C"}
         ), patch("app.environment.find_omml2mathml_xsl", return_value=None), patch(
             "app.environment._package_data_file_exists", return_value=False
         ), patch("app.environment._check_word_mac", return_value={"applicable": False}), patch(

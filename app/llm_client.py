@@ -163,9 +163,14 @@ def _same_route_transport_request(
                 transport_phase=str(getattr(exc, "transport_phase", "") or ""),
                 retry_after_seconds=getattr(exc, "retry_after_seconds", None),
             )
+            provider_name = str(provider or "").strip().lower()
+            lingsuan_ambiguous_gateway_error = (
+                (provider_name == "lingsuan" or provider_name.startswith("lingsuan_"))
+                and info.kind == "provider_ambiguous_invalid_request"
+            )
             if (
                 attempt >= attempts
-                or not info.retryable
+                or not (info.retryable or lingsuan_ambiguous_gateway_error)
                 or bool(getattr(exc, "partial_output_received", False))
                 or isinstance(exc, (StructuredOutputError, IncompleteOutputError))
             ):

@@ -1054,7 +1054,7 @@ def draw(output_path: str) -> None:
         )
         self.assertEqual("新标题", fragment["blocks"][0]["segments"][1]["text"])
 
-    def test_final_acceptance_warns_for_model_judgment_after_bounded_repair(self) -> None:
+    def test_final_acceptance_ignores_retired_model_judgment(self) -> None:
         from app.final_acceptance import build_final_acceptance_report
 
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -1101,7 +1101,7 @@ def draw(output_path: str) -> None:
         self.assertTrue(report["delivery_ready"])
         self.assertFalse(report["formal_acceptance_passed"])
         self.assertEqual("completed_with_issues", report["status"])
-        self.assertTrue(any("figure_visual_qa" in warning for warning in report["warnings"]), report["warnings"])
+        self.assertFalse(any("figure_visual_qa" in warning for warning in report["warnings"]), report["warnings"])
         self.assertFalse(any("failed stage: figures" in issue for issue in report["issues"]), report["issues"])
 
     def test_final_acceptance_ignores_unreferenced_failed_figure_when_fallback_is_used(self) -> None:
@@ -1171,13 +1171,16 @@ def draw(output_path: str) -> None:
                 encoding="utf-8",
             )
 
+            (stage / "figures").mkdir()
+            from PIL import Image
+            Image.new("RGB", (100, 100), "white").save(stage / "figures" / "q1_model_fig_01.png")
             report = build_final_acceptance_report(stage, out, require_render=True)
 
         self.assertTrue(report["ok"], report["issues"])
         self.assertFalse(any("figure_visual_qa" in issue for issue in report["issues"]), report["issues"])
         self.assertFalse(any("failed stage: figures" in issue for issue in report["issues"]), report["issues"])
-        self.assertEqual(1, report["figure_visual_qa_summary"]["ignored_unreferenced_failed_count"])
-        self.assertTrue(any("ignored unreferenced failed figure" in warning for warning in report["warnings"]), report["warnings"])
+        self.assertTrue(report["figure_visual_qa_summary"]["retired"])
+        self.assertFalse(any("ignored unreferenced failed figure" in warning for warning in report["warnings"]), report["warnings"])
 
 
 if __name__ == "__main__":

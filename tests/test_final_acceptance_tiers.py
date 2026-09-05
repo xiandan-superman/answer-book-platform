@@ -79,7 +79,7 @@ def test_unresolved_content_produces_review_candidate_not_artifact_failure(tmp_p
     assert report["delivery_tier"] == "review_candidate"
     assert report["status"] == "completed_with_issues"
     assert report["delivery_issue_count"] == 0
-    assert report["formal_issue_count"] == 2
+    assert report["formal_issue_count"] == 1
 
 
 def test_one_failed_answer_keeps_other_answers_as_review_candidate(tmp_path) -> None:
@@ -263,8 +263,8 @@ def test_warn_only_model_caveats_do_not_downgrade_passing_hard_gates(tmp_path) -
 
     report = build_final_acceptance_report(stage, output, require_render=False)
 
-    assert report["formal_acceptance_passed"] is False
-    assert report["delivery_tier"] == "review_candidate"
+    assert report["formal_acceptance_passed"] is True
+    assert report["delivery_tier"] == "formal"
     assert report["diagnostic_advisories"]["semantic_model_advisory_count"] == 1
     assert report["diagnostic_advisories"]["actionable_semantic_advisory_count"] == 0
     assert report["diagnostic_advisories"]["informational_fragment_warning_count"] == 1

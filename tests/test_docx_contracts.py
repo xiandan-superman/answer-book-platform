@@ -160,7 +160,7 @@ def test_long_display_reaction_is_split_at_arrow_for_page_width() -> None:
 
     assert len(lines) == 2
     assert lines[0].endswith(r"\mathrm{HOOC-(CH_2)_8-COOH}")
-    assert lines[1].startswith(r"{}\rightarrow")
+    assert lines[1].startswith(r"{}\xrightarrow{\text{缩聚}}")
 
 
 def test_short_display_reaction_remains_on_one_line() -> None:

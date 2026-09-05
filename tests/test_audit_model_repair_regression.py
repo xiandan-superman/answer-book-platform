@@ -11,6 +11,25 @@ sys.path.insert(0, str(ROOT))
 
 
 class AuditModelRepairRegressionTests(unittest.TestCase):
+    def test_academic_expression_candidate_validation_uses_word_preflight(self) -> None:
+        from app.audit_model_repair import _academic_expression_candidate_issues
+
+        question = {"question_id": "q_formula", "question_type": "简答题", "stem": "说明公式"}
+        malformed = {
+            "question_id": "q_formula",
+            "answer": "见解析",
+            "blocks": [],
+            "formulas": [{"formula_id": "f1", "latex": "t_0}"}],
+        }
+        valid = {
+            **malformed,
+            "formulas": [{"formula_id": "f1", "latex": "t_{0}"}],
+        }
+
+        issues = _academic_expression_candidate_issues(malformed, question)
+
+        self.assertTrue(any("LaTeX 结构错误" in item for item in issues))
+        self.assertEqual([], _academic_expression_candidate_issues(valid, question))
     def test_image_route_repair_never_silently_calls_plain_text_model(self) -> None:
         from app.audit_model_repair import repair_fragments_with_model_for_audit
         from app.llm_client import OpenAICompatibleClient

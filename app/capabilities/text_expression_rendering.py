@@ -322,6 +322,23 @@ def build_text_expression_render_plans(
     for match in registry.match_expressions(text, source_format="text", context=context):
         if match.rule_id not in RENDERABLE_TEXT_RULES:
             continue
+        # Some models use a harmless grouping wrapper in prose (``{t_0}``).
+        # Individual registry rules begin at ``t`` and include the closing
+        # brace, which previously produced the malformed formula ``t_0}`` and
+        # left the opening brace in visible text.  Absorb only the exact
+        # one-sided wrapper; ordinary subscripts such as ``h_{1}`` are
+        # unaffected.
+        if (
+            match.start > 0
+            and text[match.start - 1] == "{"
+            and match.value.endswith("}")
+            and match.value.count("}") == match.value.count("{") + 1
+        ):
+            match = replace(
+                match,
+                value="{" + match.value,
+                start=match.start - 1,
+            )
         if match.rule_id == "core.text_equation":
             narrowed_match = _narrow_text_equation_match(match)
             if narrowed_match is None:

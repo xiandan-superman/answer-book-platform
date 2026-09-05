@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import os
 
-# The established regression corpus locks A's exact OOXML formatting. B has
-# dedicated integration tests; keeping this explicit avoids downloading an
-# external runtime in hermetic unit-test jobs while production still defaults B.
-os.environ.setdefault("ANSWER_BOOK_WORD_TOOL_VARIANT", "A")
+# All document regressions exercise the production Pandoc C converter.
+if os.environ.get("PANDOC_TEST_BINARY"):
+    os.environ.setdefault("ANSWER_BOOK_PANDOC_BINARY", os.environ["PANDOC_TEST_BINARY"])
 os.environ.setdefault("ANSWER_BOOK_LITELLM_SHADOW", "0")

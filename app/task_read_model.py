@@ -19,7 +19,7 @@ from .task_contracts import (
     quality_from_summary,
     workflow_for_kind,
 )
-from .task_titles import build_display_task_title, friendly_material_title, title_matches_material_name
+from .task_titles import build_display_task_title, friendly_material_title, short_model_label, title_matches_material_name
 
 
 def _time_key(value: object) -> float:
@@ -199,13 +199,20 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     textbook_names = _textbook_display_names(row)
     question_only = str(row.get("analysis_profile") or "") == QUESTION_ONLY_ANALYSIS
     task_label = "题目解析" if question_only else "真题解析"
+    display_model = row.get("actual_model") or row.get("answer_model") or row.get("model")
+    display_provider = row.get("actual_provider") or row.get("answer_provider") or row.get("provider")
+    model_source = "actual_call" if row.get("actual_model") else "configured_answer"
+    model_label = short_model_label(display_model, display_provider)
     public_row = {
         **row,
+        "model_label": model_label,
+        "model_source": model_source,
         "display_title": build_display_task_title(
             task_label,
             friendly_material_title(exam_name) or exam_name,
-            model=row.get("model"),
-            provider=row.get("provider"),
+            model=display_model,
+            provider=display_provider,
+            model_label=model_label,
         ),
         "description": exam_name,
         "exam_display_name": exam_name,

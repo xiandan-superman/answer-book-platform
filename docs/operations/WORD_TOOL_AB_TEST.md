@@ -1,3 +1,5 @@
+> 历史记录：A/B 已退出当前生产生成路径，旧设置不再生效。当前唯一引擎为 Pandoc C，参见 WORD_ENGINE_EVALUATION.md。下文仅保留历史评估证据。
+
 # Word 工具 A/B 测试记录
 
 ## 当前决定

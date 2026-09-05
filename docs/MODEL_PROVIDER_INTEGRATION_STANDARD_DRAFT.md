@@ -21,10 +21,10 @@
 
 所有模型调用相关的实现、故障和设计，优先对照以下两个官方开源上游；同名项目、Fork、镜像、包管理器页面、搜索摘要和第三方解读都不能替代官方源码：
 
-| 上游 | 唯一认可的官方 Git 地址 | 2026-09-04 核验快照 |
+| 上游 | 唯一认可的官方 Git 地址 | 2026-09-05 核验快照 |
 |---|---|---|
-| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`f46671b14aa3bc37d4ee9a67c06385cb9ec8e2d3` |
-| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`76fda729799fe9b3848dbe2c211d4b231032b81e` |
+| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`ddf04ad26789d040f9ef6a96736f76602e35a6cc` |
+| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`d347e703908d0406b7a7ef80e3a0e594d86b2215` |
 
 快照只用于判断参考是否过期，不代表永久锁定分支或提交。每次相关排障或修改开始前必须查询官方远端 `HEAD`，动态取得默认分支和最新提交；使用本地检出时还必须确认 `origin` 精确匹配上表 Git 地址并取得最新远端引用。实际结论必须记录仓库 URL、默认分支、完整提交 SHA、核对时间和阅读文件，不能只写“参考 Codex/DeepSeek”。
 
@@ -106,6 +106,8 @@
 - 至少一种足以覆盖必要内容的表示可用时继续任务并保留风险；同一必要内容的结构化与视觉表示都不可用时明确停止，不把空白或缺失内容交给模型。超过有界页图预算时列出未覆盖页，不能宣称已完整分析。
 
 ### 1.6 任务恢复、工具结果与 Word 发布边界
+
+2026-09-05 10:44 CST 重新核验上表两个官方远程及本地 `origin`：OpenAI Codex 阅读 `codex-rs/core/src/tools/context.rs` 的模型可见工具输出和 `codex-rs/codex-api/src/provider.rs` 的有界传输重试；DeepSeek Harness 阅读 `packages/llm/llm-pi-ai/src/context.ts` 的 `toolResult` 上下文组装、`packages/session/session-persistence/README.md` 的失败结果恢复与耐久事件合同。两者都把工具/校验失败作为后续回路可见输入，而不把“一次 HTTP 成功”当成任务成功。Codex/DeepSeek 都不提供本项目专有的 Word/OMML 公式语义门，因此本项目保留确定性 Word 预检，但必须把精确失败只回传给受影响题目的最新候选，有界重试并每轮复验；程序能无损解决的幂等规范化和无歧义工具参数不增加模型调用。
 
 - 全平台文本和结构化模型请求共用传输错误分类；只有未接收部分输出的可重试故障才使用原路由、原请求有界重试，等待期可被任务取消中断。结构化输出修复只处理已完成响应的 JSON 语法/合同错误，不再把网络错误文本伪装成模型上一版答案。
 - 工具调用在执行前持久化 `started`，结果后持久化 `result`；恢复时同一稳定会话中只有 `started` 而无 `result` 的调用标记为 `TOOL_OUTCOME_UNKNOWN`，禁止自动重放可能已产生外部副作用的操作。
@@ -275,3 +277,13 @@ Word B 版直接核验 `https://github.com/iOfficeAI/OfficeCLI.git` 默认分支
 - [ ] 降级路径能力等价且可追踪
 - [ ] 测试密钥、请求内容和用户材料没有进入仓库
 - [ ] 能力表、代码、测试、设置页说明同步更新
+
+### 2026-09-05 取消独立生成图视觉审查
+
+用户明确取消历史遗留的生图后独立视觉审查及其自动修复。本次实施前动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、SHA `459a79eb85400af759e9220c7bafb4429ae07516`，阅读 `codex-rs/core/src/tools/context.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、SHA `d347e703908d0406b7a7ef80e3a0e594d86b2215`，校验本地 origin/HEAD 并阅读 `packages/core/agent-loop/src/tool-calls.ts` 与 `packages/llm/llm-pi-ai/src/context.ts`。共同参考是工具结果按调用身份回到模型上下文；本项目现有真实图片回灌、主模型明确采用和有界工具循环保持不变。取消独立审查是用户确定的产品合同，不将其虚构为上游保证图片正确。保留题目/材料识图、内容审查及文件存在、可解码、资产绑定、Word/PDF 等确定性检查；历史独立视觉报告仅作诊断档案，不再参与新运行或重新验收。
+
+### 2026-09-05 用户取消默认整任务 token 硬上限
+
+核对时间：2026-09-05（Asia/Shanghai）。通过官方远端 HEAD 动态确认并校验本地 origin：OpenAI Codex `https://github.com/openai/codex.git`，默认分支 main，完整 SHA `ddf04ad26789d040f9ef6a96736f76602e35a6cc`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git`，默认分支 master，完整 SHA `d347e703908d0406b7a7ef80e3a0e594d86b2215`。读取前者 `codex-rs/core/src/rollout_budget.rs`，后者 `packages/llm/llm/src/retry-policy.ts`。Codex 的此预算对象在未 configure 时不触发预算耗尽，并在配置后按权重累计使用量和提醒；DeepSeek 将网络重试作为独立的提供商策略，normal 模式有限次退避。两者均不构成教学任务固定 200 万 token 阈值的依据。
+
+本项目此前默认固定 200 万 token 与正常多阶段教材任务冲突，用户明确要求取消默认值。现以 0 表示不启用整任务 token 硬上限；仍累积真实 usage，显式设置正数环境预算保持生效。调用次数、运行时间、提供商熔断、单次请求超时、内容修复及工具循环上限不变。不修改模型输入、响应、上下文、质量门或已完成内容，不增加失败重试次数；没有付费模型验证。此前任务级 token 必须始终有固定上限的历史约束被本次用户指令取代。

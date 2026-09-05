@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .document_tool import DocumentToolFailure, DocumentToolSession
-from .officecli_word import officecli_runtime_info, selected_word_tool_variant
+from .officecli_word import selected_word_tool_variant, word_tool_runtime_info
+from .pandoc_word import PANDOC_CONTRACT
 from .paths import CACHE_DIR
 from .practice_document_contracts import PRACTICE_DOCUMENT_CONTRACT_VERSION
 from .practice_export import build_practice_question_docx, validate_docx_output, validate_practice_export
@@ -39,6 +40,7 @@ def _cache_key(data: dict[str, Any]) -> str:
     document_data = {
         "cache_version": EXPORT_CACHE_VERSION,
         "word_tool_variant": selected_word_tool_variant(),
+        "pandoc_contract": PANDOC_CONTRACT,
         "source_mode": data.get("source_mode"),
         "title": data.get("title"),
         "goal": data.get("goal"),
@@ -195,7 +197,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
                 "size_bytes": len(content),
                 "question_count": len(data.get("exercises") or []),
                 "word_tool_variant": word_tool_variant,
-                "word_tool_runtime": officecli_runtime_info() if word_tool_variant == "B" else {"variant": "A", "engine": "Python/OMML"},
+                "word_tool_runtime": word_tool_runtime_info(),
             }
 
         document_tool_result = document_tool.run(

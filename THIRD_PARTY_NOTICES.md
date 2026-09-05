@@ -9,7 +9,6 @@
 | `python-docx` | 1.2.0 | Word 读写与文档生成 | MIT |
 | `lxml` | 6.1.2 | DOCX/XML、OMML 解析与审计 | BSD-3-Clause |
 | `latex2mathml` | 3.81.0 | LaTeX 转 MathML | MIT |
-| `mathml-to-omml` | 1.0.5 | MathML 转 Word OMML | MIT |
 | `Pillow` | 12.3.0 | 图片读取、转换与嵌入 | MIT-CMU |
 | `pydantic` | 2.13.4 | V4 结构化答案契约校验 | MIT |
 | `instructor` | 1.16.0 | 模型结构化输出、Pydantic 校验反馈与有界纠错 | MIT |
@@ -55,10 +54,9 @@
 
 | 组件 | 固定版本 | 用途 | 许可证 |
 | --- | --- | --- | --- |
-| `iOfficeAI/OfficeCLI` | 1.0.147 | B 版 Word 的 DOCX 创建、原子批处理、公式/图片/表格写入和 OpenXML 校验 | Apache-2.0；官方仓库及许可证见 <https://github.com/iOfficeAI/OfficeCLI> |
 | `opendatalab/MinerU` / `mineru` | 3.4.5 | PDF/DOCX 主解析、OCR、公式/表格/图片块生成 | MinerU Open Source License（基于 Apache-2.0 并含附加条件）；见 <https://github.com/opendatalab/MinerU> |
 
-OfficeCLI 不随源码 ZIP 内置。MinerU 也不进入 Web 主进程依赖，而是按 `requirements-mineru.txt` 在用户数据目录创建固定版本的隔离环境。两者都不会修改用户 PATH、shell 配置和 Agent skills。
+OfficeCLI 已退出生产生成路径。MinerU 不进入 Web 主进程依赖，而是按 `requirements-mineru.txt` 在用户数据目录创建固定版本的隔离环境。MinerU 与 Pandoc 均不修改用户 PATH、shell 配置和 Agent skills。
 
 ## 开发与验证工具
 
@@ -69,3 +67,7 @@ OfficeCLI 不随源码 ZIP 内置。MinerU 也不进入 Web 主进程依赖，�
 - 新增或删除运行依赖、平台锁定包或 vendored 前端组件时，必须同步更新本文档。
 - 发布前必须保留 vendored 文件自带的版权头与许可证文本。
 - 许可证名称只是索引；如需重新分发、修改或商业授权判断，应复核对应版本发行包中的完整条款。
+
+## 可选 Word C 引擎
+
+Pandoc 3.11（GPL-2.0-or-later，含 texmath）作为独立子进程生成 OMML，python-docx 保留平台模板。官方源码和许可证：https://github.com/jgm/pandoc/tree/3.11 。C 为唯一生产引擎；应用按固定版本准备官方便携包并保留含许可证的完整压缩包，校验压缩包及可执行文件哈希和版本，不增加 Python requirements/constraints。准入运行时为 Windows x64、macOS arm64/x64，以及用于 CI 的 Linux x64；其他架构明确失败，不回退 A/B。

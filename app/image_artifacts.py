@@ -13,7 +13,7 @@ from typing import Any
 
 from PIL import Image
 
-from .artifact_store import atomic_write_json, verify_immutable_file
+from .artifact_store import atomic_write_json, fsync_directory_best_effort, verify_immutable_file
 from .paths import DATA_ROOT
 
 _MIME_BY_FORMAT = {
@@ -134,18 +134,13 @@ class ImageArtifactStore:
             temporary = Path(raw_tmp)
             try:
                 shutil.copyfile(source, temporary)
-                with temporary.open("rb") as handle:
+                # Windows rejects fsync on a read-only descriptor with EBADF;
+                # open the copied file read/write even though its bytes are not
+                # modified so the durability barrier is portable.
+                with temporary.open("rb+") as handle:
                     os.fsync(handle.fileno())
                 os.replace(temporary, destination)
-                try:
-                    directory_fd = os.open(self.root, os.O_RDONLY)
-                except OSError:
-                    directory_fd = None
-                if directory_fd is not None:
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                fsync_directory_best_effort(self.root)
             finally:
                 temporary.unlink(missing_ok=True)
         if not verify_immutable_file(destination, sha256=digest, size_bytes=size):

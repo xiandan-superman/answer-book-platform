@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -10,6 +11,17 @@ from app.image_artifacts import ImageArtifactStore, mark_final_adopted_assets
 
 def _image(path: Path, color: str = "white") -> None:
     Image.new("RGB", (96, 80), color).save(path, format="PNG")
+
+
+def test_directory_fsync_failure_is_nonfatal_and_descriptor_is_closed(tmp_path) -> None:
+    from app.artifact_store import fsync_directory_best_effort
+
+    with patch("app.artifact_store.os.open", return_value=123), patch(
+        "app.artifact_store.os.fsync", side_effect=OSError(9, "Bad file descriptor")
+    ), patch("app.artifact_store.os.close") as close:
+        fsync_directory_best_effort(tmp_path)
+
+    close.assert_called_once_with(123)
 
 
 def test_image_artifact_is_verified_on_write_read_and_adoption(tmp_path) -> None:

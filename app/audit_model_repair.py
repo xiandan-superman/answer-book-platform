@@ -20,6 +20,7 @@ from .answer_generation import (
     structured_answer_max_tokens,
 )
 from .calculation_consistency import calculation_draft_consistency_issues
+from .capabilities.academic_expressions import audit_academic_expressions
 from .concurrency import model_request_slot, run_limited_concurrent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
@@ -81,6 +82,32 @@ def audit_model_repair_timeout_seconds(question: dict[str, Any]) -> int:
         "AUDIT_MODEL_REPAIR_TIMEOUT_SECONDS",
         AUDIT_MODEL_REPAIR_TIMEOUT_SECONDS,
     )
+
+
+def _academic_expression_candidate_issues(
+    candidate: dict[str, Any],
+    question: dict[str, Any],
+) -> list[str]:
+    """Return exact deterministic formula failures for one repair candidate.
+
+    Academic-expression audit is a late delivery gate, so schema validation
+    alone is insufficient: a syntactically valid fragment can still contain a
+    formula that the authoritative Word renderer cannot consume.  Feeding
+    these errors into the existing bounded candidate loop mirrors the Harness
+    tool-result contract and prevents persisting a candidate that is known to
+    fail at the next stage.
+    """
+
+    report = audit_academic_expressions(
+        {"fragments": [candidate]},
+        structured_exam={"items": [question]},
+        render_preflight=True,
+    )
+    return [
+        str(item.get("message") or item)
+        for item in report.get("issues", [])
+        if isinstance(item, dict)
+    ]
 
 
 def _qid(value: dict[str, Any]) -> str:
@@ -877,6 +904,10 @@ def repair_fragments_with_model_for_audit(
                     candidate.setdefault("_meta", {})["deferred_formula_paraphrases"] = deferred_formula_paraphrases
                 regression_issues = _repair_regressions(fragment, candidate, question, issues)
                 candidate_issues = syntax_issues + formula_leaks[:10] + regression_issues
+                if audit_stage == "academic_expression":
+                    candidate_issues.extend(
+                        _academic_expression_candidate_issues(candidate, question)
+                    )
                 if not candidate_issues:
                     repaired = candidate
                     break

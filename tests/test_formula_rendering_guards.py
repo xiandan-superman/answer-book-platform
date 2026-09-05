@@ -48,7 +48,7 @@ class FormulaRenderingGuardTests(unittest.TestCase):
         self.assertFalse(math_node_has_empty_delimiter_character(omml))
 
     def test_primary_formula_conversion_failure_does_not_silently_degrade(self) -> None:
-        with patch("app.omml.omml_from_latex_via_mathml", side_effect=RuntimeError("broken transform")), patch.dict(
+        with patch("app.pandoc_word.convert", side_effect=RuntimeError("broken converter")), patch.dict(
             "os.environ",
             {
                 "ANSWER_BOOK_DISABLE_MATHML_OMML": "0",
@@ -58,15 +58,14 @@ class FormulaRenderingGuardTests(unittest.TestCase):
             with self.assertRaises(FormulaConversionError):
                 omml_from_latex(r"\frac{a}{b}")
 
-    def test_degraded_formula_fallback_requires_explicit_emergency_switch(self) -> None:
-        with patch("app.omml.omml_from_latex_via_mathml", side_effect=RuntimeError("broken transform")), patch.dict(
+    def test_retired_emergency_switch_cannot_enable_fallback(self) -> None:
+        with patch("app.pandoc_word.convert", side_effect=RuntimeError("broken converter")), patch.dict(
             "os.environ",
             {"ANSWER_BOOK_ALLOW_DEGRADED_OMML_FALLBACK": "1"},
             clear=False,
         ):
-            omml = omml_from_latex(r"\frac{a}{b}")
-
-        self.assertTrue(list(omml))
+            with self.assertRaises(FormulaConversionError):
+                omml_from_latex(r"\frac{a}{b}")
 
     def test_vector_norm_product_does_not_create_empty_omml_slots(self) -> None:
         latex = r"\cos\varphi=\frac{\mathbf{g}_1\cdot\mathbf{g}_2}{\left|\mathbf{g}_1\right|\left|\mathbf{g}_2\right|}"
@@ -94,10 +93,10 @@ class FormulaRenderingGuardTests(unittest.TestCase):
         self.assertIn("Ni", texts)
         self.assertNotIn("%Ni", texts)
 
-    def test_xrightarrow_annotations_use_portable_plain_arrow(self) -> None:
+    def test_xrightarrow_annotations_preserve_reaction_conditions(self) -> None:
         self.assertEqual(
             normalize_latex(r"\gamma\xrightarrow[\,T<M_s\,]{\text{水淬}}\mathrm{M}"),
-            r"\gamma\rightarrow\mathrm{M}",
+            r"\gamma\xrightarrow[ T<M_s ]{\text{水淬}}\mathrm{M}",
         )
 
     def test_docx_audit_reports_empty_formula_delimiter_slots(self) -> None:
@@ -357,7 +356,7 @@ class FormulaRenderingGuardTests(unittest.TestCase):
                                 "section": "二、填空题",
                                 "question_type": "填空题",
                                 "number": "1",
-                                "answer": r"$\\Delta G < 0$",
+                                "answer": r"$\Delta G < 0$",
                                 "answer_summary": "",
                                 "evidence_ids": [],
                                 "blocks": [],

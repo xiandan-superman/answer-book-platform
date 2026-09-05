@@ -47,7 +47,6 @@ from .exercise_generation import (
 )
 from .final_acceptance import build_final_acceptance_report
 from .http_errors import public_error_payload
-from .hybrid_client import HybridClientError, hybrid_settings_payload, save_hybrid_enabled
 from .image_orchestration import MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
 from .invariant_service import build_invariant_report
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
@@ -115,7 +114,15 @@ from .provider_errors import classify_provider_error
 from .read_snapshot import READ_SNAPSHOTS
 from .redaction import redact_credentials
 from .review_export import build_question_review, write_question_review_csv
-from .runtime_monitor import append_exception_log, append_runtime_log, build_system_status, read_runtime_logs, task_health_summary
+from .runtime_monitor import (
+    append_exception_log,
+    append_runtime_log,
+    build_system_status,
+    model_call_route_summaries,
+    model_call_route_summary,
+    read_runtime_logs,
+    task_health_summary,
+)
 from .settings import (
     DEFAULT_MODEL_MAX_TOKENS,
     get_provider,
@@ -420,11 +427,12 @@ def _task_duration_summary(task_row: dict) -> dict:
     return {"duration_seconds": seconds, "duration_text": _format_duration(seconds)}
 
 
-def _enrich_task_row(task_row: dict) -> dict:
+def _enrich_task_row(task_row: dict, route_summary: dict | None = None) -> dict:
     row = dict(task_row)
     task_id = str(row.get("task_id") or "")
     if task_id:
         row.update(_task_progress_summary(task_id, row))
+        row.update(route_summary if route_summary is not None else model_call_route_summary(task_id))
         try:
             row["review_decision_pending"] = bool(get_pending_review_decision(task_id).get("pending"))
         except Exception:
@@ -953,9 +961,6 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/environment":
             self.send_json(check_environment())
             return
-        if parsed.path == "/api/hybrid/settings":
-            self.send_json(hybrid_settings_payload())
-            return
         if parsed.path == "/api/providers":
             self.send_json({name: cfg.redacted() for name, cfg in list_providers().items()})
             return
@@ -1214,8 +1219,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/tasks":
             def build_task_list() -> dict:
                 exam_tasks = []
-                for task in list_tasks():
-                    enriched = _enrich_task_row(task)
+                stored_tasks = list_tasks()
+                routes = model_call_route_summaries([str(task.get("task_id") or "") for task in stored_tasks])
+                for task in stored_tasks:
+                    task_id = str(task.get("task_id") or "")
+                    enriched = _enrich_task_row(task, routes.get(task_id))
                     exam_tasks.append(
                         build_exam_run(
                             enriched,
@@ -1239,7 +1247,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
             # of one request per running task every refresh cycle.
             def build_live_details() -> dict:
                 rows = []
-                for task in list_tasks():
+                stored_tasks = list_tasks()
+                routes = model_call_route_summaries([str(task.get("task_id") or "") for task in stored_tasks])
+                for task in stored_tasks:
                     task_id = str(task.get("task_id") or "")
                     status = str(task.get("status") or "")
                     if status not in {"running", "paused", "queued"}:
@@ -1247,7 +1257,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     quality_summary = _task_quality_summary(task_id)
                     rows.append(
                         {
-                            **build_exam_run(_enrich_task_row(task), quality_summary),
+                            **build_exam_run(_enrich_task_row(task, routes.get(task_id)), quality_summary),
                             "pipeline_status": _read_json_if_exists(stage_dir(task_id) / "pipeline_status.json"),
                             "current_progress": _task_current_progress(task_id, task.get("current_stage")),
                             "quality_summary": quality_summary,
@@ -2032,24 +2042,6 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 self.send_json(save_shared_library_settings(str(body.get("remote_url") or "")))
                 return
-            if parsed.path == "/api/hybrid/settings":
-                if not self.is_local_client():
-                    self.send_json({"ok": False, "error": "只能在运行程序的本机修改混合云开关。"}, status=403)
-                    return
-                body = self.read_json()
-                if not isinstance(body.get("enabled"), bool):
-                    raise ValueError("enabled must be a boolean")
-                try:
-                    result = save_hybrid_enabled(bool(body["enabled"]))
-                except HybridClientError as exc:
-                    self.send_json({"ok": False, "error": str(exc)}, status=400)
-                    return
-                append_runtime_log(
-                    "hybrid_settings",
-                    "混合云执行已开启" if result["enabled"] else "混合云执行已关闭，改为本机执行",
-                )
-                self.send_json({"ok": True, **result})
-                return
             if parsed.path == "/api/shared-textbook-library/remote-catalog":
                 body = self.read_json()
                 self.send_json(fetch_remote_shared_library_catalog(str(body.get("remote_url") or "")))
@@ -2122,25 +2114,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     return
                 body = self.read_json()
                 document_diagnostics = bool(body.get("document_diagnostics"))
-                render = bool(body.get("render")) or document_diagnostics
+                render = False  # Exam output is Word-only, including legacy requests.
                 use_model = not bool(body.get("no_model"))
                 reuse_fragments = bool(body.get("reuse_fragments"))
-                if render:
-                    env = check_environment()
-                    if not env.get("document_tools", {}).get("pdf_render_available"):
-                        self.send_json(
-                            {
-                                "ok": False,
-                                "error": "PDF/PNG 渲染工具不可用：请安装 Microsoft Word 可自动化组件或 LibreOffice 后重试。",
-                                "environment": {
-                                    "document_tools": env.get("document_tools", {}),
-                                    "microsoft_word": env.get("microsoft_word", {}),
-                                    "executables": env.get("executables", {}),
-                                },
-                            },
-                            status=400,
-                        )
-                        return
                 append_runtime_log("pipeline", f"启动任务 {task_id}", payload={"task_id": task_id, "render": render, "document_diagnostics": document_diagnostics, "use_model": use_model, "reuse_fragments": reuse_fragments})
 
                 start_exam_task(

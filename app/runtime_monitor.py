@@ -191,6 +191,67 @@ def model_call_cost_summary(task_id: str) -> dict[str, Any]:
     }
 
 
+def _model_call_route_summary_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [
+        row
+        for row in rows
+        if str(row.get("provider") or "").strip()
+        and str(row.get("model") or "").strip()
+        and str(row.get("purpose") or "") != "litellm_shadow"
+        and not str(row.get("provider") or "").endswith(":litellm_shadow")
+    ]
+    if not rows:
+        return {"actual_model": "", "actual_provider": "", "actual_model_routes": []}
+    answer_rows = [row for row in rows if str(row.get("stage") or "") == "answer_generation"]
+    successful_answer_rows = [row for row in answer_rows if row.get("outcome") == "succeeded"]
+    primary = (successful_answer_rows or answer_rows)[-1] if answer_rows else None
+    routes: list[dict[str, Any]] = []
+    by_route: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row.get("provider") or "").strip(), str(row.get("model") or "").strip())
+        route = by_route.get(key)
+        if route is None:
+            route = {
+                "provider": key[0],
+                "model": key[1],
+                "call_count": 0,
+                "success_count": 0,
+            }
+            by_route[key] = route
+            routes.append(route)
+        route["call_count"] += 1
+        route["success_count"] += int(row.get("outcome") == "succeeded")
+    return {
+        "actual_model": str(primary.get("model") or "") if primary else "",
+        "actual_provider": str(primary.get("provider") or "") if primary else "",
+        "actual_model_routes": routes,
+    }
+
+
+def model_call_route_summaries(task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Read the ledger once and project actual routes for a task collection."""
+
+    wanted = {str(task_id) for task_id in task_ids if str(task_id)}
+    grouped: dict[str, list[dict[str, Any]]] = {task_id: [] for task_id in wanted}
+    for row in _read_jsonl_tail(MODEL_CALL_LEDGER, 100000):
+        task_id = str(row.get("task_id") or "")
+        if task_id in grouped:
+            grouped[task_id].append(row)
+    return {
+        task_id: _model_call_route_summary_from_rows(rows)
+        for task_id, rows in grouped.items()
+    }
+
+
+def model_call_route_summary(task_id: str) -> dict[str, Any]:
+    """Project the provider/model routes that were actually attempted for one task."""
+
+    return model_call_route_summaries([task_id]).get(
+        str(task_id),
+        {"actual_model": "", "actual_provider": "", "actual_model_routes": []},
+    )
+
+
 def current_model_call_context() -> dict[str, str]:
     """Return a detached snapshot for local diagnostics and shadow observers."""
 
@@ -898,7 +959,7 @@ def track_model_call(
             exhausted_reason = ""
             if int(state["call_count"]) >= budget.max_model_calls_per_run:
                 exhausted_reason = f"model call budget exhausted ({budget.max_model_calls_per_run})"
-            elif int(state["token_count"]) >= budget.max_model_tokens_per_run:
+            elif budget.max_model_tokens_per_run > 0 and int(state["token_count"]) >= budget.max_model_tokens_per_run:
                 exhausted_reason = f"model token budget exhausted ({budget.max_model_tokens_per_run})"
             elif elapsed >= budget.max_model_wall_seconds_per_run:
                 exhausted_reason = f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)"

@@ -34,20 +34,11 @@ def test_desktop_release_requires_and_embeds_support_receiver_secrets() -> None:
     assert WORKFLOW.count("Require support receiver configuration") == 2
 
 
-def test_desktop_release_requires_and_embeds_hybrid_cloud_secrets() -> None:
-    assert WORKFLOW.count("HYBRID_CLOUD_URL") >= 4
-    assert WORKFLOW.count("HYBRID_CLOUD_TOKEN") >= 4
-    assert WORKFLOW.count("Require hybrid cloud configuration") == 2
-    assert WORKFLOW.count('ANSWER_BOOK_HYBRID_ENABLED: "0"') == 2
-
-
-def test_desktop_bundle_generates_hybrid_configuration_at_build_time() -> None:
+def test_desktop_release_and_bundle_do_not_include_cloud_execution_configuration() -> None:
     spec = (ROOT / "build" / "answer_book_platform.spec").read_text(encoding="utf-8")
-    assert 'os.environ.get("ANSWER_BOOK_HYBRID_URL"' in spec
-    assert 'os.environ.get("ANSWER_BOOK_HYBRID_TOKEN"' in spec
-    assert 'os.environ.get("ANSWER_BOOK_HYBRID_ENABLED"' in spec
-    assert '"enabled": bool(hybrid_enabled and hybrid_url and hybrid_token)' in spec
-    assert '(str(hybrid_config_build), "config")' in spec
+    assert "HYBRID_CLOUD" not in WORKFLOW
+    assert "ANSWER_BOOK_HYBRID" not in WORKFLOW
+    assert "hybrid_cloud" not in spec
 
 
 def test_desktop_bundle_collects_and_verifies_latex2mathml_runtime_data() -> None:

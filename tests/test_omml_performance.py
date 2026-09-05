@@ -1,98 +1,36 @@
 from __future__ import annotations
 
-import os
-import tempfile
-import unittest
-from pathlib import Path
-from unittest.mock import patch
-
 from lxml import etree
 
-from app import omml
-
-MINIMAL_MATHML_TO_OMML_XSL = """<?xml version="1.0" encoding="UTF-8"?>
-<xsl:stylesheet version="1.0"
-  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
-  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
-  <xsl:output method="xml" omit-xml-declaration="yes"/>
-  <xsl:template match="/">
-    <m:oMath><m:r><m:t><xsl:value-of select="string(.)"/></m:t></m:r></m:oMath>
-  </xsl:template>
-</xsl:stylesheet>
-"""
+from app import omml, pandoc_word
 
 
-class OmmlPerformanceTests(unittest.TestCase):
-    def tearDown(self) -> None:
-        omml.clear_omml_caches()
-
-    def test_windows_xsl_search_is_scoped_and_cached(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_tmp:
-            root = Path(raw_tmp)
-            xsl = root / "Microsoft Office" / "root" / "Office16" / "MML2OMML.XSL"
-            xsl.parent.mkdir(parents=True)
-            xsl.write_text(MINIMAL_MATHML_TO_OMML_XSL, encoding="utf-8")
-            omml.clear_omml_caches()
-
-            with patch("app.omml.platform.system", return_value="Windows"), patch.dict(
-                os.environ,
-                {
-                    "ProgramFiles": str(root),
-                    "ProgramFiles(x86)": "",
-                    "LOCALAPPDATA": str(root / "user-profile"),
-                    "MATHML2OMML_XSL": "",
-                },
-                clear=False,
-            ):
-                first = omml.find_mathml2omml_xsl()
-                second = omml.find_mathml2omml_xsl()
-
-            self.assertEqual(xsl.resolve(), first)
-            self.assertEqual(first, second)
-            self.assertEqual(1, omml._find_mathml2omml_xsl_cached.cache_info().misses)
-            self.assertEqual(1, omml._find_mathml2omml_xsl_cached.cache_info().hits)
-
-    def test_repeated_formula_reuses_compiled_xslt_and_conversion(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_tmp:
-            xsl = Path(raw_tmp) / "MML2OMML.XSL"
-            xsl.write_text(MINIMAL_MATHML_TO_OMML_XSL, encoding="utf-8")
-            omml.clear_omml_caches()
-
-            with patch.dict(os.environ, {"MATHML2OMML_XSL": str(xsl)}, clear=False):
-                first = omml.omml_from_latex_via_mathml(r"W = pV")
-                second = omml.omml_from_latex_via_mathml(r"W = pV")
-
-            self.assertEqual(first.tag, second.tag)
-            self.assertIsNot(first, second)
-            self.assertEqual(1, omml._compiled_mathml2omml_transform.cache_info().misses)
-            self.assertEqual(1, omml._mathml2omml_xml.cache_info().misses)
-            self.assertEqual(1, omml._mathml2omml_xml.cache_info().hits)
-
-    def test_packaged_converter_keeps_word_export_available_without_office_xsl(self) -> None:
-        omml.clear_omml_caches()
-        with patch("app.omml.find_mathml2omml_xsl", return_value=None):
-            formula = omml.omml_from_latex_via_mathml(r"E=E^\theta-\frac{RT}{nF}\ln Q")
-
-        self.assertTrue(list(formula))
-        self.assertEqual(1, omml._pure_python_mathml2omml_xml.cache_info().misses)
-
-    def test_packaged_converter_materializes_portable_square_root_slots(self) -> None:
-        with patch("app.omml.find_mathml2omml_xsl", return_value=None):
-            formula = omml.omml_from_latex_via_mathml(r"\sqrt{a^2+b^2}")
-
-        xml = etree.tostring(formula, encoding="unicode")
-        self.assertIn("<m:radPr>", xml)
-        self.assertIn('<m:degHide m:val="1"/>', xml)
-        self.assertIn("<m:deg/>", xml)
-
-    def test_formula_chinese_runs_use_a_cjk_font(self) -> None:
-        with patch("app.omml.find_mathml2omml_xsl", return_value=None):
-            formula = omml.omml_from_latex_via_mathml(r"x\text{为偶数}")
-            formula = omml.apply_expression_math_style(formula)
-
-        xml = etree.tostring(formula, encoding="unicode")
-        self.assertIn('w:eastAsia="宋体"', xml)
+def test_repeated_formula_reuses_conversion_but_returns_independent_xml():
+    omml.clear_omml_caches()
+    first = omml.omml_from_latex(r"W = pV")
+    second = omml.omml_from_latex(r"W = pV")
+    assert first is not second
+    assert etree.tostring(first) == etree.tostring(second)
+    assert pandoc_word._xml.cache_info().misses == 1
+    assert pandoc_word._xml.cache_info().hits == 1
+    assert pandoc_word._runtime.cache_info().misses == 1
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_pandoc_square_root_has_native_radical():
+    formula = omml.omml_from_latex(r"\sqrt{a^2+b^2}")
+    assert formula.xpath('.//*[local-name()="rad"]')
+    assert not any("\\" in t for t in formula.xpath('.//*[local-name()="t"]/text()'))
+
+
+def test_formula_chinese_runs_use_cjk_font():
+    formula = omml.omml_from_latex(r"x\text{为偶数}")
+    xml = etree.tostring(formula, encoding="unicode")
+    assert 'w:eastAsia="宋体"' in xml
+    assert '为偶数' in xml
+
+
+def test_cache_refresh_revalidates_runtime():
+    omml.omml_from_latex('x')
+    omml.clear_omml_caches()
+    assert pandoc_word._runtime.cache_info().currsize == 0
+    assert pandoc_word._xml.cache_info().currsize == 0

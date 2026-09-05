@@ -19,7 +19,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("task_id")
     parser.add_argument("--no-model", action="store_true", help="Use demo fragments instead of API calls")
-    parser.add_argument("--render", action="store_true", help="Export through Word/PDF/PNG")
+    parser.add_argument("--render", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--reuse-fragments", action="store_true", help="Reuse existing stage_outputs/answer_fragments.json")
     parser.add_argument("--allow-formula-fallback", action="store_true", help="Allow built-in minimal formula converter if preferred chain is missing")
     args = parser.parse_args()
@@ -33,7 +33,7 @@ def main() -> int:
             remember_task_run_options(
                 args.task_id,
                 use_model=not args.no_model,
-                render=args.render,
+                render=False,
                 reuse_fragments=args.reuse_fragments,
             )
             clear_task_control(args.task_id)
@@ -42,7 +42,7 @@ def main() -> int:
                 PipelineOptions(
                     use_model=not args.no_model,
                     allow_demo_without_key=args.no_model,
-                    render_with_word=args.render,
+                    render_with_word=False,
                     reuse_fragments=args.reuse_fragments,
                     require_preferred_formula_chain=not args.allow_formula_fallback,
                 ),

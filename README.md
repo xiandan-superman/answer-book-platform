@@ -191,7 +191,7 @@ python3 scripts/create_task.py \
 3. 执行任务：
 
 ```bash
-python3 scripts/run_task.py "<task_id>" --render
+python3 scripts/run_task.py "<task_id>"
 ```
 
 正式执行默认要求高质量公式链路就绪，即 `check_environment.py` 中：
@@ -200,18 +200,14 @@ python3 scripts/run_task.py "<task_id>" --render
 formula_conversion.preferred_chain_ready = true
 ```
 
-Word 执行工具默认使用 B 版 `iOfficeAI/OfficeCLI`。平台会在首次生成时把固定的 1.0.147 原生二进制下载到用户数据缓存，校验 SHA-256 后启用；不会运行会修改 PATH 或 shell 配置的上游安装脚本。需要明确切回保留的 A 版 Python/OMML 工具链时，可在启动前设置：
+Word 生成统一使用 **C 引擎（Pandoc 3.11/texmath + python-docx）**，A/B 已淘汰。历史任务重新导出同样使用 C，旧 `ANSWER_BOOK_WORD_TOOL_VARIANT` 和 `word_tool.json` 不再切换引擎；已生成的历史文件保留。
 
-```bash
-export ANSWER_BOOK_WORD_TOOL_VARIANT=A
-```
-
-也可在系统用户数据目录的 `config/word_tool.json` 写入 `{"variant":"A"}` 作持久配置。完整 A/B 定义、指标和回滚方法见 [`docs/operations/WORD_TOOL_AB_TEST.md`](docs/operations/WORD_TOOL_AB_TEST.md)。
+平台在环境检查时准备固定版本的官方便携运行时，校验压缩包和二进制 SHA-256，保留完整上游压缩包及许可证，不修改 PATH。支持 Windows x64、macOS arm64/x64；Linux x64 用于自动化验证。也可用 `ANSWER_BOOK_PANDOC_BINARY` 或用户配置 `config/pandoc_runtime.json` 的 `binary` 指向已校验版本。缺失、损坏或不支持的公式会明确失败，不回退旧转换器。完整验证边界见 [`docs/operations/WORD_ENGINE_EVALUATION.md`](docs/operations/WORD_ENGINE_EVALUATION.md)。
 
 如果只验证程序主控流程，不调用模型：
 
 ```bash
-python3 scripts/run_task.py "<task_id>" --no-model --render
+python3 scripts/run_task.py "<task_id>" --no-model
 ```
 
 如果已经人工或程序修复了：
@@ -220,16 +216,16 @@ python3 scripts/run_task.py "<task_id>" --no-model --render
 tasks/<task_id>/stage_outputs/answer_fragments.json
 ```
 
-并且只想重新生成 Word、PDF 与审计结果，不允许再次调用模型覆盖结构化答案：
+并且只想重新生成 Word 与审计结果，不允许再次调用模型覆盖结构化答案：
 
 ```bash
-python3 scripts/run_task.py "<task_id>" --reuse-fragments --render
+python3 scripts/run_task.py "<task_id>" --reuse-fragments
 ```
 
 仅在排查环境时，才允许临时放宽公式链路：
 
 ```bash
-python3 scripts/run_task.py "<task_id>" --allow-formula-fallback --render
+python3 scripts/run_task.py "<task_id>" --allow-formula-fallback
 ```
 
 该参数不作为正式生产流程使用。
@@ -238,8 +234,6 @@ python3 scripts/run_task.py "<task_id>" --allow-formula-fallback --render
 
 ```text
 outputs/<task_id>/answer_book.docx
-outputs/<task_id>/word_rendered/answer_book.pdf
-outputs/<task_id>/word_rendered/page-*.png
 tasks/<task_id>/stage_outputs/pipeline_status.json
 tasks/<task_id>/stage_outputs/acceptance_report.json
 ```
@@ -252,7 +246,7 @@ python3 scripts/create_task.py \
   --exam "exams/demo_物理化学真题.docx" \
   --textbooks "textbooks" \
   --provider deepseek
-python3 scripts/run_task.py "<task_id>" --render
+python3 scripts/run_task.py "<task_id>"
 ```
 
 ## 平台质量检查
@@ -300,7 +294,7 @@ python3 scripts/data_inventory.py
 - Web 任务列表与任务选择。
 - Web 任务执行自动轮询状态。
 - Web 任务文件列表与安全下载。
-- 任务级交付包导出，打包 DOCX、PDF、渲染页和关键审计报告。
+- 任务级交付包导出，打包 DOCX 和关键审计报告。
 - macOS / Windows 启动入口。
 - 依赖安装脚本。
 - Windows 专用依赖文件 `requirements-windows.txt`，用于 Word COM 自动化。
@@ -326,8 +320,7 @@ python3 scripts/data_inventory.py
 - v4 公式对象校验。
 - DOCX 生成。
 - DOCX 普通正文公式泄漏审计。
-- Microsoft Word 导出 PDF。
-- PDF 渲染 PNG。
+- 真题解析仅交付 Word，不再导出 PDF 或页面 PNG。
 - PNG 渲染页尺寸/非空审计。
 - 验收报告。
 - Web 审计摘要查看。
@@ -336,12 +329,11 @@ python3 scripts/data_inventory.py
 - 答案覆盖率审计：防止漏题、重复题、未知题号进入正式 Word。
 - 逐题复核视图与 CSV 导出：合并题干、答案、覆盖率提示和教材证据候选。
 - 最终验收门禁：统一检查环境、题目结构、检索、覆盖率、DOCX、渲染和输出文件存在性。
-- 复用已存在 v4 结构化答案片段重新生成 DOCX / PDF，避免模型覆盖修复结果。
+- 复用已存在 v4 结构化答案片段重新生成 DOCX，避免模型覆盖修复结果。
 - `textbook_page_map.manual.csv` 手工页码覆盖。
 - 基础图形重绘：相图、折线图、电子衍射斑点图。
 - matplotlib 中文字体自动配置；随包内置 `dolbydu/font` 仓库中的完整字体集合，其他用户下载完整程序包后可直接使用这些字体渲染图中文字。
-- 公式使用 `latex2mathml -> 跨平台 MathML-to-OMML -> Word OMML` 专业链路；安装了 Microsoft Word 时也可优先复用其 `mathml2omml.xsl`。
-- 内置最小 OMML 转换支持分式、上下标、上下标组合。
+- 公式统一使用 Pandoc C 生成原生 Word OMML，保留分式、上下标与反应条件；旧 MathML/XSLT 生成链和应急简化转换器已删除。
 
 当前持续改进范围：
 
@@ -355,7 +347,7 @@ python3 scripts/data_inventory.py
 
 - 执行任务时不允许模型修改工具链。
 - 模型输出必须通过 v4 schema。
-- 高质量公式链路要求 `latex2mathml`、`lxml` 和随安装包分发的 `math_ml2omml`；不再强制依赖用户安装 Microsoft Word。`check_environment.py` 会显示 `preferred_chain_ready`。
+- 公式链路要求已校验的 Pandoc 3.11、`latex2mathml` 语法预检与 `lxml`；无需 Microsoft Word 转换表。`check_environment.py` 会显示 C 运行时和 `preferred_chain_ready`。
 - 正式流水线默认要求 `preferred_chain_ready=true`，否则环境阶段失败。
 - 使用 `--reuse-fragments` 时，平台必须先重新校验已有 `answer_fragments.json`，不合格则停止。
 - 普通 text segment 中出现公式样式内容会失败。
@@ -427,7 +419,7 @@ python3 scripts/audit_answer_coverage.py "<task_id>"
 修复并保存后，用复用模式重新生成正式文档：
 
 ```bash
-python3 scripts/run_task.py "<task_id>" --reuse-fragments --render
+python3 scripts/run_task.py "<task_id>" --reuse-fragments
 ```
 
 ## 逐题复核
@@ -459,20 +451,9 @@ python3 scripts/export_question_review.py "<task_id>"
 tasks/<task_id>/stage_outputs/question_review.csv
 ```
 
-## 渲染复核
+## Word 交付
 
-Web 控制台默认勾选：
-
-```text
-生成 PDF/PNG 渲染复核
-```
-
-正式任务应保持勾选。macOS 下平台会优先尝试 Microsoft Word 导出 PDF，默认 25 秒超时、尝试 1 次；失败后使用 LibreOffice/soffice 兜底。可用环境变量调整：
-
-```bash
-export WORD_EXPORT_TIMEOUT_SECONDS=25
-export WORD_EXPORT_ATTEMPTS=1
-```
+真题解析仅输出 Word，不再生成 PDF 和页面 PNG，也不再以 PDF 渲染作为完成条件。旧客户端或命令行传入 `--render` 时仍可兼容调用，但不会执行渲染。旧任务已有的 PDF 文件保留，不进入新交付包。Word、公式、图片及内容验收继续执行。
 
 ## 最终验收
 
@@ -494,7 +475,7 @@ python3 scripts/audit_final_acceptance.py "<task_id>"
 tasks/<task_id>/stage_outputs/final_acceptance_report.json
 ```
 
-硬门禁包括：专业公式链路就绪、题目结构通过、教材检索通过、答案覆盖率通过、DOCX 审计通过、渲染审计通过、DOCX/PDF 文件存在、流水线没有失败阶段。
+硬门禁包括：专业公式链路就绪、题目结构通过、教材检索通过、答案覆盖率通过、DOCX 审计通过、图片资产检查通过、DOCX 文件存在、有效流水线阶段没有失败。
 
 最终验收状态：
 
@@ -568,3 +549,5 @@ tasks/<task_id>/stage_outputs/figure_specs.json
 支持 `phase_diagram`、`line_chart`、`diffraction_pattern`。示例见：
 
 [figure_specs.example.json](config/figure_specs.example.json)
+
+任务默认不设固定的累计 token 硬上限，实际 token 仍写入调用记录。`QUALITY_MAX_MODEL_TOKENS_PER_RUN=0`（默认）表示关闭该项限制，显式正数可设置上限；调用次数、运行时间、请求超时、重试、修复和工具循环边界仍独立生效。

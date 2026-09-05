@@ -54,18 +54,13 @@ class TaskRecord:
     warning_reason: str = ""
     suggested_action: str = ""
     last_run_use_model: bool = True
-    last_run_render: bool = True
+    word_tool_variant: str = ""
+    last_run_render: bool = False
     last_run_document_diagnostics: bool = False
     last_run_reuse_fragments: bool = False
     interrupted_stage: str = ""
     run_started_at: str = ""
     last_run_duration_seconds: int = 0
-    execution_mode: str = "local"
-    hybrid_phase: str = ""
-    cloud_job_id: str = ""
-    cloud_status: str = ""
-    cloud_last_sync_at: str = ""
-    cloud_error: str = ""
     analysis_profile: str = EVIDENCE_BACKED_ANALYSIS
 
 
@@ -115,6 +110,7 @@ def create_task(
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     record = TaskRecord(
         task_id=new_task_id(exam_path),
+        word_tool_variant="C",
         exam_path=exam_path,
         textbooks_dir=textbooks_dir,
         provider=provider,
@@ -195,18 +191,21 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("warning_reason", "")
     data.setdefault("suggested_action", "")
     data.setdefault("last_run_use_model", True)
-    data.setdefault("last_run_render", True)
+    data.setdefault("last_run_render", False)
     data.setdefault("last_run_document_diagnostics", False)
     data.setdefault("last_run_reuse_fragments", False)
     data.setdefault("interrupted_stage", "")
     data.setdefault("run_started_at", "")
     data.setdefault("last_run_duration_seconds", 0)
-    data.setdefault("execution_mode", "local")
-    data.setdefault("hybrid_phase", "")
-    data.setdefault("cloud_job_id", "")
-    data.setdefault("cloud_status", "")
-    data.setdefault("cloud_last_sync_at", "")
-    data.setdefault("cloud_error", "")
+    for retired_key in (
+        "execution_mode",
+        "hybrid_phase",
+        "cloud_job_id",
+        "cloud_status",
+        "cloud_last_sync_at",
+        "cloud_error",
+    ):
+        data.pop(retired_key, None)
     data.setdefault("analysis_profile", EVIDENCE_BACKED_ANALYSIS)
     data["analysis_profile"] = normalize_analysis_profile(data["analysis_profile"])
     return TaskRecord(**data)
@@ -223,6 +222,8 @@ def update_task(task_id: str, *, status: str | None = None, current_stage: str |
         if error is not None:
             record.error = error
         now = time.strftime("%Y-%m-%d %H:%M:%S")
+        if status == "running":
+            record.word_tool_variant = "C"
         if status == "running" and previous_status != "running":
             record.run_started_at = now
             record.last_run_duration_seconds = 0
@@ -275,6 +276,7 @@ def remember_task_run_options(
 ) -> TaskRecord:
     with _STORE_LOCK:
         record = load_task(task_id)
+        record.word_tool_variant = "C"
         record.last_run_use_model = bool(use_model)
         record.last_run_render = bool(render)
         record.last_run_document_diagnostics = bool(document_diagnostics)
@@ -282,47 +284,6 @@ def remember_task_run_options(
         record.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
         save_task(record)
         return record
-
-
-def update_task_hybrid(
-    task_id: str,
-    *,
-    execution_mode: str | None = None,
-    hybrid_phase: str | None = None,
-    cloud_job_id: str | None = None,
-    cloud_status: str | None = None,
-    cloud_error: str | None = None,
-) -> TaskRecord:
-    """Persist cloud correlation data independently from ordinary stage updates."""
-
-    with _STORE_LOCK:
-        record = load_task(task_id)
-        if execution_mode is not None:
-            record.execution_mode = execution_mode
-        if hybrid_phase is not None:
-            record.hybrid_phase = hybrid_phase
-        if cloud_job_id is not None:
-            record.cloud_job_id = cloud_job_id
-        if cloud_status is not None:
-            record.cloud_status = cloud_status
-        if cloud_error is not None:
-            record.cloud_error = cloud_error
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
-        record.cloud_last_sync_at = now
-        record.updated_at = now
-        save_task(record)
-    append_event(
-        task_id,
-        "hybrid_updated",
-        {
-            "execution_mode": record.execution_mode,
-            "hybrid_phase": record.hybrid_phase,
-            "cloud_job_id": record.cloud_job_id,
-            "cloud_status": record.cloud_status,
-            "cloud_error": record.cloud_error,
-        },
-    )
-    return record
 
 
 def update_task_health(

@@ -15,7 +15,6 @@ let apiKeyConfigLoadState = { providers: "loading", keyFile: "loading", recovery
 let activeKeyProviderFilter = "all";
 let keyProviderSearchQuery = "";
 let expandedKeyProviderName = "";
-let hybridExecutionSettings = {};
 const keyConfigTests = {};
 let libraryFiles = { exams: [], textbooks: [], exams_root: "", textbooks_root: "" };
 let examLibrarySearchQuery = "";
@@ -183,20 +182,18 @@ const examModelPresets = {
 const pageOrder = ["home", "keys", "knowledge", "knowledge-models", "practice", "practice-models", "env", "textbook", "exam", "task", "result", "tasks", "monitor"];
 const workflowStepPages = ["env", "exam", "task", "result"];
 const taskStageGroups = [
-  { key: "prepare", title: "准备真题", summary: "读取题目并确认题型和分值", stages: ["hybrid_preprocess", "environment", "extract_exam", "exam_structure_review", "question_understanding", "figure_schema_planning"] },
-  { key: "evidence", title: "检索教材依据", summary: "判断考点并核对教材依据", stages: ["hybrid_upload", "cloud_queue", "recovered_after_restart", "cloud_pipeline", "textbook_index", "knowledge_planning", "retrieval", "evidence_selection"] },
+  { key: "prepare", title: "准备真题", summary: "读取题目并确认题型和分值", stages: ["environment", "extract_exam", "exam_structure_review", "question_understanding", "figure_schema_planning"] },
+  { key: "evidence", title: "检索教材依据", summary: "判断考点并核对教材依据", stages: ["textbook_index", "knowledge_planning", "retrieval", "evidence_selection"] },
   { key: "answer", title: "生成解析", summary: "组织答案并检查覆盖范围", stages: ["answer_generation", "answer_coverage"] },
   { key: "figures", title: "生成图件", summary: "绘制、审查和必要时回修图件", stages: ["figures"] },
   { key: "quality", title: "质量审查", summary: "检查内容完整性与专业表达", stages: ["content_quality", "content_quality_model_repair", "figures_after_content_quality_model_repair", "content_quality_local_repair"] },
-  { key: "delivery", title: "生成交付物", summary: "生成 Word、渲染复核并最终验收", stages: ["awaiting_download", "hybrid_download", "local_delivery", "docx", "docx_model_repair", "docx_repair", "question_review", "render", "acceptance", "final_acceptance", "completed"] }
+  { key: "delivery", title: "生成交付物", summary: "生成 Word、渲染复核并最终验收", stages: ["docx", "docx_model_repair", "docx_repair", "question_review", "render", "acceptance", "final_acceptance", "completed"] }
 ];
 const stageProgressMilestones = {
-  hybrid_preprocess: 2, hybrid_upload: 18, cloud_queue: 19, recovered_after_restart: 19, cloud_pipeline: 20,
   environment: 3, extract_exam: 6, exam_structure_review: 10, question_understanding: 13, figure_schema_planning: 16,
   textbook_index: 19, knowledge_planning: 25, retrieval: 31, evidence_selection: 40, answer_generation: 55,
   answer_coverage: 59, figures: 73, content_quality: 81, content_quality_model_repair: 83,
-  figures_after_content_quality_model_repair: 85, content_quality_local_repair: 86, awaiting_download: 87,
-  hybrid_download: 88, local_delivery: 90, docx: 91,
+  figures_after_content_quality_model_repair: 85, content_quality_local_repair: 86, docx: 91,
   docx_model_repair: 92, docx_repair: 93,
   question_review: 95, render: 97, acceptance: 98, final_acceptance: 99, completed: 100
 };
@@ -2105,7 +2102,7 @@ function applyExamTaskControls(task = {}, qualitySummary = {}) {
     const deliveryHint = $("deliveryPackageHint");
     if (deliveryHint) {
       deliveryHint.textContent = deliveryAllowed
-        ? "已通过下载条件检查，可导出正式 Word、PDF 与复核记录。"
+        ? "已通过下载条件检查，可导出正式 Word 与复核记录。"
         : task.status === "completed_with_issues"
           ? "当前可下载上方单个预览文件；处理复核项并通过验收后，正式交付包才会解锁。"
           : task.status === "completed"
@@ -10777,7 +10774,10 @@ function taskSearchText(task = {}) {
     task.exam_display_name,
     task.exam_path,
     ...(Array.isArray(task.textbook_material_names) ? task.textbook_material_names : []),
-    shortTaskModelName(task.model || task.answer_model || "", task.provider || task.answer_provider || "")
+    shortTaskModelName(
+      task.actual_model || task.model_label || task.answer_model || task.model || "",
+      task.actual_provider || task.answer_provider || task.provider || ""
+    )
   ].filter(Boolean).map((value) => String(value).toLocaleLowerCase()).join(" ");
 }
 
@@ -11264,8 +11264,7 @@ function renderSystemStatus(data) {
 async function loadSystemStatus() {
   const [data] = await Promise.all([
     api("/api/system/status"),
-    loadLanAccessInfo().catch(() => null),
-    loadHybridExecutionSettings().catch(() => null)
+    loadLanAccessInfo().catch(() => null)
   ]);
   renderSystemStatus(data);
   return data;
@@ -11447,83 +11446,13 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function syncMonitorAdvancedSummary() {
-  const executionLabel = hybridExecutionSettings?.enabled ? "混合云执行" : "本机执行";
+  const executionLabel = "本机执行";
   const firstLanUrl = latestLanAccessInfo?.urls?.[0] || "";
   const lanEnabled = Boolean(latestLanAccessInfo?.enabled && latestLanAccessInfo?.listening_on_lan && firstLanUrl);
   const lanLabel = latestLanAccessInfo === null
     ? "正在读取局域网状态"
     : lanEnabled ? "局域网监控已启用" : "局域网监控未启用";
   setText("monitorAdvancedSummary", `${executionLabel} · ${lanLabel}`);
-}
-
-function renderHybridExecutionSettings(data = {}) {
-  hybridExecutionSettings = data || {};
-  const enabled = Boolean(data?.enabled);
-  const available = Boolean(data?.available);
-  const locked = Boolean(data?.environment_locked);
-  const checkbox = $("hybridExecutionEnabled");
-  const panel = $("hybridExecutionPanel");
-  if (checkbox) {
-    checkbox.checked = enabled;
-    checkbox.disabled = !available || locked;
-  }
-  panel?.classList.toggle("hybrid-mode", enabled);
-  panel?.classList.toggle("local-mode", !enabled);
-  const hostText = data?.server_host ? `服务器：${data.server_host}。` : "";
-  setText(
-    "hybridExecutionLabel",
-    enabled ? "混合云服务器执行" : "本机执行（默认）"
-  );
-  setText(
-    "hybridExecutionHint",
-    !available
-      ? "当前安装包未配置混合云服务器，真题解析固定在本机执行。"
-      : locked
-        ? `${data.message || ""}${hostText}开关由启动环境锁定。`
-        : `${data.message || ""}${hostText}`
-  );
-  syncMonitorAdvancedSummary();
-}
-
-async function loadHybridExecutionSettings() {
-  const data = await api("/api/hybrid/settings");
-  renderHybridExecutionSettings(data);
-  return data;
-}
-
-async function saveHybridExecutionSetting() {
-  const checkbox = $("hybridExecutionEnabled");
-  if (!checkbox) return;
-  const requested = Boolean(checkbox.checked);
-  if (requested) {
-    const confirmed = await platformConfirm({
-      eyebrow: "执行位置",
-      title: "启用混合云服务器？",
-      message: "启用后，新的真题解析任务会将必要材料上传到已配置的混合云服务器计算。按题出题、知识点出题和 Word 工具仍在本机执行。",
-      confirmText: "确认启用",
-      tone: "warning"
-    });
-    if (!confirmed) {
-      checkbox.checked = Boolean(hybridExecutionSettings?.enabled);
-      return;
-    }
-  }
-  checkbox.disabled = true;
-  try {
-    const data = await api("/api/hybrid/settings", {
-      method: "POST",
-      body: JSON.stringify({ enabled: requested })
-    });
-    renderHybridExecutionSettings(data);
-    await platformAlert(
-      requested ? "新的真题解析任务将使用混合云服务器。" : "新的真题解析任务将在当前电脑执行。",
-      { title: "执行位置已更新", tone: "success" }
-    );
-  } catch (error) {
-    checkbox.checked = Boolean(hybridExecutionSettings?.enabled);
-    checkbox.disabled = !hybridExecutionSettings?.available || Boolean(hybridExecutionSettings?.environment_locked);
-    await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "无法修改执行位置", tone: "warning" });
-  }
 }
 
 function stopSystemMonitorPolling() {
@@ -11862,7 +11791,7 @@ async function retryExamTask(task, reopenReview = false) {
     body: JSON.stringify({
       no_model: false,
       reuse_fragments: !reopenReview,
-      render: true,
+      render: false,
       document_diagnostics: Boolean($("documentDiagnosticsCheck")?.checked)
     })
   });
@@ -13183,7 +13112,7 @@ async function runTask(noModel = false, reuseFragments = false) {
       body: JSON.stringify({
         no_model: noModel,
         reuse_fragments: reuseFragments,
-        render: $("renderCheck").checked,
+        render: false,
         document_diagnostics: Boolean($("documentDiagnosticsCheck")?.checked)
       })
     });
@@ -13337,24 +13266,6 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     addMetric(progress.figure_id ? `图件 ${progress.figure_id}` : "");
     addMetric(progress.model ? `模型 ${progress.model}` : "");
     addMetric(progress.elapsed_seconds != null ? `已耗时 ${progress.elapsed_seconds} 秒` : "");
-  } else if (current === "hybrid_preprocess") {
-    detail.title = "正在本机读取题面";
-    detail.text = "先在本机完成公式、图片和题目结构提取，再把不依赖 Microsoft Word 的计算交给云端。";
-  } else if (current === "hybrid_upload") {
-    detail.title = "正在安全上传计算资料";
-    detail.text = "上传已预处理题面和教材索引；API Key、Word 文件和本机配置不会放进任务包。";
-  } else if (["cloud_queue", "recovered_after_restart"].includes(current)) {
-    detail.title = current === "recovered_after_restart" ? "云端正在恢复任务" : "正在等待云端处理";
-    detail.text = "任务编号和队列状态已经保存；短暂断网或服务器重启不会丢失任务。";
-  } else if (current === "cloud_pipeline") {
-    detail.title = "云端正在生成并审查解析";
-    detail.text = "模型调用、答案生成、教材依据、图件和内容质量检查正在云端执行。";
-  } else if (["awaiting_download", "hybrid_download"].includes(current)) {
-    detail.title = "正在取回云端结果";
-    detail.text = "下载完整中间结果和诊断证据，校验无误后才会进入本机 Word 阶段。";
-  } else if (current === "local_delivery") {
-    detail.title = "正在本机生成并检查 Word";
-    detail.text = "最终 DOCX、Microsoft Word 渲染、PDF/PNG 和正式验收都在本机完成。";
   } else if (current === "environment") {
     detail.title = "正在检查运行环境";
     detail.text = "检查文档转换、公式写入和渲染工具是否可用。";
@@ -13380,7 +13291,7 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     detail.title = "正在审查并修复内容";
     detail.text = "检查答案完整性、教材引用、计算过程和作图要求；仅把存在问题的题目送入修复。";
   } else if (current === "docx" || current === "render" || current === "final_acceptance") {
-    detail.text = current === "docx" ? "正在写入最终 Word 文档并检查排版。" : current === "render" ? "正在生成 PDF/PNG 并检查渲染结果。" : "正在汇总全部审查结果，判断是否可以交付。";
+    detail.text = current === "docx" ? "正在写入最终 Word 文档并检查排版。" : current === "render" ? "正在整理历史渲染记录。" : "正在汇总全部审查结果，判断是否可以交付。";
   } else if (current === "completed") {
     detail.title = "任务已完成";
     detail.text = "全部阶段已完成，可以查看结果和交付文件。";
@@ -13619,13 +13530,6 @@ const finalOutputFileSpecs = [
     fallback: (file) => file.kind === "output" && file.name === "answer_book_review_candidate.docx"
   },
   {
-    label: "解析 PDF",
-    description: "PDF 文档",
-    icon: "fa-file-pdf",
-    group: "primary",
-    match: (file) => file.kind === "output" && file.name === "answer_book.pdf"
-  },
-  {
     label: "模型调用汇总",
     description: "Markdown 文档",
     icon: "fa-list-check",
@@ -13700,8 +13604,8 @@ function renderFiles(files) {
     if (hint) {
       hint.className = "result-card muted-card";
       hint.innerHTML = currentExamAnalysisProfile === "question_only"
-        ? "<strong>暂未读取到最终输出</strong><p>任务完成后会显示题目解析 Word、解析 PDF、模型调用汇总、审查报告和作图题全流程图片；本模式不生成题目依据排查表。</p>"
-        : "<strong>暂未读取到最终输出</strong><p>任务完成后会显示最终解析 Word、解析 PDF、模型调用汇总、题目依据排查、审查报告和作图题全流程图片。</p>";
+        ? "<strong>暂未读取到最终输出</strong><p>任务完成后会显示题目解析 Word、模型调用汇总、审查报告和作图题全流程图片；本模式不生成题目依据排查表。</p>"
+        : "<strong>暂未读取到最终输出</strong><p>任务完成后会显示最终解析 Word、模型调用汇总、题目依据排查、审查报告和作图题全流程图片。</p>";
     }
     return 0;
   }
@@ -14020,7 +13924,7 @@ async function finalAcceptance() {
 
 async function deliveryPackage() {
   $("runResult").textContent = "导出交付包中...";
-  setVisual("runVisualResult", "正在导出交付包", "平台正在打包最终 Word/PDF/PNG 和审计文件。", "info");
+  setVisual("runVisualResult", "正在导出交付包", "平台正在打包最终 Word 和审计文件。", "info");
   try {
     const taskId = $("taskIdInput").value.trim();
     const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/delivery-package`, {
@@ -14369,7 +14273,6 @@ $("taskBulkSelectAllBtn")?.addEventListener("click", () => {
 });
 $("refreshSystemBtn")?.addEventListener("click", refreshSystemStatusFromButton);
 $("copyLanAccessBtn")?.addEventListener("click", () => copyLanAccessInfo().catch(() => {}));
-$("hybridExecutionEnabled")?.addEventListener("change", () => saveHybridExecutionSetting());
 $("pageMapBtn").addEventListener("click", pageMap);
 $("savePageMapBtn").addEventListener("click", savePageMap);
 $("seedPageMapBtn").addEventListener("click", seedPageMap);

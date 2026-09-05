@@ -19,7 +19,7 @@ from .adapters.mineru_runtime import runtime_status as mineru_runtime_status
 from .dependency_diagnostics import dependency_version_report
 from .dependency_profiles import runtime_python_supported
 from .drawing_code import run_drawing_code
-from .omml import clear_omml_caches, find_mathml2omml_xsl
+from .omml import clear_omml_caches
 from .omml_input import clear_omml_input_caches, find_omml2mathml_xsl
 from .paths import PROJECT_ROOT, ensure_project_dirs
 from .render_fonts import project_font_diagnostics
@@ -325,7 +325,6 @@ def repair_environment(action: str) -> dict[str, Any]:
 def check_environment() -> dict[str, Any]:
     ensure_project_dirs()
     providers = {name: cfg.redacted() for name, cfg in list_providers().items()}
-    xsl = find_mathml2omml_xsl()
     input_xsl = find_omml2mathml_xsl()
     word_mac = _check_word_mac()
     word_windows = _cached_static_probe("word_windows", _check_word_windows)
@@ -336,7 +335,6 @@ def check_environment() -> dict[str, Any]:
         "python-docx": bool(find_spec("docx")),
         "lxml": bool(find_spec("lxml")),
         "latex2mathml": bool(find_spec("latex2mathml")),
-        "math_ml2omml": bool(find_spec("math_ml2omml")),
         "Pillow": bool(find_spec("PIL")),
         "matplotlib": bool(find_spec("matplotlib")),
         "numpy": bool(find_spec("numpy")),
@@ -364,19 +362,12 @@ def check_environment() -> dict[str, Any]:
         },
         "python_packages": python_packages,
         "formula_conversion": {
-            "preferred_chain": "latex2mathml -> Microsoft XSLT or packaged MathML-to-OMML -> Word OMML",
+            "preferred_chain": "Pandoc 3.11/texmath -> Word OMML (C)",
+            "variant": "C",
+            "degraded_fallback": "disabled; A/B retired",
             "latex2mathml_available": python_packages["latex2mathml"],
             "latex2mathml_data_available": latex2mathml_data_available,
-            "packaged_mathml2omml_available": python_packages["math_ml2omml"],
-            "mathml2omml_xsl": str(xsl) if xsl else None,
-            "microsoft_xslt_available": bool(xsl),
-            "degraded_fallback": "disabled unless ANSWER_BOOK_ALLOW_DEGRADED_OMML_FALLBACK=1",
-            "preferred_chain_ready": bool(
-                python_packages["latex2mathml"]
-                and latex2mathml_data_available
-                and python_packages["lxml"]
-                and (python_packages["math_ml2omml"] or xsl)
-            ),
+            "preferred_chain_ready": False,
         },
         "formula_input_conversion": {
             "preferred_chain": "Word OMML -> omml2mathml.xsl -> MathML",
@@ -424,4 +415,13 @@ def check_environment() -> dict[str, Any]:
         "network": _check_network(providers),
     }
     env["repair_actions"] = environment_repair_actions(env)
+    try:
+        from .pandoc_word import runtime_info
+
+        env["formula_conversion"]["runtime"] = runtime_info()
+        env["formula_conversion"]["preferred_chain_ready"] = bool(
+            python_packages["latex2mathml"] and latex2mathml_data_available and python_packages["lxml"]
+        )
+    except Exception as exc:
+        env["formula_conversion"]["error"] = str(exc)
     return env

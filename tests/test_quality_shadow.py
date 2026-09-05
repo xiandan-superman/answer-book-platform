@@ -132,7 +132,7 @@ class QualityShadowTests(unittest.TestCase):
         self.assertEqual(0, report["finding_count"])
         self.assertFalse(report["enforced"])
 
-    def test_unattended_governance_caps_model_judgment_at_warning(self) -> None:
+    def test_retired_visual_review_does_not_affect_current_observation(self) -> None:
         from app.capabilities.shadow_quality import build_shadow_quality_report
 
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -156,10 +156,10 @@ class QualityShadowTests(unittest.TestCase):
         self.assertEqual("unattended", report["governance_mode"])
         self.assertFalse(report["human_review_required"])
         self.assertEqual(0, report["would_block_count"])
-        self.assertEqual("warn", report["findings"][0]["action"])
-        self.assertEqual("warn_only", report["findings"][0]["governance"]["action_ceiling"])
+        self.assertEqual([], report["findings"])
+        self.assertNotIn("figure_visual_qa", report["available_sources"])
 
-    def test_unattended_governance_keeps_exact_missing_artifact_blockable(self) -> None:
+    def test_retired_pdf_report_does_not_affect_shadow_quality(self) -> None:
         from app.capabilities.shadow_quality import build_shadow_quality_report
 
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -170,8 +170,8 @@ class QualityShadowTests(unittest.TestCase):
             )
             report = build_shadow_quality_report(stage)
 
-        self.assertEqual(1, report["would_block_count"])
-        self.assertEqual("deterministic", report["findings"][0]["governance"]["evidence_class"])
+        self.assertEqual(0, report["would_block_count"])
+        self.assertNotIn("render", report["available_sources"])
 
 
 if __name__ == "__main__":

@@ -411,10 +411,14 @@ class ImageGenerationTool:
             raise ValueError("prompt is required")
         raw_paths = arguments.get("referenced_image_paths")
         recent_count = arguments.get("num_last_images_to_include")
-        if raw_paths is not None and recent_count is not None:
-            raise ValueError(
-                "referenced_image_paths and num_last_images_to_include cannot be used together"
-            )
+        if recent_count is not None:
+            if isinstance(recent_count, bool) or not isinstance(recent_count, int):
+                raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
+            if not 1 <= recent_count <= MAX_REFERENCE_IMAGES:
+                raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
+        recent_selector_available = (
+            recent_count is not None and len(self._generated_paths) >= recent_count
+        )
         if raw_paths is not None:
             if not isinstance(raw_paths, list):
                 raise ValueError("referenced_image_paths must be an array")
@@ -425,16 +429,15 @@ class ImageGenerationTool:
                     raise ValueError("referenced_image_paths entries must be strings")
                 requested = raw_path.strip()
                 path = self._allowed_reference_paths.get(requested)
-                if path is None:
+                if path is None and not recent_selector_available:
                     raise ValueError("referenced_image_paths contains an unregistered task-local path")
-        elif recent_count is not None:
-            if isinstance(recent_count, bool):
-                raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
-            if not isinstance(recent_count, int):
-                raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
-            if not 1 <= recent_count <= MAX_REFERENCE_IMAGES:
-                raise ValueError("num_last_images_to_include must be an integer from 1 to 5")
-            if len(self._generated_paths) < recent_count:
+        if recent_count is not None:
+            # When both selectors are present, prefer recent generated images
+            # once they exist; before that, fall back to explicit registered
+            # paths.  Models commonly retain both fields across edit turns, so
+            # deterministic canonicalization avoids a retry loop without
+            # allowing an unregistered path onto the filesystem.
+            if raw_paths is None and len(self._generated_paths) < recent_count:
                 raise ValueError(
                     f"only {len(self._generated_paths)} recent generated image(s) are available for editing"
                 )
@@ -446,10 +449,26 @@ class ImageGenerationTool:
         raw_paths = arguments.get("referenced_image_paths")
         recent_count = arguments.get("num_last_images_to_include")
         reference_paths: list[Path] = []
-        if raw_paths is not None:
-            reference_paths = [self._allowed_reference_paths[path.strip()] for path in raw_paths]
-        elif recent_count is not None:
+        if recent_count is not None and len(self._generated_paths) >= recent_count:
             reference_paths = self._generated_paths[-recent_count:]
+            argument_normalization = (
+                "preferred_recent_image_selector"
+                if raw_paths is not None
+                else "none"
+            )
+        elif raw_paths:
+            reference_paths = [self._allowed_reference_paths[path.strip()] for path in raw_paths]
+            argument_normalization = (
+                "ignored_unavailable_recent_image_selector"
+                if recent_count is not None
+                else "none"
+            )
+        else:
+            argument_normalization = (
+                "ignored_unavailable_recent_image_selector"
+                if raw_paths is not None and recent_count is not None
+                else "none"
+            )
 
         client = OpenAICompatibleClient(self.provider)
         try:
@@ -495,6 +514,7 @@ class ImageGenerationTool:
             "asset": artifact.to_dict(),
             "operation": operation,
             "reference_image_count": len(reference_paths),
+            "argument_normalization": argument_normalization,
             "provider_metadata": {key: value for key, value in provider_metadata.items() if value},
             "instruction": "Inspect the attached image. Use its asset_id in generated_images only if it satisfies your task.",
         }

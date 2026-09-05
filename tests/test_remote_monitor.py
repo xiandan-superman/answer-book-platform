@@ -63,8 +63,6 @@ def test_capture_fetches_logs_and_requested_task_then_prunes_old_snapshots(monke
             return {"host": {}, "tasks": {"recent": []}}
         if url.endswith("/api/system/logs"):
             return {"logs": [{"message": "failure"}]}
-        if url.endswith("/api/hybrid/settings"):
-            return {"enabled": False, "execution_mode": "local"}
         if url.endswith("/api/tasks/task-123/diagnostics"):
             return {"task_id": "task-123", "status": "failed"}
         raise AssertionError(url)
@@ -83,7 +81,7 @@ def test_capture_fetches_logs_and_requested_task_then_prunes_old_snapshots(monke
     )
 
     assert snapshot["logs"]["logs"][0]["message"] == "failure"
-    assert snapshot["hybrid"]["execution_mode"] == "local"
+    assert snapshot["execution"]["mode"] == "local"
     assert snapshot["diagnostics"]["task-123"]["status"] == "failed"
     assert any(url.endswith("/api/system/logs") for url in calls)
     assert len(list(tmp_path.glob("remote_monitor_*.json"))) == 2

@@ -5,7 +5,6 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
-from .analysis_profiles import analysis_uses_textbook_evidence
 from .pipeline import PipelineOptions, run_pipeline
 from .runtime_monitor import append_runtime_log, model_call_context
 from .task_control import clear_task_control, control_task
@@ -95,6 +94,7 @@ def run_exam_task(
     document_diagnostics: bool = False,
 ) -> None:
     """Run one exam pipeline with a consistent logging boundary."""
+    render = False  # Accept legacy flags without restoring retired PDF work.
     current = load_task(task_id)
     if current.status == "cancelled":
         append_runtime_log(
@@ -106,28 +106,16 @@ def run_exam_task(
         return
     try:
         with model_call_context(task_id=task_id, operation="解析任务"):
-            from .hybrid_client import hybrid_enabled, run_hybrid_task
-
-            if use_model and hybrid_enabled() and analysis_uses_textbook_evidence(current.analysis_profile):
-                if document_diagnostics:
-                    run_hybrid_task(
-                        task_id,
-                        render_with_word=render,
-                        preserve_document_diagnostics=True,
-                    )
-                else:
-                    run_hybrid_task(task_id, render_with_word=render)
-            else:
-                run_pipeline(
-                    task_id,
-                    PipelineOptions(
-                        use_model=use_model,
-                        allow_demo_without_key=not use_model,
-                        render_with_word=render,
-                        preserve_document_diagnostics=document_diagnostics,
-                        reuse_fragments=reuse_fragments,
-                    ),
-                )
+            run_pipeline(
+                task_id,
+                PipelineOptions(
+                    use_model=use_model,
+                    allow_demo_without_key=not use_model,
+                    render_with_word=render,
+                    preserve_document_diagnostics=document_diagnostics,
+                    reuse_fragments=reuse_fragments,
+                ),
+            )
     except Exception as exc:  # Worker boundary: preserve the durable task error and log the crash.
         append_runtime_log(
             "pipeline",
@@ -173,6 +161,7 @@ def start_exam_task(
     expected_status: str | None = None,
 ) -> Future[None]:
     """Queue one bounded exam run and deduplicate repeated starts in-process."""
+    render = False
 
     with _ACTIVE_LOCK:
         record = load_task(task_id)

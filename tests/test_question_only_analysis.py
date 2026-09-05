@@ -118,6 +118,19 @@ def test_question_only_document_title_and_public_task_label(tmp_path: Path) -> N
     assert task["display_title"].startswith("题目解析")
 
 
+def test_question_only_analysis_uses_shared_manual_structure_review_gate() -> None:
+    import inspect
+
+    from app import pipeline
+
+    source = inspect.getsource(pipeline._run_pipeline_impl)
+    review_call = source.index("wait_for_exam_structure_review(")
+    question_only_textbook_skip = source.index('if not textbook_evidence_enabled:')
+
+    assert review_call < question_only_textbook_skip
+    assert "auto_confirm_exam_structure" not in source
+
+
 def test_question_only_entry_and_request_contract_are_present() -> None:
     root = Path(__file__).resolve().parents[1]
     index = (root / "web" / "index.html").read_text(encoding="utf-8")

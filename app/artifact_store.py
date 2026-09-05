@@ -14,6 +14,24 @@ from .paths import DATA_ROOT
 ARTIFACT_REPORT_SCHEMA = "answer_book.artifact_integrity.v1"
 
 
+def fsync_directory_best_effort(directory: Path) -> None:
+    """Flush a directory entry where supported without rejecting Windows writes."""
+
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        try:
+            os.fsync(directory_fd)
+        except OSError:
+            # Windows may return EBADF for directory handles.  The file itself
+            # was already flushed before the atomic replace.
+            pass
+    finally:
+        os.close(directory_fd)
+
+
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -45,15 +63,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, target)
-        try:
-            directory_fd = os.open(target.parent, os.O_RDONLY)
-        except OSError:
-            directory_fd = None
-        if directory_fd is not None:
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+        fsync_directory_best_effort(target.parent)
     finally:
         tmp.unlink(missing_ok=True)
 
