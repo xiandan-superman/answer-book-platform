@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .analysis_profiles import EVIDENCE_BACKED_ANALYSIS, normalize_analysis_profile
-from .image_orchestration import LEGACY_FIGURE_PIPELINE, normalize_image_orchestration
+from .image_orchestration import LEGACY_FIGURE_PIPELINE, MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
 from .paths import TASKS_DIR, ensure_project_dirs
 from .resource_ids import bounded_resource_path
 
@@ -103,7 +103,7 @@ def create_task(
     vision_model: str = "",
     image_provider: str = "",
     image_model: str = "",
-    image_orchestration: str = LEGACY_FIGURE_PIPELINE,
+    image_orchestration: str = MAIN_MODEL_TOOL_LOOP,
     analysis_profile: str = EVIDENCE_BACKED_ANALYSIS,
 ) -> TaskRecord:
     ensure_project_dirs()

@@ -567,6 +567,11 @@ def _model_api_protocol(config: ProviderConfig, model: str) -> str:
     return str(profile.get("api_protocol") or getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
 
 
+def _structured_schema_name(value: str | None) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "structured_output")).strip("_")
+    return (normalized or "structured_output")[:64]
+
+
 def _model_supports_registered_tool_calls(config: ProviderConfig, model: str) -> bool:
     from .model_capability_registry import (
         get_native_tool_route,
@@ -812,6 +817,8 @@ class OpenAICompatibleClient:
         delivered_evidence_refs: Any = (),
         item_ids: Any = (),
         enforce_context_budget: bool = False,
+        output_schema: dict[str, Any] | None = None,
+        output_schema_name: str | None = None,
     ) -> LLMResult:
         if not self.config.api_key:
             raise LLMError(f"API key is not configured for provider: {self.config.name}")
@@ -842,6 +849,8 @@ class OpenAICompatibleClient:
                     thinking=thinking,
                     timeout=timeout,
                     use_response_format=use_response_format,
+                    output_schema=output_schema,
+                    output_schema_name=output_schema_name,
                 )
                 if isinstance(result.raw, dict):
                     result.raw.setdefault("_request", {})["context_plan"] = context_plan
@@ -1017,6 +1026,8 @@ class OpenAICompatibleClient:
         thinking: str | None = None,
         timeout: int = 120,
         use_response_format: bool = True,
+        output_schema: dict[str, Any] | None = None,
+        output_schema_name: str | None = None,
     ) -> LLMResult:
         target_model = str(model or self.config.default_model).strip()
         protocol = _model_api_protocol(self.config, target_model)
@@ -1026,6 +1037,7 @@ class OpenAICompatibleClient:
             return delegated._chat_json_once(
                 messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
                 thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+                output_schema=output_schema, output_schema_name=output_schema_name,
             )
         thinking_mode = _model_thinking_mode(
             self.config,
@@ -1154,6 +1166,7 @@ class OpenAICompatibleClient:
         if isinstance(raw, dict):
             raw["_request"] = {
                 "response_format": "json_object" if use_response_format else "prompt_only_json",
+                "output_schema_name": _structured_schema_name(output_schema_name) if output_schema else None,
                 "thinking": thinking_mode,
                 "reasoning_effort": reasoning_effort or "provider_default",
                 "max_tokens": payload["max_tokens"],
@@ -1950,6 +1963,8 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         thinking: str | None = None,
         timeout: int = 120,
         use_response_format: bool = True,
+        output_schema: dict[str, Any] | None = None,
+        output_schema_name: str | None = None,
     ) -> LLMResult:
         target_model = str(model or self.config.default_model).strip()
         protocol = _model_api_protocol(self.config, target_model)
@@ -1959,6 +1974,7 @@ class ResponsesAPIClient(OpenAICompatibleClient):
             return delegated._chat_json_once(
                 messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
                 thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+                output_schema=output_schema, output_schema_name=output_schema_name,
             )
         thinking_mode = _model_thinking_mode(
             self.config,
@@ -1983,7 +1999,18 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         if temperature is not None and "temperature" not in omitted:
             payload["temperature"] = temperature
         if use_response_format:
-            payload["text"] = {"format": {"type": "json_object"}}
+            payload["text"] = {
+                "format": (
+                    {
+                        "type": "json_schema",
+                        "name": _structured_schema_name(output_schema_name),
+                        "schema": output_schema,
+                        "strict": False,
+                    }
+                    if output_schema
+                    else {"type": "json_object"}
+                )
+            }
         reasoning_effort = _responses_reasoning_effort(thinking_mode)
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
@@ -2025,6 +2052,8 @@ class ResponsesAPIClient(OpenAICompatibleClient):
                     thinking=thinking,
                     timeout=timeout,
                     use_response_format=use_response_format,
+                    output_schema=output_schema,
+                    output_schema_name=output_schema_name,
                 )
                 request_meta = fallback.raw.setdefault("_request", {})
                 if isinstance(request_meta, dict):
@@ -2041,7 +2070,12 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         if isinstance(raw, dict):
             raw["_request"] = {
                 "endpoint": "/responses",
-                "response_format": "json_object" if use_response_format else "prompt_only_json",
+                "response_format": (
+                    "json_schema" if use_response_format and output_schema
+                    else "json_object" if use_response_format
+                    else "prompt_only_json"
+                ),
+                "output_schema_name": _structured_schema_name(output_schema_name) if output_schema else None,
                 "thinking": thinking_mode,
                 "max_output_tokens": payload["max_output_tokens"],
                 "store": payload.get("store", "omitted"),
@@ -2076,6 +2110,8 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
         thinking: str | None = None,
         timeout: int = 120,
         use_response_format: bool = True,
+        output_schema: dict[str, Any] | None = None,
+        output_schema_name: str | None = None,
     ) -> LLMResult:
         target_model = str(model or self.config.default_model).strip()
         protocol = _model_api_protocol(self.config, target_model)
@@ -2085,6 +2121,7 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
             return delegated._chat_json_once(
                 messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
                 thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+                output_schema=output_schema, output_schema_name=output_schema_name,
             )
         thinking_mode = _model_thinking_mode(
             self.config,
@@ -2124,11 +2161,15 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
             effort = "medium" if thinking_mode == "enabled" else thinking_mode
             payload["thinking"] = {"type": "adaptive", "display": "omitted"}
             payload["output_config"] = {"effort": effort}
-        output_schema = _anthropic_output_schema(messages) if use_response_format else None
-        if output_schema:
+        native_output_schema = (
+            output_schema or _anthropic_output_schema(messages)
+            if use_response_format
+            else None
+        )
+        if native_output_schema:
             payload.setdefault("output_config", {})["format"] = {
                 "type": "json_schema",
-                "schema": output_schema,
+                "schema": native_output_schema,
             }
         headers = _provider_request_headers(self.config)
         headers["x-api-key"] = self.config.api_key
@@ -2168,6 +2209,7 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
                 fallback = fallback_client._chat_json_once(
                     messages, model=target_model, temperature=temperature, max_tokens=max_tokens,
                     thinking=thinking, timeout=timeout, use_response_format=use_response_format,
+                    output_schema=output_schema, output_schema_name=output_schema_name,
                 )
                 fallback.raw.setdefault("_request", {}).update({
                     "protocol_requested": "anthropic_messages",
@@ -2187,7 +2229,14 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
         raw["_request"] = {
             "endpoint": "/messages",
             "protocol_used": "anthropic_messages",
-            "response_format": "json_schema" if output_schema else "prompt_only_json" if use_response_format else "text",
+            "response_format": (
+                "json_schema"
+                if native_output_schema
+                else "prompt_only_json"
+                if use_response_format or output_schema
+                else "text"
+            ),
+            "output_schema_name": _structured_schema_name(output_schema_name) if output_schema else None,
             "thinking": thinking_mode,
             "max_tokens": payload["max_tokens"],
         }
@@ -2213,7 +2262,13 @@ def create_llm_client(config: ProviderConfig) -> LLMClientProtocol:
 
 def _is_unsupported_response_format_error(error: str) -> bool:
     text = str(error or "").lower()
-    format_parameter = "response_format" in text or "text.format" in text or ("text" in text and "format" in text)
+    format_parameter = (
+        "response_format" in text
+        or "text.format" in text
+        or "output_config.format" in text
+        or ("text" in text and "format" in text)
+        or ("output_config" in text and "format" in text)
+    )
     return format_parameter and (
         "not support" in text
         or "not supported" in text

@@ -68,7 +68,7 @@ def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
             "qwen3-vl-flash",
             "qwen-vl-ocr",
         },
-        "lingsuan_openai": {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"},
+        "lingsuan_openai": {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"},
         "lingsuan_google": {
             "gemini-3.7-flash-medium",
             "gemini-3.6-flash",

@@ -56,11 +56,16 @@ def main() -> int:
     steps = [
         ("py_compile", [sys.executable, "-m", "py_compile", *py_files]),
         ("version_consistency", [sys.executable, "scripts/check_version_consistency.py"]),
-        ("pytest", [sys.executable, "-m", "pytest", "-q"]),
-        ("formula_omml", [sys.executable, "scripts/test_formula_omml.py"]),
-        ("third_party_notices", [sys.executable, "scripts/audit_third_party_notices.py"]),
-        ("project_completeness", [sys.executable, "scripts/audit_project_completeness.py"]),
     ]
+    if not args.full:
+        steps.append(("pytest", [sys.executable, "-m", "pytest", "-q"]))
+    steps.extend(
+        [
+            ("formula_omml", [sys.executable, "scripts/test_formula_omml.py"]),
+            ("third_party_notices", [sys.executable, "scripts/audit_third_party_notices.py"]),
+            ("project_completeness", [sys.executable, "scripts/audit_project_completeness.py"]),
+        ]
+    )
     if args.full:
         missing = [name for name in ("ruff", "mypy", "coverage") if not _module_available(name)]
         if missing:

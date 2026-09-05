@@ -27,10 +27,57 @@
 
 - 优先提高最终 Word/PDF/题目质量和任务完成率；不得以降低质量换速度，不得提高任务失败率。
 - 用户通过源码 ZIP 更新；macOS 双击 `start_platform.command`，Windows 双击 `启动平台.bat`，启动本地服务并打开网页前端。不要把桌面安装包设为必需品。
-- 旧版 Pydantic 影子观察不得增加模型调用、Token、网络请求、重试、修复、降级或任务阻断；已获用户明确确认的正式输出合同由 Pydantic 阻断确定性结构错误，并允许 Instructor 做一次有预算的同路由纠错，语义风险继续由现有质量门判断。
+- 旧版 Pydantic 影子观察不得增加模型调用、Token、网络请求、重试、修复、降级或任务阻断；已获用户明确确认的正式输出合同使用请求级 JSON Schema 和本地 Pydantic 阻断确定性结构错误，并允许一次有预算的同路由纠错，语义风险继续由现有质量门判断。
 - 用户数据位于系统用户数据目录；源码更新可替换代码目录，不得覆盖任务、教材、配置、日志和输出。
 
 ## 变更记录（最新在上）
+
+### OPT-20260905-17｜准备 0.9.47 请求级结构与任务稳定性正式更新
+- status: implementing
+- scope: 当前共享工作树全部 0.9.47 改动、版本元数据、任务清理、启动依赖进度、源码 ZIP、GitHub 自动发布与稳定更新源。
+- changed: 汇总请求级 JSON Schema、结构确认清洗与分值修复、任务列表首屏提速和误中断提示修复、默认自主生图、GPT-6 Astra、历史任务推荐清理及启动依赖可视化；同步 APP_VERSION、VERSION、RELEASE_MANIFEST 和 CHANGELOG 到 0.9.47。覆盖率计时回归改为排除 TLS fixture 关闭耗时，并只放宽并发测试线程的测试等待窗口，生产超时与状态接口 1 秒响应断言不变。
+- trigger: 用户明确要求将当前本地累计更新推送并部署为新版本；公开标签最新为 v0.9.45，main 中的 0.9.46 尚未形成公开标签，本次新增改动不能复用旧版本号。
+- invariants: 只推送 main，不手工创建、移动或复用标签；清理只作用于用户明确选择的 40 条以外安全候选并实际删除对应受管数据，活动/排队/暂停/待确认任务绝不清理；源码包不得包含用户任务、教材、Key、日志或输出；结构纠错不得换模型、换协议或绕过预算。
+- do_not_regress: 不得把定向测试或普通 pytest 当成完整发布门禁；覆盖率插桩的测试宽限不得改动生产超时，也不得删除系统状态接口的响应上限断言；正式完成必须核验 GitHub Actions、公开附件、SHA256 和 update-stable-v2.json。
+- verification: 发布前代码门禁首轮已通过编译、普通 pytest、公式、第三方声明、项目完整度、Ruff 和 Mypy；覆盖率轮次发现并修正两个仅包含 fixture 关闭/测试线程等待的计时不稳定点，修正后覆盖率定向 11 passed。冻结 0.9.47 代码执行完整门禁全部通过：coverage-backed pytest 2045 passed、16 deselected、零跳过，分支覆盖率 71%，编译、版本、公式、第三方声明、项目完整度、Ruff、Mypy 均通过；版本/清理/前端/发布契约另有 127 passed，能力文档同步、JavaScript 语法和 `git diff --check` 通过。Git 索引白名单源码包包含 392 个文件且反向验证 0 问题；解压包使用独立数据目录启动后 `/api/version` 返回 0.9.47、首页 HTTP 200，再正常停止。Git 推送和公开发布状态待完成；未发起付费模型调用。
+
+### OPT-20260905-16｜启动依赖安装过程可视化与可诊断失败
+- status: verified
+- scope: macOS/Windows 源码首次启动、版本更新后的依赖修复、原生准备窗口、桌面启动页和本地启动日志。
+- changed: 启动前按当前 Python 和系统标记计算缺失或版本不符的直接组件；流式读取 pip 输出并只向界面传递安全组件名、当前序号、总数、阶段、最近活动和脱敏失败分类。原生准备窗口与桌面启动页展示检查、创建环境、解析、下载/准备、安装、校验和启动阶段；失败保留中断进度，提供失败组件、网络/兼容性/权限/磁盘建议、重新尝试及复制日志位置。
+- trigger: 原启动器只显示通用准备文案，依赖安装阶段固定为 99%，用户不知道缺少多少、正在安装什么、是否仍有活动，也无法在卡住或失败时自行判断原因。
+- invariants: 依赖仍只安装到用户级 Python 3.11 环境；不改变 requirements、constraints、依赖指纹、用户确认和更新回滚语义；不把无法可靠测量的构建/安装阶段伪装成精确字节进度；不向网页状态暴露下载 URL、凭据或原始 pip 输出，完整输出仅保留在本地启动日志。
+- do_not_regress: 不得恢复固定 99% 的无信息依赖提示；当前组件、总数和失败原因必须来自本次运行且用 run_id 隔离旧状态；失败百分比不得显示为成功完成的 100%；无真实字节总量时必须使用不确定进度；启动失败必须保留可见重试和日志定位入口。
+- verification: Python 3.11 定向与扩大启动/更新回归 59 passed；修改文件 Ruff、Mypy、Python 编译、启动页 JavaScript 语法及 `git diff --check` 全部通过；完整门禁的普通 pytest、公式、第三方声明、项目完整度、Ruff 和 Mypy 阶段通过。覆盖率轮次仅既有 HTTPS 首字节时限测试超出宽限约 0.23 秒（其余 2043 passed），单独重跑仍为同一计时差异，与启动器路径无调用关系。隔离用户数据目录真实启动服务后 `/api/version` 与首页均 HTTP 200，再正常停止；内置浏览器分别检查安装中和网络失败状态，确认当前组件、第 4/16 项、中断位置、55% 保留进度、重试按钮和日志入口均可见。未在真实 Windows 主机执行首次全量联网安装，未部署、提交、推送或发布。
+
+### OPT-20260905-15｜结构化输出改为请求级 schema
+- status: verified
+- scope: 真题单题/批量答案、题目考查内容规划、按题与知识点练习生成、结构审查修复、历史任务恢复所复用的结构化模型调用，以及 Responses、Anthropic Messages、Chat 兼容协议和源码运行依赖。
+- changed: 删除 Instructor 1.16.0 运行依赖及其进程级惰性注册路径；每次调用从 Pydantic 合同生成独立 JSON Schema，显式传给协议适配器，并在模型可见请求中携带同一 schema；Responses/Messages 使用原生 schema，Chat 保持 JSON object 兼容，本地 Pydantic 最终校验；确定性校验错误只在原路由有界纠正，中间校验失败不再上报任务失败。
+- trigger: 并发真题任务冷启动时 Instructor v2 惰性全局注册表出现 `RegistryError`，用户选择采用 Harness 风格的长期请求级隔离方案，并要求只更新本地项目、不操作用户机。
+- invariants: schema、纠错消息和验证结果只属于当前请求；不得绕过调用预算、并发、取消、超时、Token 和用量账本；不得因结构纠错切换服务商、模型或协议；Pydantic 通过不代表语义正确；协议明确不支持原生 schema 时仍以同请求 prompt schema 和本地校验兜底。
+- upstream: 2026-09-05 20:08 CST 动态核验官方远端：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、`ddf04ad26789d040f9ef6a96736f76602e35a6cc`，阅读 `codex-rs/codex-api/src/common.rs`、`codex-rs/core/tests/suite/json_result.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、`d347e703908d0406b7a7ef80e3a0e594d86b2215`，阅读 `packages/subagent/subagent-in-process-driver/src/structured.ts`、`src/index.ts`、`tests/structured.spec.ts`。前者把 schema 放在单次 Responses 请求，后者按子任务作用域同步附加并覆盖两个并发 schema 隔离测试；二者均不依赖跨任务可变的惰性全局注册表。
+- do_not_regress: 不得恢复 Instructor 全局 patch/registry；不得把可恢复的第一次校验失败显示为任务中断；不得删除并发冷启动、请求 schema 透传、原生协议 payload 和同路由纠错回归；Chat 通道重复 schema 的 Token 成本、代理对原生 schema 子集的差异和一次纠错费用必须继续受现有预算约束。
+- verification: Python 编译、第三方声明审计、`git diff --check` 和本次修改文件 Ruff 均通过；请求级 schema、64 路并发冷启动、可恢复校验不误报失败、Responses/Messages 原生 schema、Messages 格式不支持时同路由 prompt 回退及既有模型协议回归 69 passed；真题答案、练习/知识点生成、历史恢复、Word/PDF 交付跨场景回归 266 passed；全量质量门禁的普通 pytest 阶段通过。整套门禁随后被另一对话尚未收尾的 `scripts/source_launcher.py` 闭包 Ruff B023 阻断；独立 coverage 轮次另有同一启动器依赖探测断言和 HTTPS 首字节时限抖动两项失败，其余 2041 passed，均不经过本次结构化调用路径，未擅自修改。未发起真实模型请求，未连接用户机，未部署、提交、推送或发布。
+
+### OPT-20260905-14｜灵算 GPT-6 Astra 模型准入
+- status: verified
+- scope: 灵算 OpenAI 模型选择、视觉输入、Instructor/Pydantic 结构化输出、Responses 原生工具循环、模型能力登记。
+- changed: 将 `gpt-6-astra` 加入灵算 OpenAI 的文字与视觉模型选项，登记 Responses 原生工具调用和已验证结构化输出能力；默认模型仍为 `gpt-5.6-sol`，同步生成能力审阅文档和准入回归。
+- trigger: 用户要求实测灵算 GPT-6 Astra，并在可用时作为平台可选模型加入。
+- invariants: 不自动替换已有默认或历史任务模型；不继承官方直连或同系列模型能力；真实调用仍受任务预算、并发、取消、调用账本、一次有界结构纠错和既有质量门约束；不把最小探测写成完整教学任务质量结论。
+- upstream: 2026-09-05（Asia/Shanghai）动态核验官方远端 HEAD：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、`ddf04ad26789d040f9ef6a96736f76602e35a6cc`，阅读 `codex-rs/core/tests/suite/json_result.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、`d347e703908d0406b7a7ef80e3a0e594d86b2215`，阅读 `packages/subagent/subagent-in-process-driver/src/structured.ts` 及测试。上游 schema 校验是参考，本项目保留跨代理通道的 Instructor 注入、Pydantic 校验和一次同路由纠错。
+- do_not_regress: 未重新实测不得删除 Astra 的精确通道能力记录或把它提升为自动路由；不得因名称推断新模型能力；工具结果必须继续回到同一主模型并只采用已检查资产。
+- verification: 灵算真实调用中，Astra 普通 JSON、项目 `AnswerDraftOutput`、64×64 PNG 图片理解和 Responses 原生函数调用均通过；当前有 Key 的 18 个模型普通结构探针最终全通过，17 个可承担答案任务的模型均一次通过真实答案合同，`qwen-vl-ocr` 按能力门在请求前正确拒绝答案任务；Instructor 重问及模型配置/能力/协议定向回归 31 passed，扩大相关回归 70 passed；JSON 校验、能力文档同步检查和 `git diff --check` 通过。未运行三条完整业务任务、长输出或压力/限流测试，未部署、提交、推送或发布。
+
+### OPT-20260905-13｜修复结构确认题干标记与大题总分泄漏
+- status: verified
+- scope: MinerU Word 文本入口、真题结构确认建议分值、用户机定向更新。
+- changed: 有界解码 MinerU 文本中的 HTML 实体并仅删除泄漏的 `text` / `u` 展示标签，保留可见留空线和比较符；当抽取结果明确一个大题含多道编号题时，不将大题总分作为每题建议分值。
+- trigger: 用户机 0.9.46 真实 Word 任务的结构确认请求已含嵌套 `&lt;text style="underline"&gt;` 文字，并把“共6题，每空0.5分，共15分”误建议为每题 15 分，用户因而拒绝了结构。
+- invariants: 不改用户原文语义、题型、图片或公式；不根据总分平均猜测每题分值；人工确认仍为必经门禁；不自动续跑、删除或改写用户任务。
+- do_not_regress: 不得用全量 HTML 标签删除损伤化学/数学小于号；多题分区的“共 N 分”不得再落到每个 item；无可靠每题分值时必须空置等用户确认。
+- verification: 使用用户机实际确认请求只读复现；定向回归 24 passed，修改文件 Ruff 与 `git diff --check` 通过。实际污染题干经新清洗后无泄漏标签且保留留空线，同一真实 item 建议分值由误判 15 变为空置。用户机两个修复文件与本地 SHA256 一致，远端 Python 编译通过；使用正式 Python 3.11 运行环境重启后监控返回 0.9.46、health normal、服务错误 0。未重跑用户任务、未调用模型，不发布新版本。
 
 ### OPT-20260905-12｜发布 0.9.46 正式源码更新
 - status: implementing

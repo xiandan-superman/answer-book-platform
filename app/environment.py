@@ -238,7 +238,7 @@ def environment_repair_actions(env: dict[str, Any]) -> list[dict[str, Any]]:
     packages = env.get("python_packages", {})
     missing_core = [
         name
-        for name in ("python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "pydantic", "instructor", "litellm", "sympy", "latex2sympy2_extended", "math-verify", "pypdfium2", "bm25s", "huey")
+        for name in ("python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "pydantic", "litellm", "sympy", "latex2sympy2_extended", "math-verify", "pypdfium2", "bm25s", "huey")
         if not packages.get(name)
     ]
     if missing_core:
@@ -339,7 +339,6 @@ def check_environment() -> dict[str, Any]:
         "matplotlib": bool(find_spec("matplotlib")),
         "numpy": bool(find_spec("numpy")),
         "pydantic": bool(find_spec("pydantic")),
-        "instructor": bool(find_spec("instructor")),
         "litellm": bool(find_spec("litellm")),
         "sympy": bool(find_spec("sympy")),
         "latex2sympy2_extended": bool(find_spec("latex2sympy2_extended")),
@@ -403,7 +402,7 @@ def check_environment() -> dict[str, Any]:
         "mineru_runtime": mineru_runtime_status(),
         "structured_output_runtime": {
             "pydantic": python_packages["pydantic"],
-            "instructor": python_packages["instructor"],
+            "request_scoped_schema": True,
         },
         "math_validation_runtime": {
             "sympy": python_packages["sympy"],

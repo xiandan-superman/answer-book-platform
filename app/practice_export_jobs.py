@@ -298,6 +298,7 @@ def create_or_reuse_practice_export_job(
             else:
                 record = {
                     "job_id": job_id,
+                    "history_id": str(data.get("history_id") or ""),
                     "status": "completed",
                     "current_operation": "已复用通过完整性校验的 Word 缓存",
                     "created_at": existing.get("created_at", now) if existing else now,
@@ -327,6 +328,7 @@ def create_or_reuse_practice_export_job(
             return _public_job(existing)
         record = {
             "job_id": job_id,
+            "history_id": str(data.get("history_id") or ""),
             "status": "queued",
             "current_operation": "等待生成 Word",
             "created_at": now,

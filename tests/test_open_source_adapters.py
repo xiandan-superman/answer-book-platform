@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,14 +18,16 @@ from app.textbook_package import TextbookPackage
 class _FakeStructuredClient:
     def __init__(self) -> None:
         self.calls: list[list[dict]] = []
+        self.call_options: list[dict] = []
 
-    def chat_json(self, messages, **_kwargs):
+    def chat_json(self, messages, **kwargs):
         self.calls.append(messages)
+        self.call_options.append(kwargs)
         content = '{"wrong": true}' if len(self.calls) == 1 else '{"exercises": [{"question": "1+1"}]}'
         return LLMResult(provider="fake", model="fake-model", content=content, raw={})
 
 
-def test_instructor_reasks_with_pydantic_validation_error() -> None:
+def test_request_scoped_schema_reasks_with_pydantic_validation_error() -> None:
     client = _FakeStructuredClient()
 
     result = structured_completion(
@@ -38,6 +41,49 @@ def test_instructor_reasks_with_pydantic_validation_error() -> None:
     assert result.exercises == [{"question": "1+1"}]
     assert len(client.calls) == 2
     assert "validation" in json.dumps(client.calls[1], ensure_ascii=False).lower()
+    assert "JSON Schema" in client.calls[0][0]["content"]
+    assert client.call_options[0]["output_schema"] == PracticeGenerationOutput.model_json_schema(mode="validation")
+    assert client.call_options[0]["output_schema_name"] == "PracticeGenerationOutput"
+
+
+def test_request_scoped_schema_does_not_report_intermediate_validation_as_task_failure() -> None:
+    client = _FakeStructuredClient()
+    events: list[str] = []
+
+    structured_completion(
+        client,
+        [{"role": "user", "content": "return practice JSON"}],
+        response_model=PracticeGenerationOutput,
+        model="fake-model",
+        max_validation_retries=1,
+        attempt_callback=lambda status, _report: events.append(status),
+    )
+
+    assert events == ["started", "started", "succeeded"]
+
+
+def test_request_scoped_schema_is_safe_during_parallel_cold_start() -> None:
+    class ValidClient:
+        def chat_json(self, _messages, **_kwargs):
+            return LLMResult(
+                provider="fake",
+                model="fake-model",
+                content='{"exercises":[{"question":"ok"}]}',
+                raw={},
+            )
+
+    def run(_index: int) -> str:
+        result = structured_completion(
+            ValidClient(),
+            [{"role": "user", "content": "return practice JSON"}],
+            response_model=PracticeGenerationOutput,
+            model="fake-model",
+            max_validation_retries=0,
+        )
+        return result.exercises[0]["question"]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        assert list(pool.map(run, range(64))) == ["ok"] * 64
 
 
 def test_math_stack_verifies_symbolic_equivalence_in_isolated_worker() -> None:
@@ -215,6 +261,50 @@ def test_mineru_removes_outer_markdown_from_section_headings(tmp_path: Path) -> 
 
     assert lines == ["一、填空题（共1题）", "1、第一题", "二、简答题（共1题）", "1、第二题"]
     assert [section["major_no"] for section in split_sections(lines)] == [1, 2]
+
+
+def test_mineru_removes_escaped_docx_underline_markup(tmp_path: Path) -> None:
+    from app.adapters.mineru_runtime import paragraph_lines
+    from app.exam_extract import IMAGE_MARKER_PREFIX, TABLE_MARKER_PREFIX
+
+    content_list = tmp_path / "exam_content_list.json"
+    content_list.write_text(
+        json.dumps(
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        '名称是<u>&lt;text style="underline"&gt;_____</u>'
+                        '&lt;/text&gt;，并比较 A &lt; B。'
+                    ),
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    package = TextbookPackage(
+        package_id="escaped-underlines",
+        root=tmp_path,
+        title="exam",
+        citation_name="exam",
+        content_list=content_list,
+        content_list_v2=None,
+        layout_json=None,
+        markdown=None,
+        origin_pdf=None,
+        images_root=None,
+        audit_path=tmp_path / "audit.json",
+    )
+
+    lines = paragraph_lines(
+        package,
+        image_dir=tmp_path / "copied",
+        image_marker_prefix=IMAGE_MARKER_PREFIX,
+        table_marker_prefix=TABLE_MARKER_PREFIX,
+    )
+
+    assert lines == ["名称是_____，并比较 A < B。"]
 
 
 def test_litellm_shadow_records_comparison_without_exposing_content(tmp_path: Path, monkeypatch) -> None:

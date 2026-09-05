@@ -17,8 +17,8 @@ python3.11 -m pip install -r requirements.txt -r requirements-dev.txt -c constra
 python3 scripts/run_quality_gates.py --full
 ```
 
-完整门禁增加 Ruff、Mypy 和分支覆盖率。现阶段 lint/type-check 先覆盖新拆出的基础模块，后续按模块扩展，避免一次性把历史告警全部静默忽略。整库分支覆盖率门槛为 60%，由 `pyproject.toml` 和完整质量门共同执行；新增测试后只允许逐步上调。
+完整门禁增加 Ruff、Mypy 和分支覆盖率。Coverage 在这一模式下直接执行唯一一次全量 pytest，不再先运行普通 pytest 后重复整套测试。现阶段 lint/type-check 先覆盖新拆出的基础模块，后续按模块扩展，避免一次性把历史告警全部静默忽略。整库分支覆盖率门槛为 60%，由 `pyproject.toml` 和完整质量门共同执行；新增测试后只允许逐步上调。
 
 浏览器端端到端测试放在 `tests/e2e/`，默认测试集不启动真实浏览器；验收环境显式设置地址后单独运行。
 
-GitHub CI 对 Python 3.11 运行平台门禁，在 Chromium 中执行关键用户流程，并在 macOS/Windows 的 Python 3.11 环境实际解析源码运行锁、执行 `pip check` 和关键导入冒烟。正式源码标签还会再次执行完整门禁，并从生成后的源码 ZIP 使用独立数据目录启动服务；CI 使用固定响应和本地测试材料，不调用真实付费模型。
+GitHub CI 保留同一个质量工作流和 `python-quality` 检查名：当前 `APP_VERSION` 已有源码标签时，普通 push 与拉取请求只运行日常 Python 3.11 门禁；当前版本尚无标签时，视为发布候选，运行完整 Python 门禁，并行执行 Chromium 关键流程和 macOS/Windows 源码依赖锁验证。最终汇总任务会核对该提交确实通过与发布状态相符的门禁集合，之后源码发布工作流才可能继续。正式发布仍从生成后的源码 ZIP 使用独立数据目录启动服务；CI 使用固定响应和本地测试材料，不调用真实付费模型。

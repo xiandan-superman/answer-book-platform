@@ -1223,11 +1223,8 @@
           </details>
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>作图链路</h3><p>由用户明确选择主模型自主生图或传统程序绘图；两条链路互斥运行。</p></div>
-            <label class="image-orchestration-switch" for="practiceImageOrchestrationSwitch">
-              <span id="practiceImageOrchestrationLabel">主模型自主生图</span>
-              <input id="practiceImageOrchestrationSwitch" type="checkbox" role="switch" checked onchange="syncImageOrchestrationUi('practice', true)"><i></i>
-            </label>
+            <div><h3>生图模型</h3><p>平台统一使用默认生图流程，不再切换历史程序绘图链路。</p></div>
+            <input id="practiceImageOrchestrationSwitch" type="checkbox" checked hidden>
             <label>服务商<select id="practiceImageProviderSelect"></select></label>
             <label>具体模型<select id="practiceImageModelSelect"></select></label>
             <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
@@ -1273,11 +1270,8 @@
           </details>
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>作图链路</h3><p>由用户明确选择主模型自主生图或传统程序绘图；两条链路互斥运行。</p></div>
-            <label class="image-orchestration-switch" for="knowledgeImageOrchestrationSwitch">
-              <span id="knowledgeImageOrchestrationLabel">主模型自主生图</span>
-              <input id="knowledgeImageOrchestrationSwitch" type="checkbox" role="switch" checked onchange="syncImageOrchestrationUi('knowledge', true)"><i></i>
-            </label>
+            <div><h3>生图模型</h3><p>平台统一使用默认生图流程，不再切换历史程序绘图链路。</p></div>
+            <input id="knowledgeImageOrchestrationSwitch" type="checkbox" checked hidden>
             <label>服务商<select id="knowledgeImageProviderSelect"></select></label>
             <label>具体模型<select id="knowledgeImageModelSelect"></select></label>
             <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
@@ -1430,14 +1424,11 @@
                   <span class="model-role-icon orange"><i class="fas fa-wand-magic-sparkles"></i></span>
                   <div>
                     <strong>作图题生图</strong>
-                    <p>由用户选择主模型自主生图或传统程序绘图；两条链路互斥运行。</p>
+                    <p>统一使用默认生图流程，不再显示历史程序绘图选项。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <label class="image-orchestration-switch" for="imageOrchestrationSwitch">
-                    <span id="imageOrchestrationLabel">主模型自主生图</span>
-                    <input id="imageOrchestrationSwitch" type="checkbox" role="switch" checked onchange="syncImageOrchestrationUi('exam', true)"><i></i>
-                  </label>
+                  <input id="imageOrchestrationSwitch" type="checkbox" checked hidden>
                   <label><i class="fas fa-cloud"></i>服务商</label>
                   <select id="imageProviderSelect"></select>
                   <label><i class="fas fa-microchip"></i>模型</label>
@@ -2167,6 +2158,29 @@
       <footer class="platform-dialog-actions">
         <button id="platformDialogCancel" class="secondary-button" type="button">取消</button>
         <button id="platformDialogConfirm" class="primary-button" type="button">确定</button>
+      </footer>
+    </section>
+  </div>
+  <div id="taskCleanupModal" class="platform-dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="taskCleanupTitle">
+    <section class="platform-dialog-card task-cleanup-card" tabindex="-1">
+      <header class="platform-dialog-header">
+        <span class="platform-dialog-icon"><i class="fas fa-broom"></i></span>
+        <div>
+          <p>历史任务管理</p>
+          <h2 id="taskCleanupTitle">发现可整理的旧任务</h2>
+        </div>
+        <button id="taskCleanupClose" class="platform-dialog-close" type="button" aria-label="关闭清理建议">
+          <i class="fas fa-xmark"></i>
+        </button>
+      </header>
+      <div class="platform-dialog-body task-cleanup-body">
+        <p id="taskCleanupSummary"></p>
+        <div id="taskCleanupReasons" class="task-cleanup-reasons"></div>
+        <p class="task-cleanup-safety"><i class="fas fa-shield-check"></i>运行中、排队中、已暂停或等待确认的任务不会被清理。</p>
+      </div>
+      <footer class="platform-dialog-actions task-cleanup-actions">
+        <button id="taskCleanupRecommended" class="primary-button" type="button"><i class="fas fa-sparkles"></i>按照推荐清理</button>
+        <button id="taskCleanupAllOverflow" class="secondary-button danger-outline" type="button"><i class="fas fa-trash"></i>清理排序 40+ 的全部任务</button>
       </footer>
     </section>
   </div>

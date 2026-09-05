@@ -1,3 +1,4 @@
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -13,13 +14,17 @@ from app.image_orchestration import (
     normalize_image_orchestration,
 )
 from app.pipeline import _isolated_image_routes
-from app.task_store import TaskRecord
+from app.task_store import TaskRecord, create_task
 
 
 def test_old_records_and_missing_values_remain_on_the_legacy_route() -> None:
     assert normalize_image_orchestration("") == LEGACY_FIGURE_PIPELINE
     record = TaskRecord("t", "e.docx", "books", "p", "m", "created", "now", "now")
     assert record.image_orchestration == LEGACY_FIGURE_PIPELINE
+
+
+def test_new_platform_tasks_default_to_the_main_model_image_route() -> None:
+    assert inspect.signature(create_task).parameters["image_orchestration"].default == MAIN_MODEL_TOOL_LOOP
 
 
 def test_unknown_route_is_rejected_instead_of_guessed() -> None:

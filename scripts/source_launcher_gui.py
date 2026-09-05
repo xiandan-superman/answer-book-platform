@@ -107,6 +107,7 @@ class LauncherController:
         self.process: subprocess.Popen[Any] | None = None
         self.log_file: Any = None
         self.started_at = 0.0
+        self.run_id = ""
         self.lock = threading.Lock()
         self.window: Any = None
         self.tray: Any = None
@@ -117,6 +118,23 @@ class LauncherController:
     def log_path(self) -> Path:
         return user_data_root() / "runtime" / "launcher.log"
 
+    @property
+    def progress_path(self) -> Path:
+        return user_data_root() / "runtime" / "startup-progress.json"
+
+    def _progress_snapshot(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if payload.get("run_id") != self.run_id:
+            return {}
+        allowed = {
+            "status", "percent", "message", "current_component", "failed_component", "hint",
+            "current_index", "completed_count", "total_count", "inactive_seconds", "progress_mode", "pending_components",
+        }
+        return {key: payload[key] for key in allowed if key in payload}
+
     def snapshot(self) -> dict[str, Any]:
         if service_ready(self.url):
             lan_mode = current_lan_mode(self.url)
@@ -124,9 +142,21 @@ class LauncherController:
                 self.status = "ready"
                 self.mode = "lan" if lan_mode else "local"
                 self.message = "局域网监控已开启" if lan_mode else "平台已在本机运行"
+        progress = self._progress_snapshot() if self.status in {"starting", "failed"} else {}
         with self.lock:
-            return {"ok": True, "status": self.status, "message": self.message, "mode": self.mode,
-                    "platform_url": self.url, "can_stop": bool(self.process is not None and self.process.poll() is None)}
+            status = "failed" if progress.get("status") == "failed" else self.status
+            message = str(progress.get("message") or self.message)
+            return {
+                "ok": True,
+                "status": status,
+                "stage": progress.get("status", ""),
+                "message": message,
+                "mode": self.mode,
+                "platform_url": self.url,
+                "can_stop": bool(self.process is not None and self.process.poll() is None),
+                "log_path": str(self.log_path),
+                **{key: value for key, value in progress.items() if key not in {"status", "message"}},
+            }
 
     def start(self, mode: str) -> tuple[bool, str]:
         if mode not in {"local", "lan"}:
@@ -144,10 +174,17 @@ class LauncherController:
                 return True, "平台正在启动"
             self.mode, self.status = mode, "starting"
             self.message = "正在检查运行环境，首次启动可能需要几分钟"
+            self.run_id = str(time.time_ns())
+        try:
+            self.progress_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_file = self.log_path.open("w", encoding="utf-8", errors="replace")
         env = os.environ.copy()
         env["ANSWER_BOOK_GUI_LAUNCHER"] = "1"
+        env["ANSWER_BOOK_STARTUP_PROGRESS_PATH"] = str(self.progress_path)
+        env["ANSWER_BOOK_STARTUP_RUN_ID"] = self.run_id
         kwargs: dict[str, Any] = {"cwd": ROOT, "env": env, "stdout": self.log_file, "stderr": subprocess.STDOUT}
         if sys.platform.startswith("win"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -177,8 +214,10 @@ class LauncherController:
                     self.message = "正在准备运行依赖，请保持此页面打开"
             time.sleep(0.7)
         if not service_ready(self.url):
+            progress = self._progress_snapshot()
             with self.lock:
-                self.status, self.message = "failed", "启动没有完成，请查看日志后重试"
+                self.status = "failed"
+                self.message = str(progress.get("message") or "启动没有完成，请查看日志后重试")
         if self.log_file is not None:
             self.log_file.close()
             self.log_file = None
@@ -339,14 +378,17 @@ def bootstrap_ready(port: int) -> bool:
 class PreparationWindow:
     def __init__(self) -> None:
         self.window: Any = None
+        self.stage: Any = None
         self.message: Any = None
+        self.detail: Any = None
+        self.bar: Any = None
         try:
             import tkinter as tk
             from tkinter import ttk
 
             window = tk.Tk()
             window.title("真题解析与生题平台")
-            window.geometry("440x190")
+            window.geometry("500x280")
             window.resizable(False, False)
             window.protocol("WM_DELETE_WINDOW", lambda: None)
             if APP_ICON.is_file():
@@ -356,14 +398,19 @@ class PreparationWindow:
             frame.pack(fill="both", expand=True)
             tk.Label(frame, text="正在准备启动环境", bg="#F6F8FC", fg="#15213B",
                      font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
+            self.stage = tk.Label(frame, text="检查运行环境", bg="#F6F8FC", fg="#246BFD",
+                                  font=("Microsoft YaHei UI", 10, "bold"))
+            self.stage.pack(anchor="w", pady=(14, 0))
             self.message = tk.Label(frame, text="首次启动需要安装必要组件，请保持网络连接。", bg="#F6F8FC", fg="#6F7B91",
-                                    font=("Microsoft YaHei UI", 10), wraplength=370, justify="left")
-            self.message.pack(anchor="w", pady=(10, 18))
+                                    font=("Microsoft YaHei UI", 10), wraplength=430, justify="left")
+            self.message.pack(anchor="w", pady=(6, 12))
             style = ttk.Style(window)
             style.configure("Bootstrap.Horizontal.TProgressbar", troughcolor="#E2E8F2", background="#246BFD")
-            bar = ttk.Progressbar(frame, mode="indeterminate", style="Bootstrap.Horizontal.TProgressbar")
-            bar.pack(fill="x")
-            bar.start(12)
+            self.bar = ttk.Progressbar(frame, maximum=100, mode="determinate", style="Bootstrap.Horizontal.TProgressbar")
+            self.bar.pack(fill="x")
+            self.detail = tk.Label(frame, text="正在扫描所需组件…", bg="#F6F8FC", fg="#8792A6",
+                                   font=("Microsoft YaHei UI", 9), wraplength=430, justify="left")
+            self.detail.pack(anchor="w", pady=(10, 0))
             window.update_idletasks()
             window.update()
             self.window = window
@@ -376,11 +423,49 @@ class PreparationWindow:
                     stderr=subprocess.DEVNULL,
                 )
 
-    def update(self, _status: str, _percent: int, message: str, **_details: Any) -> None:
+    def update(self, status: str, percent: int, message: str, **details: Any) -> None:
         if self.window is None:
             return
         try:
+            stage_names = {
+                "checking_dependencies": "检查运行环境",
+                "creating_environment": "创建专用环境",
+                "dependencies_found": "发现待安装组件",
+                "resolving_dependencies": "解析组件版本",
+                "downloading_dependencies": "下载并准备组件",
+                "installing_dependencies": "安装运行组件",
+                "verifying_dependencies": "验证安装结果",
+                "dependencies_ready": "运行组件已就绪",
+                "failed": "准备失败",
+            }
+            self.stage.configure(text=stage_names.get(status, "准备启动环境"), fg="#D14343" if status == "failed" else "#246BFD")
             self.message.configure(text=message)
+            total = int(details.get("total_count") or 0)
+            completed = int(details.get("completed_count") or 0)
+            component = str(details.get("current_component") or details.get("failed_component") or "")
+            detail_parts = []
+            if component:
+                detail_parts.append(f"当前组件：{component}")
+            if total:
+                current_index = int(details.get("current_index") or 0)
+                detail_parts.append(f"进度：第 {current_index}/{total} 项" if current_index else f"已完成：{completed}/{total} 项")
+            pending = details.get("pending_components")
+            if isinstance(pending, list) and pending and not component:
+                preview = "、".join(str(item) for item in pending[:6])
+                suffix = f" 等 {len(pending)} 项" if len(pending) > 6 else ""
+                detail_parts.append(f"待安装：{preview}{suffix}")
+            inactive = int(details.get("inactive_seconds") or 0)
+            if inactive >= 45:
+                detail_parts.append(f"最近活动：{inactive} 秒前")
+            if details.get("hint"):
+                detail_parts.append(str(details["hint"]))
+            self.detail.configure(text="  ·  ".join(detail_parts) or "正在扫描所需组件…")
+            if details.get("progress_mode") == "indeterminate":
+                self.bar.configure(mode="indeterminate")
+                self.bar.start(12)
+            else:
+                self.bar.stop()
+                self.bar.configure(mode="determinate", value=max(0, min(100, int(percent))))
             self.window.update_idletasks()
             self.window.update()
         except Exception:
@@ -424,13 +509,15 @@ def ensure_shell_runtime() -> None:
         python = ensure_dependencies(ROOT, data_root, approved=False, progress=progress.update)
     except Exception as exc:
         progress.close()
+        hint = getattr(exc, "hint", "请检查网络后重新尝试；若仍失败，请保留启动日志并联系维护人员。")
+        error_message = f"启动环境准备失败。\n\n{exc}\n\n{hint}\n\n日志：{user_data_root() / 'runtime' / 'launcher.log'}"
         try:
             from tkinter import messagebox
 
-            messagebox.showerror("真题解析与生题平台", f"启动环境准备失败。\n\n{exc}")
+            messagebox.showerror("真题解析与生题平台", error_message)
         except Exception:
             if sys.platform == "darwin" and shutil.which("osascript"):
-                safe_message = str(exc).replace('"', "'")[:300]
+                safe_message = error_message.replace('"', "'")[:600]
                 subprocess.run(
                     ["osascript", "-e", f'display dialog "启动环境准备失败。\\n\\n{safe_message}" buttons {{"关闭"}} with title "真题解析与生题平台"'],
                     stdout=subprocess.DEVNULL,

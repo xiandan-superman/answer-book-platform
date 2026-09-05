@@ -1229,7 +1229,7 @@ textarea {
 }
 
 .api-key-field input {
-  padding-right: 46px;
+  padding-right: 62px;
 }
 
 .icon-plain-button {
@@ -6170,7 +6170,7 @@ pre {
 
 .exam-structure-subquestion-main {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) minmax(140px, 170px) 110px 36px;
+  grid-template-columns: 72px minmax(190px, 1fr) minmax(120px, 150px) 100px;
   gap: 10px;
   align-items: end;
 }
@@ -6220,13 +6220,66 @@ pre {
 
 .exam-structure-requirement {
   display: grid;
-  grid-template-columns: 82px minmax(0, 1fr) minmax(130px, 160px) 110px 34px;
+  grid-template-columns: 82px minmax(180px, 1fr) minmax(120px, 145px) 100px;
   gap: 8px;
   align-items: end;
   padding: 8px;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #fafafa;
+  position: relative;
+  padding-right: 46px;
+}
+
+.exam-structure-subquestion-main {
+  position: relative;
+  padding-right: 62px;
+}
+
+.exam-structure-subquestion-main > .exam-structure-icon-btn,
+.exam-structure-requirement > .exam-structure-icon-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+}
+
+.task-cleanup-card {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.task-cleanup-body {
+  display: grid;
+  gap: 14px;
+}
+
+.task-cleanup-reasons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.task-cleanup-reasons article {
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.task-cleanup-reasons strong,
+.task-cleanup-reasons span {
+  display: block;
+}
+
+.task-cleanup-reasons strong { color: #1d4ed8; font-size: 18px; }
+.task-cleanup-reasons span { margin-top: 3px; color: #64748b; font-size: 12px; }
+.task-cleanup-safety { color: #475569; font-size: 13px; }
+.task-cleanup-safety i { margin-right: 6px; color: #059669; }
+.task-cleanup-actions { flex-wrap: wrap; }
+.task-cleanup-actions button { flex: 1 1 230px; }
+
+@media (max-width: 560px) {
+  .task-cleanup-reasons { grid-template-columns: 1fr; }
 }
 
 .exam-structure-sub-copy {
@@ -6366,12 +6419,14 @@ pre {
 .exam-structure-icon-btn {
   display: grid;
   place-items: center;
-  width: 36px;
+  width: 48px;
   height: 36px;
   border: 1px solid #fee2e2;
   border-radius: 10px;
-  background: #fff;
-  color: #ef4444;
+  background: #fff !important;
+  color: #ef4444 !important;
+  font-size: 12px;
+  font-weight: 700;
   cursor: pointer;
 }
 

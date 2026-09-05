@@ -59,6 +59,14 @@ def test_release_workflows_require_version_specific_changelog_notes() -> None:
 
 
 def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> None:
+    assert "release-plan:" in QUALITY
+    assert 'refs/tags/v${version}' in QUALITY
+    assert "quality-complete:" in QUALITY
+    assert 'RELEASE_REQUIRED: ${{ needs.release-plan.outputs.release-required }}' in QUALITY
+    assert "python scripts/run_quality_gates.py --full" in QUALITY
+    assert "python scripts/run_quality_gates.py" in QUALITY
+    assert "needs: release-plan" in QUALITY
+    assert "if: needs.release-plan.outputs.release-required == 'true'" in QUALITY
     assert 'python-version: ["3.11"]' in QUALITY
     assert "constraints-py39.txt" not in QUALITY
     assert "constraints-py311.txt" in QUALITY

@@ -21,6 +21,7 @@ MINERU_PROFILE = "pipeline"
 _INSTALL_LOCK = threading.Lock()
 _BARE_NUMBERED_ITEM_RE = re.compile(r"^\s*\d{1,3}[、.．]\s*$")
 _OUTER_MARKDOWN_EMPHASIS_RE = re.compile(r"^(?P<marker>\*\*|__)(?P<body>.+)(?P=marker)$", re.S)
+_MINERU_INLINE_FORMATTING_TAG_RE = re.compile(r"</?(?:text|u)\b[^>]*>", re.I)
 
 
 class MinerURuntimeError(RuntimeError):
@@ -30,6 +31,21 @@ class MinerURuntimeError(RuntimeError):
 def _strip_outer_markdown_emphasis(text: str) -> str:
     match = _OUTER_MARKDOWN_EMPHASIS_RE.fullmatch(text.strip())
     return clean_text(match.group("body")) if match else text
+
+
+def _clean_mineru_inline_markup(text: str) -> str:
+    """Remove leaked MinerU formatting tags while retaining their visible text."""
+
+    value = str(text or "")
+    # DOCX underlines can arrive as a real ``<u>`` wrapper containing one or
+    # more HTML-escaped ``<text style="underline">`` wrappers. Decode only a
+    # bounded number of layers, then remove those known presentation tags.
+    for _ in range(3):
+        decoded = html.unescape(value)
+        if decoded == value:
+            break
+        value = decoded
+    return clean_text(_MINERU_INLINE_FORMATTING_TAG_RE.sub("", value))
 
 
 def _sha256_file(path: Path) -> str:
@@ -255,7 +271,7 @@ def paragraph_lines(
                 lines.append(f"{table_marker_prefix}{json.dumps([[caption, body]], ensure_ascii=False)}")
         else:
             text = _strip_outer_markdown_emphasis(
-                clean_text(str(item.get("text") or item.get("content") or ""))
+                _clean_mineru_inline_markup(str(item.get("text") or item.get("content") or ""))
             )
             caption = item.get("image_caption") or item.get("chart_caption") or []
             if isinstance(caption, list):

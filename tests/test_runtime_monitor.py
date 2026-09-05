@@ -45,7 +45,7 @@ class RuntimeMonitorTests(unittest.TestCase):
             "last_progress_at": now.isoformat(),
         }
         health = runtime_monitor.task_health_summary(row)
-        self.assertEqual("error", health["health_status"])
+        self.assertEqual("warning", health["health_status"])
 
     def test_user_confirmation_and_queue_are_waiting_not_stalled(self) -> None:
         confirmation = runtime_monitor.task_health_summary({"task_id": "review", "status": "paused", "current_stage": "exam_structure_review"})

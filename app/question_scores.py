@@ -156,7 +156,10 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
         match = re.search(pattern, text)
         if match:
             return float(match.group(1))
-    if section_total:
+    # A major-section total such as ``共6题，共15分`` belongs to the
+    # section, not to every numbered item. Production extraction records the
+    # number of items, so only retain this fallback for a single/unknown item.
+    if section_total and section_item_count <= 1:
         return float(section_total.group(1))
     return None
 

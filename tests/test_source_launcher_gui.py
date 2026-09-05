@@ -77,6 +77,47 @@ def test_launcher_page_keeps_mode_choice_simple_and_user_facing() -> None:
     assert "source_launcher.py" not in page
     assert '<img class="logo" src="/app-icon.png"' in page
     assert '<div class="logo">真</div>' not in page
+    assert "当前安装：" in page
+    assert "pending_components" in page
+    assert 'role="progressbar"' in page
+    assert "复制日志位置" in page
+    assert "重新尝试" in page
+
+
+def test_launcher_snapshot_exposes_only_matching_startup_progress(monkeypatch, tmp_path: Path) -> None:
+    controller = source_launcher_gui.LauncherController(port=8766)
+    controller.status = "starting"
+    controller.run_id = "current-run"
+    progress_path = tmp_path / "startup-progress.json"
+    monkeypatch.setattr(source_launcher_gui, "service_ready", lambda _url: False)
+    monkeypatch.setattr(
+        source_launcher_gui.LauncherController,
+        "progress_path",
+        property(lambda _self: progress_path),
+    )
+    progress_path.write_text(json.dumps({
+        "run_id": "current-run",
+        "status": "downloading_dependencies",
+        "percent": 52,
+        "message": "正在准备 Pillow（4/16）",
+        "current_component": "Pillow",
+        "current_index": 4,
+        "completed_count": 3,
+        "total_count": 16,
+        "progress_mode": "indeterminate",
+        "private_output": "must not leak",
+    }), encoding="utf-8")
+
+    snapshot = controller.snapshot()
+
+    assert snapshot["status"] == "starting"
+    assert snapshot["stage"] == "downloading_dependencies"
+    assert snapshot["current_component"] == "Pillow"
+    assert snapshot["current_index"] == 4
+    assert "private_output" not in snapshot
+
+    progress_path.write_text(json.dumps({"run_id": "stale-run", "message": "stale"}), encoding="utf-8")
+    assert controller.snapshot()["message"] != "stale"
 
 
 def test_launcher_uses_the_product_icon_in_every_visible_shell() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import zipfile
 
 import pytest
@@ -69,6 +70,56 @@ def test_dependency_fingerprint_changes_with_requirements(tmp_path) -> None:
     first = source_launcher.dependency_fingerprint(tmp_path)
     (tmp_path / "requirements.txt").write_text("huey>=4\n", encoding="utf-8")
     assert source_launcher.dependency_fingerprint(tmp_path) != first
+
+
+def test_pending_dependencies_reports_unmet_direct_requirements(tmp_path) -> None:
+    (tmp_path / "requirements.txt").write_text(
+        "answer-book-missing-test-package>=999\nignored-on-this-platform>=1; sys_platform == 'never'\n",
+        encoding="utf-8",
+    )
+
+    assert source_launcher.pending_dependencies(type(tmp_path)(sys.executable), tmp_path) == [
+        "answer-book-missing-test-package"
+    ]
+
+
+def test_pip_progress_identifies_component_without_exposing_download_url() -> None:
+    assert source_launcher.pip_component_from_line("Collecting Pillow>=10") == "Pillow"
+    assert source_launcher.pip_component_from_line("Building wheel for bm25s (pyproject.toml)") == "bm25s"
+    assert source_launcher.pip_component_from_line("Downloading https://user:secret@example.test/package.whl") == ""
+
+
+def test_dependency_failure_details_are_actionable_and_sanitized() -> None:
+    message, hint = source_launcher.dependency_failure_details(
+        ["HTTPSConnectionPool: Read timed out while downloading https://user:secret@example.test/file"],
+        "Pillow",
+    )
+
+    assert message == "下载 Pillow 时网络连接中断。"
+    assert "重新尝试" in hint
+    assert "secret" not in message + hint
+
+
+def test_dependency_install_streams_current_component_and_count(tmp_path) -> None:
+    events = []
+    command = [
+        sys.executable,
+        "-c",
+        "print('Collecting Pillow>=10', flush=True); print('Installing collected packages: Pillow', flush=True)",
+    ]
+
+    returncode, lines, component = source_launcher.run_dependency_install(
+        command,
+        project_root=tmp_path,
+        pending=["Pillow"],
+        progress=lambda status, percent, message, **details: events.append((status, percent, message, details)),
+    )
+
+    assert returncode == 0
+    assert component == "Pillow"
+    assert lines[-1] == "Installing collected packages: Pillow"
+    assert any(event[0] == "downloading_dependencies" and event[3]["current_index"] == 1 for event in events)
+    assert any(event[0] == "installing_dependencies" for event in events)
 
 
 def test_pending_source_update_replaces_code_and_retains_backup(tmp_path) -> None:

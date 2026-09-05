@@ -426,6 +426,7 @@
       "default_model": "gpt-5.6-sol",
       "vision_model": "gpt-5.6-sol",
       "vision_model_options": [
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -433,12 +434,14 @@
       ],
       "supports_vision": true,
       "model_capabilities": {
+        "gpt-6-astra": ["text", "vision"],
         "gpt-5.6-sol": ["text", "vision"],
         "gpt-5.6-terra": ["text", "vision"],
         "gpt-5.6-luna": ["text", "vision"],
         "gpt-5.5": ["text", "vision"]
       },
       "model_profiles": {
+        "gpt-6-astra": {"supports_tool_calls": true},
         "gpt-5.6-sol": {"supports_tool_calls": true},
         "gpt-5.6-terra": {"supports_tool_calls": true},
         "gpt-5.5": {"supports_tool_calls": true}
@@ -446,12 +449,14 @@
       "supports_image_generation": false,
       "image_model": "",
       "model_options": [
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5"
       ],
       "model_option_labels": {
+        "gpt-6-astra": "GPT-6 Astra",
         "gpt-5.6-sol": "GPT-5.6 Sol",
         "gpt-5.6-terra": "GPT-5.6 Terra",
         "gpt-5.6-luna": "GPT-5.6 Luna",

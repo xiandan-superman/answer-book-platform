@@ -249,9 +249,13 @@ def test_https_preserves_layered_timeouts(
         started = time.monotonic()
         with pytest.raises(llm_client.LLMError) as captured:
             _chat(f"https://localhost:{server.server_port}/api/v3", timeout=hard_timeout)
+        elapsed = time.monotonic() - started
 
     assert captured.value.transport_phase == expected_phase
-    assert time.monotonic() - started < hard_timeout + 2
+    # Exclude fixture shutdown from the transport deadline assertion. Under
+    # coverage the TLS handler teardown can outlive the already-raised client
+    # timeout even though the request itself respected the correct layer.
+    assert elapsed < hard_timeout + 2
 
 
 class _ConnectProxy(socketserver.StreamRequestHandler):

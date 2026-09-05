@@ -30,6 +30,7 @@
       "qwen-vl-ocr": {"protocol":"chat_completions","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
     },
     "lingsuan_openai": {
+      "gpt-6-astra": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-09-05"},
       "gpt-5.6-sol": {"protocol":"responses","evidence":"live_task_tool_loop","last_verified_at":"2026-08-29"},
       "gpt-5.6-terra": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"},
       "gpt-5.5": {"protocol":"responses","evidence":"live_native_tool_probe","last_verified_at":"2026-08-29"}
@@ -137,6 +138,7 @@
     "lingsuan_openai": {
       "display_name": "灵算 OpenAI",
       "models": {
+        "gpt-6-astra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"platform_verified_json","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"2026-09-05"},
         "gpt-5.6-sol": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "gpt-5.6-terra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
         "gpt-5.6-luna": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},

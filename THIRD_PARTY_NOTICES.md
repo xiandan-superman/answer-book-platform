@@ -10,8 +10,7 @@
 | `lxml` | 6.1.2 | DOCX/XML、OMML 解析与审计 | BSD-3-Clause |
 | `latex2mathml` | 3.81.0 | LaTeX 转 MathML | MIT |
 | `Pillow` | 12.3.0 | 图片读取、转换与嵌入 | MIT-CMU |
-| `pydantic` | 2.13.4 | V4 结构化答案契约校验 | MIT |
-| `instructor` | 1.16.0 | 模型结构化输出、Pydantic 校验反馈与有界纠错 | MIT |
+| `pydantic` | 2.13.4 | 请求级 JSON Schema 与结构化输出校验 | MIT |
 | `litellm` | 1.99.0 | 灵算模型的库模式影子流量与用量对照 | MIT |
 | `sympy` | 1.14.0 | 本地符号计算与化简 | BSD-3-Clause |
 | `latex2sympy2-extended` | 1.11.0 | LaTeX 到 SymPy 表达式转换 | MIT |
@@ -36,9 +35,9 @@
 | `bottle`, `proxy-tools` | pywebview | MIT |
 | `pyobjc-core`, `pyobjc-framework-Cocoa`, `pyobjc-framework-Quartz`, `pyobjc-framework-WebKit`, `pyobjc-framework-security`, `pyobjc-framework-UniformTypeIdentifiers` | macOS 启动壳 | MIT |
 | `pythonnet`, `clr-loader`, `cffi`, `pycparser` | Windows pywebview 运行时 | MIT / BSD-3-Clause，以各发行包为准 |
-| `openai`, `tenacity`, `docstring-parser`, `jiter`, `distro`, `pydantic-settings`, `python-dotenv` | Instructor 结构化调用与重试 | Apache-2.0 / MIT，以各发行包为准 |
-| `aiohappyeyeballs`, `aiohttp`, `aiosignal`, `anyio`, `attrs`, `boto3`, `botocore`, `certifi`, `charset-normalizer`, `click`, `filelock`, `frozenlist`, `fsspec`, `h11`, `hf-xet`, `httpcore`, `httpx`, `huggingface-hub`, `idna`, `importlib-metadata`, `jinja2`, `jmespath`, `jsonschema`, `jsonschema-specifications`, `markdown-it-py`, `markupsafe`, `mdurl`, `multidict`, `propcache`, `pygments`, `pyyaml`, `referencing`, `regex`, `requests`, `rich`, `rpds-py`, `s3transfer`, `shellingham`, `sniffio`, `tiktoken`, `tokenizers`, `tqdm`, `typer`, `urllib3`, `yarl`, `zipp` | LiteLLM 及其传输、模型注册表和用量依赖 | Apache-2.0 / BSD / MIT，以各发行包为准 |
-| `annotated-doc`, `antlr4-python3-runtime`, `fastuuid`, `librt`, `mpmath` | Instructor、Math-Verify 与 SymPy | BSD / MIT，以各发行包为准 |
+| `aiohappyeyeballs`, `aiohttp`, `aiosignal`, `anyio`, `attrs`, `boto3`, `botocore`, `certifi`, `charset-normalizer`, `click`, `filelock`, `frozenlist`, `fsspec`, `h11`, `hf-xet`, `httpcore`, `httpx`, `huggingface-hub`, `idna`, `importlib-metadata`, `jinja2`, `jmespath`, `jsonschema`, `jsonschema-specifications`, `markupsafe`, `multidict`, `propcache`, `pyyaml`, `referencing`, `regex`, `requests`, `rpds-py`, `s3transfer`, `sniffio`, `tiktoken`, `tokenizers`, `tqdm`, `urllib3`, `yarl`, `zipp` | LiteLLM 及其传输、模型注册表和用量依赖 | Apache-2.0 / BSD / MIT，以各发行包为准 |
+| `openai`, `jiter`, `distro`, `pydantic-settings`, `python-dotenv` | LiteLLM 模型协议与配置依赖 | Apache-2.0 / MIT，以各发行包为准 |
+| `antlr4-python3-runtime`, `fastuuid`, `librt`, `mpmath` | LiteLLM、Math-Verify 与 SymPy | BSD / MIT，以各发行包为准 |
 
 精确版本见 `constraints-py311.txt` 和对应的 `constraints-source-macos-py311.txt`、`constraints-source-windows-py311.txt` 文件。Python 3.10 及以下不再受支持。
 

@@ -4,10 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import venv
@@ -28,6 +31,39 @@ from app.dependency_profiles import (  # noqa: E402
 
 RUNTIME_ENV_NAME = "python-env-py311"
 RESTART_EXIT_CODE = 75
+
+
+class DependencyInstallError(RuntimeError):
+    def __init__(self, message: str, *, component: str = "", hint: str = "") -> None:
+        super().__init__(message)
+        self.component = component
+        self.hint = hint
+
+
+class JsonProgressReporter:
+    """Persist launcher progress without exposing command output or credentials."""
+
+    def __init__(self, path: Path | None, *, run_id: str = "") -> None:
+        self.path = path
+        self.run_id = run_id
+
+    def update(self, status: str, percent: int, message: str, **details: Any) -> None:
+        if self.path is None:
+            return
+        payload = {
+            "schema_version": "answer_book.startup_progress.v1",
+            "status": status,
+            "percent": max(0, min(100, int(percent))),
+            "message": str(message)[:500],
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at_epoch": time.time(),
+            "run_id": self.run_id,
+            **{key: value for key, value in details.items() if value is not None},
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(self.path)
 
 
 class SourceUpdateProgress:
@@ -94,7 +130,14 @@ class SourceUpdateProgress:
                     "backing_up": "备份当前程序",
                     "installing": "安装新版程序",
                     "verifying_install": "验证安装结果",
-                    "dependencies": "准备运行依赖",
+                    "checking_dependencies": "检查运行组件",
+                    "creating_environment": "创建专用环境",
+                    "dependencies_found": "发现待安装组件",
+                    "resolving_dependencies": "解析组件版本",
+                    "downloading_dependencies": "下载并准备组件",
+                    "installing_dependencies": "安装运行组件",
+                    "verifying_dependencies": "验证运行组件",
+                    "dependencies_ready": "运行组件已就绪",
                     "starting": "启动新版程序",
                     "completed": "更新完成",
                     "failed": "更新失败，已保留旧版",
@@ -113,6 +156,19 @@ class SourceUpdateProgress:
             except Exception:
                 pass
             self.window = None
+
+
+def combined_progress_reporter(
+    startup_progress: JsonProgressReporter,
+    update_progress: SourceUpdateProgress,
+) -> Callable[..., None]:
+    def report(status: str, percent: int, message: str, **details: Any) -> None:
+        startup_progress.update(status, percent, message, **details)
+        if update_progress.enabled:
+            dependency_stage = status.endswith("dependencies") or status in {"dependencies_found", "dependencies_ready"}
+            update_progress.update(status, 99 if dependency_stage else percent, message, **details)
+
+    return report
 
 
 def user_data_root() -> Path:
@@ -195,7 +251,7 @@ def gui_subprocess_kwargs() -> dict[str, Any]:
 
 def dependencies_healthy(python: Path) -> bool:
     probe = (
-        "import docx,lxml,latex2mathml,PIL,pydantic,instructor,litellm,sympy,"
+        "import docx,lxml,latex2mathml,PIL,pydantic,litellm,sympy,"
         "latex2sympy2_extended,math_verify,pypdfium2,bm25s,huey,matplotlib,numpy"
     )
     if sys.platform.startswith("win") or sys.platform == "darwin":
@@ -205,6 +261,180 @@ def dependencies_healthy(python: Path) -> bool:
         return False
     check = subprocess.run([str(python), "-m", "pip", "check"], capture_output=True, timeout=60)
     return check.returncode == 0
+
+
+def declared_dependency_specs(project_root: Path) -> list[str]:
+    specs: list[str] = []
+    for path in dependency_files(project_root):
+        if path.name.startswith("constraints-"):
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if line and not line.startswith("-"):
+                specs.append(line)
+    return specs
+
+
+def pending_dependencies(python: Path, project_root: Path) -> list[str]:
+    """Return unmet direct requirements using the managed interpreter's markers."""
+    specs = declared_dependency_specs(project_root)
+    if not specs:
+        return []
+    probe = """
+import importlib.metadata, json, sys
+try:
+    from packaging.requirements import Requirement
+except ImportError:
+    from pip._vendor.packaging.requirements import Requirement
+pending = []
+for raw in json.loads(sys.argv[1]):
+    try:
+        requirement = Requirement(raw)
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        try:
+            installed = importlib.metadata.version(requirement.name)
+        except importlib.metadata.PackageNotFoundError:
+            installed = ""
+        if not installed or (requirement.specifier and installed not in requirement.specifier):
+            pending.append(requirement.name)
+    except Exception:
+        continue
+print(json.dumps(pending))
+"""
+    try:
+        result = subprocess.run(
+            [str(python), "-c", probe, json.dumps(specs)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            value = json.loads(result.stdout)
+            if isinstance(value, list):
+                return [str(item) for item in value if str(item).strip()]
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+    return []
+
+
+_PIP_COMPONENT_PATTERNS = (
+    re.compile(r"^(?:Collecting|Building wheel for)\s+([A-Za-z0-9_.-]+)", re.IGNORECASE),
+    re.compile(r"^Preparing metadata .*?\(([A-Za-z0-9_.-]+)\)", re.IGNORECASE),
+)
+
+
+def pip_component_from_line(line: str) -> str:
+    clean = line.strip()
+    for pattern in _PIP_COMPONENT_PATTERNS:
+        match = pattern.search(clean)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def dependency_failure_details(lines: list[str], component: str) -> tuple[str, str]:
+    joined = "\n".join(lines).lower()
+    label = component or "运行组件"
+    if "no matching distribution found" in joined or "could not find a version" in joined:
+        return f"找不到与当前系统兼容的 {label} 版本。", "请确认正在使用 Python 3.11，并保留日志后联系维护人员。"
+    if any(token in joined for token in ("timed out", "timeout", "connection reset", "failed to establish a new connection")):
+        return f"下载 {label} 时网络连接中断。", "请检查网络或代理设置，然后点击“重新尝试”。"
+    if any(token in joined for token in ("permission denied", "access is denied", "winerror 5")):
+        return f"安装 {label} 时没有写入权限。", "请关闭安全软件拦截或确认用户数据目录可写后重试。"
+    if "no space left on device" in joined:
+        return f"安装 {label} 时磁盘空间不足。", "请释放系统盘空间后点击“重新尝试”。"
+    return f"{label} 未能安装完成。", "请点击“重新尝试”；若仍失败，请把启动日志提供给维护人员。"
+
+
+def run_dependency_install(
+    command: list[str],
+    *,
+    project_root: Path,
+    pending: list[str],
+    progress: Callable[..., Any] | None,
+) -> tuple[int, list[str], str]:
+    output_queue: queue.Queue[str | None] = queue.Queue()
+    lines: list[str] = []
+    current_component = pending[0] if pending else ""
+    pending_positions = {name.lower().replace("_", "-"): index for index, name in enumerate(pending, 1)}
+    current_index = 1 if pending else 0
+    last_activity = time.monotonic()
+    process = subprocess.Popen(
+        command,
+        cwd=project_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        **gui_subprocess_kwargs(),
+    )
+
+    def read_output() -> None:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            output_queue.put(raw_line.rstrip())
+        output_queue.put(None)
+
+    threading.Thread(target=read_output, daemon=True).start()
+    output_finished = False
+    while process.poll() is None or not output_finished:
+        try:
+            line = output_queue.get(timeout=0.25)
+        except queue.Empty:
+            line = ""
+        if line is None:
+            output_finished = True
+        elif line:
+            print(line, flush=True)
+            lines.append(line)
+            lines[:] = lines[-80:]
+            component = pip_component_from_line(line)
+            if component:
+                current_component = component
+                normalized = component.lower().replace("_", "-")
+                current_index = max(current_index, pending_positions.get(normalized, current_index))
+            if line.lower().startswith("installing collected packages"):
+                if progress:
+                    progress(
+                        "installing_dependencies",
+                        78,
+                        "下载已完成，正在安装运行组件。",
+                        current_component=current_component,
+                        current_index=len(pending),
+                        completed_count=0,
+                        total_count=len(pending),
+                        progress_mode="indeterminate",
+                    )
+                continue
+        if progress and not output_finished:
+            total = len(pending)
+            completed = max(0, current_index - 1) if total else 0
+            percent = 28 + (int(42 * current_index / total) if total else 12)
+            inactive_seconds = int(time.monotonic() - last_activity)
+            message = (
+                f"正在准备 {current_component}（第 {current_index}/{total} 项）"
+                if current_component and total
+                else "正在解析并下载所需运行组件。"
+            )
+            if inactive_seconds >= 45:
+                message = f"仍在处理 {current_component or '运行组件'}，部分组件准备时间较长。"
+            progress(
+                "downloading_dependencies",
+                min(percent, 72),
+                message,
+                current_component=current_component,
+                current_index=current_index,
+                completed_count=completed,
+                total_count=total,
+                inactive_seconds=inactive_seconds,
+                progress_mode="indeterminate",
+            )
+        if output_finished and process.poll() is not None:
+            break
+    return int(process.returncode or 0), lines, current_component
 
 
 def confirm_dependency_install() -> bool:
@@ -231,6 +461,8 @@ def ensure_dependencies(
     approved: bool,
     progress: Callable[..., Any] | None = None,
 ) -> Path:
+    if progress:
+        progress("checking_dependencies", 6, "正在检查 Python 版本和运行组件。", progress_mode="determinate")
     if not runtime_python_supported():
         current = ".".join(str(part) for part in sys.version_info[:3])
         raise RuntimeError(f"平台运行环境必须使用 Python 3.11；当前为 Python {current}。其他 Python 版本可以保留，但不能用于启动平台。")
@@ -243,6 +475,8 @@ def ensure_dependencies(
         print(f"检测到非 Python 3.11 的旧运行环境，已保留到：{quarantined}", flush=True)
     first_install = not python.is_file()
     if first_install:
+        if progress:
+            progress("creating_environment", 10, "正在创建平台专用的 Python 3.11 环境。", progress_mode="indeterminate")
         env_dir.parent.mkdir(parents=True, exist_ok=True)
         venv.EnvBuilder(with_pip=True, clear=False).create(env_dir)
     ensure_runtime_pip(python)
@@ -254,7 +488,21 @@ def ensure_dependencies(
         state = {}
     needs_install = first_install or state.get("fingerprint") != fingerprint or not dependencies_healthy(python)
     if not needs_install:
+        if progress:
+            progress("dependencies_ready", 92, "运行组件检查完成。", completed_count=0, total_count=0, progress_mode="determinate")
         return python
+    pending = pending_dependencies(python, project_root)
+    if progress:
+        count_message = f"检测到 {len(pending)} 个组件需要安装或更新。" if pending else "检测到运行组件需要校验或修复。"
+        progress(
+            "dependencies_found",
+            18,
+            count_message,
+            pending_components=pending,
+            completed_count=0,
+            total_count=len(pending),
+            progress_mode="determinate",
+        )
     if not first_install and not approved and not confirm_dependency_install():
         raise RuntimeError("依赖安装已取消，程序仍保留原版本和用户数据。")
     command = [str(python), "-m", "pip", "install", "--disable-pip-version-check"]
@@ -264,13 +512,52 @@ def ensure_dependencies(
         else:
             command.extend(["-r", str(requirements)])
     print("首次启动需要准备运行环境，正在安装 Python 依赖，请保持此窗口打开……" if first_install else "正在补充或更新 Python 依赖，请保持此窗口打开……", flush=True)
-    process = subprocess.Popen(command, cwd=project_root, **gui_subprocess_kwargs())
-    while process.poll() is None:
+    if progress:
+        progress(
+            "resolving_dependencies",
+            24,
+            "正在解析组件版本和系统兼容性。",
+            pending_components=pending,
+            completed_count=0,
+            total_count=len(pending),
+            progress_mode="indeterminate",
+        )
+    returncode, output_lines, current_component = run_dependency_install(
+        command,
+        project_root=project_root,
+        pending=pending,
+        progress=progress,
+    )
+    if progress:
+        progress(
+            "verifying_dependencies",
+            90,
+            "安装完成，正在验证运行环境。",
+            current_component="",
+            completed_count=len(pending),
+            total_count=len(pending),
+            progress_mode="determinate",
+        )
+    if returncode != 0 or not dependencies_healthy(python):
+        message, hint = dependency_failure_details(output_lines, current_component)
+        normalized_component = current_component.lower().replace("_", "-")
+        pending_positions = {name.lower().replace("_", "-"): index for index, name in enumerate(pending, 1)}
+        current_index = pending_positions.get(normalized_component, 0)
+        install_started = any(line.lower().startswith("installing collected packages") for line in output_lines)
+        failure_percent = 82 if install_started else 28 + (int(42 * current_index / len(pending)) if pending else 12)
         if progress:
-            progress("dependencies", 99, "正在安装新版所需依赖，请保持更新窗口打开。")
-        time.sleep(0.25)
-    if process.returncode != 0 or not dependencies_healthy(python):
-        raise RuntimeError("Python 依赖安装失败，请检查网络后重新双击启动程序。")
+            progress(
+                "failed",
+                failure_percent,
+                message,
+                failed_component=current_component,
+                current_index=current_index,
+                hint=hint,
+                completed_count=0,
+                total_count=len(pending),
+                progress_mode="determinate",
+            )
+        raise DependencyInstallError(message, component=current_component, hint=hint)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps({
         "fingerprint": fingerprint,
@@ -278,6 +565,15 @@ def ensure_dependencies(
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Python 依赖准备完成。", flush=True)
+    if progress:
+        progress(
+            "dependencies_ready",
+            94,
+            "运行组件已准备完成。",
+            completed_count=len(pending),
+            total_count=len(pending),
+            progress_mode="determinate",
+        )
     return python
 
 
@@ -550,6 +846,14 @@ def main() -> int:
         return 0
     plan_path = data_root / "runtime" / "pending-source-update.json"
     update_progress = SourceUpdateProgress(data_root, enabled=plan_path.is_file())
+    startup_path_value = os.environ.get("ANSWER_BOOK_STARTUP_PROGRESS_PATH", "").strip()
+    startup_progress = JsonProgressReporter(
+        Path(startup_path_value) if startup_path_value else None,
+        run_id=os.environ.get("ANSWER_BOOK_STARTUP_RUN_ID", "").strip(),
+    )
+
+    report_progress = combined_progress_reporter(startup_progress, update_progress)
+
     update_failed = False
     browser_opened = False
     try:
@@ -557,12 +861,12 @@ def main() -> int:
     except (OSError, json.JSONDecodeError):
         planned_version = ""
     try:
-        approved = apply_pending_source_update(project_root, data_root, update_progress.update)
+        approved = apply_pending_source_update(project_root, data_root, report_progress)
     except Exception as exc:
         restored = restore_update_backup(project_root, data_root, expected_version=planned_version)
         intact = (project_root / "scripts" / "start_platform.py").is_file() and (project_root / "start_platform_windows.bat").is_file()
         failed_plan = quarantine_failed_update(data_root)
-        update_progress.update(
+        report_progress(
             "failed",
             100,
             "更新未完成，已保留或恢复原版本，可以继续使用。请回到网页重新检查更新。",
@@ -576,20 +880,28 @@ def main() -> int:
         update_failed = True
     while True:
         if approved:
-            update_progress.update("dependencies", 99, "正在核对新版运行依赖。")
+            report_progress("checking_dependencies", 6, "正在核对新版运行组件。", progress_mode="determinate")
         try:
             python = ensure_dependencies(
                 project_root,
                 data_root,
                 approved=approved,
-                progress=update_progress.update if approved else None,
+                progress=report_progress,
             )
         except Exception as exc:
+            if not isinstance(exc, DependencyInstallError):
+                report_progress(
+                    "failed",
+                    95,
+                    str(exc),
+                    hint="请点击“重新尝试”；若仍失败，请把启动日志提供给维护人员。",
+                    progress_mode="determinate",
+                )
             if not update_progress.enabled or update_failed:
                 raise
             restored = restore_update_backup(project_root, data_root, expected_version=planned_version)
             update_failed = True
-            update_progress.update(
+            report_progress(
                 "failed",
                 100,
                 "新版运行环境准备失败，已恢复原版本。平台将使用原版本重新启动。" if restored else "新版运行环境准备失败，请重新双击启动文件并查看错误提示。",
@@ -610,6 +922,14 @@ def main() -> int:
             env=env,
             **gui_subprocess_kwargs(),
         )
+        startup_progress.update(
+            "starting",
+            97,
+            "运行组件已就绪，正在启动平台服务。",
+            completed_count=0,
+            total_count=0,
+            progress_mode="determinate",
+        )
         if update_progress.enabled and not update_failed:
             update_progress.update("starting", 99, "新版程序正在启动，完成后原网页会自动恢复。")
 
@@ -617,6 +937,14 @@ def main() -> int:
             reporter: SourceUpdateProgress = update_progress,
             failed: bool = update_failed,
         ) -> None:
+            startup_progress.update(
+                "completed",
+                100,
+                "平台已启动。",
+                completed_count=0,
+                total_count=0,
+                progress_mode="determinate",
+            )
             if not reporter.enabled:
                 return
             if failed:
@@ -636,18 +964,20 @@ def main() -> int:
         if code != RESTART_EXIT_CODE:
             return code
         update_progress = SourceUpdateProgress(data_root, enabled=plan_path.is_file())
+        report_progress = combined_progress_reporter(startup_progress, update_progress)
+
         update_failed = False
         try:
             planned_version = str(json.loads(plan_path.read_text(encoding="utf-8")).get("version") or "")
         except (OSError, json.JSONDecodeError):
             planned_version = ""
         try:
-            approved = apply_pending_source_update(project_root, data_root, update_progress.update)
+            approved = apply_pending_source_update(project_root, data_root, report_progress)
         except Exception as exc:
             restored = restore_update_backup(project_root, data_root, expected_version=planned_version)
             intact = (project_root / "scripts" / "start_platform.py").is_file() and (project_root / "start_platform_windows.bat").is_file()
             failed_plan = quarantine_failed_update(data_root)
-            update_progress.update(
+            report_progress(
                 "failed",
                 100,
                 "更新未完成，已恢复原版本并重新启动。请稍后回到网页重试。",

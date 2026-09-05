@@ -142,6 +142,7 @@ from .shared_textbook_library import (
 )
 from .storage_cleanup import cleanup_storage, storage_overview
 from .support_reporting import start_support_retry_worker, stop_support_retry_worker, submit_support_report, support_status
+from .task_cleanup import build_cleanup_recommendation, forget_deleted_tasks, mark_task_downloaded
 from .task_contracts import present_error, public_support_id
 from .task_control import delete_task
 from .task_diagnostics import build_task_diagnostics
@@ -447,6 +448,52 @@ def _enrich_task_row(task_row: dict, route_summary: dict | None = None) -> dict:
     except Exception:
         row["health"] = {"health_status": "unknown", "current_operation": "暂无运行记录"}
     return row
+
+
+def _build_task_list_payload() -> dict:
+    """Build the task-center list without opening every task's audit artifacts."""
+
+    exam_tasks = []
+    stored_tasks = list_tasks()
+    routes = model_call_route_summaries([str(task.get("task_id") or "") for task in stored_tasks])
+    for task in stored_tasks:
+        task_id = str(task.get("task_id") or "")
+        row = dict(task)
+        row.update(routes.get(task_id) or {})
+        row["progress_percent"] = (
+            100
+            if str(row.get("status") or "") in {"completed", "completed_with_issues"}
+            else exam_stage_progress_percent(row.get("current_stage"))
+        )
+        row["review_decision_pending"] = (
+            str(row.get("status") or "") in {"paused", "needs_input"}
+            and str(row.get("current_stage") or "") == "review_decision"
+        )
+        row["exam_structure_review_pending"] = (
+            str(row.get("status") or "") in {"paused", "needs_input"}
+            and str(row.get("current_stage") or "") == "exam_structure_review"
+        )
+        row.update(_task_duration_summary(row))
+        exam_tasks.append(build_exam_run(row))
+    practice_tasks = build_practice_runs(
+        list_practice_jobs(limit=100, include_history_completed=True),
+        list_practice_records(limit=100),
+    )
+    return {
+        "tasks": exam_tasks + practice_tasks + list_word_format_tasks(),
+        "schema_version": 2,
+    }
+
+
+def _delete_managed_task(task_id: str) -> dict:
+    if task_id.startswith("word_format_"):
+        return delete_word_format_task(task_id)
+    if task_id.startswith("generation_"):
+        return delete_practice_job(task_id)
+    if task_id.startswith("practice_"):
+        result = delete_practice_record(task_id)
+        return {**result, **delete_jobs_for_history(task_id), "task_id": task_id}
+    return delete_task(task_id)
 
 
 def _practice_task_row(record: dict) -> dict:
@@ -758,7 +805,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         message = fmt % args
-        print(f"[server] {self.address_string()} {message}")
+        try:
+            print(f"[server] {self.address_string()} {message}")
+        except (OSError, ValueError):
+            pass
         append_runtime_log("server", f"{self.address_string()} {message}")
 
     def send_json(self, value, status: int = 200) -> None:
@@ -998,6 +1048,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, status=404)
                 return
             data = target.read_bytes()
+            mark_task_downloaded(parts[3])
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
@@ -1064,6 +1115,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if (query.get("check") or [""])[0].lower() in {"1", "true", "yes"}:
                 self.send_json({"ok": True, "filename": filename, "size_bytes": size_bytes})
                 return
+            try:
+                export_job = load_practice_export_job(parts[3])
+            except FileNotFoundError:
+                export_job = {}
+            mark_task_downloaded(parts[3], str(export_job.get("history_id") or ""))
             data = target.read_bytes()
             self.send_response(200)
             self.send_header(
@@ -1217,29 +1273,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_json(report)
             return
         if parsed.path == "/api/tasks":
-            def build_task_list() -> dict:
-                exam_tasks = []
-                stored_tasks = list_tasks()
-                routes = model_call_route_summaries([str(task.get("task_id") or "") for task in stored_tasks])
-                for task in stored_tasks:
-                    task_id = str(task.get("task_id") or "")
-                    enriched = _enrich_task_row(task, routes.get(task_id))
-                    exam_tasks.append(
-                        build_exam_run(
-                            enriched,
-                            _task_quality_summary(str(task.get("task_id") or "")),
-                        )
-                    )
-                practice_tasks = build_practice_runs(
-                    list_practice_jobs(limit=100, include_history_completed=True),
-                    list_practice_records(limit=100),
-                )
-                return {
-                    "tasks": exam_tasks + practice_tasks + list_word_format_tasks(),
-                    "schema_version": 1,
-                }
-
-            self.send_json(READ_SNAPSHOTS.get("task_list", build_task_list))
+            self.send_json(READ_SNAPSHOTS.get("task_list", _build_task_list_payload))
+            return
+        if parsed.path == "/api/tasks/cleanup-recommendation":
+            self.send_json(build_cleanup_recommendation(_build_task_list_payload()["tasks"]))
             return
         if parsed.path == "/api/tasks/live-details":
             # One coalesced read for the task manager poller: live exam tasks
@@ -1350,6 +1387,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
             raw_path = query.get("path", [""])[0]
             target = _safe_task_file(task_id, raw_path)
             data = target.read_bytes()
+            mark_task_downloaded(task_id)
             mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
             self.send_response(200)
             self.send_header("Content-Type", mime)
@@ -1717,6 +1755,37 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if len(parts := [unquote(x) for x in parsed.path.strip("/").split("/") if x]) == 5 and parts[:3] == ["api", "practice", "history"] and parts[4] == "undo":
                 self.send_json(undo_last_practice_revision(parts[3]))
                 return
+            if parsed.path == "/api/tasks/cleanup":
+                body = self.read_json()
+                mode = str(body.get("mode") or "")
+                if mode not in {"recommended", "overflow_all"}:
+                    raise ValueError("mode must be recommended or overflow_all")
+                recommendation = build_cleanup_recommendation(_build_task_list_payload()["tasks"])
+                candidates = recommendation["recommended" if mode == "recommended" else "overflow_all"]
+                results = []
+                for item in candidates:
+                    task_id = str(item.get("task_id") or "")
+                    try:
+                        result = _delete_managed_task(task_id)
+                        results.append({"task_id": task_id, **result})
+                    except Exception as exc:
+                        results.append({"task_id": task_id, "ok": False, "message": str(exc) or exc.__class__.__name__})
+                deleted_ids = [str(item.get("task_id") or "") for item in results if item.get("ok")]
+                forget_deleted_tasks(deleted_ids)
+                failed = len(results) - len(deleted_ids)
+                append_runtime_log(
+                    "task_control",
+                    f"历史任务清理：成功 {len(deleted_ids)}，未删除 {failed}",
+                    payload={"mode": mode, "task_ids": deleted_ids},
+                )
+                self.send_json({
+                    "ok": failed == 0,
+                    "mode": mode,
+                    "deleted": len(deleted_ids),
+                    "failed": failed,
+                    "results": results,
+                })
+                return
             if parsed.path == "/api/tasks/bulk-delete":
                 body = self.read_json()
                 task_ids = body.get("task_ids") if isinstance(body.get("task_ids"), list) else []
@@ -1724,19 +1793,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 results = []
                 for task_id in unique_ids:
                     try:
-                        if task_id.startswith("word_format_"):
-                            result = delete_word_format_task(task_id)
-                        elif task_id.startswith("generation_"):
-                            result = delete_practice_job(task_id)
-                        elif task_id.startswith("practice_"):
-                            result = delete_practice_record(task_id)
-                            result = {**result, **delete_jobs_for_history(task_id), "task_id": task_id}
-                        else:
-                            result = delete_task(task_id)
+                        result = _delete_managed_task(task_id)
                         results.append({"task_id": task_id, **result})
                     except Exception as exc:
                         results.append({"task_id": task_id, "ok": False, "message": str(exc) or exc.__class__.__name__})
                 deleted = sum(1 for item in results if item.get("ok"))
+                forget_deleted_tasks(item.get("task_id") for item in results if item.get("ok"))
                 failed = len(results) - deleted
                 append_runtime_log("task_control", f"批量删除任务：成功 {deleted}，未删除 {failed}", payload={"task_ids": unique_ids})
                 self.send_json({"ok": failed == 0, "deleted": deleted, "failed": failed, "results": results})
@@ -2156,6 +2218,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "delete":
                 task_id = parts[2]
                 result = delete_task(task_id)
+                if result.get("ok"):
+                    forget_deleted_tasks([task_id])
                 append_runtime_log("task_control", f"任务 {task_id} 删除操作", "info" if result.get("ok") else "warning", {"task_id": task_id, "result": result})
                 self.send_json(result, status=200 if result.get("ok") else 409)
                 return

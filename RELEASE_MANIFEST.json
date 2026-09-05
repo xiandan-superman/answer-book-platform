@@ -1,19 +1,19 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.46",
+  "version": "0.9.47",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.46",
+  "source_revision": "release-v0.9.47",
   "build_kind": "stable-source-release",
-  "created_at": "2026-09-05T14:13:19+08:00",
+  "created_at": "2026-09-05T20:34:08+08:00",
   "validation": {
-    "pytest": "Locked Python 3.11 full gate passed: 2027 tests, 16 configured deselections, zero skips; 71 percent branch coverage.",
-    "platform_quality_gate": "Local compilation, version consistency, full pytest, formula conversion, third-party notices, project completeness, Ruff, Mypy and coverage passed. Chromium critical-flow acceptance passed 13 tests. Source release is ready for the protected workflow.",
+    "pytest": "Locked Python 3.11 full gate passed: 2045 tests, 16 configured deselections, zero skips; 71 percent branch coverage.",
+    "platform_quality_gate": "Local compilation, version consistency, coverage-backed full pytest, formula conversion, third-party notices, project completeness, Ruff and Mypy passed. Source package reverse verification and isolated startup are required before push.",
     "version_consistency": "passed",
-    "saved_real_task_replay": "A Windows 33-question task produced a downloadable review-candidate DOCX using opt-in Pandoc C: 388 native formulas, 4 images, zero raw formula markers, unchanged answers and images, zero additional model-call records. Six existing content warnings remain; formal acceptance is false. Native Word COM opening was unavailable for both a simple control and the candidate.",
-    "cross_subject_regressions": "C-only complete exam replay: 388 formulas, 4 images, no document audit issues, source unchanged. Both practice modes produced questions, solutions and combined DOCX with no raw math markers. Fresh macOS arm64 runtime installation verified. Chromium critical-flow acceptance passed 13 tests; no new Windows or native Word visual verification.",
-    "paid_model_regression": "No paid model call was made for the Pandoc C recovery or release gate. Independent legacy image reviewer removed; main-model image adoption loop and deterministic asset checks remain.",
-    "cost_model_routing": "Default task token hard cap disabled (0) by explicit user decision; cumulative usage and explicit positive budgets remain. Dynamic call limits, wall-clock limits, transport retries, content repair limits and tool-loop limits unchanged.",
+    "saved_real_task_replay": "The affected Windows task evidence was diagnosed without rerunning paid stages. MinerU inline markup and per-item score inference now have deterministic regression coverage.",
+    "cross_subject_regressions": "Request-scoped structured output, exam analysis, both practice modes, history recovery, task cleanup, Word/PDF delivery and source-launch dependency progress are covered by local automated regressions. No new native Windows or Microsoft Word visual run was performed for this patch.",
+    "paid_model_regression": "No paid model call is required by the release gate. GPT-6 Astra capability evidence comes from the separately recorded live probe; release verification does not repeat it.",
+    "cost_model_routing": "Structured correction remains bounded to one same-provider, same-model, same-protocol retry and is charged to existing budgets. Chat-compatible schema prompts add input tokens; no hidden route switch is introduced.",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

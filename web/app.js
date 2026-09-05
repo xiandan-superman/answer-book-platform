@@ -2573,7 +2573,7 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
     if (!modelSupportsMainToolLoop(model, mainConfig)) {
       return {
         provider: providerName,
-        message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 未通过“原生工具调用 + 图片回看”逐模型验证。请改选已验证模型，或切换为“传统程序绘图”；当前材料已保留。`,
+        message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 未通过“原生工具调用 + 图片回看”逐模型验证。请改选已验证模型；当前材料已保留。`,
       };
     }
     const imageProvider = String(request.image_provider || "").trim();
@@ -2581,7 +2581,7 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
     if (!imageProvider || !imageModel || providerConfigs?.[imageProvider]?.api_key_set !== true) {
       return {
         provider: imageProvider,
-        message: `无法开始${workflowLabel}：已选择“主模型自主生图”，但生图模型尚未完整配置。请配置生图服务商、模型和 API Key，或切换为“传统程序绘图”；当前材料已保留。`,
+        message: `无法开始${workflowLabel}：默认生图流程尚未完整配置。请配置生图服务商、模型和 API Key；当前材料已保留。`,
       };
     }
   }
@@ -6718,7 +6718,7 @@ function practiceRegenerationPayload(index, instruction) {
     source_files: latestPracticeRequest?.source_files || practiceSourceFiles || [],
     image_provider: latestPracticeRequest?.image_provider || "",
     image_model: latestPracticeRequest?.image_model || "",
-    image_orchestration: latestPracticeRequest?.image_orchestration || "legacy_figure_pipeline",
+    image_orchestration: "main_model_tool_loop",
     ...modelRequest,
     thinking: selectedThinkingMode()
   };
@@ -10172,28 +10172,16 @@ const IMAGE_ORCHESTRATION_IDS = {
 };
 
 function imageOrchestrationMode(scope = "exam") {
-  const ids = IMAGE_ORCHESTRATION_IDS[scope] || IMAGE_ORCHESTRATION_IDS.exam;
-  return $(ids[0])?.checked === true ? "main_model_tool_loop" : "legacy_figure_pipeline";
+  return "main_model_tool_loop";
 }
 
 function syncImageOrchestrationUi(scope = "exam", persist = false) {
   const ids = IMAGE_ORCHESTRATION_IDS[scope] || IMAGE_ORCHESTRATION_IDS.exam;
   const input = $(ids[0]);
   if (!input) return;
-  const storageKey = `answerBook.imageOrchestration.${scope}`;
-  if (!persist) {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (["main_model_tool_loop", "legacy_figure_pipeline"].includes(saved)) {
-        input.checked = saved === "main_model_tool_loop";
-      }
-    } catch (e) {}
-  }
-  const mode = imageOrchestrationMode(scope);
-  setText(ids[1], mode === "main_model_tool_loop" ? "主模型自主生图" : "传统程序绘图");
-  if (persist) {
-    try { localStorage.setItem(storageKey, mode); } catch (e) {}
-  }
+  input.checked = true;
+  setText(ids[1], "默认生图流程");
+  try { localStorage.removeItem(`answerBook.imageOrchestration.${scope}`); } catch (e) {}
 }
 
 function selectedThinkingMode() {
@@ -10273,7 +10261,7 @@ async function createTask() {
     }
     const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel());
     if (imageOrchestrationMode("exam") === "main_model_tool_loop" && !imageFallbackConfigured) {
-      throw new Error("已选择“主模型自主生图”，请先配置并验证生图模型；也可一键切换为“传统程序绘图”。");
+      throw new Error("请先配置并验证默认生图流程所需的生图模型。");
     }
     const answerProviderName = $("answerProviderSelect")?.value || $("providerSelect").value;
     const answerModelName = selectedTextRoleModel("answer") || requireSelectedModel();
@@ -10283,7 +10271,7 @@ async function createTask() {
     ) {
       throw new Error(
         "已选择“主模型自主生图”，但当前答案模型未通过原生工具调用与图片回看逐模型验证。"
-        + "请改选已验证模型，或切换为“传统程序绘图”。"
+        + "请改选已通过该能力验证的模型。"
       );
     }
     const data = await api("/api/tasks", {
@@ -12578,7 +12566,7 @@ function requirementEditorRowHtml(req, types, parentType, parentNumber, reqIndex
       </label>
       ${scoreFieldHtml(req, "要求分值", "data-requirement-score")}
       <button class="exam-structure-icon-btn" type="button" data-requirement-remove title="删除二级要求">
-        <i class="fa-solid fa-trash"></i>
+        删除
       </button>
     </div>
   `;
@@ -12628,7 +12616,7 @@ function subquestionEditorRowHtml(sub, types, parentType, subIndex) {
         </label>
         ${scoreFieldHtml(sub, "小问分值", "data-subquestion-score")}
         <button class="exam-structure-icon-btn" type="button" data-subquestion-remove title="删除小问">
-          <i class="fa-solid fa-trash"></i>
+          删除
         </button>
       </div>
       ${renderRequirementRows(sub, types, selected, subNumber)}
@@ -12691,8 +12679,6 @@ function showExamStructureReviewModal(request) {
     ? items
         .map((item, index) => {
           const selected = item.question_type || item.inferred_question_type || "简答题";
-          const drawingMode = normalizeDrawingGenerationMode(item.drawing_generation_mode || "code");
-          const drawingModeHidden = itemHasDrawingType(item, selected) ? "" : " hidden";
           const subCount = Number(item.subquestion_count || 0);
           return `
             <article class="exam-structure-review-row" data-question-id="${escapeHtml(item.question_id || "")}">
@@ -12721,13 +12707,6 @@ function showExamStructureReviewModal(request) {
                 </select>
                 ${drawingRiskWarningHtml(item.stem || item.question_text || "", selected)}
                 ${scoreFieldHtml(item, "整题分值", "data-question-score")}
-                <div class="exam-structure-drawing-mode${drawingModeHidden}" data-drawing-mode-wrap>
-                  <span>作图流程</span>
-                  <select data-drawing-generation-mode>
-                    ${drawingGenerationModeOptions(drawingMode)}
-                  </select>
-                  <small>默认代码绘图；失败重试后再生图兜底。</small>
-                </div>
               </label>
             </article>
           `;
@@ -12833,7 +12812,6 @@ function showExamStructureReviewModal(request) {
         || event.target.matches("[data-subquestion-stem]")
         || event.target.matches("[data-requirement-type]")
         || event.target.matches("[data-requirement-stem]")
-        || event.target.matches("[data-drawing-generation-mode]")
       ) {
         updateExamStructureDrawingRisks(body);
         updateExamStructureCapabilityRisk(body, items);
@@ -12865,7 +12843,6 @@ function showExamStructureReviewModal(request) {
           question_id: row.dataset.questionId,
           question_type: parentSelect?.value || "简答题",
           confirmed_score: row.querySelector("[data-question-score]")?.value.trim() || "",
-          drawing_generation_mode: normalizeDrawingGenerationMode(row.querySelector("[data-drawing-generation-mode]")?.value || "code"),
           stem: row.querySelector("[data-question-stem]")?.value.trim() || "",
           subquestions: Array.from(row.querySelectorAll("[data-subquestion-row]")).map((subRow, index) => ({
             number: subRow.querySelector("[data-subquestion-number]")?.value.trim() || String(index + 1),
@@ -13067,12 +13044,18 @@ async function loadTasks(options = {}) {
   try {
     const data = await api("/api/tasks");
     const loadedTasks = data.tasks || [];
-    if (includeLiveDetails) await hydrateLiveTaskDetails(loadedTasks);
     if (requestVersion !== taskLoadVersion) return;
     latestTasks = loadedTasks;
     updateReviewNotificationBadges(latestTasks);
     renderTasks(latestTasks);
     renderTaskManager(latestTasks);
+    if (includeLiveDetails) {
+      await hydrateLiveTaskDetails(latestTasks);
+      if (requestVersion !== taskLoadVersion) return;
+      updateReviewNotificationBadges(latestTasks);
+      renderTasks(latestTasks);
+      renderTaskManager(latestTasks);
+    }
     const activeTask = latestTasks.find((task) => task.task_id === activeTaskId);
     if (activeTask) updateTaskSummary(activeTask);
     else if (!activeTaskId && latestTasks.length) {
@@ -13100,6 +13083,67 @@ async function loadTasks(options = {}) {
     }
   }
 }
+
+async function runStartupTaskCleanup(mode) {
+  const modal = $("taskCleanupModal");
+  const recommended = $("taskCleanupRecommended");
+  const allOverflow = $("taskCleanupAllOverflow");
+  if (!modal || !recommended || !allOverflow) return;
+  recommended.disabled = true;
+  allOverflow.disabled = true;
+  try {
+    const result = await api("/api/tasks/cleanup", {
+      method: "POST",
+      body: JSON.stringify({ mode })
+    });
+    modal.classList.add("hidden");
+    await loadTasks({ silent: true, includeLiveDetails: true });
+    await platformAlert(
+      result.failed
+        ? `已删除 ${result.deleted || 0} 个任务，${result.failed} 个因状态变化未删除。`
+        : `已真正删除 ${result.deleted || 0} 个历史任务及其相关文件。`,
+      { title: result.failed ? "清理部分完成" : "清理完成", tone: result.failed ? "warning" : "success" }
+    );
+  } catch (err) {
+    await platformAlert(String(err).replace(/^Error:\s*/, ""), { title: "清理失败", tone: "danger" });
+  } finally {
+    recommended.disabled = false;
+    allOverflow.disabled = false;
+  }
+}
+
+async function checkStartupTaskCleanup() {
+  const modal = $("taskCleanupModal");
+  if (!modal) return;
+  const data = await api("/api/tasks/cleanup-recommendation");
+  const sessionKey = `answerBook.taskCleanup.${data.launch_id || "current"}`;
+  if (sessionStorage.getItem(sessionKey)) return;
+  sessionStorage.setItem(sessionKey, "checked");
+  if (!data.show_prompt) return;
+  const recommended = Array.isArray(data.recommended) ? data.recommended : [];
+  const reasonCounts = new Map();
+  recommended.forEach((item) => (item.reasons || []).forEach((reason) => {
+    reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+  }));
+  setText(
+    "taskCleanupSummary",
+    `当前共 ${data.task_count || 0} 个任务。平台保留最新 40 个，在更旧的 ${data.overflow_count || 0} 个任务中，推荐清理 ${data.recommended_count || 0} 个。`
+  );
+  const reasons = $("taskCleanupReasons");
+  if (reasons) {
+    reasons.innerHTML = Array.from(reasonCounts.entries()).map(([reason, count]) => `
+      <article><strong>${count}</strong><span>${escapeHtml(reason)}</span></article>
+    `).join("") || `<article><strong>${data.safe_overflow_count || 0}</strong><span>可安全整理的历史任务</span></article>`;
+  }
+  $("taskCleanupRecommended").textContent = `按照推荐清理（${data.recommended_count || 0} 个）`;
+  $("taskCleanupAllOverflow").textContent = `清理排序 40+ 的全部任务（${data.safe_overflow_count || 0} 个）`;
+  modal.classList.remove("hidden");
+  $("taskCleanupRecommended").focus();
+}
+
+$("taskCleanupClose")?.addEventListener("click", () => $("taskCleanupModal")?.classList.add("hidden"));
+$("taskCleanupRecommended")?.addEventListener("click", () => runStartupTaskCleanup("recommended"));
+$("taskCleanupAllOverflow")?.addEventListener("click", () => runStartupTaskCleanup("overflow_all"));
 
 async function runTask(noModel = false, reuseFragments = false) {
   $("runResult").textContent = "任务已提交...";
@@ -13277,7 +13321,7 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     detail.text = task.status === "paused" ? "请确认题目边界、题型和作图题标记，确认后才会继续解析。" : "正在检查题目边界、题型和附属图片是否对应。";
   } else if (current === "figure_schema_planning") {
     detail.title = "正在规划作图要求";
-    detail.text = "确定作图题是否有可复用的专业绘图规则，以及后续采用代码绘图或模型出图。";
+    detail.text = "正在整理作图题的图件要求，交由默认生图流程后续处理。";
   } else if (current === "textbook_index") {
     detail.title = "正在加载教材索引";
     detail.text = "复用已建立的教材片段、页码映射和图片资源索引。";
@@ -13308,7 +13352,7 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     } else if (healthState === "warning") {
       detail.title = "等待时间较长";
       detail.text = health.warning_reason || "后台仍在运行，但较长时间没有新的业务进展。";
-    } else if (healthState === "error") {
+    } else if (healthState === "error" && ["failed", "cancelled"].includes(String(task.status || ""))) {
       detail.title = "任务已中断";
       detail.text = health.warning_reason || task.error || "任务已停止，请查看详情后重新运行。";
     }
@@ -13455,9 +13499,8 @@ function startTaskPolling(taskId) {
       }
     } catch (err) {
       $("runResult").textContent = String(err);
-      setVisual("runVisualResult", "进度读取失败", String(err).replace(/^Error:\s*/, ""), "error");
-      clearInterval(taskPollTimer);
-      taskPollTimer = null;
+      setVisual("runVisualResult", "进度暂时未刷新", "任务仍在后台运行，页面将自动重试。", "warn");
+      console.warn("Task progress refresh failed; polling will continue", err);
     }
   }, 2500);
 }
@@ -15418,6 +15461,7 @@ function initSiteEnhancements() {
   // Only minimal job pointers live in browser storage; the server owns state.
   resumeRememberedPracticeWordExports().catch(() => {});
   window.setTimeout(() => checkPlatformUpdateSilently(), 1500);
+  window.setTimeout(() => checkStartupTaskCleanup().catch((err) => console.warn("Task cleanup scan failed", err)), 1800);
   // 首屏立即显示
   requestAnimationFrame(() => {
     document.querySelectorAll(".page.active .reveal,.page.active .reveal-scale").forEach((el) => {

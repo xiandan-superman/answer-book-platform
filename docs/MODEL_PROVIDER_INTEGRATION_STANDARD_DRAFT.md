@@ -246,12 +246,20 @@ Word B 版直接核验 `https://github.com/iOfficeAI/OfficeCLI.git` 默认分支
 - 所有服务商原始错误只写入脱敏诊断信息；用户只看到可理解的原因、影响范围和下一步操作。
 - 自动降级、模型切换、输入转换、截断或分批必须写入任务诊断记录。
 
-### 7.1 结构化纠错与 LiteLLM 影子边界
+### 7.1 请求级结构化输出与 LiteLLM 影子边界
 
-- 正式结构输出以 Pydantic 模型为真源；Instructor 只负责 schema 注入、把确定性校验错误回给同一模型，以及最多一次有预算的纠错，不负责判断答案语义正确。
-- Instructor 的底层请求必须继续调用平台 `LLMClientProtocol`，不得自行创建绕过调用次数、Token、超时、取消、并发和用量账本的第二套客户端。
+- 正式结构输出以 Pydantic 模型为真源；每次调用从该模型生成独立 JSON Schema，并随本次请求传给协议适配器。Responses 与 Anthropic Messages 在通道支持时发送原生 `json_schema`，Chat 兼容协议将同一 schema 放入模型可见 system 消息。任何路径最终都必须经过本地 Pydantic 校验。
+- 结构校验不得依赖进程级可变 schema/工具注册表、惰性全局初始化或跨任务共享的临时状态；并发任务只能持有各自请求内的 schema、纠错历史和结果。确定性校验错误最多一次回给同一服务商、同一模型、同一协议纠正，不允许借结构修复换模型或换路由。
+- 原生协议的 schema 仅作为生成约束，不作为最终可信边界：代理网关可能只支持 JSON object、可能拒绝部分 JSON Schema 关键字，或忽略 `strict`。因此协议明确报格式参数不支持时可按既有规则退回同请求的 prompt schema，最终仍由本地 Pydantic 判定；结构正确不代表答案语义正确。
+- 所有底层请求继续调用平台 `LLMClientProtocol`，不得自行创建绕过调用次数、Token、超时、取消、并发和用量账本的第二套客户端。一次可恢复校验失败不得向任务进度上报最终失败；只有纠错预算耗尽才上报失败。
 - LiteLLM 当前只用于灵算影子对照，不参与主路由、重试、降级或结果选择。默认 10% 样本、单 worker、最多 4 个待处理、零重试；队列满、图片内嵌或影子失败时直接跳过/记录，正式响应不受影响。
 - 影子调用仍是实际付费调用并计入平台账本；影子日志只能保存服务商/模型、耗时、用量、状态、JSON 可解析性和内容摘要，不保存提示词、原始响应或密钥。
+
+#### 2026-09-05 请求级 schema 并发核验
+
+核对时间：2026-09-05 20:08 CST。OpenAI Codex 官方远端 `https://github.com/openai/codex.git`，默认分支 `main`，完整 SHA `ddf04ad26789d040f9ef6a96736f76602e35a6cc`；阅读 `codex-rs/codex-api/src/common.rs` 与 `codex-rs/core/tests/suite/json_result.rs`，确认最终输出 schema 是单次 Responses 请求的 `text.format` 内容。DeepSeek Harness 官方远端 `https://github.com/deepseek-ai/deepseek-harness.git`，默认分支 `master`，完整 SHA `d347e703908d0406b7a7ef80e3a0e594d86b2215`；阅读 `packages/subagent/subagent-in-process-driver/src/structured.ts`、`src/index.ts` 与 `tests/structured.spec.ts`，确认结构工具在子任务发布前按子任务作用域同步附加，且并发结构任务各自保持自己的 schema。
+
+本平台采用相同的作用域原则，但不复制 Harness 的完整 agent/tool runtime：`structured_completion` 创建请求局部 schema 和纠错消息，Responses/Messages/Chat 三类适配器只消费本次调用显式参数，本地 Pydantic 是最终边界。这样消除 Instructor 1.16.0 v2 惰性全局注册表在多 worker 冷启动时的竞态。代价是 Chat 兼容通道会重复携带 schema、增加少量输入 Token；原生 schema 子集在不同代理网关上不完全一致；一次纠错仍增加调用成本。上述代价必须由任务预算、格式不支持回退、一次纠错上限和协议回归共同约束。
 
 ## 8. 配置与代码要求
 
@@ -277,6 +285,12 @@ Word B 版直接核验 `https://github.com/iOfficeAI/OfficeCLI.git` 默认分支
 - [ ] 降级路径能力等价且可追踪
 - [ ] 测试密钥、请求内容和用户材料没有进入仓库
 - [ ] 能力表、代码、测试、设置页说明同步更新
+
+### 2026-09-05 灵算 GPT-6 Astra 准入
+
+核对时间：2026-09-05（Asia/Shanghai）。官方远端 HEAD 保持为 OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、完整 SHA `ddf04ad26789d040f9ef6a96736f76602e35a6cc`，阅读 `codex-rs/core/tests/suite/json_result.rs` 的 Responses `json_schema` 最终输出合同；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、完整 SHA `d347e703908d0406b7a7ef80e3a0e594d86b2215`，阅读 `packages/subagent/subagent-in-process-driver/src/structured.ts` 及对应结构化输出测试。上游共同原则是让 schema 随请求或执行作用域隔离；本项目已改为请求级 schema、协议适配器约束、本地 Pydantic 校验和一次有界同路由纠错。
+
+灵算 `gpt-6-astra` 已在该代理通道真实通过普通 JSON、`AnswerDraftOutput`、64×64 纯色 PNG 图片理解和 Responses 原生函数调用探测，因此登记为文本+图片模型并开放现有主模型工具循环；默认模型仍为 `gpt-5.6-sol`。本次证据只支持显式选择下的 limited 任务资格，不代表完整真题、按题出题、知识点出题、长输出、限流和错误恢复质量已经验证，也不用于自动替换其他模型。
 
 ### 2026-09-05 取消独立生成图视觉审查
 

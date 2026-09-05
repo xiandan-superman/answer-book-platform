@@ -23,7 +23,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 1. 应用待处理的已校验源码更新。
 2. 在用户数据目录创建 Python 3.11 专用的 `runtime/python-env-py311`，并使用独立的 `runtime/dependencies-py311.json` 记录依赖指纹；旧版 `runtime/python-env` 与 `runtime/dependencies.json` 保留用于回滚，不在原地改造成新解释器。
 3. 运行时固定为 Python 3.11.x，使用 `constraints-py311.txt`；macOS 额外叠加 `constraints-source-macos-py311.txt`，Windows 额外叠加 `constraints-source-windows-py311.txt`，并比较运行依赖、Windows 补充依赖和全部所选约束的联合指纹。Python 3.10 及以下或 3.12 及以上不得用于平台运行环境；检测到错误版本创建的同名环境时先保留为带时间戳的隔离备份，再重建正确环境。
-4. 首次运行自动安装依赖；已安装环境异常或指纹变化时请求用户确认。
+4. 首次运行自动安装依赖；已安装环境异常或指纹变化时请求用户确认。原生准备窗口与桌面启动页统一展示待处理组件数量、当前组件、阶段进度和最近活动；无法可靠测量的解析、构建或安装步骤使用不确定进度，不伪造精确下载比例。失败时展示脱敏后的失败组件、原因分类、处理建议、重试入口和日志位置，原始安装输出只保存在本地日志中。
 5. 启动 `scripts/start_platform.py`，等待 `/api/version` 健康检查通过。
 6. 持续等待 `/api/version` 就绪后只打开一次默认浏览器，不设置会导致慢启动漏开网页的固定 30 秒截止时间；默认浏览器调用失败时使用系统打开命令兜底。如果服务已运行，则只打开页面，不启动第二个工作器。
 7. 服务以退出码 75 请求更新重启时，监督器应用更新、复核依赖并重新启动。
@@ -70,7 +70,7 @@ macOS 的 `start_platform.command` 和 Windows 的 `启动平台.bat` / `start_p
 1. 完成源码修改和独立数据目录的本地预览。
 2. 用户确认后提交并推送 Git。
 3. 累积到正式版本时同步 `APP_VERSION`、`VERSION`、`RELEASE_MANIFEST.json` 和对应的 `CHANGELOG.md` 条目，只推送 `main`，不人工创建标签。
-4. `.github/workflows/quality.yml` 完成 Python 3.11、Chromium，以及 macOS/Windows 源码运行依赖锁解析门禁；失败只停留在预检阶段，不产生正式版本标签。
+4. `.github/workflows/quality.yml` 对已有版本标签的普通 push 运行日常 Python 3.11 门禁；对尚无标签的 `APP_VERSION` 运行完整 Python 3.11 门禁，并行执行 Chromium 以及 macOS/Windows 源码运行依赖锁解析，最终汇总确认发布矩阵完整。完整模式只由 Coverage 执行一次全量 pytest，避免重复测试；失败只停留在预检阶段，不产生正式版本标签。
 5. 门禁全部成功后，`.github/workflows/source-release.yml` 仅为尚未公开的新版本运行。它使用 `scripts/package_release.py` 从 Git 索引白名单生成源码 ZIP，再由 `scripts/verify_release_package.py` 反向检查启动文件、Logo、版本清单和运行数据排除规则；禁止直接用未筛选的 `git archive` 作为普通用户附件。打包反向验证和启动冒烟全部通过后，工作流才自动创建完全匹配的 `v<APP_VERSION>` 标签。
 6. 生成包含版本、附件名、大小、SHA256 和依赖指纹的 `update-manifest.json`。
 7. 发布到 `xiandan-superman/answer-book-platform-releases`，更新仅供 0.9.19+ 安全替换器使用的 `update-stable-v2.json`。上传和稳定源更新使用有限重试；结束时重新下载公开附件，核对大小、SHA256 和稳定源。若稳定源更新中断，后续运行从已发布清单幂等恢复。旧版固定读取的 `update-stable.json` 保持禁用，防止旧替换逻辑再次触发。

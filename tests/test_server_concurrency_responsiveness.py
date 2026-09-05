@@ -52,7 +52,7 @@ class ServerConcurrencyResponsivenessTests(unittest.TestCase):
                 current = call_count
             if current == 1:
                 first_entered.set()
-                if not release_first.wait(3.0):
+                if not release_first.wait(8.0):
                     raise TimeoutError("test did not release the first model call")
             return _Response()
 
@@ -63,7 +63,7 @@ class ServerConcurrencyResponsivenessTests(unittest.TestCase):
         serving.start()
 
         def provider_test_request() -> tuple[int, dict]:
-            connection = http.client.HTTPConnection(host, port, timeout=4)
+            connection = http.client.HTTPConnection(host, port, timeout=8)
             body = json.dumps({"provider": provider.name, "model": provider.default_model})
             connection.request("POST", "/api/provider-test", body=body, headers={"Content-Type": "application/json"})
             response = connection.getresponse()
@@ -102,8 +102,8 @@ class ServerConcurrencyResponsivenessTests(unittest.TestCase):
                 self.assertEqual(1, status_payload["models"]["waiting_count"])
 
                 release_first.set()
-                first.join(2.0)
-                second.join(2.0)
+                first.join(5.0)
+                second.join(5.0)
                 self.assertEqual(200, first_result[0][0])
                 self.assertEqual(200, second_result[0][0])
         finally:

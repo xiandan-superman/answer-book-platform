@@ -304,6 +304,111 @@ class LLMProtocolAdapterTests(unittest.TestCase):
         self.assertTrue(result.raw["_request"]["stream"])
         self.assertEqual("provider_default", result.raw["_request"]["reasoning_effort"])
 
+    def test_responses_protocol_carries_request_scoped_json_schema(self):
+        from app.llm_client import ResponsesAPIClient
+
+        client = ResponsesAPIClient(self._provider(api_protocol="responses", responses_streaming=False))
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            return _FakeResponse(
+                {
+                    "id": "resp_schema",
+                    "status": "completed",
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"ok":true}'}]}],
+                }
+            )
+
+        client._urlopen = fake_urlopen
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+        }
+        result = client.chat_json(
+            [{"role": "user", "content": "return JSON"}],
+            output_schema=schema,
+            output_schema_name="Result Contract",
+        )
+
+        self.assertEqual('{"ok":true}', result.content)
+        self.assertEqual(
+            {
+                "type": "json_schema",
+                "name": "Result_Contract",
+                "schema": schema,
+                "strict": False,
+            },
+            requests[0]["text"]["format"],
+        )
+        self.assertEqual("json_schema", result.raw["_request"]["response_format"])
+
+    def test_anthropic_protocol_carries_request_scoped_json_schema(self):
+        from app.llm_client import AnthropicMessagesClient
+
+        client = AnthropicMessagesClient(self._provider(api_protocol="anthropic_messages"))
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            return _FakeResponse(
+                {
+                    "id": "msg_schema",
+                    "content": [{"type": "text", "text": '{"ok":true}'}],
+                }
+            )
+
+        client._urlopen = fake_urlopen
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+        }
+        result = client.chat_json(
+            [{"role": "user", "content": "return JSON"}],
+            output_schema=schema,
+            output_schema_name="Result Contract",
+        )
+
+        self.assertEqual('{"ok":true}', result.content)
+        self.assertEqual(
+            {"type": "json_schema", "schema": schema},
+            requests[0]["output_config"]["format"],
+        )
+        self.assertEqual("json_schema", result.raw["_request"]["response_format"])
+        self.assertEqual("Result_Contract", result.raw["_request"]["output_schema_name"])
+
+    def test_anthropic_schema_rejection_falls_back_to_prompt_only_on_same_route(self):
+        from app.llm_client import AnthropicMessagesClient
+
+        client = AnthropicMessagesClient(self._provider(api_protocol="anthropic_messages"))
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            if len(requests) == 1:
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    400,
+                    "Bad Request",
+                    {},
+                    io.BytesIO(b'{"error":"output_config.format is not supported"}'),
+                )
+            return _FakeResponse({"content": [{"type": "text", "text": '{"ok":true}'}]})
+
+        client._urlopen = fake_urlopen
+        result = client.chat_json(
+            [{"role": "user", "content": "schema is already visible in this request"}],
+            output_schema={"type": "object"},
+            output_schema_name="Result",
+        )
+
+        self.assertEqual('{"ok":true}', result.content)
+        self.assertIn("format", requests[0]["output_config"])
+        self.assertNotIn("output_config", requests[1])
+        self.assertEqual("prompt_only_json", result.raw["_request"]["response_format"])
+
     def test_responses_tool_request_preserves_complete_output(self):
         from app.llm_client import ResponsesAPIClient
 

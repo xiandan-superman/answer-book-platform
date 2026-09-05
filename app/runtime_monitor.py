@@ -1356,9 +1356,9 @@ def _task_health(
         if heartbeat_age is None:
             health_status = "unknown"
         elif heartbeat_age > HEARTBEAT_ERROR_SECONDS:
-            health_status = "error"
-            warning_reason = "后台心跳长时间未更新，任务可能已中断。"
-            suggested_action = "查看任务详情或重新运行。"
+            health_status = "warning"
+            warning_reason = "后台较长时间没有新心跳，可能正在等待模型或耗时处理返回。"
+            suggested_action = "任务仍在运行，建议继续等待。"
         elif progress_age is not None and progress_age > PROGRESS_WARNING_SECONDS:
             health_status = "warning"
             warning_reason = "后台仍在运行，但较长时间没有新的业务进展。"

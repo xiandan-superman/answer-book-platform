@@ -18,6 +18,18 @@ def test_section_score_suggestions_cover_per_question_patterns():
     assert infer_suggested_score({"number": "1", "section_raw": "五、计算题 (本题共15分)"}) == 15
 
 
+def test_section_total_is_not_suggested_for_each_numbered_fill_item():
+    question = {
+        "number": "1",
+        "major_number": "1",
+        "section_item_count": 6,
+        "section_raw": "一、填空题（共6题，每空0.5分，共15分）",
+        "stem": "名称是_____，记作_____。",
+    }
+
+    assert infer_suggested_score(question) is None
+
+
 def test_grouped_major_question_uses_section_total_before_first_child_score():
     question = {
         "number": "9",
