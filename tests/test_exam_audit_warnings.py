@@ -141,3 +141,23 @@ def test_source_coverage_audits_inline_numbered_terms_individually(tmp_path) -> 
     assert not any("source paragraph not covered" in issue for issue in issues)
     assert report["source_coverage"]["item_like_count"] == 3
     assert report["source_coverage"]["covered_item_like_count"] == 3
+
+
+def test_confirmed_question_score_is_not_replaced_by_section_total(tmp_path):
+    from app.exam_audit import audit_exam_structure
+    from app.question_scores import infer_explicit_parent_score
+
+    item = {"question_id": "q1", "number": "1", "major_number": "2",
+            "section_item_count": 2, "section": "简答题",
+            "extracted_section_raw": "二、简答题（共2题，每题10分，共20分）",
+            "stem": "回答下列问题。", "score_reviewed": True, "confirmed_score": 10,
+            "subquestions": [{"stem": "问题甲", "score": 5}, {"stem": "问题乙", "score": 5}]}
+    assert infer_explicit_parent_score(item) == 10
+    assert not audit_exam_structure({"items": [item]}, tmp_path / "audit.json")
+    item["subquestions"][1]["score"] = 4
+    assert any("subquestion total" in issue for issue in audit_exam_structure({"items": [item]}, tmp_path / "audit.json"))
+    item.pop("confirmed_score")
+    item.pop("score_reviewed")
+    assert infer_explicit_parent_score(item) == 10
+    item["extracted_section_raw"] = "简答题（共20分）"
+    assert infer_explicit_parent_score(item) is None

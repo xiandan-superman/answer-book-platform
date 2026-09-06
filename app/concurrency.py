@@ -4,7 +4,7 @@ import random
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from typing import Any, Callable, Iterable, Iterator, TypeVar
@@ -297,14 +297,32 @@ def run_limited_concurrent(
 
     concurrent_results: list[R | None] = [None] * len(values)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(copy_context().run, worker, item): (index, item)
-            for index, item in enumerate(values)
-        }
-        for future in as_completed(futures):
-            index, item = futures[future]
-            result = future.result()
-            concurrent_results[index] = result
-            if on_complete:
-                on_complete(index, item, result)
+        pending = iter(enumerate(values))
+        futures: dict[Future[R], tuple[int, T]] = {}
+
+        def replenish() -> None:
+            while len(futures) < workers:
+                try:
+                    index, item = next(pending)
+                except StopIteration:
+                    return
+                futures[executor.submit(copy_context().run, worker, item)] = (index, item)
+
+        replenish()
+        try:
+            while futures:
+                completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                # Commit/check downstream work before admitting more producers.
+                # Callback failure or cancellation stops replenishment, while
+                # the executor drains already-started calls on exit.
+                for future in sorted(completed, key=lambda value: futures[value][0]):
+                    index, item = futures.pop(future)
+                    result = future.result()
+                    concurrent_results[index] = result
+                    if on_complete:
+                        on_complete(index, item, result)
+                replenish()
+        finally:
+            for future in futures:
+                future.cancel()
     return [result for result in concurrent_results if result is not None]

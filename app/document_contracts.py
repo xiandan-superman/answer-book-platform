@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 
-DOCUMENT_CONTRACT_VERSION = "answer_book.current_compatibility.v1"
+DOCUMENT_CONTRACT_VERSION = "answer_book.current_compatibility.v2"
 HEADER_TEXT = "航研学考研 丨 专注北航考研 丨 材料考研 954467835"
 FOOTER_TEXT = "愿每一位考研学子，以梦为马，不负韶华；披荆斩棘，终达彼岸！"
 

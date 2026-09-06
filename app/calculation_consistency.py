@@ -446,7 +446,9 @@ def _quantity_answer_aliases(name: Any) -> list[str]:
 def _close(actual: float, expected: float) -> bool:
     # Model answers commonly round to 3 significant figures.  The tolerance is
     # tight enough to reject 1/3 reported as 2/3 while accepting normal rounding.
-    return math.isclose(actual, expected, rel_tol=0.012, abs_tol=0.0015)
+    # A fixed absolute tolerance accepts orders-of-magnitude errors for small
+    # physical quantities. Rounding tolerance must scale with the operands.
+    return math.isclose(actual, expected, rel_tol=0.012, abs_tol=0.0)
 
 
 def _close_with_percent_equivalence(actual: float, expected: float) -> bool:
@@ -465,14 +467,19 @@ def _close_substitution_result(actual: float, expected: float, scale: float | No
     # Three-significant-figure operands can leave a small residual when large
     # terms cancel.  Cap this special allowance at 0.2% of their combined
     # magnitude; material errors remain far outside it.
-    return scale is not None and abs(actual - expected) <= max(0.0015, 0.002 * scale)
+    return scale is not None and abs(actual - expected) <= 0.002 * scale
 
 
-def formula_numeric_consistency_issues(formulas: list[dict[str, Any]]) -> list[str]:
+def formula_numeric_consistency_issues(formulas: list[dict[str, Any]], *,
+                                     observations: list[dict[str, Any]] | None = None) -> list[str]:
     issues: list[str] = []
     for index, formula in enumerate(formulas, start=1):
         if not isinstance(formula, dict):
             continue
+        observation = {"formula_index": index, "status": "unknown", "scope": "numeric_equality",
+                       "unit_verification": "unknown", "reason": "not_decidable_by_this_checker"}
+        if observations is not None:
+            observations.append(observation)
         if "程序在结构校验前从解析正文中提升" in str(formula.get("source_note") or ""):
             # These objects preserve Word typography for a prose substring.
             # The substring can be a suffix of a longer equality chain, so it
@@ -502,10 +509,15 @@ def formula_numeric_consistency_issues(formulas: list[dict[str, Any]]) -> list[s
                 from .adapters.math_verifier import verify_math_equivalence
 
                 verification = verify_math_equivalence(f"${parts[0]}$", f"${parts[1]}$")
+                if verification.available and verification.equivalent is not None:
+                    observation.update(status="passed" if verification.equivalent else "failed",
+                                       scope="symbolic_equality", reason="symbolic_verifier")
                 if verification.available and verification.equivalent is False:
                     issues.append(f"formula_{index}_symbolic_equality_mismatch")
             continue
-        if not _close_with_percent_equivalence(actual, expected):
+        agrees = _close_with_percent_equivalence(actual, expected)
+        observation.update(status="passed" if agrees else "failed", reason="evaluated_numeric_equality")
+        if not agrees:
             issues.append(
                 f"formula_{index}_numeric_equality_mismatch:{actual:.8g}!={expected:.8g}"
             )
@@ -543,9 +555,10 @@ def formula_numeric_consistency_issues(formulas: list[dict[str, Any]]) -> list[s
     return list(dict.fromkeys(issues))
 
 
-def calculation_draft_consistency_issues(draft: dict[str, Any]) -> list[str]:
+def calculation_draft_consistency_issues(draft: dict[str, Any], *,
+                                       observations: list[dict[str, Any]] | None = None) -> list[str]:
     formulas = [item for item in draft.get("formulas", []) or [] if isinstance(item, dict)]
-    issues = formula_numeric_consistency_issues(formulas)
+    issues = formula_numeric_consistency_issues(formulas, observations=observations)
     units = draft.get("answer_units") if isinstance(draft.get("answer_units"), list) else []
     step_groups = [unit.get("steps", []) for unit in units if isinstance(unit, dict)] or [draft.get("steps", [])]
     for steps in step_groups:

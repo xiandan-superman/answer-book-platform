@@ -42,7 +42,7 @@ from .content_quality_repair import repair_content_quality_locally
 from .document_tool import DocumentToolFailure, DocumentToolSession
 from .docx_audit import audit_docx_v4
 from .docx_model_repair import repair_fragments_with_model_for_docx
-from .docx_v4 import build_docx_from_fragments
+from .docx_v4 import build_docx_from_fragments, expected_fragment_formula_count
 from .environment import check_environment
 from .evidence_audit import audit_retrieval_candidates
 from .evidence_selection import confirm_evidence_selection, filter_candidates_by_selection, load_confirmed_candidates
@@ -852,6 +852,8 @@ def build_and_audit_docx_with_repair(
     provider=None,
     model: str = "",
     use_model: bool = False,
+    image_provider=None,
+    image_model: str = "",
 ) -> dict:
     attempts: list[dict] = []
     content_changed = False
@@ -884,7 +886,7 @@ def build_and_audit_docx_with_repair(
             word_tool_variant = selected_word_tool_variant()
             build_docx_from_fragments(fragments_json, docx_path)
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
-            expected_formula_count = sum(len(x.get("formulas", [])) for x in fragments_data.get("fragments", []))
+            expected_formula_count = sum(expected_fragment_formula_count(x) for x in fragments_data.get("fragments", []))
             issues = audit_after_document_close(expected_formula_count)
             if issues:
                 raise DocumentToolFailure(
@@ -1019,6 +1021,8 @@ def build_and_audit_docx_with_repair(
             model=model,
             docx_issues=model_repair_issues,
             backup_path=sdir / "answer_fragments.before_docx_model_repair.json",
+            image_provider=image_provider,
+            image_model=image_model,
         )
         repair_payload["model_repair"] = model_repair_report
         mark("docx_model_repair", "applied" if model_repair_report.get("changed") else "skipped", model_repair_report)
@@ -2816,8 +2820,6 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         mark("figure_quality_unattended_gate",
              "passed" if figure_artifact_report["ok"] else "failed",
              figure_artifact_report)
-        if not figure_artifact_report["ok"]:
-            raise RuntimeError("Figure artifact validation failed: missing or unreadable image")
         content_quality = attach_figure_generation_audit(content_quality, sdir)
         academic_expression_report = audit_academic_expressions(
             fragments_data,
@@ -2875,8 +2877,6 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 "warning_count": academic_expression_report["warning_count"],
             },
         )
-        if not academic_expression_report["ok"]:
-            raise RuntimeError("Academic expression render contract failed")
         selective_review = _review_selective_quality_with_fallback(
             academic_report=academic_expression_report,
             content_quality_report=content_quality,
@@ -2931,8 +2931,25 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             "passed" if not final_source_image_delivery.get("missing") else "failed",
             final_source_image_delivery,
         )
-        if final_source_image_delivery.get("missing"):
-            raise RuntimeError("Required source question image is missing before document delivery")
+        late_failure = (
+            "Figure artifact validation failed: missing or unreadable image" if not figure_artifact_report["ok"] else
+            "Academic expression render contract failed" if not academic_expression_report["ok"] else
+            "Required source question image is missing before document delivery" if final_source_image_delivery.get("missing") else ""
+        )
+        if late_failure:
+            from .exam_unit_delivery import preserve_exam_units
+
+            try:
+                preserved = preserve_exam_units(sdir, structured_exam=structured_exam,
+                                                fragments_json=fragments_json, selection_data=selection_data,
+                                                checkpoint=lambda: checkpoint(task_id))
+                mark("unit_delivery", "passed", {"available_count": preserved["available_count"],
+                                                 "missing_count": len(preserved["missing"])})
+            except TaskCancelled:
+                raise
+            except Exception as exc:
+                mark("unit_delivery", "advisory", {"error": str(exc)})
+            raise RuntimeError(late_failure)
 
         return complete_pipeline_delivery(
             task_id=task_id,
@@ -2951,6 +2968,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             mark=mark,
             write_json=write_json,
             build_docx_with_repair=build_and_audit_docx_with_repair,
+            image_provider=answer_image_provider,
+            image_model=answer_image_model,
         )
     except TaskCancelled as exc:
         write_json(

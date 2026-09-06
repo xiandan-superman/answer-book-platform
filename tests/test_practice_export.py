@@ -10,6 +10,7 @@ from app.practice_document_contracts import (
     PRACTICE_DOCUMENT_CONTRACT_VERSION,
     PRACTICE_NUMBERING_CONTRACT,
     PRACTICE_STRUCTURE_CONTRACT,
+    PRACTICE_TEXT_CONTRACT,
 )
 from app.practice_export import (
     build_practice_question_docx,
@@ -65,6 +66,7 @@ def test_practice_export_creates_question_only_document():
 
 
 def test_practice_word_contract_keeps_independent_structure_and_numbering():
+    assert PRACTICE_DOCUMENT_CONTRACT_VERSION == "practice_word.current_compatibility.v4"
     assert PRACTICE_STRUCTURE_CONTRACT["questions"] == (
         "专项练习题目卷",
         "练习题",
@@ -216,7 +218,7 @@ def test_practice_export_repairs_gateway_control_escapes_before_word_integrity_a
     assert any("ZnCO3" in formula for formula in formulas)
 
 
-def test_practice_export_formats_choice_options_without_bold_or_blank_lines():
+def test_practice_export_formats_choice_options_with_three_character_first_line_indent():
     data = _practice()
     data["exercises"][0]["question_type"] = "单选题"
     data["exercises"][0]["options"] = [
@@ -228,9 +230,14 @@ def test_practice_export_formats_choice_options_without_bold_or_blank_lines():
     option_paragraphs = [p for p in document.paragraphs if p.text.startswith(("A. ", "B. "))]
     assert [p.text for p in option_paragraphs] == ["A. 第一项。", "B. 第二项。"]
     assert all(not any(run.bold for run in paragraph.runs) for paragraph in option_paragraphs)
-    assert all(paragraph.paragraph_format.left_indent.pt == 22 for paragraph in option_paragraphs)
+    assert all(paragraph.paragraph_format.left_indent.pt == 0 for paragraph in option_paragraphs)
     assert all(paragraph.paragraph_format.right_indent.pt == 0 for paragraph in option_paragraphs)
-    assert all(paragraph.paragraph_format.first_line_indent.pt == -22 for paragraph in option_paragraphs)
+    assert all(
+        paragraph.paragraph_format.first_line_indent.pt
+        == PRACTICE_TEXT_CONTRACT.body_size_pt * 3
+        for paragraph in option_paragraphs
+    )
+    assert all('w:firstLineChars="300"' in paragraph._p.xml for paragraph in option_paragraphs)
     paragraph_texts = [paragraph.text for paragraph in document.paragraphs]
     assert paragraph_texts.index("B. 第二项。") == paragraph_texts.index("A. 第一项。") + 1
 
@@ -257,7 +264,7 @@ def test_practice_solution_restarts_numbered_steps_for_each_question():
     second["solution_steps"] = ["第二题步骤一。", "第二题步骤二。"]
     data["exercises"].append(second)
     content = build_practice_solution_docx(data)
-    report = validate_docx_output(content, data)
+    report = validate_docx_output(content, data, document_kind="solutions")
     assert report["ok"] is True
     with ZipFile(BytesIO(content)) as archive:
         document = etree.fromstring(archive.read("word/document.xml"))
@@ -558,6 +565,7 @@ def test_practice_formula_caption_stays_with_formula():
 
 def test_practice_export_marks_unreviewed_edit_as_candidate_without_blocking_download():
     data = _practice()
+    data["exercises"][0]["answerability_check_status"] = "reported"
     data["semantic_review"] = {
         "status": "failed",
         "review_scope": "stale_after_edit",
@@ -567,8 +575,22 @@ def test_practice_export_marks_unreviewed_edit_as_candidate_without_blocking_dow
     report = validate_practice_export(data)
 
     assert report["ok"] is True
-    assert report["release_level"] == "review_candidate"
-    assert "不应视为正式发布版" in report["warning_issues"][0]
+    assert report["release_level"] == "formal"
+    assert not report["warning_issues"]
+
+
+def test_historical_semantic_review_creates_no_word_notice():
+    data = _practice()
+    data["exercises"][0]["answerability_check_status"] = "reported"
+    data["semantic_review"] = {
+        "status": "failed",
+        "review_scope": "stale_after_edit",
+        "items": [{"number": 1, "status": "not_reviewed", "risks": []}],
+    }
+
+    content = build_practice_question_docx(data)
+    document = Document(BytesIO(content))
+    assert not any(paragraph.text.startswith("待复核成果：") for paragraph in document.paragraphs)
 
 
 def test_practice_export_preflights_inline_math_before_building_word():
@@ -584,6 +606,7 @@ def test_practice_export_preflights_inline_math_before_building_word():
 
 def test_selected_export_does_not_inherit_another_questions_review_candidate_status():
     data = _practice()
+    data["exercises"][0]["answerability_check_status"] = "reported"
     data["exercises"].append({
         **data["exercises"][0],
         "number": 2,

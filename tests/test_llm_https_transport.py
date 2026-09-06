@@ -28,6 +28,13 @@ FIXTURE_KEY = "ark-test-https-secret-12345678"
 FIXTURE_MODEL = "ark-test-https-model"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_transport_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_diagnostics, "MODEL_DIAGNOSTICS_DIR", tmp_path / "diagnostics")
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "calls.jsonl")
+    monkeypatch.setattr(runtime_monitor, "MODEL_EXECUTION_EVENT_LEDGER", tmp_path / "events.jsonl")
+
+
 def _provider(base_url: str) -> ProviderConfig:
     return ProviderConfig(
         name="ark",

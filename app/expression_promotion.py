@@ -6,6 +6,7 @@ from typing import Any
 from .capabilities.catalog import DEFAULT_CAPABILITY_REGISTRY
 from .capabilities.text_expression_rendering import build_text_expression_render_plans, reaction_text_to_latex
 from .docx_v4 import _answer_summary_formula_candidates
+from .rich_text_math import protected_math_spans
 from .expression_normalization import (
     consume_formula_continuation,
     normalize_expression_latex,
@@ -217,6 +218,7 @@ def promote_inline_reactions(fragment: dict[str, Any]) -> dict[str, Any]:
                 replaced.append(segment)
                 continue
             text = str(segment.get("text") or "")
+            protected = protected_math_spans(text)
             cursor = 0
             matches = [
                 match
@@ -225,6 +227,7 @@ def promote_inline_reactions(fragment: dict[str, Any]) -> dict[str, Any]:
                     source_format="text",
                 )
                 if match.rule_id == "core.text_reaction"
+                and not any(match.start < end and start < match.end for start, end, _ in protected)
             ]
             if not matches:
                 replaced.append(segment)
@@ -340,10 +343,12 @@ def promote_inline_mathematical_expressions(fragment: dict[str, Any]) -> dict[st
             # overlap resolution. Otherwise discarded broad matches leave
             # orphan formula records in the durable fragment.
             candidates: list[tuple[int, int, str, bool]] = []
+            protected = protected_math_spans(text)
             for alias, formula_id in declared_aliases:
                 candidates.extend(
                     (match.start(), match.end(), formula_id, True)
                     for match in re.finditer(re.escape(alias), text)
+                    if not any(match.start() < end and start < match.end() for start, end, _ in protected)
                 )
             for start, end, latex in _answer_summary_formula_candidates(text):
                 if not _is_operandless_operator(latex):
@@ -352,6 +357,8 @@ def promote_inline_mathematical_expressions(fragment: dict[str, Any]) -> dict[st
                 start = plan.start
                 end = plan.end
                 latex = plan.render_latex
+                if any(start < protected_end and protected_start < end for protected_start, protected_end, _ in protected):
+                    continue
                 if _is_operandless_operator(latex):
                     continue
                 # The generic equation recognizer intentionally starts on the

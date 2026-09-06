@@ -17,11 +17,12 @@ from .calculation_consistency import (
     reconcile_calculation_reference_structure,
 )
 from .capabilities.catalog import capability_policy_contributions
-from .concurrency import run_limited_concurrent
+from .concurrency import ModelRequestAborted, run_limited_concurrent
 from .document_presentation import is_synthetic_requirement_parent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import looks_like_formula
+from .formula_normalization import normalize_formula_entry
 from .image_artifacts import ImageArtifactStore
 from .image_orchestration import (
     DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
@@ -31,6 +32,7 @@ from .llm_client import LLMError, OpenAICompatibleClient, StructuredOutputError
 from .model_output_contracts import AnswerDraftBatchOutput, AnswerDraftOutput
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
 from .omml_input import strip_structured_math_metadata
+from .output_checkpoints import file_dependencies, load_output_checkpoint, save_output_checkpoint
 from .prompt_registry import prompt_contract
 from .prompts import build_answer_depth_profile, build_answer_draft_prompt
 from .provider_errors import classify_provider_error
@@ -708,6 +710,7 @@ def _draft_formulas(draft: dict[str, Any], qid: str) -> list[dict[str, Any]]:
     for index, raw in enumerate(draft.get("formulas") or [], start=1):
         if not isinstance(raw, dict):
             continue
+        raw = normalize_formula_entry(raw, index=index)
         latex = _normalize_formula_latex(raw.get("latex", ""))
         if not latex:
             continue
@@ -3293,6 +3296,40 @@ def generate_answer_fragments(
         for qid, fragment in (reusable_fragments or {}).items()
         if str(qid) in question_ids and isinstance(fragment, dict)
     }
+    dependency_by_id = {}
+    recovered_drafts = []
+    for question in questions:
+        qid = str(question.get("question_id") or "")
+        selection = (evidence_selections or {}).get(qid)
+        evidence = evidence_for_answer_generation(candidates, qid, selection)
+        dependencies = {
+            "question": question, "evidence": evidence, "selection": selection,
+            "files": file_dependencies([question, evidence]),
+            "provider": provider.name, "endpoint": provider.base_url, "model": model,
+            "generation_settings": {"temperature": provider.temperature, "max_tokens": provider.max_tokens,
+                                    "thinking_mode": provider.thinking_mode, "type": provider.type,
+                                    "model_profile": provider.model_profiles.get(model, {})},
+            "image_provider": getattr(image_provider, "name", ""), "image_model": image_model,
+            "image_settings": {"endpoint": getattr(image_provider, "base_url", ""),
+                               "size": getattr(image_provider, "image_size", "")},
+            "include_textbook_evidence": include_textbook_evidence,
+            "contract": [ANSWER_SOURCE_CONTRACT_VERSION, "answer-unit-generation-v1"],
+        }
+        dependency_by_id[qid] = dependencies
+        if qid in reusable_fragments:
+            continue
+        saved = load_output_checkpoint(output_json.parent, stage="answer_generation", object_id=qid,
+                                       dependencies=dependencies)
+        if not saved or (saved.get("diagnostics") or {}).get("issues"):
+            continue
+        candidate = saved.get("candidate")
+        if not isinstance(candidate, dict) or candidate.get("_review_flags") or candidate.get("_review_candidate_issues"):
+            continue
+        if validate_v4_answer_fragment(candidate) or semantic_generation_issues(question, candidate):
+            continue
+        reusable_fragments[qid] = copy.deepcopy(candidate)
+        if isinstance(saved.get("source"), dict):
+            recovered_drafts.append(copy.deepcopy(saved["source"]))
     prior_drafts_path = output_json.parent / "answer_drafts.json"
     if reusable_fragments and prior_drafts_path.exists():
         try:
@@ -3311,6 +3348,8 @@ def generate_answer_fragments(
         for question in questions
         if str(question.get("question_id") or "") not in reusable_fragments
     ]
+    known_draft_ids = {str(row.get("question_id") or "") for row in answer_drafts}
+    answer_drafts.extend(row for row in recovered_drafts if str(row.get("question_id") or "") not in known_draft_ids)
     reused_fragment_count = len(reusable_fragments)
     max_workers = answer_generation_worker_count()
     parallel_enabled = max_workers > 1 and len(questions) > 1
@@ -3333,6 +3372,7 @@ def generate_answer_fragments(
     evidence_target_count = answer_generation_evidence_target_count()
     started_at = time.time()
     completed_counter = {"value": 0}
+    preflight_counts = {"checked": 0, "passed": 0, "blocked": 0}
     active_progress: dict[str, Any] = {}
     progress_events: list[dict[str, Any]] = []
 
@@ -3359,6 +3399,7 @@ def generate_answer_fragments(
             "elapsed_seconds": elapsed_seconds,
             "elapsed_text": _format_elapsed(elapsed_seconds),
             "active": dict(active_progress),
+            "unit_preflight": dict(preflight_counts),
             "recent_events": progress_events[-12:],
         }
         progress_json.parent.mkdir(parents=True, exist_ok=True)
@@ -3626,6 +3667,8 @@ def generate_answer_fragments(
                     }
                 )
             return out
+        except ModelRequestAborted:
+            raise
         except Exception as exc:
             out = []
             for item in items:
@@ -3692,6 +3735,29 @@ def generate_answer_fragments(
         completed_results += len(unit_results)
         completed_counter["value"] = completed_results
         for item_result in unit_results:
+            fragment = item_result.get("fragment")
+            if isinstance(fragment, dict) and fragment.get("question_id"):
+                save_output_checkpoint(
+                    output_json.parent,
+                    stage="answer_generation",
+                    object_id=str(fragment["question_id"]),
+                    source=item_result.get("draft"),
+                    candidate=fragment,
+                    diagnostics={"issues": item_result.get("issues") or []},
+                    dependencies=dependency_by_id[str(fragment["question_id"])],
+                )
+                from .unit_preflight import preflight_object
+
+                try:
+                    report = preflight_object(output_json.parent, object_id=str(fragment["question_id"]),
+                                              source=item_result.get("draft") or {}, candidate=fragment,
+                                              kind="exam", question=item_result.get("question"))
+                except Exception as exc:
+                    # Early diagnostics are not the publication authority. The
+                    # final Word/content gates still run on current content.
+                    report = {"status": "blocked", "issues": [str(exc)], "available": False}
+                preflight_counts["checked"] += 1
+                preflight_counts[report["status"]] += 1
             all_issues.extend(item_result.get("issues") or [])
         write_progress("running", completed_results, result.get("question") or {})
 

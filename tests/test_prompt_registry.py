@@ -116,7 +116,7 @@ def test_practice_stage_mapping_preserves_intentional_prompt_forks() -> None:
     assert practice_prompt_contract_id("source_analysis") == "practice.source_analysis"
     assert practice_prompt_contract_id("planning") == "practice.planning"
     assert practice_prompt_contract_id("generation") == "practice.generation"
-    assert practice_prompt_contract_id("semantic_review") == "practice.semantic_review"
+    assert practice_prompt_contract_id("semantic_review") == "unregistered.practice"
     assert practice_prompt_contract_id("unknown") == "unregistered.practice"
 
 

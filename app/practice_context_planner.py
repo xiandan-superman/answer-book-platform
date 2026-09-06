@@ -9,6 +9,15 @@ from .model_context_planner import (
     model_stage_quality_limit,
 )
 
+__all__ = [
+    "aggregate_source_evidence",
+    "apply_source_evidence_contract",
+    "build_context_plan",
+    "estimate_text_tokens",
+    "image_evidence_refs",
+    "image_numbers_from_evidence_refs",
+    "model_stage_quality_limit",
+]
 
 IMAGE_ANCHOR_RE = re.compile(r"⟦IMAGE_REF:(\d+);[^⟧]*⟧")
 IMAGE_EVIDENCE_RE = re.compile(r"^image:(\d+)$")
@@ -56,7 +65,7 @@ def apply_source_evidence_contract(source: dict[str, Any]) -> dict[str, Any]:
     source["visual_dependency"] = {
         "required": bool(visual_refs),
         "evidence_refs": visual_refs,
-        "must_reach_stages": ["planning", "generation", "semantic_review"] if visual_refs else [],
+        "must_reach_stages": ["planning", "generation"] if visual_refs else [],
         "replaceable_by_summary": False if visual_refs else True,
     }
     return source

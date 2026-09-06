@@ -53,11 +53,18 @@ def test_bootstrap_reports_hidden_launcher_failure(tmp_path: Path) -> None:
 
 
 def test_bootstrap_log_uses_windows_user_data(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ANSWER_BOOK_DATA_DIR", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
     assert windows_launcher_bootstrap.bootstrap_log_path() == (
         tmp_path / "Answer Book Platform" / "runtime" / "launcher-bootstrap.log"
     )
+
+
+def test_bootstrap_log_respects_explicit_isolated_data_directory(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ANSWER_BOOK_DATA_DIR", str(tmp_path / "isolated"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "windows"))
+    assert windows_launcher_bootstrap.bootstrap_log_path() == tmp_path / "isolated" / "runtime" / "launcher-bootstrap.log"
 
 
 def test_bootstrap_rejects_python_314_before_starting_gui(monkeypatch) -> None:

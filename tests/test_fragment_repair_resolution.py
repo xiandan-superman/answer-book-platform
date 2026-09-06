@@ -168,7 +168,8 @@ def test_split_mathml_metadata_and_missing_formula_reference_preserve_candidate_
     text = "".join(str(segment.get("text") or "") for segment in repaired["blocks"][0]["segments"])
 
     assert report["ok"] is True
-    assert text == "在1000 K保温，体积自由能差为驱动力。"
+    assert text == "在1000 K保温，体积自由能差【公式缺失：f2】为驱动力。"
+    assert "【公式缺失：f2】" in repaired["answer_summary"]
     assert "{f2}" not in repaired["answer_summary"]
     assert not any(segment.get("formula_id") == "bogus" for segment in repaired["blocks"][0]["segments"])
     assert any(flag.get("code") == "unresolved_formula_reference_removed" for flag in repaired["_review_flags"])

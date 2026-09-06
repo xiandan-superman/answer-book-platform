@@ -2724,7 +2724,7 @@ def parse_json_content(content: str) -> dict[str, Any]:
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        extracted = _extract_json_object(cleaned)
+        extracted = _extract_final_json_object(cleaned) or _extract_json_object(cleaned)
         if extracted and extracted != cleaned:
             try:
                 value = json.loads(extracted)
@@ -2968,6 +2968,25 @@ def _token_recommendations(attempts: list[dict[str, Any]]) -> list[dict[str, Any
                 }
             )
     return recommendations
+
+
+def _extract_final_json_object(content: str) -> str | None:
+    """Recover an intact terminal object after provider-added prose.
+
+    Do not repair escapes, concatenate examples, or accept a nested object
+    inside a malformed enclosing response. Business schema validation remains
+    the caller's responsibility.
+    """
+    decoder = json.JSONDecoder()
+    for match in reversed(list(re.finditer(r"\{", content))):
+        candidate = content[match.start():]
+        try:
+            value, end = decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and candidate[end:].strip() in {"", "```"}:
+            return candidate[:end]
+    return None
 
 
 def _extract_json_object(content: str) -> str | None:

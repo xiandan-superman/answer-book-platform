@@ -105,6 +105,11 @@ class AnswerUnitTests(unittest.TestCase):
         self.assertFalse(_calculation_has_high_confidence_missing_unit(symbolic, {}))
         self.assertTrue(_calculation_has_high_confidence_missing_unit(missing, {}))
         self.assertFalse(_calculation_has_high_confidence_missing_unit(present, {}))
+        native = {**missing, "formulas": [{"formula_id": "f", "latex": r"20\text{ MPa}"}],
+                  "blocks": [{"segments": [{"type": "formula_ref", "formula_id": "f"}]}]}
+        self.assertFalse(_calculation_has_high_confidence_missing_unit(native, {}))
+        native["blocks"] = []
+        self.assertTrue(_calculation_has_high_confidence_missing_unit(native, {}))
 
     def test_single_leaf_question_promotes_single_answer_unit(self) -> None:
         from app.answer_generation import fragment_from_analysis_draft

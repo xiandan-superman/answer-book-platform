@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from .paths import DATA_ROOT
+from .practice_requirements import practice_user_focus
 from .task_titles import friendly_material_title
 
 PRACTICE_HISTORY_DIR = DATA_ROOT / "practice_history"
@@ -544,7 +545,7 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
         "difficulty": request.get("difficulty"),
         "difficulty_counts": request.get("difficulty_counts") or {},
         "question_types": request.get("question_types") or [],
-        "focus": str(request.get("focus") or "")[:1000],
+        "focus": practice_user_focus(request),
         "generation_strategy": request.get("generation_strategy"),
         # The orchestration mode and its concrete image route are one atomic
         # user choice.  Persist all three so continuation/regeneration cannot
@@ -561,7 +562,6 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
         "difficulty_selection_order": int(request.get("difficulty_selection_order") or 0),
         "blueprint_variant_selection_order": int(request.get("blueprint_variant_selection_order") or 0),
         "blueprint_review_enabled": bool(request.get("blueprint_review_enabled", True)),
-        "semantic_review_enabled": bool(request.get("semantic_review_enabled", True)),
         "generation_run_id": str(request.get("generation_run_id") or "")[:100],
         "generation_contract": request.get("generation_contract") if isinstance(request.get("generation_contract"), dict) else {},
         "granularity": str((request.get("source_scope") or {}).get("granularity") or request.get("granularity") or "")[:20],
@@ -659,50 +659,6 @@ def copy_request(request: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(request, ensure_ascii=False))
 
 
-def _merge_continuation_semantic_review(
-    latest: dict[str, Any],
-    incoming: dict[str, Any],
-    *,
-    latest_success_ids: set[str],
-    merged_exercises: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    latest_review = latest.get("semantic_review") if isinstance(latest.get("semantic_review"), dict) else None
-    incoming_review = incoming.get("semantic_review") if isinstance(incoming.get("semantic_review"), dict) else None
-    if not latest_review and not incoming_review:
-        return None
-    latest_by_number = {
-        str(item.get("number") or ""): item
-        for item in (latest_review or {}).get("items") or []
-        if isinstance(item, dict)
-    }
-    incoming_by_number = {
-        str(item.get("number") or ""): item
-        for item in (incoming_review or {}).get("items") or []
-        if isinstance(item, dict)
-    }
-    items: list[dict[str, Any]] = []
-    for index, exercise in enumerate(merged_exercises, start=1):
-        if exercise.get("generation_status") == "failed":
-            continue
-        number = str(exercise.get("number") or index)
-        plan_item_id = str(exercise.get("plan_item_id") or "")
-        selected = (
-            latest_by_number.get(number)
-            if plan_item_id in latest_success_ids
-            else incoming_by_number.get(number)
-        ) or incoming_by_number.get(number) or latest_by_number.get(number)
-        items.append(dict(selected) if isinstance(selected, dict) else {"number": exercise.get("number") or index, "status": "not_reviewed", "risks": []})
-    all_passed = bool(items) and all(str(item.get("status") or "") == "passed" for item in items)
-    base = incoming_review or latest_review or {}
-    return {
-        **base,
-        "status": "passed" if all_passed else "failed",
-        "review_scope": "merged_continuation",
-        "items": items,
-        **({} if all_passed else {"error": str(base.get("error") or "合并后的题目包含尚未完成语义复核的内容。")}),
-    }
-
-
 @_store_synchronized
 def save_practice_continuation_record(
     data: dict[str, Any],
@@ -750,14 +706,6 @@ def save_practice_continuation_record(
         "blueprint": copy_request(latest_blueprint),
         "exercises": merged_exercises,
     }
-    semantic_review = _merge_continuation_semantic_review(
-        latest,
-        merged,
-        latest_success_ids=set(latest_success),
-        merged_exercises=merged_exercises,
-    )
-    if semantic_review is not None:
-        merged["semantic_review"] = semantic_review
     generation = merged.get("generation") if isinstance(merged.get("generation"), dict) else {}
     merged["generation"] = {
         **generation,
@@ -865,7 +813,6 @@ def update_practice_exercise(
     exercise: dict[str, Any],
     *,
     change_reason: str = "regenerate_question",
-    semantic_review: dict[str, Any] | None = None,
     practice_updates: dict[str, Any] | None = None,
     expected_edit_version: str = "",
 ) -> dict[str, Any]:
@@ -881,7 +828,17 @@ def update_practice_exercise(
     if not isinstance(exercise, dict):
         raise ValueError("需要保存的题目内容无效。")
     current = exercises[exercise_index] if isinstance(exercises[exercise_index], dict) else {}
-    current_edit_version = _content_fingerprint({"exercises": [current]})
+    # The browser token is generated from the normalized public response.  A
+    # legacy or batch-local record can gain a confirmed blueprint identity
+    # during that normalization, so compare the same representation here.
+    presented = _with_current_quality(data)
+    presented_exercises = presented.get("exercises") if isinstance(presented.get("exercises"), list) else []
+    presented_current = (
+        presented_exercises[exercise_index]
+        if exercise_index < len(presented_exercises) and isinstance(presented_exercises[exercise_index], dict)
+        else current
+    )
+    current_edit_version = _content_fingerprint({"exercises": [presented_current]})
     expected_edit_version = str(expected_edit_version or "").strip()
     if not expected_edit_version:
         raise PracticeEditConflict(
@@ -911,29 +868,6 @@ def update_practice_exercise(
         patched["source_question_id"] = stable_source_refs[0]
         patched["source_refs"] = stable_source_refs
     exercises[exercise_index] = patched
-    updated_semantic_review = semantic_review
-    if updated_semantic_review is None and isinstance(data.get("semantic_review"), dict):
-        previous_review = data["semantic_review"]
-        target_number = str(current.get("number") or exercise_index + 1)
-        review_items = []
-        target_found = False
-        for item in previous_review.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("number") or "") == target_number:
-                review_items.append({"number": current.get("number") or exercise_index + 1, "status": "not_reviewed", "risks": []})
-                target_found = True
-            else:
-                review_items.append(item)
-        if not target_found:
-            review_items.append({"number": current.get("number") or exercise_index + 1, "status": "not_reviewed", "risks": []})
-        updated_semantic_review = {
-            **previous_review,
-            "status": "failed",
-            "review_scope": "stale_after_edit",
-            "items": review_items,
-            "error": "题目内容已修改，原语义复核结论已失效。",
-        }
     updated_data = {**data, "exercises": exercises, "history_id": history_id}
     practice_updates = practice_updates if isinstance(practice_updates, dict) else {}
     incoming_blueprint_item = (
@@ -978,8 +912,6 @@ def update_practice_exercise(
         updated_data["blueprint_audit"] = verified_audit
         if isinstance(practice_updates.get("blueprint_audit_repair"), dict):
             updated_data["blueprint_audit_repair"] = practice_updates["blueprint_audit_repair"]
-    if isinstance(updated_semantic_review, dict):
-        updated_data["semantic_review"] = updated_semantic_review
     updated = _with_current_quality(updated_data)
     saved = save_practice_record(
         updated,

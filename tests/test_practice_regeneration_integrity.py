@@ -162,14 +162,12 @@ def _review_item(report: dict, number: int) -> dict:
 
 def test_single_regeneration_restores_all_blueprint_sources_and_reviews_only_changed_item(monkeypatch) -> None:
     practice = _practice()
-    unchanged_review = deepcopy(_review_item(practice["semantic_review"], 1))
     prompts: list[str] = []
     changed_stem = "重新生成后的第二题：分别判断三类动态软化曲线边界。"
     _install_model_responses(
         monkeypatch,
         [
             {"exercises": [_candidate(changed_stem)]},
-            {"items": [{"number": 2, "status": "passed", "risks": []}], "set_summary": "第2题通过"},
         ],
         prompts,
     )
@@ -187,13 +185,8 @@ def test_single_regeneration_restores_all_blueprint_sources_and_reviews_only_cha
     assert result["exercise"]["source_question_id"] == "source_01"
     assert result["exercise"]["source_refs"] == ["source_01", "source_02", "source_03"]
     assert result["exercise"]["stem"] == changed_stem
-    assert _review_item(result["semantic_review"], 1) == unchanged_review
-    assert _review_item(result["semantic_review"], 2)["status"] == "passed"
-    assert result["semantic_review"]["review_scope"] == "incremental_set"
-    assert result["semantic_review"]["triggered"] is True
-    assert len(prompts) == 2
-    assert changed_stem in prompts[1]
-    assert practice["exercises"][0]["stem"] not in prompts[1]
+    assert "semantic_review" not in result
+    assert len(prompts) == 1
 
 
 def test_regeneration_without_review_invalidates_only_changed_question(monkeypatch) -> None:
@@ -217,11 +210,8 @@ def test_regeneration_without_review_invalidates_only_changed_question(monkeypat
 
     assert len(prompts) == 1
     assert result["exercise"]["source_refs"] == ["source_01", "source_02", "source_03"]
-    assert _review_item(result["semantic_review"], 1)["status"] == "passed"
-    assert _review_item(result["semantic_review"], 2)["status"] == "not_reviewed"
-    assert result["semantic_review"]["status"] == "failed"
-    assert result["semantic_review"]["triggered"] is False
-    assert result["quality"]["release_level"] == "review_candidate"
+    assert "semantic_review" not in result
+    assert result["quality"]["release_level"] == "formal"
 
 
 def test_batch_regeneration_keeps_each_blueprint_sources_and_previous_incremental_review(monkeypatch) -> None:
@@ -233,9 +223,7 @@ def test_batch_regeneration_keeps_each_blueprint_sources_and_previous_incrementa
         monkeypatch,
         [
             {"exercises": [_candidate(first_stem)]},
-            {"items": [{"number": 1, "status": "passed", "risks": []}], "set_summary": "第1题通过"},
             {"exercises": [_candidate(second_stem)]},
-            {"items": [{"number": 2, "status": "passed", "risks": []}], "set_summary": "第2题通过"},
         ],
         prompts,
     )
@@ -252,7 +240,6 @@ def test_batch_regeneration_keeps_each_blueprint_sources_and_previous_incrementa
     after_first = {
         **practice,
         "exercises": [first["exercise"], practice["exercises"][1]],
-        "semantic_review": first["semantic_review"],
     }
     assert after_first["exercises"][1]["stem"] == "重新生成前的第二题题干。"
 
@@ -270,32 +257,21 @@ def test_batch_regeneration_keeps_each_blueprint_sources_and_previous_incrementa
     assert [item["stem"] for item in final_exercises] == [first_stem, second_stem]
     assert final_exercises[0]["source_refs"] == ["source_01", "source_02"]
     assert final_exercises[1]["source_refs"] == ["source_01", "source_02", "source_03"]
-    assert [_review_item(second["semantic_review"], number)["status"] for number in (1, 2)] == ["passed", "passed"]
-    assert len(prompts) == 4
-    assert first_stem in prompts[1] and second_stem not in prompts[1]
-    assert second_stem in prompts[3] and first_stem not in prompts[3]
+    assert "semantic_review" not in first and "semantic_review" not in second
+    assert len(prompts) == 2
 
 
-def test_history_enforces_blueprint_sources_revisions_and_word_review_isolation() -> None:
+def test_history_enforces_blueprint_sources_revisions_and_word_export_isolation() -> None:
     with tempfile.TemporaryDirectory() as raw, patch.object(
         practice_store,
         "PRACTICE_HISTORY_DIR",
         Path(raw),
     ):
         practice = _practice()
-        saved = practice_store.save_practice_record(practice, request={"semantic_review_enabled": True})
+        saved = practice_store.save_practice_record(practice, request={})
         history_id = str(saved["history_id"])
         q2_version = saved["data"]["exercises"][1]["_edit_version"]
 
-        fresh_review = {
-            **practice["semantic_review"],
-            "review_scope": "incremental_set",
-            "items": [
-                {"number": 1, "status": "passed", "risks": []},
-                {"number": 2, "status": "passed", "risks": []},
-            ],
-            "set_summary": "第2题已增量复核。",
-        }
         updated = practice_store.update_practice_exercise(
             history_id,
             1,
@@ -306,7 +282,6 @@ def test_history_enforces_blueprint_sources_revisions_and_word_review_isolation(
                 "source_refs": ["source_01"],
             },
             change_reason="regenerate_selected_questions",
-            semantic_review=fresh_review,
             expected_edit_version=q2_version,
         )
 
@@ -347,8 +322,8 @@ def test_history_enforces_blueprint_sources_revisions_and_word_review_isolation(
         )
         assert stale["revision_count"] == 2
         assert stale["data"]["exercises"][1]["source_refs"] == ["source_01", "source_02", "source_03"]
-        assert _review_item(stale["data"]["semantic_review"], 1)["status"] == "passed"
-        assert _review_item(stale["data"]["semantic_review"], 2)["status"] == "not_reviewed"
+        assert stale["data"]["semantic_review"]["status"] == "passed"
+        assert all(item["status"] == "passed" for item in stale["data"]["semantic_review"]["items"])
 
         selected_q1 = resolve_practice_export_payload(
             {"export_scope": "selected", "selected_exercise_ids": ["plan_item_01"]},
@@ -359,18 +334,35 @@ def test_history_enforces_blueprint_sources_revisions_and_word_review_isolation(
             stale["data"],
         )
         assert validate_practice_export(selected_q1)["release_level"] == "formal"
-        assert validate_practice_export(selected_q2)["release_level"] == "review_candidate"
+        assert validate_practice_export(selected_q2)["release_level"] == "formal"
 
 
-def test_frontend_regeneration_payload_carries_review_switch_for_single_and_batch() -> None:
+def test_frontend_regeneration_payload_omits_removed_review_switch() -> None:
     start = APP_JS.index("function practiceRegenerationPayload(index, instruction)")
     end = APP_JS.index("async function regeneratePracticeExercise", start)
     payload_source = APP_JS[start:end]
-    assert "semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled === true" in payload_source
-    assert "formal_quality_review: latestPracticeRequest?.formal_quality_review === true" in payload_source
+    assert "semantic_review_enabled" not in payload_source
+    assert "formal_quality_review" not in payload_source
 
     batch_start = APP_JS.index("async function regenerateSelectedPracticeQuestions(button)")
     batch_end = APP_JS.index("async function undoPracticeChange()", batch_start)
     batch_source = APP_JS[batch_start:batch_end]
     assert "const response = await regeneratePracticeExercise(index, instruction);" in batch_source
-    assert "response.semantic_review" in batch_source
+    assert "response.semantic_review" not in batch_source
+
+
+def test_repair_mode_accepts_minimal_candidate_without_diversity_retry(monkeypatch) -> None:
+    practice = _practice()
+    baseline = deepcopy(practice)
+    prompts: list[str] = []
+    _install_model_responses(monkeypatch, [{"exercises": [deepcopy(practice["exercises"][1])]}], prompts)
+    instruction = "只核对公式。" * 300 + "保留最后的限制。"
+    result = exercise_generation.regenerate_practice_exercise({
+        "practice": practice, "exercise_index": 1, "repair_only": True,
+        "instruction": instruction, "include_source_content_in_generation": True,
+    })
+    assert len(prompts) == 1
+    assert "至少两项" not in prompts[0]
+    assert instruction in prompts[0]
+    assert result["exercise"]["stem"] == baseline["exercises"][1]["stem"]
+    assert practice == baseline

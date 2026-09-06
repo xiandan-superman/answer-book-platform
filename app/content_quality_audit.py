@@ -131,6 +131,18 @@ def _calculation_has_high_confidence_missing_unit(fragment: dict[str, Any], draf
             ],
         ]
     )
+    # Native formulas are visible output too. Only count formulas actually
+    # referenced by the rendered content, not unused ledger/audit entries.
+    refs = {str(segment.get("formula_id") or "")
+            for block in fragment.get("blocks", []) or []
+            for segment in block.get("segments", []) or []
+            if isinstance(segment, dict) and segment.get("type") == "formula_ref"}
+    visible_text += " " + " ".join(
+        str(formula.get("latex") or "") for formula in fragment.get("formulas", []) or []
+        if isinstance(formula, dict) and str(formula.get("formula_id") or "") in refs
+        and not formula.get("_program_mirrored_from_contract")
+        and "程序从计算结果账本中镜像" not in str(formula.get("source_note") or "")
+    )
     for result in contract.get("result_quantities", []) or []:
         if not isinstance(result, dict):
             continue
@@ -533,6 +545,7 @@ def audit_content_quality(
     warnings: list[dict[str, str]] = []
     diagnostics: list[dict[str, str]] = []
     by_question: list[dict[str, Any]] = []
+    numeric_verification: dict[str, list[dict[str, Any]]] = {}
     mistake_note_texts: list[tuple[str, str]] = []
 
     for question in items:
@@ -766,7 +779,8 @@ def audit_content_quality(
                 issue("choice_missing_option_analysis", "选择题缺少选项辨析。")
 
         if has_calculation_part:
-            consistency_issues = calculation_draft_consistency_issues(draft)
+            numeric_verification[qid] = []
+            consistency_issues = calculation_draft_consistency_issues(draft, observations=numeric_verification[qid])
             if consistency_issues:
                 issue(
                     "calculation_internal_inconsistency",
@@ -888,6 +902,7 @@ def audit_content_quality(
         "warnings": warnings,
         "diagnostics": diagnostics,
         "by_question": by_question,
+        "numeric_verification": numeric_verification,
     }
     if output_json is not None:
         output_json.parent.mkdir(parents=True, exist_ok=True)

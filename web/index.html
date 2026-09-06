@@ -319,10 +319,6 @@
                   <span><strong>审查出题蓝图</strong><small>开启后可逐题调整题型、难度和设计意图；关闭后从范围确认直接生题。</small></span>
                   <input id="knowledgeBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
                 </label>
-                <label class="practice-blueprint-toggle">
-                  <span><strong>严格教研审查</strong><small>默认关闭以快速出题；开启后增加一次模型语义审查，适合正式下发前复核。</small></span>
-                  <input id="knowledgeSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
-                </label>
                 <label class="practice-blueprint-toggle practice-source-content-toggle">
                   <span><strong>正式生题时参考来源材料</strong><small>开启后会参考教材原文、公式、图表和上传文件中的相关内容。</small></span>
                   <input id="knowledgeIncludeSourceContent" type="checkbox" checked role="switch"><i></i>
@@ -638,10 +634,6 @@
                     <label class="practice-blueprint-toggle">
                       <span><strong>审查出题蓝图</strong><small>开启后可逐题调整蓝图；关闭后从范围确认直接生题。</small></span>
                       <input id="practiceBlueprintReviewEnabled" type="checkbox" checked role="switch"><i></i>
-                    </label>
-                    <label class="practice-blueprint-toggle">
-                      <span><strong>严格教研审查</strong><small>默认使用快速模式；开启后生成完成会再调用模型检查语义边界。</small></span>
-                      <input id="practiceSemanticReviewEnabled" type="checkbox" role="switch"><i></i>
                     </label>
                     <label class="practice-blueprint-toggle practice-source-content-toggle">
                       <span><strong>正式生题时参考来源材料</strong><small>开启后会参考原题题面或知识材料中的图文、公式和表格。</small></span>
@@ -1639,6 +1631,7 @@
         <p id="currentStepText">正在读取任务状态…</p>
       </article>
 
+      <article id="taskUnitDeliveryPanel" class="panel-card hidden" aria-live="polite"></article>
       <article id="diagnosticsPanel" class="panel-card diagnostics-panel hidden">
         <h3><i class="fas fa-magnifying-glass-chart text-blue"></i>问题排查</h3>
         <div id="diagnosticsSummary" class="diagnostics-summary">正在读取任务日志...</div>
@@ -1719,6 +1712,7 @@
     </section>
 
     <section id="page-result" class="page">
+      <article id="resultUnitDeliveryPanel" class="panel-card hidden" aria-live="polite"></article>
       <div class="page-title result-page-title">
         <div id="resultStateIcon" class="result-icon result-icon-neutral"><i class="fas fa-file-circle-question"></i></div>
         <p id="resultPageEyebrow" class="task-page-eyebrow">真题解析 · 审阅与下载</p>

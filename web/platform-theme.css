@@ -3532,8 +3532,11 @@ input[type="number"]::-webkit-outer-spin-button {
   line-height: 1.75;
 }
 
-#page-practice .practice-options p {
+#page-practice .practice-options p,
+#page-practice .practice-plan-draft__options p {
   font-size: 15px;
+  margin-left: 0;
+  text-indent: 3em;
 }
 
 @media (min-width: 1900px) {

@@ -26,6 +26,14 @@ def test_practice_results_offer_direct_full_export_and_selected_export() -> None
     assert 'id="practiceDownloadSelectedBtn"' in INDEX_HTML
     assert "function exportablePracticeSet()" in APP_JS
     assert '$("practiceDownloadAllBtn")?.addEventListener("click"' in APP_JS
+    assert "const downloadedFilename = job.filename || filename || practiceWordFilename(data);" in APP_JS
+
+
+def test_choice_options_use_three_character_first_line_indent_across_web_outputs() -> None:
+    assert "margin-left:0;text-indent:3em" in APP_JS
+    assert "#page-practice .practice-options p," in PLATFORM_THEME_CSS
+    assert "#page-practice .practice-plan-draft__options p" in PLATFORM_THEME_CSS
+    assert "text-indent: 3em;" in PLATFORM_THEME_CSS
 
 
 def test_storage_preview_is_compact_without_narrowing_full_cleanup_scope() -> None:
@@ -661,10 +669,10 @@ def test_pre_generation_workspace_is_persisted_by_mode_and_stage() -> None:
     assert 'id="knowledgeWorkspaceDraftRestorePrevious"' in INDEX_HTML
     assert "function restorePreviousPracticeWorkspace(" in APP_JS
     assert "workspace_mode: normalizedMode" in APP_JS
-    assert 'id="practiceSemanticReviewEnabled"' in INDEX_HTML
-    assert 'id="knowledgeSemanticReviewEnabled"' in INDEX_HTML
-    assert 'semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true' in APP_JS
-    assert 'semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true' in APP_JS
+    assert 'id="practiceSemanticReviewEnabled"' not in INDEX_HTML
+    assert 'id="knowledgeSemanticReviewEnabled"' not in INDEX_HTML
+    assert 'semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true' not in APP_JS
+    assert 'semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true' not in APP_JS
     assert "function announceAvailablePracticeWorkspaceDraft(" in APP_JS
     assert "当前已保持新任务空白" in APP_JS
     assert "practiceWorkspaceDraftEpochs[normalizedMode] += 1" in APP_JS

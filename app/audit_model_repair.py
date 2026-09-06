@@ -21,7 +21,7 @@ from .answer_generation import (
 )
 from .calculation_consistency import calculation_draft_consistency_issues
 from .capabilities.academic_expressions import audit_academic_expressions
-from .concurrency import model_request_slot, run_limited_concurrent
+from .concurrency import ModelRequestAborted, model_request_slot, run_limited_concurrent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .formula_audit import audit_text_segments_no_formula
@@ -32,11 +32,13 @@ from .image_orchestration import (
 )
 from .llm_client import OpenAICompatibleClient
 from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_supported
+from .output_checkpoints import save_output_checkpoint
 from .prompt_registry import prompt_contract
 from .prompts import question_image_parts
 from .question_requirements import answer_figure_required
 from .question_types import question_has_type
 from .retrieval import EvidenceCandidate
+from .runtime_monitor import model_call_context
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .v4_schema import validate_v4_answer_fragment
 
@@ -335,6 +337,11 @@ def _repair_context(fragment: dict[str, Any] | None, issues: list[dict[str, Any]
         "answer": fragment.get("answer", ""),
         "answer_summary": fragment.get("answer_summary", ""),
         "blocks_to_repair": blocks,
+        "complete_candidate": {
+            **copy.deepcopy(fragment),
+            "blocks": [copy.deepcopy(block) for block in fragment.get("blocks", []) or []
+                       if not isinstance(block, dict) or block.get("label") != "教材依据"],
+        },
         "formulas": draft.get("formulas", fragment.get("formulas", [])),
         "calculation_contract": draft.get("calculation_contract", fragment.get("calculation_contract", {})),
         "answer_units": draft.get("answer_units", fragment.get("answer_units", [])),
@@ -382,7 +389,7 @@ def _repair_prompt(
         "audit_issues": issues,
         "question": question,
         "visual_context": visual_context,
-        "confirmed_evidence": evidence[:20],
+        "confirmed_evidence": evidence,
         "current_answer_context": _repair_context(fragment, issues),
         "output_schema": {
             "schema_version": "answer_book.answer_draft.v1",
@@ -476,6 +483,8 @@ def _repair_retry_prompt(
     base_messages: list[dict[str, Any]],
     candidate: dict[str, Any],
     validation_issues: list[str],
+    *,
+    checked_candidate: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Ask once more only after a candidate fails deterministic postconditions."""
 
@@ -492,10 +501,13 @@ def _repair_retry_prompt(
                     "rejected_result_values": match.group(3),
                 }
             )
-    validation_tool_result = _repair_validation_tool_result(candidate, validation_issues)
+    validation_tool_result = _repair_validation_tool_result(
+        checked_candidate if checked_candidate is not None else candidate, validation_issues
+    )
     retry_instruction = {
         "task": "repair_previous_candidate_validation_only",
         "previous_candidate": candidate,
+        "checked_candidate": checked_candidate,
         "validation_tool_result": validation_tool_result,
         "deterministic_validation_issues": validation_issues,
         "authoritative_arithmetic_diagnostics": arithmetic_diagnostics,
@@ -513,7 +525,7 @@ def _repair_retry_prompt(
         ],
     }
     return ensure_generation_image_label_language_requirement([
-        copy.deepcopy(base_messages[0]),
+        *copy.deepcopy(base_messages),
         {"role": "assistant", "content": json.dumps(candidate, ensure_ascii=False)},
         {"role": "user", "content": json.dumps(retry_instruction, ensure_ascii=False)},
     ])
@@ -778,6 +790,7 @@ def repair_fragments_with_model_for_audit(
     image_model: str = "",
     backup_path: Path | None = None,
     max_repairs: int = 5,
+    worker_limit: int | None = None,
 ) -> dict[str, Any]:
     data = json.loads(fragments_json.read_text(encoding="utf-8")) if fragments_json.exists() else {"fragments": []}
     original = copy.deepcopy(data)
@@ -808,7 +821,7 @@ def repair_fragments_with_model_for_audit(
     repair_issues: list[dict[str, Any]] = []
 
     target_rows = list(targets.items())[:max_repairs]
-    max_workers = 1 if client is not None else audit_model_repair_worker_count()
+    max_workers = 1 if client is not None else max(1, min(6, worker_limit or audit_model_repair_worker_count()))
 
     def repair_one(
         target: tuple[str, list[dict[str, Any]]]
@@ -862,13 +875,16 @@ def repair_fragments_with_model_for_audit(
             if tool_loop is not None:
                 base_messages = _with_main_model_image_tool_contract(base_messages)
             draft: dict[str, Any] = {}
+            candidate: dict[str, Any] | None = None
             repaired: dict[str, Any] | None = None
             candidate_issues: list[str] = []
             max_attempts = audit_model_repair_max_attempts()
             for attempt in range(max_attempts):
-                messages = base_messages if attempt == 0 else _repair_retry_prompt(base_messages, draft, candidate_issues)
+                messages = base_messages if attempt == 0 else _repair_retry_prompt(
+                    base_messages, draft, candidate_issues, checked_candidate=candidate
+                )
                 agent_result = None
-                with prompt_contract("exam.answer_audit_repair"):
+                with prompt_contract("exam.answer_docx_repair" if audit_stage == "docx" else "exam.answer_audit_repair"), model_call_context(budget_phase="delivery_repair"):
                     if tool_loop is not None:
                         agent_result = tool_loop.run_json(
                             messages,
@@ -886,7 +902,7 @@ def repair_fragments_with_model_for_audit(
                                 max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
                                 thinking="disabled",
                                 timeout=audit_model_repair_timeout_seconds(question),
-                                task_stage="review",
+                                task_stage="format_repair" if audit_stage == "docx" else "review",
                                 item_ids=[qid],
                                 enforce_context_budget=True,
                             )
@@ -904,25 +920,45 @@ def repair_fragments_with_model_for_audit(
                     candidate.setdefault("_meta", {})["deferred_formula_paraphrases"] = deferred_formula_paraphrases
                 regression_issues = _repair_regressions(fragment, candidate, question, issues)
                 candidate_issues = syntax_issues + formula_leaks[:10] + regression_issues
-                if audit_stage == "academic_expression":
+                if audit_stage in {"academic_expression", "docx"}:
                     candidate_issues.extend(
                         _academic_expression_candidate_issues(candidate, question)
                     )
+                checkpoint_path = save_output_checkpoint(
+                    fragments_json.parent,
+                    stage=f"audit_repair:{audit_stage}",
+                    object_id=qid,
+                    source=draft,
+                    candidate=candidate,
+                    diagnostics={"attempt": attempt + 1, "issues": candidate_issues},
+                )
                 if not candidate_issues:
                     repaired = candidate
                     break
-                validation_result = _repair_validation_tool_result(draft, candidate_issues)
+                validation_result = _repair_validation_tool_result(candidate, candidate_issues)
                 validation_result["meta"].update(
                     {
                         "attempt": attempt + 1,
                         "max_attempts": max_attempts,
                         "question_id": qid,
+                        "checkpoint": str(checkpoint_path),
                     }
                 )
+                if validation_history and (
+                    validation_history[-1]["meta"]["candidate_sha256"]
+                    == validation_result["meta"]["candidate_sha256"]
+                    and validation_history[-1]["error"]["details"]["issues"] == candidate_issues
+                ):
+                    validation_result["error"].update({
+                        "code": "ANSWER_REPAIR_NO_PROGRESS",
+                        "message": "连续修复返回相同受检内容与相同问题，已停止重复调用。",
+                        "retryable": False,
+                    })
+                    validation_history.append(validation_result)
+                    return qid, None, candidate_issues, validation_history
                 validation_history.append(validation_result)
-                # Each retry receives the latest full candidate plus the exact
-                # deterministic tool result. No retry starts again from the
-                # original answer, and no failed candidate is persisted.
+                # Failed candidates remain diagnostic checkpoints, never
+                # replacements for the accepted fragment collection.
                 if attempt + 1 < max_attempts:
                     continue
                 return qid, None, candidate_issues, validation_history
@@ -951,6 +987,8 @@ def repair_fragments_with_model_for_audit(
                 }
             )
             repaired["_meta"] = meta
+        except ModelRequestAborted:
+            raise
         except Exception as exc:
             return qid, None, [str(exc)], validation_history
         return qid, repaired, [], validation_history

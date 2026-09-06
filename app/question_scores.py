@@ -166,6 +166,11 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
 
 def infer_explicit_parent_score(question: dict[str, Any]) -> float | None:
     """Return a parent total only when the source identifies it as a total."""
+    review_origin = str(question.get("score_review_origin") or "").strip().lower()
+    if question.get("score_reviewed") and (review_origin == "manual" or review_origin.startswith("user_confirmed")):
+        confirmed = parse_score(question.get("confirmed_score"))
+        if confirmed is not None:
+            return confirmed
     section_text = _score_text(
         question,
         ("section", "section_raw", "extracted_section", "extracted_section_raw", "raw_title"),
@@ -174,8 +179,6 @@ def infer_explicit_parent_score(question: dict[str, Any]) -> float | None:
     if per_question is not None:
         return per_question
     section_total = re.search(r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分", section_text)
-    if section_total:
-        return float(section_total.group(1))
     section_item_count = int(question.get("section_item_count") or 0)
     represents_whole_section = bool(question.get("subquestions")) and (
         section_item_count == 1
@@ -183,9 +186,14 @@ def infer_explicit_parent_score(question: dict[str, Any]) -> float | None:
         else str(question.get("number") or "").strip() == str(question.get("major_number") or "").strip()
     )
     if represents_whole_section:
+        if section_total:
+            return float(section_total.group(1))
         bare_section_total = re.search(r"[（(]\s*(\d+(?:\.\d+)?)\s*分\s*[）)]", section_text)
         if bare_section_total:
             return float(bare_section_total.group(1))
+    per_item = re.search(r"每(?:小)?题\s*(\d+(?:\.\d+)?)\s*分", section_text)
+    if per_item:
+        return float(per_item.group(1))
     stem_text = _score_text(question, ("stem", "title"))
     explicit_stem_total = re.search(
         r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分",

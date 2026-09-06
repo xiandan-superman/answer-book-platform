@@ -216,13 +216,6 @@ _CONTRACTS = (
         version="2",
     ),
     _contract(
-        "practice.semantic_review",
-        profiles=("practice", "knowledge"),
-        sections=("base_rules", "task_profile", "source_or_evidence", "answer_candidates", "review_dimensions", "output_schema"),
-        output="json_object",
-        consumers=("practice_semantic_review",),
-    ),
-    _contract(
         "practice.blueprint_revision",
         profiles=("practice", "knowledge"),
         sections=("base_rules", "source_analysis", "current_blueprint_item", "user_instruction", "output_schema"),
@@ -266,7 +259,6 @@ _PRACTICE_STAGE_CONTRACTS = {
     "source_analysis": "practice.source_analysis",
     "planning": "practice.planning",
     "generation": "practice.generation",
-    "semantic_review": "practice.semantic_review",
 }
 _ACTIVE_PROMPT_CONTRACT: ContextVar[str] = ContextVar(
     "active_prompt_contract",

@@ -31,8 +31,7 @@ def _draft(text: str, batch_id: str, updated_at: int) -> dict:
             "focus": "",
             "question_types": [],
             "include_source_content_in_generation": True,
-            "semantic_review_enabled": False,
-        },
+            },
     }
 
 

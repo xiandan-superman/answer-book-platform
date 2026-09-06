@@ -78,6 +78,9 @@ def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> 
     assert "constraints-source-windows-py39.txt" not in QUALITY
     assert "constraints-source-windows-py311.txt" in QUALITY
     assert "python -m pip check" in QUALITY
+    assert "requirements-windows.txt -r requirements-dev.txt" in QUALITY
+    assert "Validate Windows API Key persistence" in QUALITY
+    assert "tests/test_local_config.py tests/test_api_key_config_concurrency.py" in QUALITY
 
 
 def test_manifest_builder_runs_outside_repository_working_directory(tmp_path: Path) -> None:

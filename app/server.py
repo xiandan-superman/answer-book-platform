@@ -68,6 +68,7 @@ from .practice_export_jobs import (
     create_or_reuse_practice_export_job,
     load_practice_export_job,
     practice_export_download,
+    practice_unit_package,
     recover_practice_export_jobs,
     retry_practice_export_job,
 )
@@ -152,6 +153,7 @@ from .task_runner import control_exam_task, start_exam_task
 from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
 from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
 from .token_meter import build_token_meter_report
+from .unit_delivery import build_unit_package, read_manifest
 from .update_manager import UpdateError, check_for_updates, start_update, update_progress
 from .v4_schema import validate_v4_answer_fragment
 from .version import get_app_version, get_source_revision, get_version, release_manifest_status
@@ -1105,6 +1107,13 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:3] == ["api", "practice", "export-jobs"]:
             self.send_json({"ok": True, "job": load_practice_export_job(parts[3])})
             return
+        if len(parts) == 5 and parts[:3] == ["api", "practice", "export-jobs"] and parts[4] == "unit-package":
+            revision = parse_qs(parsed.query).get("revision", [""])[0]
+            target = practice_unit_package(parts[3], revision)
+            self.send_download(target)
+            record = load_practice_export_job(parts[3])
+            mark_task_downloaded(parts[3], str(record.get("history_id") or ""))
+            return
         if len(parts) == 5 and parts[:3] == ["api", "practice", "export-jobs"] and parts[4] == "download":
             target, filename = practice_export_download(parts[3])
             query = parse_qs(parsed.query)
@@ -1349,6 +1358,21 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "result-view":
             task_id = parts[2]
             self.send_json(build_task_result_view(task_id))
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "unit-delivery":
+            task_id = parts[2]
+            load_task(task_id)
+            self.send_json(read_manifest(stage_dir(task_id) / "unit_delivery"))
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "unit-package":
+            task_id = parts[2]
+            load_task(task_id)
+            revision = parse_qs(parsed.query).get("revision", [""])[0]
+            if not revision:
+                raise ValueError("请指定已显示的成果版本，避免下载期间切换内容。")
+            target = build_unit_package(stage_dir(task_id) / "unit_delivery", revision)
+            self.send_download(target)
+            mark_task_downloaded(task_id)
             return
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "answer-fragments":
             task_id = parts[2]
@@ -1727,11 +1751,6 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         int(body.get("exercise_index")),
                         body.get("exercise") if isinstance(body.get("exercise"), dict) else {},
                         change_reason=str(body.get("change_reason") or "regenerate_question"),
-                        semantic_review=(
-                            body.get("semantic_review")
-                            if isinstance(body.get("semantic_review"), dict)
-                            else None
-                        ),
                         practice_updates=(
                             body.get("practice_updates")
                             if isinstance(body.get("practice_updates"), dict)
@@ -1821,7 +1840,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         latest_export_data = None
                 export_data = resolve_practice_export_payload(body, latest_export_data)
                 export_validation = validate_practice_export(export_data)
-                if not export_validation.get("ok"):
+                if not export_validation.get("ok") and parsed.path != "/api/practice/export/prepare":
                     issues = export_validation.get("blocking_issues") or []
                     append_runtime_log(
                         "practice_export",

@@ -72,7 +72,6 @@ def build_practice_diagnostics(task_id: str) -> dict[str, Any]:
             "quality": _sanitized(data.get("quality") or record.get("quality") or {}),
             "generation": _sanitized(data.get("generation") or record.get("generation") or {}),
             "completion_issues": _sanitized(data.get("completion_issues") or record.get("completion_issues") or {}),
-            "semantic_review": _sanitized(data.get("semantic_review") or {}),
             "format_repair": _sanitized(data.get("format_repair") or {}),
             "blueprint_audit_repair": _sanitized(data.get("blueprint_audit_repair") or {}),
         }

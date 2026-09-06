@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 
-
-PRACTICE_DOCUMENT_CONTRACT_VERSION = "practice_word.current_compatibility.v1"
+PRACTICE_DOCUMENT_CONTRACT_VERSION = "practice_word.current_compatibility.v4"
 
 
 @dataclass(frozen=True)
@@ -27,6 +26,7 @@ class PracticeTextContract:
     page_number_size_pt: float
     line_spacing: float
     first_line_indent_pt: float
+    option_first_line_indent_chars: float
     list_left_indent_pt: float
     list_hanging_indent_pt: float
     table_line_spacing: float
@@ -50,6 +50,7 @@ PRACTICE_TEXT_CONTRACT = PracticeTextContract(
     page_number_size_pt=9,
     line_spacing=1.5,
     first_line_indent_pt=22,
+    option_first_line_indent_chars=3,
     list_left_indent_pt=22,
     list_hanging_indent_pt=22,
     table_line_spacing=1.15,

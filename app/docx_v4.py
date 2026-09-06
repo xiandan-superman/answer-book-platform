@@ -14,7 +14,7 @@ from docx.shared import Cm, Pt, RGBColor
 from lxml import etree
 from PIL import Image
 
-from .capabilities.expression_rendering import render_expression_omml
+from .capabilities.expression_rendering import build_expression_render_plan, preflight_expression_render, render_expression_omml
 from .capabilities.text_expression_rendering import build_text_expression_render_plans
 from .document_contracts import (
     FOOTER_TEXT,
@@ -35,7 +35,7 @@ from .question_types import (
     is_term_explanation_question,
     question_has_type,
 )
-from .rich_text_math import iter_delimited_math
+from .rich_text_math import iter_delimited_math, protected_math_spans
 
 MIN_WORD_FIGURE_HEIGHT_CM = 3.8
 WIDE_WORD_FIGURE_ASPECT_RATIO = 2.4
@@ -81,6 +81,23 @@ CRYSTALLOGRAPHIC_LATEX_RE = re.compile(
     rf"(?:\}}?\)|\}}?\]|\}}?>|\}})"
 )
 SQRT_SUMMARY_RE = re.compile(r"√\s*(?:\(([^)]+)\)|([A-Za-z0-9]+))(?:\s*≈\s*[-+]?\d+(?:\.\d+)?)?")
+FUNCTION_ARGUMENT_SUMMARY_RE = re.compile(
+    rf"(?<![A-Za-z\\])(?P<function>sin|cos|tan|ln|log|exp)\s+"
+    rf"(?P<argument>[{SYMBOL_CHARS}])(?![A-Za-z0-9_^])"
+)
+_UNIT_SYMBOL = r"(?:mol|kg|[kMGTmun]?Pa|[kMmun]?[JWLmgAsK]|cd)"
+_UNIT_FACTOR = rf"{_UNIT_SYMBOL}(?:\^[-+]?\d+)?"
+COMPOUND_UNIT_SUMMARY_RE = re.compile(
+    rf"(?<![A-Za-z\\]){_UNIT_FACTOR}(?:[·⋅*]{_UNIT_FACTOR})+(?![A-Za-z])"
+)
+
+
+def _compound_unit_latex(value: str) -> str:
+    factors = []
+    for factor in re.split(r"[·⋅*]", value):
+        unit, _, power = factor.partition("^")
+        factors.append(rf"\mathrm{{{unit}}}" + (rf"^{{{power}}}" if power else ""))
+    return r"\cdot ".join(factors)
 FORMULA_TOKEN_RE = (
     rf"(?:"
     rf"(?:sin|cos|tan)\s*[{SYMBOL_CHARS}][A-Za-z0-9{GREEK_CHARS}]{{0,4}}"
@@ -213,6 +230,31 @@ def add_figure_picture(paragraph, image_path: Path) -> None:
     paragraph.add_run().add_picture(str(fitted_path), width=Cm(display_width_cm))
 
 
+def _append_prose_runs(paragraph, text: str, *, bold: bool = False, size: float = 11, highlight: bool = False) -> None:
+    """Render paired Markdown emphasis; leave unmatched delimiters visible."""
+    # ``\%`` is valid inside a LaTex formula but is a visible-text escape when
+    # it reaches this prose-only renderer. Preserve the percentage and avoid a
+    # raw-LaTex audit failure without touching formula-object conversion.
+    text = str(text or "").replace(r"\%", "%")
+    cursor = 0
+    for match in re.finditer(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", text):
+        if match.start() > cursor:
+            run = paragraph.add_run(text[cursor:match.start()])
+            set_run_font(run, bold=bold, size=size)
+            if highlight:
+                set_run_shading(run)
+        run = paragraph.add_run(match.group(1))
+        set_run_font(run, bold=True, size=size)
+        if highlight:
+            set_run_shading(run)
+        cursor = match.end()
+    if cursor < len(text):
+        run = paragraph.add_run(text[cursor:])
+        set_run_font(run, bold=bold, size=size)
+        if highlight:
+            set_run_shading(run)
+
+
 def append_domain_text_runs(paragraph, text: str, *, highlight: bool = False) -> None:
     """Render deterministic academic notation while preserving surrounding prose."""
 
@@ -226,10 +268,7 @@ def append_domain_text_runs(paragraph, text: str, *, highlight: bool = False) ->
         if plan.start < cursor:
             continue
         if plan.start > cursor:
-            run = paragraph.add_run(source[cursor:plan.start])
-            set_run_font(run)
-            if highlight:
-                set_run_shading(run)
+            _append_prose_runs(paragraph, source[cursor:plan.start], highlight=highlight)
         if plan.preserve_parentheses:
             run = paragraph.add_run("（")
             set_run_font(run)
@@ -250,10 +289,7 @@ def append_domain_text_runs(paragraph, text: str, *, highlight: bool = False) ->
             set_run_font(run)
         cursor = plan.end
     if cursor < len(source):
-        run = paragraph.add_run(source[cursor:])
-        set_run_font(run)
-        if highlight:
-            set_run_shading(run)
+        _append_prose_runs(paragraph, source[cursor:], highlight=highlight)
 
 
 def set_run_font(
@@ -292,8 +328,7 @@ def set_para(p, align=None):
 def add_text_paragraph(doc: Document, text: str, bold: bool = False, size: float = 11, align=None, skip_formula_audit: bool = False):
     p = doc.add_paragraph()
     set_para(p, align)
-    r = p.add_run(normalize_answer_hierarchy_markers(text))
-    set_run_font(r, size=size, bold=bold)
+    _append_prose_runs(p, normalize_answer_hierarchy_markers(text), size=size, bold=bold)
     return p
 
 
@@ -496,6 +531,11 @@ def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
     for span in iter_delimited_math(text):
         if span.latex:
             candidates.append((span.start, span.end, span.latex))
+    for match in COMPOUND_UNIT_SUMMARY_RE.finditer(text):
+        candidates.append((match.start(), match.end(), _compound_unit_latex(match.group(0))))
+    for match in FUNCTION_ARGUMENT_SUMMARY_RE.finditer(text):
+        candidates.append((match.start(), match.end(),
+                           "\\" + match.group("function") + " " + _latex_symbol(match.group("argument"))))
     for match in PARTIAL_DERIVATIVE_SUMMARY_RE.finditer(text):
         numerator = _latex_atom(match.group("numerator"))
         numerator = re.sub(r"^\\Delta(?=[A-Za-z])", r"\\Delta ", numerator)
@@ -558,12 +598,33 @@ def _answer_summary_formula_candidates(text: str) -> list[tuple[int, int, str]]:
         )
         for match in ARROW_SUMMARY_RE.finditer(text)
     )
+    protected = protected_math_spans(text)
+    # Existing crystal-index recognition owns its explicit outer brackets.
+    # It may encompass a bare command span, but never split one internally.
+    crystals = _crystallographic_formula_candidates(text)
+    protected = [
+        item for item in protected
+        if not any(start <= item[0] and item[1] <= end for start, end, _ in crystals)
+    ] + crystals
+    candidates = [
+        item for item in candidates
+        if not any(item[0] < end and start < item[1] for start, end, _ in protected)
+    ] + [
+        item for item in protected
+        if not preflight_expression_render(build_expression_render_plan(item[2]))
+    ]
     candidates.sort(key=lambda item: (item[0], -(item[1] - item[0])))
     selected: list[tuple[int, int, str]] = []
     cursor = -1
     for start, end, latex in candidates:
         if start < cursor:
             continue
+        if start > 0 and text[start - 1] == "[" and latex.count("]") == latex.count("[") + 1:
+            start -= 1
+            latex = "[" + latex
+        latex = COMPOUND_UNIT_SUMMARY_RE.sub(lambda match: _compound_unit_latex(match.group(0)), latex)
+        latex = re.sub(r"(?<![A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)[eE]([+-]?[0-9]+)(?![A-Za-z0-9])",
+                       lambda match: rf"{match.group(1)}\times 10^{{{int(match.group(2))}}}", latex)
         # A relation embedded in explanatory parentheses can be recognized as
         # ``(Delta U=Q+W`` while the closing parenthesis correctly remains
         # prose after the mathematical span.  Keep unmatched boundary
@@ -594,7 +655,10 @@ def add_answer_summary_paragraph(doc: Document, answer_summary: str, size: float
         if plain:
             if strict_formula_audit and looks_like_symbolic_formula(plain):
                 raise ValueError(f"Formula-like text remained in answer summary: {plain[:120]}")
-            run = p.add_run(plain)
+            # This path bypasses ``_append_prose_runs``.  Clean a visible
+            # percent escape here, after mathematical spans are identified, so
+            # a delimited formula retains its legal LaTex ``\\%`` unchanged.
+            run = p.add_run(plain.replace(r"\%", "%"))
             set_run_font(run, size=size)
         p._p.append(render_expression_omml(latex, display=False, location="answer_summary"))
         cursor = end
@@ -602,7 +666,7 @@ def add_answer_summary_paragraph(doc: Document, answer_summary: str, size: float
     if tail:
         if strict_formula_audit and looks_like_symbolic_formula(tail):
             raise ValueError(f"Formula-like text remained in answer summary: {tail[:120]}")
-        run = p.add_run(tail)
+        run = p.add_run(tail.replace(r"\%", "%"))
         set_run_font(run, size=size)
     return p
 
@@ -780,37 +844,32 @@ def add_mixed_paragraph(
 def add_split_block(doc: Document, segments: list[dict], formulas: dict[str, dict], label: str = "", base_dir: Path | None = None):
     if label:
         add_text_paragraph(doc, f"{label}：", bold=True)
-    skip_promoted_tail = False
     previous_was_formula = False
-    for seg in segments:
+    inline_segments: list[dict] = []
+    for index, seg in enumerate(segments):
         typ = seg.get("type")
+        next_inline = index + 1 < len(segments) and bool(segments[index + 1].get("inline"))
+        if (typ == "formula_ref" and bool(seg.get("inline"))) or (
+            typ == "text" and (inline_segments or next_inline)
+        ):
+            inline_segments.append(seg)
+            if index == len(segments) - 1 or (typ == "text" and not next_inline):
+                add_mixed_paragraph(doc, inline_segments, formulas, base_dir=base_dir)
+                inline_segments = []
+            previous_was_formula = False
+            continue
+        if inline_segments:
+            add_mixed_paragraph(doc, inline_segments, formulas, base_dir=base_dir)
+            inline_segments = []
         if typ == "text":
             text = str(seg.get("text", "")).strip()
             if previous_was_formula and re.fullmatch(r"[。．.，,；;：:、!?！？]+", text):
-                skip_promoted_tail = False
                 previous_was_formula = False
                 continue
-            if skip_promoted_tail and re.fullmatch(
-                r"(?:(?:总|隔离|系统|环境|环|外|内)+\s*=\s*)?"
-                r"[=<>{}\[\]()（）A-Za-z0-9⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻+\-−*/×·.,。，、\s]+",
-                text,
-            ):
-                skip_promoted_tail = False
-                previous_was_formula = False
-                continue
-            skip_promoted_tail = False
             if text:
                 add_text_paragraph(doc, text)
             previous_was_formula = False
         elif typ == "formula_ref":
-            # Inline promotion can leave a duplicate fragment immediately after
-            # the authoritative display result (for example display ``b=a<100>``
-            # followed by inline ``b=a`` + plain ``<100>``). Do not render that
-            # duplicate or let the following step heading stick to it.
-            if bool(seg.get("inline")):
-                skip_promoted_tail = True
-                previous_was_formula = True
-                continue
             fid = str(seg.get("formula_id", ""))
             formula = formulas.get(fid)
             if not formula:
@@ -874,7 +933,17 @@ def _display_formula_lines(latex: str) -> list[str]:
     # array before emitting OMML.
     if STRUCTURED_DISPLAY_ENVIRONMENT_RE.search(value):
         return [value]
-    outer_upright = value.startswith(r"\mathrm{") and value.endswith("}")
+    outer_upright = False
+    if value.startswith(r"\mathrm{"):
+        depth = 1
+        for index in range(len(r"\mathrm{"), len(value)):
+            if value[index] == "{" and value[index - 1] != "\\":
+                depth += 1
+            elif value[index] == "}" and value[index - 1] != "\\":
+                depth -= 1
+            if depth == 0:
+                outer_upright = index == len(value) - 1
+                break
     search_value = value[len(r"\mathrm{") : -1] if outer_upright else value
     match = DISPLAY_REACTION_ARROW_RE.search(search_value)
     if not match:
@@ -910,6 +979,7 @@ def add_formula_paragraph(doc: Document, latex: str, *, location: str = "formula
     for line_index, line in enumerate(lines):
         p = doc.add_paragraph()
         set_para(p, WD_ALIGN_PARAGRAPH.CENTER)
+        p.paragraph_format.keep_with_next = line_index < len(lines) - 1
         try:
             p._p.append(render_expression_omml(line, display=True, location=location))
         except Exception as exc:
@@ -1106,6 +1176,34 @@ def _answer_text(answer: str, answer_summary: str) -> str:
     if summary and summary not in {"待复核", "待补充", "见解析"}:
         return summary
     return str(answer or "").strip() or "待复核"
+
+
+def expected_fragment_formula_count(fragment: dict) -> int:
+    """Exclude program-only summary projections that this document does not use.
+
+    Model-declared formulas and every body reference retain the existing gate.
+    The calculation renderer deliberately uses steps, not the optional summary;
+    rebuilding that summary must not increase its expected Word formula count.
+    """
+    body_refs = {str(segment.get("formula_id") or "")
+                 for block in fragment.get("blocks", []) or []
+                 for segment in block.get("segments", []) or []
+                 if isinstance(segment, dict) and segment.get("type") == "formula_ref"}
+    context = {"section": fragment.get("section"), "question_type": fragment.get("question_type"),
+               "subquestions": fragment.get("subquestions") or []}
+    summary = str(fragment.get("answer_summary") or "").strip()
+    use_summary = not is_calculation_section(context) and _answer_text(str(fragment.get("answer") or ""), summary) == summary
+    summary_refs = {str(segment.get("formula_id") or "")
+                    for segment in fragment.get("answer_summary_segments", []) or []
+                    if isinstance(segment, dict) and segment.get("type") == "formula_ref"} if use_summary else set()
+    expected = 0
+    for formula in fragment.get("formulas", []) or []:
+        fid = str(formula.get("formula_id") or "")
+        summary_projection = ("_answer_summary_math_" in fid and
+                              formula.get("source_note") == "程序在结构校验前从答案摘要中提升的数学表达式。")
+        if not summary_projection or fid in body_refs or fid in summary_refs:
+            expected += 1
+    return expected
 
 
 def _find_block(fragment: dict, label: str) -> dict | None:

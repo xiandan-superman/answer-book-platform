@@ -65,6 +65,31 @@ def test_lingsuan_non_gpt_model_keeps_configured_protocol():
     assert client.config.api_protocol == "responses"
 
 
+def test_generation_formula_contract_matches_the_normalization_consumer():
+    contract = exercise_generation._batch_output_contract([{
+        "question_type": "计算题",
+        "required_constraints": {"essential_formulas": ["状态方程"]},
+    }])["exercises"][0]
+
+    assert "完整包在 $...$ 或 \\[...\\] 中" in contract["stem"]
+    assert contract["formulas"][0]["latex"] == "不含美元符号的 LaTeX"
+
+    normalized = exercise_generation.normalize_practice_set(
+        {"exercises": [{
+            "plan_item_id": "plan_item_01",
+            "question_type": "计算题",
+            "difficulty": "进阶",
+            "stem": "按给定状态方程计算。",
+            "formulas": [{"formula_id": "f1", "latex": r"pV=nRT", "location": "stem"}],
+        }]},
+        requested_count=1,
+        subject="物理",
+        planned_plan_ids=["plan_item_01"],
+    )
+
+    assert normalized["exercises"][0]["formulas"][0]["latex"] == r"pV=nRT"
+
+
 def test_control_character_in_responses_output_repairs_on_same_route():
     primary_calls = []
 
@@ -104,6 +129,50 @@ def test_invalid_same_route_retry_is_rejected_instead_of_returned():
             temperature=0.35,
             thinking=None,
         )
+
+
+def test_tool_loop_output_repairs_single_escaped_latex_control_before_normalization():
+    calls = []
+
+    class ToolLoop:
+        def run_json(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return SimpleNamespace(
+                value={"exercises": [{"stem": "$" + "\t" + "imes$"}]},
+                generated_artifacts=[],
+                steps=[],
+                tool_calls=[],
+            )
+
+    parsed = exercise_generation._call_practice_json(
+        object(),
+        [{"role": "user", "content": "return JSON"}],
+        model="gpt-5.6-terra",
+        temperature=0.35,
+        thinking=None,
+        tool_loop=ToolLoop(),
+    )
+
+    assert parsed["exercises"][0]["stem"] == "$\\times$"
+    assert exercise_generation._practice_control_character_issues(parsed) == []
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("command_suffix", ["heta", "ext", "imes"])
+def test_gateway_control_recovery_is_limited_to_known_latex_commands(command_suffix):
+    repaired = exercise_generation._repair_gateway_latex_control_characters({
+        "stem": "$" + "\t" + command_suffix + "$",
+    })
+
+    assert repaired["stem"] == "$\\t" + command_suffix + "$"
+    assert exercise_generation._practice_control_character_issues(repaired) == []
+
+
+def test_gateway_control_recovery_leaves_ambiguous_control_characters_for_the_gate():
+    repaired = exercise_generation._repair_gateway_latex_control_characters({"stem": "普通\t文字"})
+
+    assert repaired["stem"] == "普通\t文字"
+    assert exercise_generation._practice_control_character_issues(repaired)
 
 
 def test_control_gate_rejects_formula_escape_controls_but_allows_newline():
@@ -157,4 +226,30 @@ def test_normalization_refuses_contaminated_data_before_persistence():
             {"exercises": [{"stem": "$\beta$"}]},
             requested_count=1,
             subject="化学",
+        )
+
+
+@pytest.mark.parametrize("subject", ["按题出题", "知识点出题"])
+def test_one_known_slot_control_failure_does_not_destroy_other_results(subject):
+    raw = {"exercises": [
+        {"plan_item_id": "plan_item_01", "stem": "解释此现象。", "question_type": "简答题"},
+        {"plan_item_id": "plan_item_02", "stem": "$\theta$", "question_type": "简答题"},
+    ]}
+    result = exercise_generation.normalize_practice_set(raw, requested_count=2, subject=subject)
+    assert result["exercises"][0]["stem"] == "解释此现象。"
+    assert result["exercises"][0]["generation_status"] == "completed"
+    rejected = result["exercises"][1]
+    assert rejected["number"] == 2
+    assert rejected["generation_status"] == "failed"
+    assert rejected["generation_error"]["code"] == "invalid_output_control_character"
+    assert exercise_generation._practice_control_character_issues(result) == []
+    assert "\t" in raw["exercises"][1]["stem"]  # original evidence untouched
+
+
+def test_corrupt_shared_context_still_blocks_the_set():
+    with pytest.raises(ValueError, match="不能进入规范化或保存"):
+        exercise_generation.normalize_practice_set(
+            {"source_analysis": {"subject": "\t"}, "exercises": [
+                {"plan_item_id": "plan_item_01", "stem": "解释此现象。"},
+            ]}, requested_count=1, subject="化学",
         )

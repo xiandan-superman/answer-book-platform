@@ -199,20 +199,28 @@ def _trace_files(root: Path) -> list[Path]:
 
 
 def _remove_orphan_attachments(task_root: Path) -> None:
-    referenced: set[str] = set()
-    for trace in _trace_files(task_root):
+    attachment_root = task_root / "attachments"
+    if not attachment_root.is_dir() or attachment_root.is_symlink():
+        return
+    remaining = {path.name: path for path in attachment_root.iterdir() if path.is_file() and not path.is_symlink()}
+    if not remaining:
+        return
+    # Recent traces usually own every current attachment. Do not decompress
+    # thousands of unrelated historical responses on each model return.
+    for trace in reversed(_trace_files(task_root)):
         try:
             with gzip.open(trace, "rt", encoding="utf-8") as handle:
                 text = handle.read()
-        except OSError:
-            continue
-        referenced.update(re.findall(r'attachments\/([0-9a-f]{64}\.[A-Za-z0-9]+)', text))
-    attachment_root = task_root / "attachments"
-    if not attachment_root.exists():
-        return
-    for path in attachment_root.iterdir():
-        if path.is_file() and path.name not in referenced:
-            path.unlink(missing_ok=True)
+        except (OSError, EOFError, UnicodeError):
+            # A damaged trace may still own an attachment. Missing evidence is
+            # not proof that the user's diagnostic image can be removed.
+            return
+        for name in re.findall(r'attachments\/([0-9a-f]{64}\.[A-Za-z0-9]+)', text):
+            remaining.pop(name, None)
+        if not remaining:
+            return
+    for path in remaining.values():
+        path.unlink(missing_ok=True)
 
 
 def _prune_expired(root: Path) -> None:

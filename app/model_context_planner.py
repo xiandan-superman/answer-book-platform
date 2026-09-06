@@ -16,7 +16,6 @@ DEFAULT_QUALITY_INPUT_TOKENS = {
     "answer": 22000,
     "answer_generation": 22000,
     "review": 18000,
-    "semantic_review": 20000,
     "format_repair": 12000,
     "figure_schema": 14000,
     "drawing_code": 14000,

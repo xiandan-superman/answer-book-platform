@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from app import practice_store
 
-
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -45,7 +44,7 @@ def test_editor_programmatic_values_refresh_custom_select_labels() -> None:
     assert "syncPlatformSelectElement(difficultySelect);" in populated_editor
 
 
-def test_edit_then_undo_restores_question_review_and_sources() -> None:
+def test_edit_then_undo_preserves_historical_review_data_and_sources() -> None:
     with tempfile.TemporaryDirectory() as raw, patch.object(
         practice_store,
         "PRACTICE_HISTORY_DIR",
@@ -91,8 +90,8 @@ def test_edit_then_undo_restores_question_review_and_sources() -> None:
         )
 
         assert edited["revision_count"] == 1
-        assert edited["data"]["semantic_review"]["status"] == "failed"
-        assert edited["data"]["semantic_review"]["items"][0]["status"] == "not_reviewed"
+        assert edited["data"]["semantic_review"]["status"] == "passed"
+        assert edited["data"]["semantic_review"]["items"][0]["status"] == "passed"
 
         restored = practice_store.undo_last_practice_revision(history_id)
         exercise = restored["data"]["exercises"][0]

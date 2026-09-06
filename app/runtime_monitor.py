@@ -276,6 +276,7 @@ def model_call_context(
     question_count: int | None = None,
     task_kind: str = "",
     textbook_evidence_enabled: bool | None = None,
+    budget_phase: str = "",
 ) -> Iterator[None]:
     current = dict(_MODEL_CALL_CONTEXT.get() or {})
     execution_run_id = str(current.get("execution_run_id") or "")
@@ -292,6 +293,7 @@ def model_call_context(
                 "execution_run_id": execution_run_id,
                 "stage": stage,
                 "operation": operation,
+                "budget_phase": budget_phase,
                 "active_item": active_item,
                 "lease_epoch": lease_epoch,
                 "question_count": str(max(0, int(question_count or 0))) if question_count is not None else None,
@@ -957,8 +959,12 @@ def track_model_call(
             elapsed = max(0.0, time.monotonic() - float(state["started_monotonic"]))
             provider_failures = int((state.get("provider_failures") or {}).get(route_key, 0) or 0)
             exhausted_reason = ""
+            remaining_reserve = max(0, budget.delivery_reserve_calls - int(state.get("delivery_repair_calls", 0)))
             if int(state["call_count"]) >= budget.max_model_calls_per_run:
                 exhausted_reason = f"model call budget exhausted ({budget.max_model_calls_per_run})"
+            elif (context.get("budget_phase") != "delivery_repair" and remaining_reserve > 0
+                  and int(state["call_count"]) >= budget.max_model_calls_per_run - remaining_reserve):
+                exhausted_reason = f"model generation budget exhausted; {remaining_reserve} calls reserved for delivery repair"
             elif budget.max_model_tokens_per_run > 0 and int(state["token_count"]) >= budget.max_model_tokens_per_run:
                 exhausted_reason = f"model token budget exhausted ({budget.max_model_tokens_per_run})"
             elif elapsed >= budget.max_model_wall_seconds_per_run:
@@ -976,6 +982,8 @@ def track_model_call(
                 )
                 raise RuntimeError(exhausted_reason)
             state["call_count"] = int(state["call_count"]) + 1
+            if context.get("budget_phase") == "delivery_repair":
+                state["delivery_repair_calls"] = int(state.get("delivery_repair_calls", 0)) + 1
         _MODEL_SEQUENCE += 1
         call_id = str(_MODEL_SEQUENCE)
         invocation_id = uuid4().hex

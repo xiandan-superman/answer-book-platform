@@ -58,7 +58,6 @@ def _payload(count: int = 3) -> dict:
         "generation_concurrency": 1,
         "generation_transport_attempts": 2,
         "generation_retry_backoff_seconds": 0,
-        "semantic_review_enabled": False,
         "plan": _plan(count),
     }
 

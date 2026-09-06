@@ -125,7 +125,6 @@ def test_generation_entry_repairs_only_cross_source_blueprint_item_before_genera
         "source_mode": "knowledge",
         "generation_strategy": "knowledge_item_wise",
         "include_source_content_in_generation": False,
-        "semantic_review_enabled": False,
         "plan_drafts": {
             "p1": {
                 "question_type": "简答题", "difficulty": "基础", "target_skill": "精馏原理",

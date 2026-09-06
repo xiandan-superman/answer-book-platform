@@ -28,6 +28,7 @@ from .capabilities.text_expression_rendering import (
     normalize_standard_state_latex,
     repair_json_escaped_latex,
 )
+from .practice_cloze import practice_cloze_issues
 from .practice_document_contracts import (
     PRACTICE_DOCUMENT_CONTRACT_VERSION,
     PRACTICE_PAGE_CONTRACT,
@@ -56,7 +57,7 @@ CHART_FONT_PATHS = (
 
 
 _SELF_CORRECTION_RE = re.compile(
-    r"(?:自我纠错|纠错草稿|内部草稿|模型分析|思考过程|模型(?:刚才|此前)|"
+    r"(?:自我纠错|纠错草稿|内部草稿|模型(?:刚才|此前)|"
     r"前文有误|刚才的答案|我刚才|更正如下|纠正(?:如下|为)|抱歉[，,]?)"
 )
 
@@ -160,12 +161,48 @@ def resolve_practice_export_payload(
             for index, item in enumerate(exercises)
             if isinstance(item, dict)
         }
-        resolved["exercises"] = [indexed[value] for value in dict.fromkeys(selected_ids) if value in indexed]
+        if len(indexed) != len(exercises):
+            raise ValueError("题目选择标识重复或无效，不能确定导出范围。")
+        if any(value not in indexed for value in selected_ids):
+            raise ValueError("所选题目已不存在，请刷新后重新选择。")
+        original_numbers = {practice_export_exercise_id(item, index): item.get("number") or index + 1
+                            for index, item in enumerate(exercises)}
+        resolved["exercises"] = [{**indexed[value], "_export_original_number": original_numbers[value]}
+                                 for value in dict.fromkeys(selected_ids)]
+        resolved["export_omitted_numbers"] = [original_numbers[value] for value in indexed if value not in selected_ids]
         # Whole-set quality belongs to the original collection. The selected
         # subset is validated item-by-item below and must not inherit stale
         # blockers from questions that are no longer part of the export.
         resolved["quality"] = {}
         resolved["requested_count"] = len(resolved["exercises"])
+        plan_ids = {
+            str(item.get("parent_plan_item_id") or item.get("plan_item_id") or "").strip()
+            for item in resolved["exercises"]
+            if isinstance(item, dict)
+        }
+        refs = {
+            str(ref).strip()
+            for item in resolved["exercises"] if isinstance(item, dict)
+            for ref in (item.get("source_refs") or [item.get("source_question_id")])
+            if str(ref).strip()
+        }
+        blueprint = dict(resolved.get("blueprint") or {})
+        blueprint["exercise_plan"] = [
+            item for item in (blueprint.get("exercise_plan") or [])
+            if isinstance(item, dict) and str(item.get("plan_item_id") or "").strip() in plan_ids
+        ]
+        resolved["blueprint"] = blueprint
+        resolved["selected_source_questions"] = [
+            item for item in (resolved.get("selected_source_questions") or [])
+            if isinstance(item, dict) and str(item.get("source_question_id") or "").strip() in refs
+        ]
+        source_scope = dict(resolved.get("source_scope") or {})
+        if isinstance(source_scope.get("questions"), list):
+            source_scope["questions"] = [
+                item for item in source_scope["questions"]
+                if isinstance(item, dict) and str(item.get("source_question_id") or "").strip() in refs
+            ]
+            resolved["source_scope"] = source_scope
         resolved["export_scope"] = "selected"
         resolved["selected_exercise_ids"] = selected_ids
         # Whole-set blockers from unselected questions must not leak into a
@@ -192,9 +229,13 @@ def resolve_practice_export_payload(
 
 def validate_practice_export(data: dict[str, Any]) -> dict[str, Any]:
     """Block every deterministic defect before producing a formal Word file."""
-    blocking_issues: list[str] = []
+    blocking_issues: list[str] = practice_cloze_issues(data)
     warning_issues: list[str] = []
-    quality = data.get("quality") if isinstance(data, dict) and isinstance(data.get("quality"), dict) else {}
+    # Saved quality is a cache. Recompute at the export boundary so current
+    # deterministic failures and warnings remain authoritative.
+    from .exercise_generation import recompute_practice_quality
+
+    quality = recompute_practice_quality(data) if isinstance(data, dict) else {}
     blocking_issues.extend(str(issue) for issue in quality.get("blocking_issues") or [] if str(issue).strip())
     if quality.get("release_level") == "review_candidate":
         quality_warnings = [str(issue).strip() for issue in quality.get("warnings") or [] if str(issue).strip()]
@@ -241,32 +282,6 @@ def validate_practice_export(data: dict[str, Any]) -> dict[str, Any]:
                 blocking_issues.append(f"第 {question_number} 题包含无法绘制的题图，不能用文字说明代替正式配图。")
     blocking_issues.extend(audit_practice_export_data(data))
     blocking_issues.extend(preflight_practice_inline_expressions(data))
-    review = data.get("semantic_review") if isinstance(data.get("semantic_review"), dict) else {}
-    review_items = {
-        str(item.get("number") or "").strip(): item
-        for item in review.get("items") or []
-        if isinstance(item, dict) and str(item.get("number") or "").strip()
-    }
-    review_candidate_numbers: list[str] = []
-    review_status = str(review.get("status") or "").strip().lower()
-    if review and review_status not in {"disabled", "not_required"}:
-        for index, item in enumerate(exercises or [], start=1):
-            if not isinstance(item, dict) or item.get("generation_status") == "failed":
-                continue
-            number = str(item.get("number") or index).strip()
-            item_review = review_items.get(number)
-            status = str((item_review or {}).get("status") or "not_reviewed").strip().lower()
-            risks = (item_review or {}).get("risks") if isinstance((item_review or {}).get("risks"), list) else []
-            actionable = any(
-                isinstance(risk, dict) and str(risk.get("severity") or "medium").strip().lower() in {"high", "medium"}
-                for risk in risks
-            )
-            if status not in {"passed", "warning"} or actionable:
-                review_candidate_numbers.append(number)
-    if review_candidate_numbers:
-        warning_issues.append(
-            "第 " + "、".join(dict.fromkeys(review_candidate_numbers)) + " 题尚未完成学科复核；Word 可供查看和继续修改，但不应视为正式发布版。"
-        )
     blocking_issues = list(dict.fromkeys(blocking_issues))
     warning_issues = list(dict.fromkeys(warning_issues))
     return {
@@ -420,17 +435,114 @@ def _practice_document_contract_issues(archive: ZipFile, root, namespaces: dict[
     return issues
 
 
-def validate_docx_output(content: bytes, data: dict[str, Any]) -> dict[str, Any]:
+def _word_content_signature(element) -> str:
+    """Compare visible content, preserving the structure of Office equations.
+
+    Run splitting, fonts and paragraph layout may differ. A superscript must
+    not compare equal to a subscript, nor a numerator to a denominator.
+    """
+    def math_signature(node) -> str:
+        name = etree.QName(node).localname
+        if name in {"rPr", "ctrlPr"}:
+            return ""
+        if name == "t":
+            return re.sub(r"\s+", "", node.text or "")
+        children = "".join(math_signature(child) for child in node)
+        if name in {"r", "oMath"}:
+            return children
+        attrs = sorted((etree.QName(key).localname, value) for key, value in node.attrib.items())
+        return f"<{name}{attrs}>{children}</{name}>"
+
+    parts: list[str] = []
+    for node in element.iter():
+        if node.tag == qn("m:oMath"):
+            parts.append("\x00math:" + math_signature(node) + "\x00")
+        elif node.tag == qn("w:t"):
+            parts.append(re.sub(r"\s+", "", node.text or ""))
+    return "".join(parts)
+
+
+def _practice_question_content_issues(root, exercises: list[dict[str, Any]], *, document_kind: str) -> list[str]:
+    """Check source stem/options in their own question, not document-wide counts.
+
+    The source fields are projected independently of _add_question. Only the
+    existing inline math converter is shared; no model request or image work
+    is needed. This does not judge subject correctness or figure semantics.
+    """
+    sections: list[list[Any]] = []
+    body = root.find(qn("w:body"))
+    if body is None:
+        return ["DOCX 缺少正文，无法核对题目内容。"]
+    for node in body:
+        style = node.find(f"{qn('w:pPr')}/{qn('w:pStyle')}")
+        if style is not None and style.get(qn("w:val")) == "Heading2":
+            sections.append([])
+        elif sections:
+            sections[-1].append(node)
+    if len(sections) != len(exercises):
+        return []  # The heading contract reports this mismatch separately.
+    issues: list[str] = []
+    scratch = Document()
+    for index, (item, nodes) in enumerate(zip(exercises, sections), start=1):
+        if item.get("generation_status") == "failed":
+            continue  # Existing content gate owns failed-item placeholders.
+        actual = "".join(_word_content_signature(node) for node in nodes)
+        if item.get("cloze_literal") is True and document_kind == "questions":
+            literal_paragraphs = ["".join(node.itertext(tag=qn("w:t"))) for node in nodes if node.tag == qn("w:p")]
+            while literal_paragraphs and literal_paragraphs[-1] == "":
+                literal_paragraphs.pop()
+            if "\n".join(literal_paragraphs) != str(item.get("stem") or ""):
+                issues.append(f"第 {item.get('_export_original_number', index)} 题原句填空与当前题干逐字不一致。")
+            continue
+        fields = [("题干", normalize_practice_question_text(item.get("stem")))]
+        fields.extend(
+            (f"选项 {chr(65 + position)}", f"{chr(65 + position)}. " + _option_text(option.get("text")))
+            for position, option in enumerate(item.get("options") or [])
+            if isinstance(option, dict)
+        )
+        if document_kind == "solutions":
+            fields = [("参考答案", normalize_practice_markup(item.get("answer")))]
+            fields.extend((f"解析步骤 {position}", step)
+                          for position, step in enumerate(item.get("solution_steps") or [], start=1))
+        cursor = 0
+        for label, value in fields:
+            parts: list[str] = []
+            for part in _split_export_paragraphs(value):
+                paragraph = scratch.add_paragraph()
+                _add_rich_text(paragraph, part, location=f"content_check question={index} {label}")
+                parts.append(_word_content_signature(paragraph._p))
+                paragraph._p.getparent().remove(paragraph._p)
+            expected = "".join(parts)
+            position = actual.find(expected, cursor)
+            if expected and position < 0:
+                number = item.get("_export_original_number", index)
+                issues.append(f"第 {number} 题{label}与当前结果不一致：Word 中内容缺失、被改写或顺序错误。")
+            else:
+                cursor = position + len(expected)
+    return issues
+
+
+def validate_docx_output(content: bytes, data: dict[str, Any], *, document_kind: str = "questions") -> dict[str, Any]:
     """Verify the generated Word package against its question contract."""
+    if document_kind not in {"questions", "solutions"}:
+        raise ValueError("不支持的练习 Word 文档类型。")
+    asset_location = "stem" if document_kind == "questions" else "solution"
     exercises = [item for item in data.get("exercises") or [] if isinstance(item, dict)]
     expected_questions = len(exercises)
-    expected_figures = sum(len(item.get("figures") or []) for item in exercises)
-    expected_tables = sum(len(item.get("tables") or []) for item in exercises)
+    expected_figures = sum(
+        1 for item in exercises for figure in item.get("figures") or []
+        if isinstance(figure, dict) and _matches_location(figure.get("location"), asset_location)
+    )
+    expected_tables = sum(
+        1 for item in exercises for table in item.get("tables") or []
+        if isinstance(table, dict) and _matches_location(table.get("location"), asset_location)
+    )
     expected_formulas = sum(
         1
         for item in exercises
         for formula in item.get("formulas") or []
-        if _question_formula_visible(formula)
+        if (_question_formula_visible(formula) if document_kind == "questions"
+            else isinstance(formula, dict) and _matches_location(formula.get("location"), "solution"))
     )
     issues: list[str] = []
     metrics = {
@@ -485,10 +597,12 @@ def validate_docx_output(content: bytes, data: dict[str, Any]) -> dict[str, Any]
                 "".join(node.xpath(".//w:t/text()", namespaces=namespaces)).strip()
                 for node in heading_nodes
             ]
-            expected_headings = [f"第 {index} 题" for index in range(1, expected_questions + 1)]
+            expected_headings = [f"第 {item.get('_export_original_number', index)} 题"
+                                 for index, item in enumerate(data.get("exercises") or [], start=1)]
             metrics["question_heading_count"] = len(question_headings)
             if question_headings != expected_headings:
                 issues.append(f"题号结构不完整：期望 {expected_headings}，实际 {question_headings}。")
+            issues.extend(_practice_question_content_issues(root, exercises, document_kind=document_kind))
 
             metrics["table_count"] = len(root.xpath(".//w:tbl", namespaces=namespaces))
             if metrics["table_count"] < expected_tables:
@@ -580,7 +694,9 @@ def validate_docx_output(content: bytes, data: dict[str, Any]) -> dict[str, Any]
 
 
 def _text(value: Any, limit: int = 10000) -> str:
-    return str(value or "").strip()[:limit]
+    # Legacy limits are presentation hints, never permission to delete a
+    # question condition or half of a formula from the delivered document.
+    return str(value or "").strip()
 
 
 def _set_run(
@@ -713,6 +829,36 @@ def _add_title_block(doc: Document, data: dict[str, Any], *, document_kind: str 
     title.add_run(titles.get(document_kind, titles["combined"]))
 
     title.paragraph_format.first_line_indent = Pt(0)
+    if data.get("export_scope") == "selected":
+        notice = "范围说明：本文件仅包含所选题目，保留原题号，不代表整套验收通过。"
+        omitted = data.get("export_omitted_numbers") or []
+        if omitted:
+            notice += "未包含原题号：" + "、".join(str(number) for number in omitted) + "。"
+        doc.add_paragraph(notice)
+    report = validate_practice_export(data)
+    if report.get("release_level") == "review_candidate":
+        _add_review_notice(
+            doc,
+            "待复核成果：本文件可供查看和修改，不应视为正式发布版。",
+        )
+        for warning in report.get("warning_issues") or []:
+            _add_review_notice(doc, str(warning))
+
+
+def _add_review_notice(doc: Document, text: str) -> None:
+    """Add review status in the document body, where Word may paginate it safely."""
+
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    paragraph.paragraph_format.first_line_indent = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(2)
+    paragraph.paragraph_format.space_after = Pt(2)
+    # Review feedback can be long.  Explicitly allow each notice to flow onto
+    # the next page instead of inheriting a heading-like keep constraint.
+    paragraph.paragraph_format.keep_together = False
+    paragraph.paragraph_format.keep_with_next = False
+    paragraph.paragraph_format.widow_control = False
+    paragraph.add_run(text)
 
 
 _INLINE_MATH_RE = DELIMITED_MATH_RE
@@ -913,13 +1059,29 @@ def _repair_bare_latex_segment(text: str) -> str:
     return "".join(output)
 
 
+def _close_unambiguous_percent_math(text: str) -> str:
+    """Close a clearly terminated inline percentage formula before CJK prose.
+
+    A model can omit the closing dollar after ``\\%`` while immediately
+    continuing with Chinese punctuation. Leaving it open makes the shared
+    delimiter matcher consume a later, already-valid formula. This recovery
+    only applies when no intervening dollar or newline exists, so it never
+    rewrites a complete expression or guesses a general LaTeX boundary.
+    """
+    return re.sub(
+        r"(?<!\\)\$[^$\n]*?\\%(?=[。；，、])",
+        lambda match: match.group(0) + "$",
+        text,
+    )
+
+
 def normalize_practice_markup(value: Any, *, limit: int = 12000) -> str:
     """Repair bare LaTeX and keep fill-in blanks out of invalid math syntax.
 
     Existing mathematical notation is otherwise preserved.  The same
     normalization is safe both for new generations and for historical exports.
     """
-    text = _text(value, limit)
+    text = _close_unambiguous_percent_math(_text(value, limit))
     parts: list[str] = []
     cursor = 0
     for match in _INLINE_MATH_RE.finditer(text):
@@ -1071,13 +1233,22 @@ def _add_rich_text(
 
 
 def _set_body_paragraph(paragraph, *, option: bool = False) -> None:
-    paragraph.paragraph_format.left_indent = Pt(PRACTICE_TEXT_CONTRACT.list_left_indent_pt) if option else Pt(0)
+    paragraph.paragraph_format.left_indent = Pt(0)
     paragraph.paragraph_format.right_indent = Pt(0)
     paragraph.paragraph_format.first_line_indent = (
-        Pt(-PRACTICE_TEXT_CONTRACT.list_hanging_indent_pt)
+        Pt(
+            PRACTICE_TEXT_CONTRACT.body_size_pt
+            * PRACTICE_TEXT_CONTRACT.option_first_line_indent_chars
+        )
         if option
         else Pt(PRACTICE_TEXT_CONTRACT.first_line_indent_pt)
     )
+    if option:
+        indent = paragraph._p.get_or_add_pPr().get_or_add_ind()
+        indent.set(
+            qn("w:firstLineChars"),
+            str(round(PRACTICE_TEXT_CONTRACT.option_first_line_indent_chars * 100)),
+        )
     paragraph.paragraph_format.space_before = Pt(0)
     paragraph.paragraph_format.space_after = Pt(0)
     paragraph.paragraph_format.line_spacing = PRACTICE_TEXT_CONTRACT.line_spacing
@@ -1145,7 +1316,7 @@ def _option_text(value: Any) -> str:
 
 def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
     heading = doc.add_paragraph(style="Heading 2")
-    heading.add_run(f"第 {index} 题")
+    heading.add_run(f"第 {item.get('_export_original_number', index)} 题")
     stem = doc.add_paragraph()
     _set_body_paragraph(stem)
     if item.get("generation_status") == "failed":
@@ -1155,6 +1326,14 @@ def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
         _set_run(failed_run, size=11, bold=True, color=ERROR_RED)
         spacer = doc.add_paragraph()
         spacer.paragraph_format.space_after = Pt(4)
+        return
+    if item.get("cloze_literal") is True:
+        # The validated source mapping owns every character, including source
+        # numbering, spaces and symbols. Do not run prose/numbering repair.
+        for position, part in enumerate(str(item.get("stem") or "").split("\n")):
+            paragraph = stem if position == 0 else doc.add_paragraph()
+            _set_body_paragraph(paragraph)
+            _set_run(paragraph.add_run(part))
         return
     stem_parts = _split_export_paragraphs(normalize_practice_question_text(item.get("stem"))) or [""]
     question_id = practice_export_exercise_id(item, index - 1)
@@ -1182,7 +1361,7 @@ def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
 
 def _add_answer(doc: Document, item: dict[str, Any], index: int) -> None:
     heading = doc.add_paragraph(style="Heading 2")
-    heading.add_run(f"第 {index} 题")
+    heading.add_run(f"第 {item.get('_export_original_number', index)} 题")
     answer = doc.add_paragraph()
     _set_body_paragraph(answer)
     label = answer.add_run("参考答案：")

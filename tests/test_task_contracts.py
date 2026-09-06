@@ -221,14 +221,14 @@ def test_practice_pass_keeps_structural_not_subject_quality_claim() -> None:
     assert run["quality_presentation"]["label"] == "已完成"
 
 
-def test_disabled_semantic_review_is_a_completed_downloadable_practice_task() -> None:
+def test_legacy_semantic_review_data_is_a_completed_downloadable_practice_task() -> None:
     run = build_practice_runs(
         [],
         [{
             "history_id": "practice-gemini-clean",
             "task_kind": "practice",
             "quality": {"status": "passed", "release_level": "formal"},
-            "semantic_review": {"status": "disabled", "triggered": False, "items": []},
+            "semantic_review": {"status": "failed", "items": [{"number": 1, "status": "risk", "risks": []}]},
             "generation": {"status": "completed", "generated_count": 3, "failed_count": 0},
             "exercises": [{"stem": "题干", "generation_status": "completed"}] * 3,
         }],

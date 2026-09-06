@@ -84,7 +84,7 @@ def main() -> int:
     data = _fixture()
     for kind, builder in (("questions", build_practice_question_docx), ("solutions", build_practice_solution_docx)):
         content = builder(data)
-        report = validate_docx_output(content, data)
+        report = validate_docx_output(content, data, document_kind=kind)
         if not report["ok"]:
             raise RuntimeError(f"{kind} fixture failed contract audit: {report['issues']}")
         docx = args.output_dir / f"practice_contract_{kind}.docx"

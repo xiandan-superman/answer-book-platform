@@ -557,7 +557,6 @@ function capturePracticeWorkspaceDraft(mode) {
     count: $("practiceCount")?.value || "5",
     difficulty: $("practiceDifficulty")?.value || "基础到进阶",
     question_types: Array.from(document.querySelectorAll('input[name="practiceQuestionType"]:checked')).map((input) => input.value),
-    semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true,
     focus: $("practiceFocus")?.value || "",
     include_source_content_in_generation: includeSourceContentInGeneration()
   };
@@ -585,7 +584,6 @@ function restorePracticeWorkspaceDraft(mode) {
   syncPracticeSourceContentPreference(draft.include_source_content_in_generation !== false);
   const selectedTypes = new Set(draft.question_types || []);
   document.querySelectorAll('input[name="practiceQuestionType"]').forEach((input) => { input.checked = selectedTypes.has(input.value); });
-  if ($("practiceSemanticReviewEnabled")) $("practiceSemanticReviewEnabled").checked = draft.semantic_review_enabled === true;
   renderPracticeFilePreview();
   updatePracticeConfigSummary();
 }
@@ -659,8 +657,7 @@ function restorablePracticeWorkspaceDraft(record) {
   if (Array.isArray(input.question_types) && input.question_types.length) return true;
   if (String(input.count || "5") !== "5") return true;
   if (String(input.difficulty || "基础到进阶") !== "基础到进阶") return true;
-  return input.semantic_review_enabled === true
-    || input.include_source_content_in_generation === false
+  return input.include_source_content_in_generation === false
     || input.blueprint_review_enabled === false;
 }
 
@@ -804,7 +801,6 @@ function captureKnowledgeInputWorkspace() {
     focus: $("knowledgeFocusInput")?.value || "",
     question_types: Array.from(document.querySelectorAll('input[name="knowledgeQuestionType"]:checked')).map((input) => input.value),
     blueprint_review_enabled: $("knowledgeBlueprintReviewEnabled")?.checked !== false,
-    semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true,
     include_source_content_in_generation: $("knowledgeIncludeSourceContent")?.checked !== false
   };
 }
@@ -817,7 +813,6 @@ function restoreKnowledgeInputWorkspace(input = {}) {
   const types = new Set(input.question_types || []);
   document.querySelectorAll('input[name="knowledgeQuestionType"]').forEach((item) => { item.checked = types.has(item.value); });
   if ($("knowledgeBlueprintReviewEnabled")) $("knowledgeBlueprintReviewEnabled").checked = input.blueprint_review_enabled !== false;
-  if ($("knowledgeSemanticReviewEnabled")) $("knowledgeSemanticReviewEnabled").checked = input.semantic_review_enabled === true;
   if ($("knowledgeIncludeSourceContent")) $("knowledgeIncludeSourceContent").checked = input.include_source_content_in_generation !== false;
   syncPracticeSourceContentPreference(input.include_source_content_in_generation !== false);
   renderKnowledgeFilePreview();
@@ -1110,7 +1105,6 @@ function openPracticeEntry(mode = "exam", openModelSettings = false) {
   setPracticeStage("submit");
   setPracticeStageDescription(mode === "knowledge" ? "请先提交知识材料，平台将解析知识单元与范围。" : "请先提交题目材料，平台将解析考点与原题范围。");
   setPracticeStatusBanner("新任务 · 等待提交");
-  if ($("practiceSemanticReviewEnabled")) $("practiceSemanticReviewEnabled").checked = false;
   setText("practiceSourceStatus", "等待输入");
   setPracticeWorkspaceMode(mode);
   goToPage("practice");
@@ -1132,7 +1126,6 @@ function openKnowledgeEntry() {
   syncPracticeSourceContentPreference(true);
   if ($("knowledgeTitleInput")) $("knowledgeTitleInput").value = "";
   if ($("knowledgeTextInput")) $("knowledgeTextInput").value = "";
-  if ($("knowledgeSemanticReviewEnabled")) $("knowledgeSemanticReviewEnabled").checked = false;
   renderKnowledgeFilePreview();
   $("knowledgeError")?.classList.add("hidden");
   goToPage("knowledge");
@@ -1395,11 +1388,6 @@ function practiceCompletionContract(subject = {}) {
     batchErrors.filter((item) => item?.code === "blueprint_audit_failed").length
   );
   if (auditCount) reviewReasons.push(`${auditCount} 题蓝图需要复核`);
-  const semantic = subject?.semantic_review && typeof subject.semantic_review === "object" ? subject.semantic_review : null;
-  const semanticRisks = (semantic?.items || []).flatMap((item) => item?.risks || []).filter((risk) => ["medium", "high"].includes(String(risk?.severity || "").toLowerCase()));
-  const semanticReviewIncomplete = Boolean(semantic) && !["passed", "warning", "disabled", "not_required"].includes(String(semantic.status || "").toLowerCase());
-  if (semanticReviewIncomplete) reviewReasons.push("语义审查未完成，需人工复核");
-  if (semanticRisks.length) reviewReasons.push(...semanticRisks.map((risk) => String(risk.message || risk.summary || "语义风险需要复核")));
   if (quality.release_level === "review_candidate" && !reviewReasons.length) reviewReasons.push("当前成果需复核后使用");
   const warningReasons = Array.isArray(quality.warnings) ? quality.warnings.filter(Boolean).map(String) : [];
   const issues = [];
@@ -3723,7 +3711,7 @@ function practiceRichClipboardHtml(data, mathJax, { word = false, includeQuestio
   const items = (data.exercises || []).map((rawItem) => {
     const item = normalizePracticeMarkdownTables(rawItem);
     const options = (item.options || []).map((option, optionIndex) =>
-      `<p style="${paragraphStyle};margin-left:22pt;text-indent:0;font-weight:400"><span style="font-weight:400">${String.fromCharCode(65 + optionIndex)}. </span>${practiceClipboardTextHtml(practiceClipboardOptionText(option.text), mathJax, { word })}</p>`
+      `<p style="${paragraphStyle};margin-left:0;text-indent:3em;font-weight:400"><span style="font-weight:400">${String.fromCharCode(65 + optionIndex)}. </span>${practiceClipboardTextHtml(practiceClipboardOptionText(option.text), mathJax, { word })}</p>`
     ).join("");
     const tables = (item.tables || []).filter((table) => String(table.location || "stem").includes("stem"))
       .map((table) => practiceClipboardTableHtml(table, mathJax, { word, tableStyle, cellStyle })).join("");
@@ -4015,6 +4003,9 @@ function normalizePracticeQuestionText(value) {
 
 function normalizePracticeMarkdownTables(item) {
   if (!item || typeof item !== "object") return item;
+  // Literal source spans bypass editorial normalization, not the downstream
+  // HTML escaping or math renderer used by every question.
+  if (item.cloze_literal === true) return { ...item, stem: String(item.stem ?? "") };
   // Preserve pipe-table row boundaries until the table extractor has lifted
   // them; the question-text normalizer may then safely join ordinary wraps.
   const extracted = extractPracticeMarkdownTables(item.stem);
@@ -4939,7 +4930,6 @@ function renderPracticeResults(data) {
   renderPracticeFilters(data);
   const practiceSourceLookup = new Map((data.selected_source_questions || []).map((item) => [String(item.source_question_id), item]));
   const practiceBlueprintItemNumbers = new Map((data.blueprint?.exercise_plan || []).map((item, index) => [String(item.plan_item_id || ""), index + 1]));
-  const semanticReviewByNumber = new Map((data.semantic_review?.items || []).map((item) => [String(item?.number || ""), item]));
   const generationErrorDetailCodes = new Set([
     "generation_quality_gate_failed",
     "generation_response_invalid",
@@ -4983,8 +4973,7 @@ function renderPracticeResults(data) {
       generationErrorSummary !== generationError ? generationError : "",
       generationErrorDetail
     ].filter(Boolean)).join("；");
-    const semanticRisks = (semanticReviewByNumber.get(String(item.number || idx + 1))?.risks || [])
-      .filter((risk) => ["high", "medium"].includes(String(risk?.severity || "").toLowerCase()));
+    const semanticRisks = [];
     const semanticFixInstruction = semanticRisks
       .map((risk) => String(risk.suggested_action || risk.message || "").trim())
       .filter(Boolean)
@@ -5033,7 +5022,6 @@ function renderPracticeResults(data) {
         ${item.question_type === "作图题" && !(item.figures || []).length ? `<div class="practice-source-link"><i class="fas fa-pencil-ruler"></i>本题要求学生作图，因此未附完整答案曲线，也不会额外调用图片生成模型。</div>` : ""}
         ${item.options?.length ? `<div class="practice-options">${item.options.map((option) => `<p><b>${escapeHtml(option.label)}</b>${practiceMarkdown(option.text)}</p>`).join("")}</div>` : ""}
         ${tagsArr.length ? `<div class="practice-exercise-tags">${visibleTags.map((t) => `<span>${escapeHtml(t)}</span>`).join("")}${tagsArr.length > visibleTags.length ? `<span class="practice-tag-count">+${tagsArr.length - visibleTags.length}</span>` : ""}</div>` : ""}
-        ${semanticRisks.length ? `<div class="practice-generation-error" role="alert"><i class="fas fa-shield-halved"></i><div><strong>语义复核发现 ${semanticRisks.length} 项需修复</strong><p>${escapeHtml(semanticRisks.slice(0, 2).map((risk) => risk.message || risk.suggested_action || "语义风险").join("；"))}</p><button type="button" class="secondary-button" data-practice-semantic-fix="${idx}" data-practice-semantic-instruction="${escapeHtml(semanticFixInstruction)}"><i class="fas fa-wand-magic-sparkles"></i>按复核建议修复本题</button></div></div>` : ""}
       `}
     </article>
   `;
@@ -5058,13 +5046,6 @@ function renderPracticeResults(data) {
   });
   document.querySelectorAll("[data-practice-regenerate]").forEach((button) => {
     button.addEventListener("click", () => regeneratePracticeQuestion(Number(button.dataset.practiceRegenerate), button));
-  });
-  document.querySelectorAll("[data-practice-semantic-fix]").forEach((button) => {
-    button.addEventListener("click", () => regeneratePracticeQuestion(
-      Number(button.dataset.practiceSemanticFix),
-      button,
-      button.dataset.practiceSemanticInstruction || "按语义复核结论做最小修改，消除事实、边界或歧义风险。"
-    ));
   });
   document.querySelectorAll("[data-practice-config]").forEach((button) => {
     button.addEventListener("click", () => goToPage("keys"));
@@ -5154,7 +5135,6 @@ function practiceRequestPayload() {
     question_text: $("practiceQuestionText").value.trim(),
     source_files: practiceSourceFiles.map((file) => ({ ...file })),
     blueprint_review_enabled: blueprintReviewEnabled(),
-    semantic_review_enabled: $("practiceSemanticReviewEnabled")?.checked === true,
     include_source_content_in_generation: includeSourceContentInGeneration(),
     count: Number($("practiceCount")?.value || 5),
     difficulty: $("practiceDifficulty")?.value || "基础到进阶",
@@ -5188,7 +5168,6 @@ function knowledgeRequestPayload() {
     question_text: questionText,
     source_files: knowledgeSourceFiles.map((file) => ({ ...file })),
     blueprint_review_enabled: $("knowledgeBlueprintReviewEnabled")?.checked !== false,
-    semantic_review_enabled: $("knowledgeSemanticReviewEnabled")?.checked === true,
     include_source_content_in_generation: $("knowledgeIncludeSourceContent")?.checked !== false,
     count,
     difficulty_mode: count === 1 ? "single" : "distribution",
@@ -5347,9 +5326,6 @@ function renderPracticeSourceSelection(data) {
   syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
   if (knowledgeMode && $("knowledgeBlueprintReviewEnabled")) $("knowledgeBlueprintReviewEnabled").checked = reviewEnabled;
   if (!knowledgeMode && $("practiceBlueprintReviewEnabled")) $("practiceBlueprintReviewEnabled").checked = reviewEnabled;
-  const semanticReviewEnabled = latestPracticeRequest?.semantic_review_enabled === true;
-  if (knowledgeMode && $("knowledgeSemanticReviewEnabled")) $("knowledgeSemanticReviewEnabled").checked = semanticReviewEnabled;
-  if (!knowledgeMode && $("practiceSemanticReviewEnabled")) $("practiceSemanticReviewEnabled").checked = semanticReviewEnabled;
   latestPracticeSourceScope = data.source_scope || null;
   latestPracticeSourceAnalysis = data.source_analysis || latestPracticeSourceAnalysis || null;
   latestPracticePlan = null;
@@ -6654,7 +6630,7 @@ async function applyPracticeEditor(event) {
     clearPracticeEditorDraft();
     $("practiceEditor").close();
     renderPracticeResults(latestPracticeSet);
-    setPracticeStatusBanner(`第 ${practiceEditingIndex + 1} 题已保存；原语义复核已失效，请复核后再作为正式结果使用。`, "warning");
+    setPracticeStatusBanner(`第 ${practiceEditingIndex + 1} 题已保存。`, "success");
     await loadPracticeHistory();
   } catch (error) {
     editConflict = error?.code === "practice_edit_conflict";
@@ -6711,8 +6687,6 @@ function practiceRegenerationPayload(index, instruction) {
     selected_source_questions: latestPracticeSet?.selected_source_questions || latestPracticeRequest?.selected_source_questions || [],
     source_scope: latestPracticeSet?.source_scope || latestPracticeRequest?.source_scope || {},
     include_source_content_in_generation: latestPracticeRequest?.include_source_content_in_generation !== false,
-    semantic_review_enabled: latestPracticeRequest?.semantic_review_enabled === true,
-    formal_quality_review: latestPracticeRequest?.formal_quality_review === true,
     question_types: latestPracticeRequest?.question_types || [],
     question_text: latestPracticeRequest?.question_text || "",
     source_files: latestPracticeRequest?.source_files || practiceSourceFiles || [],
@@ -6752,7 +6726,6 @@ async function saveRegeneratedPracticeExercise(index, exercise, changeReason = "
       exercise,
       expected_edit_version: String(latestPracticeSet?.exercises?.[index]?._edit_version || exercise?._edit_version || ""),
       change_reason: changeReason,
-      ...(semanticReview ? { semantic_review: semanticReview } : {}),
       ...(practiceUpdates && Object.keys(practiceUpdates).length ? { practice_updates: practiceUpdates } : {})
     })
   });
@@ -6783,7 +6756,7 @@ async function regeneratePracticeQuestion(index, button, instructionOverride = n
   setPracticeRegenerationBusy(true);
   button.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
   setPracticeStatusBanner(instructionOverride !== null
-    ? `正在按语义复核建议修复第 ${index + 1} 题，完成后会自动重新复核`
+    ? `正在按本次调整要求生成第 ${index + 1} 题`
     : auditNeedsReview
     ? `正在复审第 ${index + 1} 题蓝图：通过后只生成本题`
     : `正在重新生成第 ${index + 1} 题：生成后会自动检查并必要时修复配图`, "loading");
@@ -6792,7 +6765,7 @@ async function regeneratePracticeQuestion(index, button, instructionOverride = n
   try {
     const response = await regeneratePracticeExercise(index, instruction);
     generatedCandidate = response.exercise;
-    await saveRegeneratedPracticeExercise(index, response.exercise, auditNeedsReview ? "review_and_regenerate_question" : "regenerate_question", response.semantic_review, response.practice_updates);
+    await saveRegeneratedPracticeExercise(index, response.exercise, auditNeedsReview ? "review_and_regenerate_question" : "regenerate_question", null, response.practice_updates);
     renderPracticeResults(latestPracticeSet);
     await loadPracticeHistory();
   } catch (error) {
@@ -6860,7 +6833,7 @@ async function regenerateSelectedPracticeQuestions(button) {
           index,
           response.exercise,
           "regenerate_selected_questions",
-          response.semantic_review
+          null
         );
         succeeded.push(index);
       } catch (error) {
@@ -7325,28 +7298,32 @@ async function waitForPracticeWordDesktopSaveApi(timeoutMs = 5000) {
 function practiceWordRecoveryMeta(job = {}, pointer = {}) {
   const status = String(job.status || "checking");
   if (status === "completed") {
+    const candidateWarning = String((job.warning_issues || [])[0] || "").trim();
+    const candidatePrefix = job.release_level === "review_candidate"
+      ? `待复核候选：${candidateWarning || "Word 含需要检查的格式转换。"} `
+      : "";
     if (pointer.desktop_saved_path) return {
       tone: "success",
-      message: `已保存到：${pointer.desktop_saved_path}`,
+      message: `${candidatePrefix}已保存到：${pointer.desktop_saved_path}`,
       action: "download",
       actionLabel: "重新保存",
       canOpenFolder: true,
     };
     if (pointer.last_download_triggered_at) return {
       tone: "success",
-      message: `已开始下载：${pointer.filename}。请查看浏览器下载记录或默认下载文件夹。`,
+      message: `${candidatePrefix}已开始下载：${pointer.filename}。请查看浏览器下载记录或默认下载文件夹。`,
       action: "download",
       actionLabel: "再次下载",
     };
     if (practiceWordDesktopRuntimeExpected()) return {
       tone: "success",
-      message: "Word 已生成，等待你选择保存位置。",
+      message: `${candidatePrefix}Word 已生成，等待你选择保存位置。`,
       action: "download",
       actionLabel: "保存 Word",
     };
     return {
       tone: "success",
-      message: "Word 已生成，等待你确认下载。",
+      message: `${candidatePrefix}Word 已生成，等待你确认下载。`,
       action: "download",
       actionLabel: "下载 Word",
     };
@@ -7407,6 +7384,7 @@ function renderPracticeWordRecoveryNotice() {
         <div class="practice-word-recovery-item__actions">
           <button class="${meta.action === "download" ? "primary-button" : "ghost-button"}" type="button" data-practice-word-recovery-action="${escapeHtml(meta.action)}" data-practice-word-recovery-index="${index}">${escapeHtml(meta.actionLabel)}</button>
           ${meta.canOpenFolder ? `<button class="ghost-button" type="button" data-practice-word-recovery-action="open_folder" data-practice-word-recovery-index="${index}">打开所在文件夹</button>` : ""}
+          ${Number(job?.unit_delivery?.available_count || 0) > 0 ? `<a class="secondary-button" href="/api/practice/export-jobs/${encodeURIComponent(job.job_id)}/unit-package?revision=${encodeURIComponent(job.unit_delivery.revision)}" download="分题成果-非完整试卷.zip">下载分题成果（${Number(job.unit_delivery.available_count)} 题，非整套）</a>` : ""}
           <button class="text-button" type="button" data-practice-word-recovery-action="dismiss" data-practice-word-recovery-index="${index}">关闭记录</button>
         </div>
       </section>`;
@@ -7742,7 +7720,7 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
       return;
     }
     wordReady = true;
-    const downloadedFilename = filename || job.filename || practiceWordFilename(data);
+    const downloadedFilename = job.filename || filename || practiceWordFilename(data);
     const completedPointer = readPracticeWordExportPointers().find((item) => item.export_key === exportKey)
       || rememberPracticeWordExportPointer(exportKey, job.job_id, downloadedFilename);
     practiceWordRecoveryJobs.set(exportKey, { pointer: completedPointer, job });
@@ -13411,6 +13389,7 @@ function renderTaskProgress(data) {
 
 function renderTaskVisual(data) {
   const task = data.task || {};
+  refreshTaskUnitDelivery(task.task_id || activeTaskId);
   const status = task.status || "";
   const stages = (data.pipeline_status && data.pipeline_status.stages) || [];
   const current = effectiveCurrentStage(task, stages);
@@ -13867,8 +13846,46 @@ function renderQuestionDetail(question) {
   requestAnimationFrame(() => typesetMath(detail));
 }
 
+const taskUnitDeliveryRequests = new Map();
+async function refreshTaskUnitDelivery(taskId) {
+  if (!taskId) return;
+  const panels = [$("taskUnitDeliveryPanel"), $("resultUnitDeliveryPanel")].filter(Boolean);
+  panels.forEach((panel) => {
+    if (panel.dataset.taskId !== taskId) {
+      panel.replaceChildren();
+      panel.classList.add("hidden");
+      panel.dataset.taskId = taskId;
+    }
+  });
+  if (Date.now() - (taskUnitDeliveryRequests.get(taskId) || 0) < 3000) return;
+  taskUnitDeliveryRequests.set(taskId, Date.now());
+  try {
+    const manifest = await api(`/api/tasks/${encodeURIComponent(taskId)}/unit-delivery`, { cache: "no-store" });
+    if (taskId !== activeTaskId) return;
+    panels.forEach((panel) => {
+      panel.replaceChildren();
+      panel.classList.toggle("hidden", !Number(manifest.available_count || 0));
+      if (!manifest.available_count) return;
+      const heading = document.createElement("h3");
+      heading.textContent = `已保留 ${manifest.available_count} 题分题成果`;
+      const description = document.createElement("p");
+      description.textContent = `${manifest.notice} 未完成 ${manifest.missing?.length || 0} 题。下载内容固定为此验收版本，不随后续修复改变。`;
+      const link = document.createElement("a");
+      link.className = "secondary-button";
+      link.textContent = "下载分题成果与缺失清单（非完整试卷）";
+      link.href = `/api/tasks/${encodeURIComponent(taskId)}/unit-package?revision=${encodeURIComponent(manifest.revision)}`;
+      link.download = "分题成果-非完整试卷.zip";
+      panel.append(heading, description, link);
+    });
+  } catch (_) {
+    // A failed read never revokes an already pinned download or changes the
+    // worker's lifecycle state. The next normal poll retries this read.
+  }
+}
+
 function renderTaskResultView(data) {
   resultViewData = data;
+  refreshTaskUnitDelivery(data?.task?.task_id || activeTaskId);
   const questions = data?.questions || [];
   setResultPageState(data?.task?.status === "completed_with_issues" ? "issues" : "completed", data?.task || null);
   if (!activeResultQuestionId || !questions.some((q) => q.question_id === activeResultQuestionId)) {

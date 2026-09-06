@@ -28,10 +28,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PracticeTrustTests(unittest.TestCase):
-    def test_frontend_exposes_local_semantic_repair_and_phase_batch_ids(self) -> None:
+    def test_frontend_omits_local_semantic_repair_and_keeps_phase_batch_ids(self) -> None:
         js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("按复核建议修复本题", js)
-        self.assertIn("data-practice-semantic-fix", js)
+        self.assertNotIn("按复核建议修复本题", js)
+        self.assertNotIn("data-practice-semantic-fix", js)
         self.assertIn("<span>阶段</span>", js)
         self.assertIn("<span>流程</span>", js)
         self.assertIn("button?.dataset.taskId || task?.task_id", js)
@@ -111,9 +111,9 @@ class PracticeTrustTests(unittest.TestCase):
         js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn("source_recovery?.status === \"blocked\"", js)
         self.assertIn("latestPracticeRequest || practiceRequestPayload()", js)
-        self.assertIn('response.semantic_review, response.practice_updates', js)
+        self.assertNotIn('response.semantic_review, response.practice_updates', js)
         self.assertIn('auditNeedsReview ? "review_and_regenerate_question" : "regenerate_question"', js)
-        self.assertIn("semantic_review: semanticReview", js)
+        self.assertNotIn("semantic_review: semanticReview", js)
         self.assertIn("/exercise`, {", js)
         self.assertIn("latestPracticeSet = record.data", js)
         self.assertIn("restorePracticePreferenceOrders(latestPracticeRequest)", js)
@@ -215,7 +215,7 @@ class PracticeTrustTests(unittest.TestCase):
             finally:
                 practice_store.PRACTICE_HISTORY_DIR = old
 
-    def test_manual_question_edit_invalidates_only_that_questions_semantic_review(self) -> None:
+    def test_manual_question_edit_preserves_historical_semantic_data_without_projecting_review(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             old = practice_store.PRACTICE_HISTORY_DIR
             try:
@@ -229,8 +229,8 @@ class PracticeTrustTests(unittest.TestCase):
                         ],
                     },
                     "exercises": [
-                        {"number": 1, "plan_item_id": "plan_item_01", "stem": "原第一题"},
-                        {"number": 2, "plan_item_id": "plan_item_02", "stem": "原第二题"},
+                        {"number": 1, "plan_item_id": "plan_item_01", "stem": "原第一题", "answerability_check_status": "reported", "knowledge_points": ["基础概念"]},
+                        {"number": 2, "plan_item_id": "plan_item_02", "stem": "原第二题", "answerability_check_status": "reported", "knowledge_points": ["基础概念"]},
                     ],
                 })
                 edit_version = first["data"]["exercises"][0]["_edit_version"]
@@ -238,16 +238,15 @@ class PracticeTrustTests(unittest.TestCase):
                 updated = update_practice_exercise(
                     first["history_id"],
                     0,
-                    {"number": 1, "plan_item_id": "plan_item_01", "stem": "用户修改后的第一题"},
+                    {"number": 1, "plan_item_id": "plan_item_01", "stem": "用户修改后的第一题", "answerability_check_status": "reported", "knowledge_points": ["基础概念"]},
                     change_reason="manual_edit",
                     expected_edit_version=edit_version,
                 )
 
                 review = updated["data"]["semantic_review"]
-                self.assertEqual("failed", review["status"])
-                self.assertEqual("stale_after_edit", review["review_scope"])
-                self.assertEqual("not_reviewed", review["items"][0]["status"])
-                self.assertEqual("passed", review["items"][1]["status"])
+                self.assertEqual("passed", review["status"])
+                self.assertEqual("passed", review["items"][0]["status"])
+                self.assertFalse(any(item["code"] == "review_required" for item in updated["data"]["completion_issues"]["issues"]))
                 self.assertEqual("用户修改后的第一题", updated["data"]["exercises"][0]["stem"])
                 self.assertEqual("原第二题", updated["data"]["exercises"][1]["stem"])
             finally:

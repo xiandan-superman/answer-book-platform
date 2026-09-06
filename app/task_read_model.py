@@ -188,7 +188,7 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
             or final_acceptance.get("delivery_tier") == "review_candidate"
         )
     )
-    if is_review_candidate:
+    if is_review_candidate and status.value in {"completed", "completed_with_issues"}:
         quality = QualityStatus.WARNING
         status = practice_run_status("completed", quality=QualityStatus.WARNING)
     if status.value == "completed" and quality == QualityStatus.BLOCKED:
@@ -231,6 +231,11 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     enriched["task_kind"] = "exam"
     enriched["analysis_profile"] = row.get("analysis_profile") or "evidence_backed"
     enriched["quality_summary"] = quality_summary
+    if is_review_candidate:
+        # Saved artifacts remain inspectable, but cannot complete a newer run
+        # or replace its pause/resume/cancel controls.
+        enriched["capabilities"]["view_result"] = True
+        enriched["capabilities"]["view_files"] = True
     enriched["steps"] = []
     return enriched
 
@@ -429,14 +434,17 @@ def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, An
             max(0, int((item.get("model_usage") or {}).get("call_count") or 0))
             for item in group
         )
-    history_batches = {str(row.get("practice_batch_id") or "") for row in history_runs if row.get("practice_batch_id")}
+    history_updated = {
+        batch_id: max(_time_key(row.get("updated_at")) for row in history_runs
+                      if str(row.get("practice_batch_id") or "") == batch_id)
+        for batch_id in {str(row.get("practice_batch_id") or "") for row in history_runs
+                         if row.get("practice_batch_id")}
+    }
 
     job_runs: list[dict[str, Any]] = []
     operation_order = {"analyze": 0, "plan": 1, "generate_from_plan": 2, "generate_from_contract": 2}
     for key, group in groups.items():
         batch_id = "" if key.startswith("legacy:") else key
-        if batch_id and batch_id in history_batches:
-            continue
         if not batch_id and all(str(item.get("status")) == "completed" and str(item.get("operation")) in {"analyze", "plan"} for item in group):
             continue
         ordered = sorted(
@@ -449,6 +457,17 @@ def build_practice_runs(jobs: list[dict[str, Any]], histories: list[dict[str, An
             reverse=True,
         )
         current = ordered[0]
+        active = str(current.get("status")) in {"queued", "running", "paused"}
+        if batch_id in history_updated and not active:
+            # A completed job is represented by its history. A later failed or
+            # cancelled continuation is a separate actionable attempt, not that
+            # older result. Missing legacy timestamps cannot prove supersession.
+            current_time = _time_key(current.get("updated_at") or current.get("created_at"))
+            history_time = history_updated[batch_id]
+            if str(current.get("status")) == "completed" or (
+                current_time and history_time and current_time <= history_time
+            ):
+                continue
         steps = []
         for item in sorted(group, key=lambda item: (operation_order.get(str(item.get("operation") or ""), -1), _time_key(item.get("created_at")))):
             step_support_id = public_support_id(

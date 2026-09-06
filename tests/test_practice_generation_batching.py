@@ -1370,6 +1370,52 @@ def test_reconciled_generation_uses_current_questions_not_stale_initial_errors()
     assert malformed["generation"]["status"] == "partial_success"
 
 
+def test_reconciled_generation_restores_identity_from_confirmed_plan_ids() -> None:
+    reconciled = reconcile_practice_generation({
+        "blueprint": {
+            "exercise_plan": [
+                {"plan_item_id": "plan_item_01", "number": 1, "question_type": "简答题"},
+                {"plan_item_id": "plan_item_02", "number": 2, "question_type": "简答题"},
+                {"plan_item_id": "plan_item_03", "number": 3, "question_type": "简答题"},
+            ],
+        },
+        "exercises": [
+            {"plan_item_id": "plan_item_01", "exercise_id": "practice_01", "number": 1, "question_type": "简答题", "stem": "第一题。"},
+            {"plan_item_id": "plan_item_02", "exercise_id": "practice_01", "number": 1, "question_type": "简答题", "stem": "第二题。"},
+            {"plan_item_id": "plan_item_03", "exercise_id": "practice_01", "number": 1, "question_type": "简答题", "stem": "第三题。"},
+        ],
+    })
+
+    assert [item["number"] for item in reconciled["exercises"]] == [1, 2, 3]
+    assert [item["exercise_id"] for item in reconciled["exercises"]] == ["practice_01", "practice_02", "practice_03"]
+    assert reconciled["generation"]["identity_reconciliation"] == {
+        "status": "reconciled",
+        "reason": "confirmed_plan_identity",
+        "changed_plan_item_ids": ["plan_item_02", "plan_item_03"],
+    }
+
+
+def test_reconciled_generation_does_not_reidentify_ambiguous_plan_ids() -> None:
+    reconciled = reconcile_practice_generation({
+        "blueprint": {
+            "exercise_plan": [
+                {"plan_item_id": "plan_item_01", "number": 1, "question_type": "简答题"},
+                {"plan_item_id": "plan_item_02", "number": 2, "question_type": "简答题"},
+            ],
+        },
+        "exercises": [
+            {"plan_item_id": "plan_item_01", "exercise_id": "practice_01", "number": 1, "question_type": "简答题", "stem": "第一题。"},
+            {"plan_item_id": "plan_item_01", "exercise_id": "practice_01", "number": 1, "question_type": "简答题", "stem": "重复身份。"},
+        ],
+    })
+
+    assert [item["number"] for item in reconciled["exercises"]] == [1, 1]
+    assert reconciled["generation"]["identity_reconciliation"] == {
+        "status": "skipped",
+        "reason": "duplicate_current_plan_item_id",
+    }
+
+
 def test_blueprint_multi_question_total_is_advisory_not_limited_to_thirty() -> None:
     plan = [
         {

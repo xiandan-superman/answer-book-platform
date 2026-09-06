@@ -196,18 +196,6 @@ def practice_completion_issue_contract(data: dict[str, Any] | None) -> dict[str,
     audit_count = max(audit_count, sum(item.get("code") == "blueprint_audit_failed" for item in batch_errors))
     if audit_count:
         review_reasons.append(f"{audit_count} 题蓝图需要复核")
-    semantic = data.get("semantic_review") if isinstance(data.get("semantic_review"), dict) else {}
-    semantic_status = str(semantic.get("status") or "").lower()
-    semantic_risks = [
-        risk
-        for item in semantic.get("items") or [] if isinstance(item, dict)
-        for risk in item.get("risks") or [] if isinstance(risk, dict)
-        and str(risk.get("severity") or "").lower() in {"medium", "high"}
-    ]
-    if semantic and semantic_status not in {"passed", "warning", "disabled", "not_required"}:
-        review_reasons.append("语义审查未完成，需人工复核")
-    if semantic_risks:
-        review_reasons.extend(_practice_issue_reasons(semantic_risks, fallback="语义审查发现需复核风险"))
     if str(quality.get("release_level") or "") == "review_candidate" and not review_reasons:
         review_reasons.append("当前成果需复核后使用")
     review_reasons = list(dict.fromkeys(review_reasons))[:20]

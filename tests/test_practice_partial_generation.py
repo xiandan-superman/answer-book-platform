@@ -326,7 +326,6 @@ def test_audit_failed_item_can_be_repaired_reviewed_generated_and_saved_locally(
         "exercise_index": 0,
         "source_mode": "knowledge",
         "include_source_content_in_generation": False,
-        "semantic_review_enabled": False,
     })
 
     assert generation_calls == [True]
@@ -337,7 +336,6 @@ def test_audit_failed_item_can_be_repaired_reviewed_generated_and_saved_locally(
         saved["history_id"],
         0,
         response["exercise"],
-        semantic_review=response["semantic_review"],
         practice_updates=response["practice_updates"],
         expected_edit_version=saved["data"]["exercises"][0]["_edit_version"],
     )

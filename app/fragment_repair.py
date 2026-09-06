@@ -178,7 +178,7 @@ def _remove_unresolved_formula_placeholders(fragment: dict[str, Any]) -> dict[st
     def clean(value: str) -> str:
         def replace(match: re.Match[str]) -> str:
             removed.append(match.group(0))
-            return ""
+            return "【公式缺失：" + match.group(0).strip("{}") + "】"
 
         return _UNRESOLVED_FORMULA_PLACEHOLDER_RE.sub(replace, str(value or ""))
 
@@ -193,7 +193,7 @@ def _remove_unresolved_formula_placeholders(fragment: dict[str, Any]) -> dict[st
                 segment["text"] = clean(str(segment.get("text") or ""))
     if removed:
         unique = sorted(set(removed))
-        message = "模型返回了不存在的公式引用，程序已移除占位符并保留周围答案文字；本题需复核公式完整性：" + "、".join(unique)
+        message = "模型返回了不存在的公式引用，已在原位置保留公式缺失提示；本题需复核公式完整性：" + "、".join(unique)
         warnings = [str(item) for item in fragment.get("warnings", []) or [] if str(item).strip()]
         if message not in warnings:
             warnings.append(message)

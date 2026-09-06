@@ -400,7 +400,8 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
         diagnostic = retry["authoritative_arithmetic_diagnostics"][0]
         self.assertEqual(8, diagnostic["formula_index"])
         self.assertAlmostEqual(8.2618243, diagnostic["authoritative_percentage"])
-        self.assertEqual(3, len(messages))
+        self.assertEqual(4, len(messages))
+        self.assertEqual("large initial prompt", messages[1]["content"])
 
     def test_contract_diagnostics_expose_partition_and_transition_deficits(self) -> None:
         from app.audit_model_repair import _deterministic_contract_diagnostics

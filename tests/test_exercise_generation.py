@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -169,102 +170,28 @@ def test_simple_question_without_boundary_conflict_does_not_require_subject_revi
     assert quality["checks"]["subject_matter_review_required"] is False
 
 
-def test_semantic_review_checks_complete_set_once_without_answer_content(monkeypatch):
-    captured = {}
-    practice = {
-        "blueprint": {"exercise_plan": [
-            {"plan_item_id": "p1", "target_skill": "概念辨析", "required_constraints": {}},
-            {"plan_item_id": "p2", "target_skill": "综合判断", "required_constraints": {}},
-        ]},
-        "exercises": [
-            {"number": 1, "plan_item_id": "p1", "question_type": "简答题", "difficulty": "基础", "stem": "说明概念。", "knowledge_points": ["概念"]},
-            {
-                "number": 2,
-                "plan_item_id": "p2",
-                "question_type": "综合题",
-                "difficulty": "挑战",
-                "stem": "分析综合情形。",
-                "knowledge_points": ["概念"],
-                "figures": [{
-                    "series": [{"name": "边界曲线", "points": [[0, 1], [1, 2], [2, 3]]}],
-                    "nodes": [
-                        {"id": "o", "label": "O", "x": 0.1, "y": 0.1},
-                        {"id": "p", "label": "P", "x": 0.8, "y": 0.8},
-                    ],
-                    "edges": [{"from": "o", "to": "p", "label": "晶向 OP", "directed": True}],
-                }],
-            },
-        ],
-    }
-
-    def fake_call(_client, messages, **kwargs):
-        captured["prompt"] = str(messages[-1]["content"])
-        captured["kwargs"] = kwargs
-        return {
-            "items": [
-                {"number": 1, "status": "passed", "risks": []},
-                {"number": 2, "status": "passed", "risks": []},
-            ],
-            "set_summary": "通过",
-        }
-
-    monkeypatch.setattr(exercise_generation, "_primary_model_runtime", lambda _payload: (SimpleNamespace(name="fake"), "fake-model"))
-    monkeypatch.setattr(exercise_generation, "OpenAICompatibleClient", lambda _provider: object())
-    monkeypatch.setattr(exercise_generation, "_call_practice_json", fake_call)
-
-    report = exercise_generation.review_practice_semantics(practice, {})
-
-    assert report["status"] == "passed"
-    assert [item["number"] for item in report["items"]] == [1, 2]
-    assert "说明概念" in captured["prompt"] and "分析综合情形" in captured["prompt"]
-    assert '"sampled_points": [' in captured["prompt"]
-    assert '0.0' in captured["prompt"] and '3.0' in captured["prompt"]
-    assert '"series_names_are_visible_legend_labels": true' in captured["prompt"]
-    assert '"from": "o"' in captured["prompt"]
-    assert '"directed_edges_have_arrowheads": true' in captured["prompt"]
-    assert "不输出答案" in captured["prompt"]
-    assert captured["kwargs"]["thinking"] == "disabled"
-    assert captured["kwargs"]["timeout_seconds"] == 180
-
-
-def test_completed_semantic_review_clears_complex_review_requirement():
+def test_historical_semantic_review_is_ignored_by_current_quality():
     practice = {
         "requested_count": 1,
-        "blueprint": {"exercise_plan": [{"plan_item_id": "p1", "question_type": "综合题", "required_knowledge_points": ["相图"]}]},
+        "blueprint": {"exercise_plan": [{
+            "plan_item_id": "p1", "question_type": "综合题", "required_knowledge_points": ["相图"],
+        }]},
         "exercises": [{
             "number": 1, "plan_item_id": "p1", "question_type": "综合题", "difficulty": "挑战",
-            "stem": "比较两种相图路径。", "knowledge_points": ["相图"], "answerability_check_status": "reported",
+            "stem": "比较两种相图路径。", "knowledge_points": ["相图"],
+            "answerability_check_status": "reported",
         }],
-        "semantic_review": {"status": "passed", "items": [{"number": 1, "status": "passed", "risks": []}]},
-    }
-
-    quality = recompute_practice_quality(practice)
-
-    assert quality["checks"]["semantic_review_completed"] is True
-    assert quality["checks"]["semantic_review_passed"] is True
-    assert quality["checks"]["subject_matter_review_required"] is False
-
-
-def test_actionable_semantic_risk_keeps_result_and_marks_review_required():
-    practice = {
-        "requested_count": 1,
-        "blueprint": {"exercise_plan": [{"plan_item_id": "p1", "question_type": "综合题", "required_knowledge_points": ["相图"]}]},
-        "exercises": [{
-            "number": 1, "plan_item_id": "p1", "question_type": "综合题", "difficulty": "挑战",
-            "stem": "比较两种相图路径。", "knowledge_points": ["相图"], "answerability_check_status": "reported",
-        }],
-        "semantic_review": {"status": "warning", "items": [{
-            "number": 1, "status": "risk", "risks": [{"severity": "high", "code": "missing_condition", "message": "缺少关键条件。"}],
+        "semantic_review": {"status": "failed", "items": [{
+            "number": 1, "status": "risk", "risks": [{"severity": "high", "message": "旧风险"}],
         }]},
     }
 
     quality = recompute_practice_quality(practice)
 
     assert quality["status"] == "passed"
-    assert quality["checks"]["semantic_review_completed"] is True
-    assert quality["checks"]["semantic_review_passed"] is False
-    assert quality["checks"]["subject_matter_review_required"] is True
-    assert any("缺少关键条件" in warning for warning in quality["warnings"])
+    assert quality["release_level"] == "formal"
+    assert "semantic_review_completed" not in quality["checks"]
+    assert not any("旧风险" in warning for warning in quality["warnings"])
 
 
 def test_global_diversity_gate_detects_source_surface_reuse_in_comprehensive_set():
@@ -555,6 +482,43 @@ def test_blueprint_audit_does_not_treat_negated_foreign_topic_as_assessed_scope(
     assert audit["review_item_ids"] == []
     assert not any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
     assert any(finding.get("code") == "cross_source_context_reference" for finding in audit["findings"])
+
+
+def test_blueprint_audit_treats_shared_binary_qualifier_as_bound_parent_scope():
+    plan = {
+        "source_mode": "knowledge",
+        "selected_source_questions": [
+            {
+                "source_question_id": "phase_diagram",
+                "title": "共晶相图结构解析",
+                "knowledge_points": ["共晶相图", "相区识别"],
+            },
+            {
+                "source_question_id": "solidification",
+                "title": "合金平衡凝固",
+                "knowledge_points": ["二元共晶相图", "杠杆定律"],
+            },
+        ],
+        "blueprint": {
+            "generation_strategy": "knowledge_overall",
+            "exercise_plan": [{
+                "number": 1,
+                "plan_item_id": "phase_item",
+                "source_question_id": "phase_diagram",
+                "source_refs": ["phase_diagram"],
+                "question_type": "简答题",
+                "difficulty": "基础",
+                "target_skill": "二元共晶相图相区识别",
+                "variation_type": "概念辨析",
+                "design_intent": "考查二元共晶相图的相区识别。",
+                "required_knowledge_points": ["共晶相图", "相区识别"],
+            }],
+        },
+    }
+
+    audit = exercise_generation.audit_practice_blueprint(plan)
+
+    assert not any(finding.get("code") == "cross_source_design_leak" for finding in audit["findings"])
 
 
 @pytest.mark.parametrize(
@@ -2238,22 +2202,6 @@ def test_parallel_exam_auto_mode_breaks_up_three_identical_comprehensive_types()
     assert source_ids == ["source_1", "source_2", "source_3"]
 
 
-def test_disabled_or_not_required_semantic_review_does_not_create_false_review_warning():
-    base = {
-        "requested_count": 1,
-        "blueprint": {"exercise_plan": [{"plan_item_id": "p1", "question_type": "综合题", "required_knowledge_points": ["相图"]}]},
-        "exercises": [{
-            "number": 1, "plan_item_id": "p1", "question_type": "综合题", "difficulty": "挑战",
-            "stem": "比较两种相图路径。", "knowledge_points": ["相图"], "answerability_check_status": "reported",
-        }],
-    }
-    for status in ("disabled", "not_required"):
-        quality = recompute_practice_quality({**base, "semantic_review": {"status": status, "items": []}})
-        assert quality["checks"]["semantic_review_completed"] is True
-        assert quality["checks"]["subject_matter_review_required"] is False
-        assert not any("语义质量审查未执行" in item for item in quality["warnings"])
-
-
 def test_per_question_variants_partition_knowledge_across_same_source():
     source = {
         "source_question_id": "source_1",
@@ -2357,7 +2305,8 @@ def test_underprovisioned_comprehensive_plan_skips_adaptive_detail_calls(monkeyp
                 "training_goal": "核心知识专项补强",
                 "exercise_plan": [
                     {
-                        "source_refs": [f"S{index}"], "question_type": "综合题",
+                        "source_refs": ["S1", "S2"] if index == 2 else ["S1"], "question_type": "综合题",
+                        "coverage_role": "综合" if index == 2 else "铺垫",
                         "target_skill": f"能力{index}", "variation_type": "改变论证链条",
                         "design_intent": f"考查知识点{index}",
                         "required_knowledge_points": [f"知识点{index}"],
@@ -2408,7 +2357,9 @@ def test_exact_difficulty_counts_must_equal_strategy_total():
 
 
 def test_direct_contract_has_stable_slots_and_exact_quotas():
-    contract = build_generation_contract(_direct_contract_payload())
+    focus = "完整约束；" * 300 + "最后一项不能丢失。"
+    contract = build_generation_contract({**_direct_contract_payload(), "focus": focus})
+    assert contract["focus"] == focus
     assert [item["slot_id"] for item in contract["slots"]] == [f"generation_slot_{index:02d}" for index in range(1, 6)]
     assert [item["difficulty"] for item in contract["slots"]] == ["基础", "基础", "进阶", "进阶", "挑战"]
     assert contract["source_coverage"]["complete"] is True
@@ -2426,8 +2377,10 @@ def test_direct_generation_uses_program_contract_without_planning_call(monkeypat
 
     monkeypatch.setattr(exercise_generation, "generate_practice_from_plan", fake_generate)
     payload = {**_direct_contract_payload(), "blueprint_review_enabled": False, "generation_run_id": "run_new"}
+    payload["generation_contract"] = build_generation_contract({**payload, "focus": "已确认的完整要求"})
     result = generate_practice_from_contract(payload)
 
+    assert captured["plan"]["focus"] == "已确认的完整要求"
     assert captured["plan"]["blueprint"]["exercise_plan"][0]["plan_item_id"] == "generation_slot_01"
     assert result["blueprint_review_enabled"] is False
     assert result["generation"]["generation_run_id"] == "run_new"
@@ -2543,13 +2496,19 @@ def test_blueprint_difficulty_design_is_level_aware_without_dropping_bound_point
     assert all("步" not in item["difficulty_rationale"] for item in items)
 
 
-def test_comprehensive_plan_has_full_coverage_and_count_scaled_cross_source_gate():
+def test_comprehensive_plan_has_full_coverage_without_inventing_cross_source_items():
     selected = [
         {"source_question_id": f"source_{index}", "title": f"来源{index}", "stem_excerpt": f"材料{index}"}
         for index in range(1, 4)
     ]
     raw = {"blueprint": {"exercise_plan": [
-        {"target_skill": f"能力{index}", "variation_type": f"变化{index}", "design_intent": "形成递进"}
+        {
+            "target_skill": f"能力{index}",
+            "variation_type": f"变化{index}",
+            "design_intent": "形成递进",
+            "source_refs": [f"source_{index % 3 + 1}"],
+            "coverage_role": "铺垫",
+        }
         for index in range(5)
     ]}}
 
@@ -2569,8 +2528,78 @@ def test_comprehensive_plan_has_full_coverage_and_count_scaled_cross_source_gate
     assert contract["status"] == "passed"
     assert contract["mode"] == "comprehensive"
     assert contract["metrics"]["covered_source_count"] == 3
-    assert contract["metrics"]["multi_source_count"] >= 1
-    assert any(len(item["source_refs"]) >= 2 for item in plan["blueprint"]["exercise_plan"])
+    assert contract["metrics"]["multi_source_count"] == 0
+    assert contract["metrics"]["required_multi_source_count"] == 0
+
+
+@pytest.mark.parametrize("strategy", ["targeted_set", "knowledge_overall"])
+def test_comprehensive_prompt_does_not_create_a_default_cross_source_quota(strategy):
+    requirement = exercise_generation._strategy_prompt_requirement(
+        strategy,
+        knowledge_mode=strategy == "knowledge_overall",
+        source_count=7,
+        exercise_count=10,
+    )
+
+    assert "除非用户明确要求单题跨来源" in requirement
+    assert "不要求固定比例的跨来源题" in requirement
+    assert "连接或综合项为平台默认" not in requirement
+
+
+@pytest.mark.parametrize(
+    ("source_mode", "strategy"),
+    [("exam", "targeted_set"), ("knowledge", "knowledge_overall")],
+)
+def test_comprehensive_cross_source_gate_only_applies_to_explicit_user_requirement(source_mode, strategy):
+    focus = "题目可以跨来源综合"
+    selected = [
+        {"source_question_id": "source_1", "knowledge_points": ["知识点A"]},
+        {"source_question_id": "source_2", "knowledge_points": ["知识点B"]},
+    ]
+    items = [
+        {
+            "number": index + 1,
+            "source_refs": [f"source_{index % 2 + 1}"],
+            "coverage_role": "铺垫",
+        }
+        for index in range(10)
+    ]
+
+    default_plan = {
+        "source_mode": source_mode,
+        "focus": focus,
+        "selected_source_questions": selected,
+        "blueprint": {
+            "generation_strategy": strategy,
+            "requirements_contract": {
+                "wording": "unconstrained",
+                "cross_source": "default",
+                "focus_sha256": exercise_generation.text_hash(focus),
+            },
+            "exercise_plan": items,
+        },
+    }
+    default_contract = validate_practice_mode_contract(default_plan)
+    historical_plan = json.loads(json.dumps(default_plan))
+    historical_plan["blueprint"].pop("requirements_contract")
+
+    assert default_contract["status"] == "passed"
+    assert default_contract["metrics"]["multi_source_count"] == 0
+    assert default_contract["metrics"]["required_multi_source_count"] == 0
+    assert validate_practice_mode_contract(historical_plan)["status"] == "passed"
+
+    explicit_plan = json.loads(json.dumps(default_plan))
+    explicit_plan["blueprint"]["requirements_contract"] = {
+        "wording": "unconstrained",
+        "cross_source": "explicit",
+        "cross_source_quote": "跨来源综合",
+        "focus_sha256": exercise_generation.text_hash(focus),
+    }
+    explicit_contract = validate_practice_mode_contract(explicit_plan)
+
+    assert explicit_contract["status"] == "failed"
+    assert explicit_contract["metrics"]["required_multi_source_count"] == 2
+    assert any("跨来源题不足" in error for error in explicit_contract["errors"])
 
 
 def test_comprehensive_plan_warns_for_incomplete_coverage_without_blocking():
@@ -3006,7 +3035,7 @@ def test_confirmed_comprehensive_planning_uses_compact_catalog_and_one_default_c
     def fake_call(_client, messages, **kwargs):
         captured["prompt"] = messages[-1]["content"]
         return {"blueprint": {"training_goal": "综合掌握", "exercise_plan": [
-            {"target_skill": f"能力{index}", "variation_type": f"变化{index}", "design_intent": "形成覆盖", "source_refs": [f"S{1 + index % 2}"]}
+            {"target_skill": f"能力{index}", "variation_type": f"变化{index}", "design_intent": "形成覆盖", "source_refs": ["S1", "S2"] if index == 4 else [f"S{1 + index % 2}"]}
             for index in range(5)
         ]}}
 
@@ -3046,6 +3075,9 @@ def test_large_blueprint_uses_global_allocation_then_retryable_unit_batches(monk
         prompt = messages[-1]["content"]
         calls.append(prompt)
         if "只做全局槽位分配" in prompt:
+            requested_contract = json.loads(prompt.split("## 输出结构")[-1].strip())
+            assert "required_constraints" in requested_contract["blueprint"]["exercise_plan"][0]
+            assert "无相关公式时显式返回空列表" in prompt
             return {
                 "blueprint": {
                     "training_goal": "掌握动力学方法",

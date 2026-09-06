@@ -154,6 +154,44 @@ def test_api_key_file_and_atomic_temporary_use_owner_only_permissions(tmp_path: 
     assert not list(key_file.parent.glob(f".{key_file.name}.*.tmp"))
 
 
+def test_runtime_without_fchmod_can_create_replace_and_delete_keys(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    without_fchmod = patch.object(api_key_config.os, "fchmod", None, create=True)
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], without_fchmod:
+        created = api_key_config.update_api_key_values({"ARK_API_KEY": "first-test-value"})
+        assert created["updated"] is True
+        assert api_key_config.read_api_keys() == {"ARK_API_KEY": "first-test-value"}
+
+        replaced = api_key_config.update_api_key_values({"ARK_API_KEY": "second-test-value"})
+        assert replaced["updated"] is True
+        assert api_key_config.read_api_keys() == {"ARK_API_KEY": "second-test-value"}
+
+        deleted = api_key_config.update_api_key_values({"ARK_API_KEY": ""})
+        assert deleted["updated"] is True
+        assert api_key_config.read_api_keys() == {}
+
+    assert key_file.is_file()
+    assert not list(key_file.parent.glob(f".{key_file.name}.*.tmp"))
+
+
+def test_runtime_without_fchmod_can_back_up_and_recover_damaged_keys(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text('{"keys": {', encoding="utf-8")
+    original_digest = hashlib.sha256(key_file.read_bytes()).digest()
+    without_fchmod = patch.object(api_key_config.os, "fchmod", None, create=True)
+    with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], without_fchmod:
+        result = api_key_config.recover_damaged_api_key_file()
+
+    backups = list(key_file.parent.glob(f".{key_file.name}.damaged-*.bak"))
+    assert result["recovered"] is True
+    assert len(backups) == 1
+    assert hashlib.sha256(backups[0].read_bytes()).digest() == original_digest
+    assert api_key_config._read_json(key_file)["keys"] == {
+        name: "" for name in sorted(api_key_config.ALLOWED_API_KEY_NAMES)
+    }
+
+
 def test_first_provider_endpoints_concurrently_return_200(tmp_path: Path) -> None:
     _key_file, *contexts = _isolated_config(tmp_path)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_module.PlatformHandler)
@@ -173,6 +211,34 @@ def test_first_provider_endpoints_concurrently_return_200(tmp_path: Path) -> Non
 
         assert [status for status, _payload in results] == [200, 200]
         assert all(isinstance(payload, dict) for _status, payload in results)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        serving.join(2)
+
+
+def test_local_key_endpoint_persists_on_runtime_without_fchmod(tmp_path: Path) -> None:
+    key_file, *contexts = _isolated_config(tmp_path)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_module.PlatformHandler)
+    httpd.daemon_threads = True
+    serving = threading.Thread(target=httpd.serve_forever, daemon=True)
+    serving.start()
+    without_fchmod = patch.object(api_key_config.os, "fchmod", None, create=True)
+    try:
+        with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], without_fchmod:
+            status, payload = _post(
+                httpd,
+                "/api/providers/local-keys",
+                {"keys": {"DEEPSEEK_API_KEY": "endpoint-test-value"}},
+            )
+            saved = api_key_config.read_api_keys()
+
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["updated"] is True
+        assert "endpoint-test-value" not in json.dumps(payload)
+        assert saved == {"DEEPSEEK_API_KEY": "endpoint-test-value"}
+        assert key_file.is_file()
     finally:
         httpd.shutdown()
         httpd.server_close()

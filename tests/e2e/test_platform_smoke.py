@@ -10,6 +10,96 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
+@pytest.fixture
+def partial_package_server():
+    import io
+    import threading
+    import urllib.request
+    import zipfile
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("omissions.json", json.dumps({"missing": ["q2"]}))
+
+    class DownloadHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if "/unit-package?" not in self.path:
+                with urllib.request.urlopen(os.environ["ANSWER_BOOK_E2E_URL"].rstrip("/") + self.path) as response:
+                    body = response.read()
+                    self.send_response(response.status)
+                    self.send_header("Content-Type", response.headers.get("Content-Type", "text/plain"))
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="partial.zip"')
+            self.send_header("Content-Length", str(len(package.getvalue())))
+            self.end_headers()
+            self.wfile.write(package.getvalue())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DownloadHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_partial_delivery_pins_download_and_isolates_task_switches(partial_package_server) -> None:
+    base_url = os.getenv("ANSWER_BOOK_E2E_URL", "").strip()
+    if not base_url:
+        pytest.skip("set ANSWER_BOOK_E2E_URL to an isolated local platform")
+    import zipfile
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    manifest = {"available_count": 1, "missing": ["q2"], "revision": "a" * 64,
+                "notice": "非完整试卷，整卷验收未通过。"}
+    with playwright.sync_playwright() as runtime:
+        launch = {} if Path(runtime.chromium.executable_path).is_file() else {"channel": "chrome"}
+        browser = runtime.chromium.launch(headless=True, **launch)
+        page = browser.new_page()
+        page.route("**/api/tasks/partial-test/unit-delivery", lambda route: route.fulfill(json=manifest))
+        page.route("**/api/tasks/empty-test/unit-delivery", lambda route: route.fulfill(json={"available_count": 0}))
+        page.goto(partial_package_server, wait_until="networkidle")
+        page.evaluate("""async () => {
+            document.querySelector('.page.active').classList.remove('active');
+            document.getElementById('page-task').classList.add('active');
+            activeTaskId = 'partial-test';
+            await refreshTaskUnitDelivery(activeTaskId);
+        }""")
+        panel = page.locator("#taskUnitDeliveryPanel")
+        assert "未完成 1 题" in panel.inner_text()
+        link = panel.locator("a")
+        pinned = link.get_attribute("href")
+        assert "revision=" + "a" * 64 in pinned
+        with page.expect_download() as download:
+            link.click()
+        with zipfile.ZipFile(download.value.path()) as archive:
+            assert json.loads(archive.read("omissions.json"))["missing"] == ["q2"]
+        # Simulate a polling exception without a real failing resource. The
+        # already accepted version must stay downloadable and status untouched.
+        page.evaluate("""async () => {
+            const original = api;
+            api = async () => { throw new Error('transient polling failure'); };
+            taskUnitDeliveryRequests.clear();
+            try { await refreshTaskUnitDelivery(activeTaskId); } finally { api = original; }
+        }""")
+        assert link.get_attribute("href") == pinned
+        page.evaluate("""async () => {
+            activeTaskId = 'empty-test';
+            await refreshTaskUnitDelivery(activeTaskId);
+        }""")
+        assert panel.locator("a").count() == 0
+        assert "hidden" in panel.get_attribute("class")
+        browser.close()
+
+
 def _wait_for_platform_dialog(
     page,
     *,
@@ -690,8 +780,7 @@ def test_two_pages_cannot_silently_overwrite_the_same_practice_question() -> Non
                 """async () => {
                   platformPrompt = async () => '';
                   regeneratePracticeExercise = async () => ({
-                    exercise: {number: 1, question_type: '简答题', difficulty: '进阶', stem: '已经生成但尚未应用的候选题'},
-                    semantic_review: {status: 'passed', items: [{number: 1, status: 'passed', risks: []}]}
+                    exercise: {number: 1, question_type: '简答题', difficulty: '进阶', stem: '已经生成但尚未应用的候选题'}
                   });
                   const button = document.createElement('button');
                   button.id = 'e2eRegenerateButton';

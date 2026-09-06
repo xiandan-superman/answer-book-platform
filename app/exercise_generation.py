@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterable
 
 from .adapters.structured_completion import structured_completion
 from .concurrency import ModelRequestAborted
+from .formula_normalization import normalize_formula_entry
 from .image_artifacts import ImageArtifactStore
 from .image_orchestration import (
     DEFAULT_EDUCATIONAL_IMAGE_STYLE_RULE,
@@ -30,7 +31,7 @@ from .model_output_contracts import (
     PracticeFigureRepairOutput,
     PracticeGenerationOutput,
     PracticePlanningOutput,
-    PracticeSemanticReviewOutput,
+    PracticePlanningRefinementOutput,
     PracticeSourceAnalysisOutput,
 )
 from .model_tool_loop import (
@@ -41,6 +42,7 @@ from .model_tool_loop import (
 )
 from .paths import OUTPUTS_DIR
 from .practice_batch_contracts import complete_practice_slots, partition_practice_batch_rows
+from .practice_cloze import CLOZE_SCHEMA, REQUIREMENTS_SCHEMA, cloze_issue, compile_cloze, compile_requirements, expected_stem, text_hash
 from .practice_context_planner import (
     aggregate_source_evidence,
     apply_source_evidence_contract,
@@ -56,6 +58,7 @@ from .practice_export import (
     preflight_practice_inline_expressions,
 )
 from .practice_inputs import parse_practice_sources
+from .practice_requirements import PRACTICE_REQUIREMENT_PRIORITY, practice_user_focus
 from .practice_result_assembly import (
     PracticeGenerationMetadataContext,
     build_practice_generation_metadata,
@@ -435,7 +438,7 @@ def _required_constraints_for_plan_item(
     """Resolve constraints without overwriting a comprehensive item's own selection.
 
     A comprehensive blueprint may intentionally use only part of the knowledge
-    covered by its bound sources.  In that mode, a non-empty
+    covered by its bound sources.  In that mode, an explicitly supplied (including empty)
     ``required_constraints`` emitted or edited on the blueprint item is the
     authoritative selection.  One-to-one and per-source variants continue to
     use the full constraint set of their bound source.
@@ -447,7 +450,7 @@ def _required_constraints_for_plan_item(
             field: [value for value in explicit[field] if value in available[field]]
             for field in _CONSTRAINT_FIELDS
         }
-    if _mode_kind(generation_strategy) == "comprehensive" and any(explicit.values()):
+    if _mode_kind(generation_strategy) == "comprehensive" and isinstance(planned_constraints, dict):
         return explicit
     return _required_constraints_for_refs(source_refs, source_catalog, fallback)
 
@@ -595,8 +598,8 @@ def _strategy_prompt_requirement(strategy: str, *, knowledge_mode: bool, source_
     strategy = _clean(strategy, 40)
     if strategy in {"targeted_set", "knowledge_overall"}:
         if source_count > 0 and exercise_count > 0 and exercise_count < source_count:
-            return "综合模式：题量少于已选来源数，优先覆盖核心知识点并设置连接或综合项；允许部分来源或知识点留待下一套练习覆盖，不得伪造已全量覆盖。"
-        return "综合模式：按蓝图项合理分配或组合绑定来源的知识点；整套蓝图覆盖全部确认范围，并设置连接或综合项。"
+            return "综合模式：题量少于已选来源数，优先覆盖核心知识点；每题只绑定实际考查的一项或多项来源。除非用户明确要求单题跨来源，不要求固定比例的跨来源题；允许部分来源或知识点留待下一套练习覆盖，不得伪造已全量覆盖。"
+        return "综合模式：按蓝图项在整套内合理分配或组合绑定来源的知识点；每题只绑定实际考查的一项或多项来源。除非用户明确要求单题跨来源，不要求固定比例的跨来源题；整套蓝图覆盖全部确认范围。"
     if strategy in {"parallel_exam"}:
         return "一一对应模式：每项只绑定一道来源原题，并完整保留该原题的必考知识点组合。"
     if strategy == "per_question":
@@ -861,6 +864,10 @@ def practice_diversity_issues(practice: dict[str, Any]) -> list[dict[str, Any]]:
 
     if comprehensive:
         for index, item in enumerate(exercises):
+            # Fill-in-the-blank questions can legitimately reuse source wording.
+            # Peer collisions below still reject duplicated questions.
+            if _source_type(item.get("question_type")) == "填空题":
+                continue
             source = source_by_id.get(_clean(item.get("source_question_id"), 80), {})
             source_text = _clean(source.get("source_content") or source.get("stem_excerpt") or source.get("excerpt"), 6000)
             if len(_number_masked_text(source_text)) < 40:
@@ -1061,7 +1068,25 @@ def validate_practice_mode_contract(plan: dict[str, Any]) -> dict[str, Any]:
     covered = {ref for refs in refs_by_item for ref in refs}
     multi_source_count = sum(1 for refs in refs_by_item if len(refs) >= 2)
     roles = {_clean(item.get("coverage_role"), 20) for item in items if _clean(item.get("coverage_role"), 20)}
-    required_multi = max(1, (len(items) + 4) // 5) if len(selected_ids) >= 2 and items else 0
+    requirements = blueprint.get("requirements_contract") or {}
+    # A comprehensive set means coverage across the set.  It does not itself
+    # mean that a fixed portion of individual questions must combine sources.
+    # Only the user-facing requirements contract can make that an explicit
+    # per-question constraint.  Missing historical contracts deliberately
+    # retain the default interpretation without rewriting stored plans.
+    cross_source_explicit = requirements.get("cross_source") == "explicit"
+    required_multi = (
+        max(1, (len(items) + 4) // 5)
+        if cross_source_explicit and len(selected_ids) >= 2 and items
+        else 0
+    )
+    if requirements:
+        if requirements.get("focus_sha256") != text_hash(practice_user_focus(plan)):
+            errors.append("用户原始要求已变化，必须重新规划合同。")
+        errors.extend(str(value) for value in requirements.get("conflicts") or [])
+        for item, refs in zip(items, refs_by_item):
+            if selected_ids and (not refs or any(ref not in selected_ids for ref in refs)):
+                errors.append(f"第{item.get('number')}题来源缺失或未知，不能自动补绑。")
     if mode == "single_source":
         if selected_ids and any(len(refs) != 1 for refs in refs_by_item):
             errors.append("单项模式每个蓝图项必须且只能绑定一个来源。")
@@ -1098,7 +1123,7 @@ def validate_practice_mode_contract(plan: dict[str, Any]) -> dict[str, Any]:
                 warnings.append(f"{message} 请在蓝图审查中确认是否需要补充该来源。")
         if multi_source_count < required_multi:
             errors.append(f"综合模式跨来源题不足：至少 {required_multi} 题，实际 {multi_source_count} 题。")
-        if len(selected_ids) >= 2 and not roles.intersection({"连接", "综合"}):
+        if required_multi and not roles.intersection({"连接", "综合"}):
             errors.append("综合模式至少需要一个连接或综合角色。")
     return {
         "status": "failed" if errors else ("warning" if warnings else "passed"),
@@ -1155,6 +1180,13 @@ def _source_evidence_covers_anchor(anchor: str, evidence: str) -> bool:
     canonical_base = _canonical_scope_text(base)
     if len(canonical_base) >= 4 and canonical_base in canonical_evidence:
         return True
+    # Knowledge extraction sometimes adds the generic "二元" qualifier to a
+    # source whose confirmed title and content use the parent term. It cannot
+    # distinguish another source by itself, so do not turn that shared anchor
+    # into a false cross-source design leak.
+    if canonical_base.startswith("二元") and len(canonical_base) >= 6:
+        if canonical_base.removeprefix("二元") in canonical_evidence:
+            return True
     terms = [
         _canonical_scope_text(term)
         for term in re.split(r"(?:与|和|及|、|/)", base)
@@ -1473,6 +1505,17 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     for index, item in enumerate(items, start=1):
         required = _unique_strings(item.get("required_knowledge_points"), limit=60, item_limit=500)
         refs = _unique_strings(item.get("source_refs") or [item.get("source_question_id")], limit=3, item_limit=80)
+        # A strict verbatim fill-in has one fixed source span. Its planned
+        # knowledge points describe that span and blank, rather than every
+        # concept, formula, or boundary attached to the full source record.
+        # The source-wide equality rule below remains the default for normal
+        # single-source generation, where a question may exercise the full
+        # bound source scope.
+        strict_literal_fill = (
+            _clean((blueprint.get("requirements_contract") or {}).get("wording"), 40) == "strict_verbatim"
+            and _effective_question_type(item) == "填空题"
+            and isinstance(item.get("cloze_mapping"), dict)
+        )
         if item.get("stem_figure_required") is True:
             image_dependent_source_ids.update(ref for ref in refs if ref in image_source_ids)
         expected = _required_knowledge_points_for_refs(refs, list(source_by_id.values()), analysis_fallback_points)
@@ -1497,7 +1540,12 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 if point not in unsupported and point not in supported_knowledge_targeted_points:
                     supported_knowledge_targeted_points.append(point)
         elif expected:
-            if mode == "single_source" and not partitioned_knowledge_item and set(required) != set(expected):
+            if (
+                mode == "single_source"
+                and not partitioned_knowledge_item
+                and not strict_literal_fill
+                and set(required) != set(expected)
+            ):
                 invalid_required_points.append(str(item.get("number") or index))
             elif (mode == "comprehensive" or partitioned_knowledge_item) and not set(required).issubset(set(expected)):
                 invalid_required_points.append(str(item.get("number") or index))
@@ -1962,9 +2010,9 @@ def _normalize_options(value: Any) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for index, raw in enumerate(value[:8]):
         if isinstance(raw, dict):
-            text = _clean(raw.get("text"), 1200)
+            text = str(raw.get("text") or "").strip()
         else:
-            text = _clean(raw, 1200)
+            text = str(raw or "").strip()
         # Some models repeat the visible label inside the option body (for
         # example {"label": "A", "text": "A. ..."}). Labels are owned by
         # the renderer, so keep the stored option body label-free.
@@ -2049,10 +2097,11 @@ def _normalize_formulas(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     rows = []
-    for index, raw in enumerate(value[:16], start=1):
+    for index, raw in enumerate(value, start=1):
         if not isinstance(raw, dict):
             continue
-        latex = _clean(raw.get("latex"), 3000)
+        raw = normalize_formula_entry(raw, index=index)
+        latex = str(raw.get("latex") or "").strip()
         if latex:
             rows.append(
                 {
@@ -2060,7 +2109,7 @@ def _normalize_formulas(value: Any) -> list[dict[str, Any]]:
                     "latex": latex,
                     "location": _clean(raw.get("location"), 20) or "stem",
                     "display": bool(raw.get("display", True)),
-                    "caption": _clean(raw.get("caption"), 300),
+                    "caption": str(raw.get("caption") or "").strip(),
                     "role": _clean(raw.get("role"), 20).lower() or "relation",
                 }
             )
@@ -2071,20 +2120,20 @@ def _normalize_tables(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     tables = []
-    for index, raw in enumerate(value[:6], start=1):
+    for index, raw in enumerate(value, start=1):
         if not isinstance(raw, dict):
             continue
-        headers = _string_list(raw.get("headers"), limit=10)
+        headers = [str(cell or "").strip() for cell in (raw.get("headers") or [])]
         rows = []
-        for row in (raw.get("rows") or [])[:30]:
+        for row in (raw.get("rows") or []):
             if isinstance(row, list):
-                rows.append([_clean(cell, 500) for cell in row[:10]])
+                rows.append([str(cell or "").strip() for cell in row])
         if headers or rows:
             tables.append(
                 {
                     "table_id": _clean(raw.get("table_id"), 50) or f"t{index}",
                     "location": _clean(raw.get("location"), 20) or "stem",
-                    "title": _clean(raw.get("title"), 300),
+                    "title": str(raw.get("title") or "").strip(),
                     "headers": headers,
                     "rows": rows,
                 }
@@ -2094,7 +2143,7 @@ def _normalize_tables(value: Any) -> list[dict[str, Any]]:
 
 def _normalize_generated_markup(value: Any, *, limit: int = 6000) -> tuple[str, bool]:
     """Repair deterministic markup defects and report anything still unsafe."""
-    normalized = normalize_practice_markup(_clean(value, limit), limit=limit)
+    normalized = normalize_practice_markup(str(value or "").replace("\r\n", "\n"), limit=limit)
     return normalized, has_unrenderable_practice_markup(normalized)
 
 
@@ -3283,6 +3332,7 @@ def _exercise_boundary_issues(exercise: dict[str, Any], planned_item: dict[str, 
             marker
             for key, markers in _BOUNDARY_CONTRADICTION_MARKERS.items()
             if _normalized_figure_term(key) in normalized_boundary
+            and not any(_normalized_figure_term(value) in normalized_boundary for value in markers)
             for marker in markers
             if marker in stem
         ]
@@ -3295,29 +3345,6 @@ def _exercise_boundary_issues(exercise: dict[str, Any], planned_item: dict[str, 
             })
     return issues
 
-
-def _practice_semantic_review_risks(practice: dict[str, Any]) -> list[dict[str, Any]]:
-    review = practice.get("semantic_review") if isinstance(practice.get("semantic_review"), dict) else {}
-    risks: list[dict[str, Any]] = []
-    for item in review.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        number = str(item.get("number") or "").strip()
-        for risk in item.get("risks") or []:
-            if not isinstance(risk, dict):
-                continue
-            severity = _clean(risk.get("severity"), 20).lower()
-            message = _clean(risk.get("message"), 800)
-            if severity in {"high", "medium", "low"} and message:
-                risks.append({
-                    "number": number,
-                    "severity": severity,
-                    "code": _clean(risk.get("code"), 100) or "semantic_risk",
-                    "message": message,
-                    "evidence": _clean(risk.get("evidence"), 800),
-                    "suggested_action": _clean(risk.get("suggested_action"), 800),
-                })
-    return risks
 
 
 def ensure_unique_figure_ids(exercises: list[dict[str, Any]]) -> None:
@@ -3399,6 +3426,9 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         )
         question_type = _effective_question_type(item, planned_by_id.get(plan_item_id))
         planned_item = planned_by_id.get(plan_item_id) or {}
+        provenance_issue = cloze_issue(item, planned_item, practice)
+        if provenance_issue:
+            blocking_issues.append(f"第 {question_number} 题原句填空核验失败：{provenance_issue['message']}")
         if question_type in {"综合题", "作图题"} or _clean(item.get("difficulty"), 20) == "挑战":
             complex_review_candidates.append(question_number)
         structure_issue = _question_structure_issue(item, question_type=question_type)
@@ -3491,26 +3521,7 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         for observation in difficulty_observations
         if _clean(observation.get("message"), 800)
     )
-    semantic_review = practice.get("semantic_review") if isinstance(practice.get("semantic_review"), dict) else {}
-    semantic_review_status = _clean(semantic_review.get("status"), 30)
-    semantic_review_risks = _practice_semantic_review_risks(practice)
-    actionable_semantic_risks = [risk for risk in semantic_review_risks if risk["severity"] in {"high", "medium"}]
-    for risk in semantic_review_risks:
-        if risk["severity"] in {"high", "medium"}:
-            warnings.append(f"第 {risk['number'] or '?'} 题语义复核：{risk['message']}")
-    semantic_review_completed = semantic_review_status in {"passed", "warning", "not_required", "disabled"}
-    if semantic_review_status == "failed":
-        warnings.append("语义质量审查未完成，已保留题目并标记为待复核。")
-    elif semantic_review and not semantic_review_completed:
-        warnings.append("语义质量审查未执行，已保留题目并标记为待复核。")
-    subject_review_required = bool(actionable_semantic_risks) or (
-        bool(semantic_review) and not semantic_review_completed
-    ) or (
-        bool(boundary_issues)
-    ) or (
-        bool(semantic_review) and semantic_review_status not in {"not_required", "disabled"}
-        and bool(complex_review_candidates) and not semantic_review_completed
-    )
+    subject_review_required = bool(boundary_issues)
     word_formula_issues = preflight_practice_inline_expressions({"exercises": exercises})
     blocking_issues.extend(word_formula_issues)
     checks = {
@@ -3523,8 +3534,6 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
             observation.get("severity") == "high" for observation in difficulty_observations
         ),
         "applicable_boundary_consistency": not boundary_issues,
-        "semantic_review_completed": semantic_review_completed,
-        "semantic_review_passed": semantic_review_completed and not actionable_semantic_risks,
         "subject_matter_review_required": subject_review_required,
         "word_formula_renderable": not word_formula_issues,
     }
@@ -3546,7 +3555,6 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         "difficulty_observations": difficulty_observations,
         "boundary_issues": boundary_issues,
         "subject_review_candidates": list(dict.fromkeys(complex_review_candidates)),
-        "semantic_review_risks": semantic_review_risks,
     }
 
 
@@ -3558,6 +3566,58 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
     rebuilt from the current question slots after every edit or regeneration.
     """
     data = copy.deepcopy(practice) if isinstance(practice, dict) else {}
+    # A recovered or locally merged candidate may retain the temporary
+    # batch-local ordinal returned by a one-item model response.  When the
+    # confirmed blueprint and current exercises are a one-to-one set, the
+    # blueprint's plan_item_id -> number mapping is the sole authority for
+    # presentation identity.  This runs before quality reporting so findings
+    # name the affected question rather than an unrelated duplicate number.
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    planned_items = [item for item in (blueprint.get("exercise_plan") or []) if isinstance(item, dict)]
+    exercises_for_identity = data.get("exercises") if isinstance(data.get("exercises"), list) else []
+    plan_positions = {
+        _clean(item.get("plan_item_id"), 80): _nonnegative_int(item.get("number")) or position
+        for position, item in enumerate(planned_items, start=1)
+        if _clean(item.get("plan_item_id"), 80)
+    }
+    exercise_ids = [
+        _clean(item.get("plan_item_id"), 80)
+        for item in exercises_for_identity
+        if isinstance(item, dict)
+    ]
+    identity_reconciliation: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "confirmed_blueprint_missing" if not plan_positions else "",
+    }
+    one_to_one_identity = (
+        plan_positions
+        and len(planned_items) == len(exercises_for_identity)
+        and len(exercise_ids) == len(set(exercise_ids))
+        and set(exercise_ids) == set(plan_positions)
+    )
+    if one_to_one_identity:
+        changed_ids: list[str] = []
+        for item in exercises_for_identity:
+            if not isinstance(item, dict):
+                continue
+            position = plan_positions[_clean(item.get("plan_item_id"), 80)]
+            if item.get("number") != position or item.get("exercise_id") != f"practice_{position:02d}":
+                changed_ids.append(_clean(item.get("plan_item_id"), 80))
+            item["number"] = position
+            item["exercise_id"] = f"practice_{position:02d}"
+        identity_reconciliation = {
+            "status": "reconciled" if changed_ids else "verified",
+            "reason": "confirmed_plan_identity",
+            "changed_plan_item_ids": changed_ids,
+        }
+    elif plan_positions:
+        if len(planned_items) != len(exercises_for_identity):
+            reason = "cardinality_mismatch"
+        elif len(exercise_ids) != len(set(exercise_ids)):
+            reason = "duplicate_current_plan_item_id"
+        else:
+            reason = "current_plan_ids_do_not_match_confirmed_blueprint"
+        identity_reconciliation["reason"] = reason
     quality = recompute_practice_quality(data)
     exercises = data.get("exercises") if isinstance(data.get("exercises"), list) else []
     current_errors: list[dict[str, Any]] = []
@@ -3600,6 +3660,7 @@ def reconcile_practice_generation(practice: dict[str, Any]) -> dict[str, Any]:
         "configuration_blocked": any(row.get("requires_configuration") for row in current_errors),
         "route_blocked": any(row.get("failure_state") == "route_blocked" for row in current_errors),
         "batch_errors": current_errors,
+        "identity_reconciliation": identity_reconciliation,
     })
     data["quality"] = quality
     data["generation"] = generation
@@ -3929,7 +3990,7 @@ def _type_plan(selected: list[str], count: int) -> list[str]:
     rng = random.SystemRandom()
     # Auto mode is a bounded academic mix. It must not randomly introduce a
     # calculation or drawing requirement that the confirmed source never had.
-    pool = selected or ["简答题", "综合题", "判断题", "单选题"]
+    pool = selected or ["简答题", "综合题", "判断题", "单选题", "填空题"]
     plan: list[str] = []
     while len(plan) < count:
         cycle = list(pool)
@@ -4089,8 +4150,11 @@ def _repair_gateway_latex_control_characters(value: Any) -> Any:
     if not isinstance(value, str):
         return value
 
-    repaired = re.sub(r"[\x00-\x07](?=[A-Za-z\[\]()])", lambda _match: "\\", value)
-    repaired = re.sub(r"[\x00-\x07]", "", repaired)
+    repaired = re.sub(
+        r"[\x00-\x07](?=(?:mathrm|mathbf|mathit|mathbb|mathcal|operatorname)\b)",
+        lambda _match: "\\",
+        value,
+    )
     for control, command_prefix, suffixes in (
         ("\r", "r", r"ight|m\b|angle|ho"),
         ("\b", "b", r"eta|oldsymbol|egin"),
@@ -4133,6 +4197,32 @@ def normalize_practice_set(
         raise ValueError("模型输出必须是 JSON 对象。")
     control_issues = _practice_control_character_issues(raw)
     if control_issues:
+        # A corrupt visible body belongs to its known blueprint slot, not to
+        # all its siblings. Shared inputs and identities still fail closed.
+        # Preserve raw checkpoints upstream; never show the rejected body or
+        # infer what a control character was intended to mean.
+        raw = copy.deepcopy(raw)
+        accepted_ids = planned_plan_ids or [f"plan_item_{index + 1:02d}" for index in range(requested_count)]
+        body_fields = {"stem", "options", "formulas", "tables", "figures"}
+        for position, item in enumerate(raw.get("exercises") or []):
+            if not isinstance(item, dict) or not _practice_control_character_issues(item):
+                continue
+            identity = {key: value for key, value in item.items() if key not in body_fields}
+            plan_id = identity.get("plan_item_id")
+            if plan_id not in accepted_ids or _practice_control_character_issues(identity):
+                continue
+            raw["exercises"][position] = _failed_exercise_placeholder(
+                identity,
+                index=accepted_ids.index(plan_id) + 1,
+                error={
+                    "code": "invalid_output_control_character",
+                    "message": "本题正文包含非法控制字符，未通过内容检查；其他题目继续处理。",
+                    "retryable": True,
+                    "detail": json.dumps(_practice_control_character_issues(item), ensure_ascii=False),
+                },
+            )
+        control_issues = _practice_control_character_issues(raw)
+    if control_issues:
         raise ValueError(
             "专项练习数据包含非法控制字符，不能进入规范化或保存："
             + json.dumps(control_issues[:8], ensure_ascii=False)
@@ -4167,6 +4257,8 @@ def normalize_practice_set(
         stem, tables = _merge_stem_markdown_tables(stem, tables)
         stem, post_table_merge_stem_has_unrenderable_markup = _normalize_generated_stem(stem, limit=6000)
         tables, post_table_merge_tables_have_unrenderable_markup = _normalize_generated_tables(tables)
+        if item.get("cloze_literal") is True:
+            stem = str(item.get("stem") or "")
         target_skill, target_skill_has_unrenderable_markup = _normalize_generated_markup(item.get("target_skill"), limit=500)
         options, options_have_unrenderable_markup = _normalize_generated_options(item.get("options"))
         markup_issue = (
@@ -4248,6 +4340,7 @@ def normalize_practice_set(
                 "target_skill": target_skill,
                 "variation_type": _clean(item.get("variation_type"), 100),
                 "stem": stem,
+                **({"cloze_literal": True} if item.get("cloze_literal") is True else {}),
                 "options": options,
                 # A blueprint may legitimately bind more than ten atomic
                 # points to one comprehensive item. Truncating this metadata
@@ -4448,7 +4541,7 @@ def build_generation_contract(payload: dict[str, Any]) -> dict[str, Any]:
         "total_count": count,
         "difficulty_counts": difficulty_counts,
         "question_types": selected_types,
-        "focus": _clean(payload.get("focus"), 1000),
+        "focus": practice_user_focus(payload),
         "include_source_content_in_generation": include_source_content,
         "source_coverage": coverage,
         "slots": slots,
@@ -4608,6 +4701,7 @@ def _practice_output_format_requirements() -> list[str]:
     """The generated-question layout is owned by the platform, not the model."""
     return [
         "stem 只写题面正文；不要写“第 N 题”、题目标题、Markdown 标题、答案、解析或提示语。",
+        "用户指定题干字数上限时，应约束完整 stem（包含全部小问），不能只计算导语，也不能把中文‘字’解释为英文单词；不要通过删去必要条件或把条件移入答案来凑字数。",
         "普通题干使用连续自然段，不得为视觉排版插入手动换行；系统会自动换行。",
         "综合题、计算题和作图题的一级小问必须独占一行，统一写为 ASCII 英文括号 (1)、(2)、(3)，禁止使用全角（1）或 1.、1、。",
         "仅在一个小问内有多项并列要求时使用 ①、②；选择项只能放在 options 字段，由系统输出 A.、B.、C.、D.。",
@@ -5026,6 +5120,9 @@ def _semantic_batch_plan(
             "visual_evidence_refs": _unique_strings(item.get("visual_evidence_refs"), limit=64, item_limit=40),
             "requires_source_visuals": item.get("requires_source_visuals") is True,
         }
+        if item.get("cloze_mapping"):
+            row["cloze_expected_stem"] = item.get("cloze_expected_stem")
+            row["cloze_rule"] = "stem必须逐字等于cloze_expected_stem；仅输出题干，不增加公式、表格、图片或答案。"
         constraints = _compact_required_constraints(item.get("required_constraints"))
         if constraints:
             row["required_constraints"] = constraints
@@ -5261,6 +5358,11 @@ def _call_practice_json(
                 timeout=timeout_seconds,
             )
         raw = agent_result.value
+        # Tool-loop gateways hand back an already-decoded object, so a model's
+        # single-backslash LaTeX command can arrive as a JSON control escape.
+        # Repair only identifiable LaTeX forms before the per-item gate.
+        if _practice_control_character_issues(raw):
+            raw = _repair_gateway_latex_control_characters(raw)
         raw["_image_tool_artifacts"] = agent_result.generated_artifacts
         raw["_image_tool_loop"] = {
             "steps": agent_result.steps,
@@ -5273,9 +5375,10 @@ def _call_practice_json(
     response_contract = {
         "practice.generation": PracticeGenerationOutput,
         "practice.figure_repair": PracticeFigureRepairOutput,
-        "practice.semantic_review": PracticeSemanticReviewOutput,
         "practice.source_analysis": PracticeSourceAnalysisOutput,
-        "practice.planning": PracticePlanningOutput,
+        "practice.planning": (
+            PracticePlanningOutput if task_stage == "planning" else PracticePlanningRefinementOutput
+        ),
     }.get(contract_id, GenericJsonObjectOutput)
     with prompt_contract(contract_id):
         validated = structured_completion(
@@ -5340,481 +5443,6 @@ def _practice_analysis_output_default(material: str, image_count: int = 0) -> in
         return 9000
     return 6000
 
-
-def _practice_semantic_review_should_run(practice: dict[str, Any], payload: dict[str, Any]) -> bool:
-    if payload.get("semantic_review_enabled") is not True and payload.get("formal_quality_review") is not True:
-        return False
-    quality = practice.get("quality") if isinstance(practice.get("quality"), dict) else recompute_practice_quality(practice)
-    if quality.get("blocking_issues") or int(quality.get("failed_count") or 0) > 0:
-        return False
-    blueprint = practice.get("blueprint") if isinstance(practice.get("blueprint"), dict) else {}
-    strategy = _clean(
-        practice.get("generation_strategy") or blueprint.get("generation_strategy"),
-        40,
-    )
-    source_mode = _clean(practice.get("source_mode"), 30)
-    cross_source_item = any(
-        len(_unique_strings(
-            item.get("source_refs") or [item.get("source_question_id")],
-            limit=3,
-            item_limit=80,
-        )) > 1
-        for item in (blueprint.get("exercise_plan") or [])
-        if isinstance(item, dict)
-    )
-    return bool(
-        quality.get("subject_review_candidates")
-        or quality.get("boundary_issues")
-        or payload.get("formal_quality_review")
-        or (source_mode == "knowledge" and strategy == "knowledge_overall")
-        or cross_source_item
-    )
-
-
-def _sample_series_points_for_review(series: dict[str, Any], *, limit: int = 24) -> list[list[float]]:
-    """Expose chart geometry to review without allowing one chart to dominate the prompt."""
-    points = [point for point in (series.get("points") or []) if isinstance(point, list) and len(point) >= 2]
-    if len(points) <= limit:
-        selected = points
-    else:
-        indexes = sorted({round(index * (len(points) - 1) / (limit - 1)) for index in range(limit)})
-        selected = [points[index] for index in indexes]
-    normalized: list[list[float]] = []
-    for point in selected:
-        try:
-            normalized.append([float(point[0]), float(point[1])])
-        except (TypeError, ValueError, IndexError):
-            continue
-    return normalized
-
-
-def _cross_source_universal_premise_risks(
-    exercise: dict[str, Any],
-    planned_item: dict[str, Any],
-) -> list[dict[str, str]]:
-    """Guard a proven cross-source boundary that models may normalize away.
-
-    A judgment question may intentionally contain a false universal claim. For
-    other question types, the same wording is a factual premise unless the
-    student is explicitly asked to evaluate it.
-    """
-    refs = _unique_strings(
-        exercise.get("source_refs")
-        or planned_item.get("source_refs")
-        or [exercise.get("source_question_id"), planned_item.get("source_question_id")],
-        limit=3,
-        item_limit=80,
-    )
-    if len(refs) < 2 or _effective_question_type(exercise, planned_item) == "判断题":
-        return []
-    stem = _clean(exercise.get("stem"), 12000)
-    if any(marker in stem for marker in ("判断该表述", "判断上述", "判断正误", "辨析该说法", "评价该说法", "指出该说法")):
-        return []
-    simultaneous_dynamic_softening = re.search(
-        r"(?:动态回复\s*[、和与及]\s*动态再结晶.{0,24}同时(?:发生|存在)"
-        r"|同时(?:发生|存在).{0,24}动态回复\s*[、和与及]\s*动态再结晶)",
-        stem,
-    )
-    if not simultaneous_dynamic_softening:
-        return []
-    return [{
-        "severity": "high",
-        "code": "cross_source_universal_premise",
-        "message": "题干把动态回复与动态再结晶同时发生或存在写成跨材料共同前提，未保留不同材料类别的触发边界。",
-        "evidence": simultaneous_dynamic_softening.group(0),
-        "suggested_action": "改为加工硬化与各自相应的动态软化共存，再分别要求辨析主导机制。",
-    }]
-
-
-def _judgment_risk_only_says_proposition_is_false(
-    exercise: dict[str, Any],
-    risk: dict[str, Any],
-) -> bool:
-    """Ignore factual/scope critiques when a judgment proposition stays decidable."""
-    code = _clean(risk.get("code"), 100)
-    if _effective_question_type(exercise) != "判断题" or code not in {
-        "fact_error",
-        "ambiguous_proposition_scope",
-        "ambiguity_or_scope",
-        "boundary_violation",
-        "boundary_mismatch",
-    }:
-        return False
-    detail = " ".join(
-        _clean(risk.get(key), 1200)
-        for key in ("message", "evidence", "suggested_action")
-    )
-    ambiguity_markers = (
-        "无法唯一判断",
-        "不能唯一判断",
-        "真假不唯一",
-        "整体无法判断",
-        "条件不足",
-        "缺少关键条件",
-    )
-    if any(marker in detail for marker in ambiguity_markers):
-        return False
-    return True
-
-
-def review_practice_semantics(practice: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """Review one complete practice set in one bounded model operation.
-
-    The reviewer reports risks only. It never rewrites questions, reveals
-    answers, or turns an otherwise usable set into a missing result.
-    """
-    exercises = [
-        item for item in (practice.get("exercises") or [])
-        if isinstance(item, dict) and item.get("generation_status") != "failed"
-    ]
-    if not exercises:
-        return {"status": "skipped", "reason": "no_usable_exercises", "items": []}
-    blueprint = practice.get("blueprint") if isinstance(practice.get("blueprint"), dict) else {}
-    planned_by_id = {
-        _clean(item.get("plan_item_id"), 80): item
-        for item in (blueprint.get("exercise_plan") or [])
-        if isinstance(item, dict) and _clean(item.get("plan_item_id"), 80)
-    }
-    source_by_id = {
-        _clean(item.get("source_question_id"), 80): item
-        for item in (practice.get("selected_source_questions") or [])
-        if isinstance(item, dict) and _clean(item.get("source_question_id"), 80)
-    }
-    review_rows: list[dict[str, Any]] = []
-    for index, exercise in enumerate(exercises, start=1):
-        plan_item_id = _clean(exercise.get("parent_plan_item_id") or exercise.get("plan_item_id"), 80)
-        planned_item = planned_by_id.get(plan_item_id) or {}
-        source_refs = _unique_strings(
-            exercise.get("source_refs")
-            or planned_item.get("source_refs")
-            or [exercise.get("source_question_id"), planned_item.get("source_question_id")],
-            limit=3,
-            item_limit=80,
-        )
-        review_rows.append({
-            "number": exercise.get("number") or index,
-            "question_type": _clean(exercise.get("question_type"), 30),
-            "difficulty": _clean(exercise.get("difficulty"), 20),
-            "stem": _clean(exercise.get("stem"), 12000),
-            "options": _normalize_options(exercise.get("options")),
-            "knowledge_points": _unique_strings(exercise.get("knowledge_points"), limit=60, item_limit=500),
-            "formulas": [
-                {
-                    "latex": _clean(formula.get("latex"), 1000),
-                    "caption": _clean(formula.get("caption"), 300),
-                }
-                for formula in (exercise.get("formulas") or [])[:20]
-                if isinstance(formula, dict)
-            ],
-            "tables": [
-                {
-                    "headers": _unique_strings(table.get("headers"), limit=20, item_limit=300),
-                    "rows": [row[:20] for row in (table.get("rows") or [])[:30] if isinstance(row, list)],
-                }
-                for table in (exercise.get("tables") or [])[:8]
-                if isinstance(table, dict)
-            ],
-            "figure_summary": [
-                {
-                    "title": _clean(figure.get("title"), 300),
-                    "x_label": _clean(figure.get("x_label"), 100),
-                    "y_label": _clean(figure.get("y_label"), 100),
-                    "series": [
-                        {
-                            "name": _clean(series.get("name"), 200),
-                            "sampled_points": _sample_series_points_for_review(series),
-                        }
-                        for series in (figure.get("series") or [])[:8]
-                        if isinstance(series, dict)
-                    ],
-                    "nodes": [
-                        {
-                            "id": _clean(node.get("id"), 80),
-                            "label": _clean(node.get("label"), 200),
-                            "x": node.get("x"),
-                            "y": node.get("y"),
-                        }
-                        for node in (figure.get("nodes") or [])[:30]
-                        if isinstance(node, dict)
-                    ],
-                    "edges": [
-                        {
-                            "from": _clean(edge.get("from"), 80),
-                            "to": _clean(edge.get("to"), 80),
-                            "label": _clean(edge.get("label"), 200),
-                            "directed": edge.get("directed") is not False,
-                        }
-                        for edge in (figure.get("edges") or [])[:50]
-                        if isinstance(edge, dict)
-                    ],
-                    "renderer_contract": {
-                        "series_names_are_visible_legend_labels": True,
-                        "nodes_are_visible_markers_with_text_labels": True,
-                        "edges_are_visible_lines": True,
-                        "directed_edges_have_arrowheads": True,
-                        "crystal_plane_edges_are_shaded_or_hatched_when_labelled": True,
-                    },
-                }
-                for figure in (exercise.get("figures") or [])
-                if isinstance(figure, dict)
-            ],
-            "blueprint": {
-                "target_skill": _clean(planned_item.get("target_skill"), 500),
-                "source_refs": source_refs,
-                "required_knowledge_points": _unique_strings(
-                    planned_item.get("required_knowledge_points"), limit=60, item_limit=500
-                ),
-                "required_constraints": planned_item.get("required_constraints") or {},
-                "figure_design": planned_item.get("figure_design") or {},
-            },
-            "bound_source_evidence": [
-                {
-                    "source_question_id": source_ref,
-                    "title": _clean(source_by_id[source_ref].get("title"), 300),
-                    "content": _clean(
-                        source_by_id[source_ref].get("source_content")
-                        or source_by_id[source_ref].get("stem_excerpt"),
-                        6000,
-                    ),
-                    "required_constraints": source_by_id[source_ref].get("required_constraints") or {},
-                    "required_evidence_refs": source_by_id[source_ref].get("evidence_refs") or [],
-                    "visual_evidence_refs": source_by_id[source_ref].get("visual_evidence_refs") or [],
-                }
-                for source_ref in source_refs
-                if source_ref in source_by_id
-            ],
-        })
-    task = f"""# 任务
-
-对下面整套研究生练习题做一次语义质量审查。只报告题干和蓝图可直接证明的问题，不输出答案、解析或完整解题过程。
-
-每题、每个小问分别检查：学科事实，条件充分性，蓝图适用边界，术语与图/坐标语义，是否有唯一合理作答方向，任务是否偏离蓝图。
-
-- high：事实错误、条件矛盾/缺少关键条件、违反硬边界，正式交付前必须修复。
-- medium：明显歧义或教研上需要确认。
-- low：纯表达建议，不影响作答。
-- 逐项核对 blueprint.required_knowledge_points：题干必须实际要求学生使用每个必考知识点；练习题自己的 knowledge_points 字段只是声明，不是已经考查的证据。声明覆盖但题干未考查属于蓝图偏离。
-- 逐项核对 required_constraints：只有与本题目标相关的定义、公式和适用边界才应被绑定；若蓝图把其它子主题的约束误绑到本题，应报告蓝图内部不一致，不应强迫题干堆入无关内容。
-- bound_source_evidence 是本题绑定的材料证据。跨来源题必须逐项对照全部绑定材料，不能只用其中一项为题干的全称前提背书；材料之间存在对象或条件差异时，题干必须保留这些边界。
-- 当一般概述与具体材料类别的触发条件或主导机制存在张力时，以具体类别边界为准。例如题目比较高、低层错能金属时，不得把“动态回复和动态再结晶同时发生/同时存在”写成两类金属共同的事实前提；可概括为加工硬化与“各自相应的动态软化”共存，再让学生辨析具体主导机制。违反此规则属于事实性前提越界，不因后文要求比较机制而自动免责。
-- 根据题干实际需要的识记、转换、方法选择、多概念综合、迁移、纠错或评价负担核对 difficulty；不得把 difficulty_evidence 或 difficulty_rationale 的自我声明当作证明。若“挑战”题仅为教材原句识记、唯一正确项明显的直接判断，应报告难度偏低。
-- 判断题的待判断命题可以为真，也可以为假。命题为假本身不是 fact_error；只检查学生能否依据已给材料和边界得到唯一真值。仅当命题真假不唯一、混合了无法整体判断的多项陈述、缺少决定真值的条件、超出材料边界，或题干的事实性前提本身错误时报告风险。
-- 区分“待判断命题”和题干用来设定情境的事实性前提。无论题型如何，事实性前提都必须受材料支持；主动核对“同时发生、均、总是、必然、无论、始终”等全称或绝对化措辞，不能把只对部分材料成立的结论扩展到全部对象。
-- 不得为了显得严格而编造问题；不要把“要求学生掌握标准示意图”误判为题干必须给出全部曲线数据。
-- figure_summary.renderer_contract 是实际导出器的可视规则；已声明会显示的图例、节点、连线、箭头和晶面填充，不得误报为“图中未标注/未定义”。
-
-## 待审查内容
-
-{json.dumps(review_rows, ensure_ascii=False, indent=2)}
-
-## 输出结构
-
-只输出合法 JSON：
-{{"items":[{{"number":1,"status":"passed|risk","risks":[{{"severity":"high|medium|low","code":"...","message":"简明问题","evidence":"题干中的直接证据","suggested_action":"最小修复方向"}}]}}],"set_summary":"..."}}
-每题必须返回一项；无风险时 risks=[]。
-"""
-    review_visual_refs = _unique_strings(
-        [
-            evidence_ref
-            for row in review_rows
-            for source in (row.get("bound_source_evidence") or [])
-            if isinstance(source, dict)
-            for evidence_ref in (source.get("visual_evidence_refs") or [])
-        ],
-        limit=64,
-        item_limit=40,
-    )
-    review_images: list[str] = []
-    if review_visual_refs:
-        parsed_sources = parse_practice_sources(payload)
-        available_images = parsed_sources.get("reference_images") or parsed_sources.get("images") or []
-        review_image_numbers = image_numbers_from_evidence_refs(
-            review_visual_refs,
-            maximum=len(available_images),
-        )
-        review_images = [available_images[number - 1] for number in review_image_numbers]
-    provider, model = _model_runtime(payload, bool(review_images)) if review_images else _primary_model_runtime(payload)
-    review_required_refs = _unique_strings(
-        [
-            evidence_ref
-            for row in review_rows
-            for source in (row.get("bound_source_evidence") or [])
-            if isinstance(source, dict)
-            for evidence_ref in (source.get("required_evidence_refs") or [])
-        ],
-        limit=320,
-        item_limit=80,
-    )
-    review_messages = [
-        {"role": "system", "content": "你只做题目语义质量审查，只输出合法 JSON。"},
-        {"role": "user", "content": _user_content(task, review_images)},
-    ]
-    review_context_plan = build_context_plan(
-        stage="semantic_review",
-        provider_name=provider.name,
-        model_name=model,
-        text=task,
-        image_evidence_refs=review_visual_refs if review_images else [],
-        required_evidence_refs=review_required_refs,
-        delivered_evidence_refs=[
-            evidence_ref
-            for evidence_ref in review_required_refs
-            if not evidence_ref.startswith("image:")
-        ],
-        item_ids=[row.get("number") for row in review_rows],
-        messages=review_messages,
-    )
-    if not review_context_plan["evidence_complete"]:
-        raise ValueError(
-            "质量审查所需的来源图片没有完整进入模型上下文，不能把本次审查标记为已完成。缺少证据："
-            + "、".join(review_context_plan["omitted_required_evidence_refs"])
-        )
-    raw = _call_practice_json(
-        _practice_generation_client(provider, model),
-        review_messages,
-        model=model,
-        temperature=0,
-        thinking="disabled",
-        timeout_seconds=_practice_stage_timeout("semantic_review", 180),
-        ensure_active=lambda: ensure_practice_generation_active(payload),
-        task_stage="semantic_review",
-        required_evidence_refs=review_required_refs,
-        delivered_evidence_refs=[
-            *[
-                evidence_ref
-                for evidence_ref in review_required_refs
-                if not evidence_ref.startswith("image:")
-            ],
-            *(review_visual_refs if review_images else []),
-        ],
-        item_ids=[row.get("number") for row in review_rows],
-    )
-    raw_by_number = {
-        str(item.get("number") or "").strip(): item
-        for item in (raw.get("items") or [])
-        if isinstance(item, dict) and str(item.get("number") or "").strip()
-    }
-    items: list[dict[str, Any]] = []
-    missing_numbers: list[str] = []
-    for index, exercise in enumerate(exercises, start=1):
-        number = str(exercise.get("number") or index)
-        raw_item = raw_by_number.get(number)
-        if not raw_item:
-            missing_numbers.append(number)
-            items.append({"number": exercise.get("number") or index, "status": "not_reviewed", "risks": []})
-            continue
-        risks: list[dict[str, Any]] = []
-        for risk in raw_item.get("risks") or []:
-            if not isinstance(risk, dict):
-                continue
-            severity = _clean(risk.get("severity"), 20).lower()
-            message = _clean(risk.get("message"), 800)
-            if severity not in {"high", "medium", "low"} or not message:
-                continue
-            normalized_risk = {
-                "severity": severity,
-                "code": _clean(risk.get("code"), 100) or "semantic_risk",
-                "message": message,
-                "evidence": _clean(risk.get("evidence"), 800),
-                "suggested_action": _clean(risk.get("suggested_action"), 800),
-            }
-            if _judgment_risk_only_says_proposition_is_false(exercise, normalized_risk):
-                continue
-            risks.append(normalized_risk)
-        plan_item_id = _clean(exercise.get("parent_plan_item_id") or exercise.get("plan_item_id"), 80)
-        for risk in _cross_source_universal_premise_risks(exercise, planned_by_id.get(plan_item_id) or {}):
-            if not any(existing.get("code") == risk["code"] for existing in risks):
-                risks.append(risk)
-        items.append({
-            "number": exercise.get("number") or index,
-            "status": "risk" if risks else "passed",
-            "risks": risks,
-        })
-    actionable = [
-        risk for item in items for risk in item.get("risks") or []
-        if risk.get("severity") in {"high", "medium"}
-    ]
-    return {
-        "status": "failed" if missing_numbers else ("warning" if actionable else "passed"),
-        "triggered": True,
-        "review_scope": "complete_set",
-        "provider": provider.name,
-        "model": model,
-        "thinking_requested": "disabled",
-        "thinking_effective": "max" if provider.name == "bigmodel" and model == "glm-5.3-flash" else "disabled",
-        "context_plan": review_context_plan,
-        "items": items,
-        "risk_count": sum(len(item.get("risks") or []) for item in items),
-        "actionable_risk_count": len(actionable),
-        "missing_numbers": missing_numbers,
-        "set_summary": _clean(raw.get("set_summary"), 1000),
-    }
-
-
-def _merge_incremental_semantic_review(
-    practice: dict[str, Any],
-    replacement_report: dict[str, Any],
-    *,
-    target_number: int,
-) -> dict[str, Any]:
-    """Replace one review item while retaining reviews for unchanged questions."""
-    existing = practice.get("semantic_review") if isinstance(practice.get("semantic_review"), dict) else {}
-    by_number = {
-        str(item.get("number") or "").strip(): item
-        for item in (existing.get("items") or [])
-        if isinstance(item, dict) and str(item.get("number") or "").strip()
-    }
-    replacement_by_number = {
-        str(item.get("number") or "").strip(): item
-        for item in (replacement_report.get("items") or [])
-        if isinstance(item, dict) and str(item.get("number") or "").strip()
-    }
-    target_key = str(target_number)
-    by_number[target_key] = replacement_by_number.get(target_key) or {
-        "number": target_number,
-        "status": "not_reviewed",
-        "risks": [],
-    }
-
-    candidate_numbers = set(
-        recompute_practice_quality({**practice, "semantic_review": {}}).get("subject_review_candidates") or []
-    )
-    items: list[dict[str, Any]] = []
-    missing_numbers: list[str] = []
-    for index, exercise in enumerate(practice.get("exercises") or [], start=1):
-        if not isinstance(exercise, dict) or exercise.get("generation_status") == "failed":
-            continue
-        number = str(exercise.get("number") or index)
-        item = by_number.get(number) or {
-            "number": exercise.get("number") or index,
-            "status": "not_required",
-            "risks": [],
-        }
-        if number in candidate_numbers and item.get("status") in {"not_reviewed", None}:
-            missing_numbers.append(number)
-        items.append(item)
-    actionable = [
-        risk
-        for item in items
-        for risk in (item.get("risks") or [])
-        if isinstance(risk, dict) and _clean(risk.get("severity"), 20).lower() in {"high", "medium"}
-    ]
-    failed = replacement_report.get("status") == "failed" or bool(missing_numbers)
-    return {
-        **{
-            key: value
-            for key, value in replacement_report.items()
-            if key not in {"items", "missing_numbers", "set_summary", "status", "review_scope"}
-        },
-        "status": "failed" if failed else ("warning" if actionable else "passed"),
-        "triggered": replacement_report.get("triggered") is not False,
-        "review_scope": "incremental_set",
-        "items": items,
-        "risk_count": sum(len(item.get("risks") or []) for item in items),
-        "actionable_risk_count": len(actionable),
-        "missing_numbers": missing_numbers,
-        "set_summary": "重生成题目已增量复核；未修改题目沿用最近一次有效复核结论。",
-    }
 
 
 def _is_transport_generation_error(exc: Exception) -> bool:
@@ -6430,10 +6058,20 @@ def _normalize_plan(
     planned_source_ids: list[str] | None = None,
     generation_strategy: str = "single",
     include_source_content_in_generation: bool = True,
+    fresh_planning: bool = False,
+    focus: str = "",
 ) -> dict[str, Any]:
     source = raw.get("source_analysis") if isinstance(raw.get("source_analysis"), dict) else {}
     blueprint = raw.get("blueprint") if isinstance(raw.get("blueprint"), dict) else {}
-    raw_plan = blueprint.get("exercise_plan") if isinstance(blueprint.get("exercise_plan"), list) else []
+    requirements = compile_requirements(blueprint.get("requirements_contract"), focus) if fresh_planning else blueprint.get("requirements_contract")
+    nested_plan = blueprint.get("exercise_plan")
+    legacy_plan = raw.get("exercise_plan") or raw.get("plan_items")
+    if isinstance(nested_plan, list) and nested_plan and isinstance(legacy_plan, list) and legacy_plan and nested_plan != legacy_plan:
+        raise ValueError("蓝图同时包含不一致的内层与顶层题目列表，不能自动选择或合并。")
+    raw_plan = nested_plan if isinstance(nested_plan, list) and nested_plan else legacy_plan
+    raw_plan = raw_plan if isinstance(raw_plan, list) else []
+    if fresh_planning and len(raw_plan) != count:
+        raise ValueError("新规划题目列表数量不匹配，不能用默认题替代缺失设计。")
     exercise_plan = []
     default_difficulties = ["基础", "进阶", "挑战"]
     source_catalog = [item for item in (selected_source_questions or []) if isinstance(item, dict)]
@@ -6458,8 +6096,6 @@ def _normalize_plan(
     }
     mode = _mode_kind(generation_strategy)
     has_multiple_sources = len(catalog_ids) >= 2
-    required_multi = max(1, (count + 4) // 5) if mode == "comprehensive" and len(catalog_ids) >= 2 else 0
-    multi_indexes = set(range(max(0, count - required_multi), count))
     for index in range(count):
         row = raw_plan[index] if index < len(raw_plan) and isinstance(raw_plan[index], dict) else {}
         locked_source_id = (
@@ -6472,28 +6108,35 @@ def _normalize_plan(
             source_question_id = alias_to_id[source_question_id]
         if locked_source_id:
             source_question_id = locked_source_id
-        elif selected_ids and source_question_id not in selected_ids:
+        elif not fresh_planning and selected_ids and source_question_id not in selected_ids:
             source_question_id = _clean(
                 source_catalog[index % len(source_catalog)].get("source_question_id"),
                 80,
             )
         raw_refs = _unique_strings(row.get("source_refs"), limit=3, item_limit=80)
+        if fresh_planning and selected_ids:
+            unknown = [ref for ref in raw_refs if alias_to_id.get(ref, ref) not in selected_ids]
+            if source_question_id and source_question_id not in selected_ids:
+                unknown.append(source_question_id)
+            if unknown or (not raw_refs and not source_question_id):
+                raise ValueError(f"第{index + 1}题来源缺失或未知：{unknown}，禁止自动替换来源。")
         source_refs: list[str] = []
         for ref in raw_refs:
             resolved = alias_to_id.get(ref, ref)
             if resolved in selected_ids and resolved not in source_refs:
                 source_refs.append(resolved)
+        if fresh_planning and source_refs and source_question_id and source_question_id != source_refs[0]:
+            raise ValueError(f"第{index + 1}题主来源与source_refs首项不一致，不能自动替换。")
+        if fresh_planning and mode == "single_source" and len(source_refs) > 1:
+            raise ValueError(f"第{index + 1}题单项模式包含多个来源，不能静默删除。")
         if source_refs:
             source_question_id = source_refs[0]
         if source_question_id and source_question_id not in source_refs:
             source_refs.insert(0, source_question_id)
-        if not source_refs and catalog_ids:
+        if not fresh_planning and not source_refs and catalog_ids:
             source_refs = [catalog_ids[index % len(catalog_ids)]]
         if mode == "single_source":
             source_refs = source_refs[:1]
-        elif index in multi_indexes and len(catalog_ids) >= 2 and len(source_refs) < 2:
-            secondary = next(source_id for source_id in catalog_ids if source_id != source_refs[0])
-            source_refs.append(secondary)
         source_question_id = source_refs[0] if source_refs else source_question_id
         if locked_source_id:
             # Per-source slot allocation is a user/program contract. Model
@@ -6580,6 +6223,15 @@ def _normalize_plan(
                 "figure_design": _figure_design(row.get("figure_design"), required=stem_figure_required),
             }
         )
+    if requirements:
+        for index, item in enumerate(exercise_plan):
+            row = raw_plan[index] if index < len(raw_plan) else {}
+            if requirements.get("wording") == "strict_verbatim" and item["question_type"] == "填空题":
+                item["cloze_mapping"] = compile_cloze(row.get("cloze_source"), item, source_catalog, alias_to_id) if fresh_planning else copy.deepcopy(row.get("cloze_mapping"))
+                item["cloze_expected_stem"] = expected_stem(item["cloze_mapping"], source_catalog)
+                maximum = requirements.get("max_stem_characters") or 0
+                if maximum and len(item["cloze_expected_stem"]) > maximum:
+                    raise ValueError(f"第{index + 1}题原句挖空后超过{maximum}字符，需重新选择可满足要求的来源句子。")
     plan = {
         "schema_version": "answer_book.practice_plan.v1",
         "source_analysis": {
@@ -6600,6 +6252,7 @@ def _normalize_plan(
             "progression": _string_list(blueprint.get("progression"), limit=count),
             "design_notes": _string_list(blueprint.get("design_notes")),
             "exercise_plan": exercise_plan,
+            **({"requirements_contract": requirements} if requirements else {}),
             "question_type_mode": "selected" if selected_types else "random",
             "question_type_plan": planned_types,
             "difficulty_mode": difficulty,
@@ -6621,6 +6274,8 @@ def _normalize_plan(
             exercise_plan,
         ),
     }
+    if fresh_planning:
+        plan["focus"] = focus
     plan["mode_contract"] = validate_practice_mode_contract(plan)
     plan["blueprint_audit"] = audit_practice_blueprint(plan)
     _observe_pydantic_shadow("blueprint", plan)
@@ -6799,7 +6454,7 @@ def _refine_blueprint_batch(
     provider, model = _model_runtime(payload, False)
     locked_fields = {
         "plan_item_id", "number", "source_question_id", "source_refs", "question_type", "difficulty",
-        "coverage_role", "required_knowledge_points", "required_constraints",
+        "coverage_role", "required_knowledge_points", "required_constraints", "cloze_mapping", "cloze_expected_stem",
     }
     slots = [{key: value for key, value in item.items() if key in locked_fields or key in {"target_skill", "variation_type", "structural_change"}} for item in batch]
     occupied_summary = [
@@ -6828,6 +6483,12 @@ def _refine_blueprint_batch(
     task = f"""# 任务
 
 细化一组已由全局规划锁定的研究生训练蓝图槽位。只补全每项的设计细节，绝不能改变题号、来源绑定、题型、难度、必考知识点或题量。
+
+## 用户原始要求
+
+{PRACTICE_REQUIREMENT_PRIORITY}
+
+{practice_user_focus(payload, plan) or "未另行指定"}
 
 ## 任务级语义
 
@@ -7980,7 +7641,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
     include_source_content = _include_source_content_in_generation(payload)
     knowledge_title = _clean(payload.get("knowledge_title"), 300)
     difficulty = _clean(payload.get("difficulty"), 100) or "基础到进阶"
-    focus = _clean(payload.get("focus"), 1000) or (
+    focus = practice_user_focus(payload) or (
         "围绕知识点形成概念辨析、原理理解、计算应用和综合迁移的渐进式练习"
         if is_knowledge_mode
         else "围绕原题核心考点形成由浅入深的专项练习"
@@ -8069,6 +7730,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "source_ref": f"S{index}",
             "number": _clean(item.get("number"), 50),
             "title": _clean(item.get("title"), 300),
+            "source_content": str(item.get("source_content") or "") if "填空题" in planned_types else "",
             "source_excerpt": _clean(item.get("stem_excerpt") or item.get("excerpt"), 1200),
             "recognized_content": (
                 _recognized_source_content(item)
@@ -8121,10 +7783,14 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         required_knowledge_points_requirement = (
-            "逐项模式完整保留所绑定来源的知识点组合；综合模式按 source_refs 合理分配或组合，"
+            "严格原句填空的required_knowledge_points只写该连续原句与空位实际考查的知识点；"
+            "不得因为来源目录还包含其他知识点、公式或边界，就把它们列为这道原句填空的必考内容。"
+            "非严格原句题的逐项模式完整保留所绑定来源的知识点组合；综合模式按 source_refs 合理分配或组合，"
             "题量少于已选来源数时优先覆盖核心知识点，不得声称已覆盖全部范围"
             if underprovisioned_comprehensive
-            else "逐项模式完整保留所绑定来源的知识点组合；综合模式按 source_refs 合理分配或组合，并在整套蓝图中覆盖所有已选知识点"
+            else "严格原句填空的required_knowledge_points只写该连续原句与空位实际考查的知识点；"
+            "不得因为来源目录还包含其他知识点、公式或边界，就把它们列为这道原句填空的必考内容。"
+            "非严格原句题的逐项模式完整保留所绑定来源的知识点组合；综合模式按 source_refs 合理分配或组合，并在整套蓝图中覆盖所有已选知识点"
         )
     compact_material = "" if confirmed_analysis and prompt_source_catalog else sources["text"]
     # A confirmed source snapshot is already text/JSON. Do not let the mere
@@ -8208,6 +7874,13 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "question_dependency": "学生需要从题干配图读取的信息",
         },
     }
+    # Global allocation owns source and constraint selection. Refinement locks
+    # these fields, so omitting them here would lock the full source fallback.
+    blueprint_item_contract["required_constraints"] = {
+        "essential_definitions": ["仅与本题考查目标相关的定义，无则空列表"],
+        "essential_formulas": ["仅本题实际需要的公式，无则空列表"],
+        "applicable_boundaries": ["本题所选知识点必须遵守的适用边界"],
+    }
     if not adaptive_blueprint:
         blueprint_item_contract.update({
             "difficulty_levers": ["选择一种主要难度方向，必要时再选一种辅助方向；不全部堆叠"],
@@ -8216,7 +7889,9 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
             "design_intent": "本题为何这样设计",
             "required_constraints": {"essential_definitions": ["本题允许使用的必要定义"], "essential_formulas": ["本题允许使用的公式或参数关系"], "applicable_boundaries": ["本题适用条件、边界或限制"]},
         })
+    blueprint_item_contract["cloze_source"] = CLOZE_SCHEMA
     blueprint_contract = {
+        "requirements_contract": REQUIREMENTS_SCHEMA,
         "training_goal": "明确训练目标",
         "progression": ["逐题梯度"],
         "design_notes": ["设计原则"],
@@ -8274,6 +7949,8 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
 
 ## 出题要求
 
+{PRACTICE_REQUIREMENT_PRIORITY}
+
 {focus}
 
 ## 参数
@@ -8298,7 +7975,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
 - exercise_plan 必须恰好 {count} 项，并严格使用程序指定的逐题题型和逐题难度
 - 仅当学生必须读图，或空白作答框架能帮助作图但不泄漏答案时，stem_figure_required 才为 true。前者 role=stem_reference；后者 role=blank_template，必须同时填写 template_elements 和 forbidden_answer_elements。禁止生成答案图
 - 题目应覆盖概念辨析、原理理解、公式或参数应用、图表理解和综合迁移中适合该知识点的层次
-- {"本次只做全局槽位分配：先给出每题的来源、目标能力、变式方式和覆盖角色；系统随后会按知识点/来源分组并发补全设计意图与难度细节。" if adaptive_blueprint else "每题说明目标能力、出题方式和设计意图；不得只是对教材原句做机械填空"}
+- {"本次只做全局槽位分配：先给出每题的来源、目标能力、变式方式、覆盖角色及相关约束子集；约束会被锁定，无关项必须排除，不能留给后续细化清理。系统随后按知识点/来源分组补全设计意图与难度细节。" if adaptive_blueprint else "每题说明目标能力、出题方式和设计意图；原句挖空要求按用户原文执行"}
 - 只输出合法 JSON，不输出具体题干
 
 ## 输出结构
@@ -8319,6 +7996,8 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
 {json.dumps(prompt_source_catalog, ensure_ascii=False) if prompt_source_catalog else "尚未形成，需先从材料识别"}
 
 ## 专项要求
+
+{PRACTICE_REQUIREMENT_PRIORITY}
 
 {focus}
 
@@ -8349,7 +8028,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
 - 如果确实只有一道题：source_scope.mode 返回 single，并直接设计蓝图
 - 只有单题或用户已经选择原题时，exercise_plan 才必须恰好 {count} 项，并严格使用上面的逐题题型
 - 仅当学生必须读图，或空白作答框架能帮助作图但不泄漏答案时，stem_figure_required 才为 true。前者 role=stem_reference；后者 role=blank_template，必须同时填写 template_elements 和 forbidden_answer_elements。禁止生成答案图
-- {"本次只做全局槽位分配：先给出每题的来源、目标能力、变式方式和覆盖角色；系统随后会按知识点/原题分组并发补全设计意图与难度细节。" if adaptive_blueprint else "每题说明目标能力、变式方式和设计意图"}
+- {"本次只做全局槽位分配：先给出每题的来源、目标能力、变式方式、覆盖角色及相关约束子集；约束会被锁定，无关项必须排除，不能留给后续细化清理。系统随后按知识点/原题分组补全设计意图与难度细节。" if adaptive_blueprint else "每题说明目标能力、变式方式和设计意图"}
 - variation_type 与 structural_change 必须具体说明考查方式或解题结构如何变化，不能把数字变化当作唯一变化。
 - 只输出合法 JSON，不输出具体题干
 
@@ -8477,10 +8156,8 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
         planned_source_ids=planned_source_ids,
         generation_strategy=generation_strategy,
         include_source_content_in_generation=include_source_content,
-    )
-    plan["blueprint"]["exercise_plan"] = _ensure_selected_source_coverage(
-        plan["blueprint"].get("exercise_plan") or [],
-        selected_source_questions,
+        fresh_planning=True,
+        focus=practice_user_focus(payload),
     )
     plan = ensure_practice_blueprint_defaults(plan)
     blueprint_refinement = None
@@ -8556,6 +8233,7 @@ def plan_practice_set(payload: dict[str, Any]) -> dict[str, Any]:
     }
     plan["source_file_diagnostics"] = sources.get("file_diagnostics", [])
     plan["source_snapshot"] = source_snapshot
+    plan["focus"] = practice_user_focus(payload)
     if is_knowledge_mode:
         plan["knowledge_title"] = knowledge_title or source_scope.get("title") or "知识点模拟题"
     plan["generation"] = {
@@ -8734,6 +8412,7 @@ def _selectively_repair_practice_format(
                 **payload,
                 "practice": practice,
                 "exercise_index": index,
+                "repair_only": True,
                 "instruction": (
                     "Word 公式预检只阻断了当前这一题。保持题型、难度、知识点、题意和数值关系不变，"
                     "只重写无法转换为 Word 原生公式的标记；所有 LaTeX 必须使用完整、平衡且受支持的语法。"
@@ -9079,7 +8758,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         analysis = plan.get("source_analysis") if isinstance(plan.get("source_analysis"), dict) else {}
         common_context = {
             "subject": _clean(analysis.get("subject"), 100),
-            "user_focus": _clean(payload.get("focus"), 1000),
+            "user_focus": practice_user_focus(payload, plan),
+            "requirement_priority": PRACTICE_REQUIREMENT_PRIORITY,
             "generation_strategy": _clean(blueprint.get("generation_strategy"), 40),
             "blueprint_multi_question": multi_question_config,
         }
@@ -9127,7 +8807,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
 - 文字、术语和推导深度保持研究生层级
 - 仅生成题目正文；不得输出答案、解析、解题步骤、评分依据或自我验证过程
 - verification_note 仅记录题干条件充分性检查，不得包含答案、结论、推导或解题过程
-- 每题独立、条件充分、可作答；严格执行 change_contract.required_difference
+- 每题独立、条件充分、可作答；变式建议 change_contract.required_difference 仅在不违背用户原始要求时适用
 - 不得把仅适用于部分来源、部分材料类别或特定边界的结论，写成“同时发生、均、总是、必然、无论、始终”等普遍事实；综合多来源时须逐项核对各来源边界后再设定题干前提
 - 当一般概述与具体材料类别的触发条件或主导机制存在张力时，以具体类别边界为准。例如比较高、低层错能金属时，不得把“动态回复和动态再结晶同时发生/同时存在”写成两类金属共同的事实前提；应表述为加工硬化与“各自相应的动态软化”共存，再要求辨析具体主导机制
 - 判断题允许待判断命题为真或为假，但整句必须在已给材料与边界内具有唯一真值；不要把错误命题当作题干之外的既定事实
@@ -9564,6 +9244,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         "code": "stem_answer_leak",
                         "message": "题干结构化公式可能直接泄漏待求答案：" + "；".join(leak_reasons),
                     })
+                provenance_issue = cloze_issue(raw_item, batch_plan[local_index], plan)
+                if provenance_issue:
+                    structure_issues.append({"batch_index": raw_item.get("batch_index"), **provenance_issue})
                 overload = _basic_question_overload_issue(raw_item, batch_plan[local_index])
                 if overload:
                     structure_issues.append({"batch_index": raw_item.get("batch_index"), **overload})
@@ -9914,6 +9597,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             if local_index in issues_by_index:
                 continue
             planned_item = batch_plan[local_index]
+            if planned_item.get("cloze_mapping"):
+                item["cloze_literal"] = True
             item["plan_item_id"] = str(planned_item.get("plan_item_id") or f"plan_item_{batch_start + local_index + 1:02d}")
             item["parent_plan_item_id"] = _clean(planned_item.get("parent_plan_item_id"), 80)
             item["variant_id"] = _clean(planned_item.get("variant_id"), 100)
@@ -10105,6 +9790,16 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             all_exercises.extend(restored)
             batch_failures.update(isolated_failures)
             generation_batch_diagnostics.append(batch_diagnostic)
+            if job_id:
+                from .practice_store import PRACTICE_JOB_DIR
+                from .unit_preflight import preflight_practice_batch
+
+                try:
+                    batch_diagnostic["unit_preflight"] = preflight_practice_batch(
+                        PRACTICE_JOB_DIR / job_id, restored, exercise_plan[:count],
+                    )
+                except Exception as exc:
+                    batch_diagnostic["unit_preflight"] = {"available": False, "error": str(exc)}
         except PracticeGenerationStopped:
             raise
         except Exception as exc:
@@ -10185,6 +9880,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         planned_difficulties=planned_difficulties,
     )
     result["source_analysis"] = plan.get("source_analysis") or result["source_analysis"]
+    result["focus"] = practice_user_focus(payload, plan)
     result["blueprint"] = {**result["blueprint"], **reviewed_blueprint}
     result["blueprint_multi_question"] = multi_question_config
     result["source_scope"] = plan.get("source_scope") or {"mode": "single", "questions": []}
@@ -10255,35 +9951,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         result["history_id"] = resume_history_id
     result["blueprint_review_enabled"] = bool(payload.get("blueprint_review_enabled", True))
     result["quality"] = recompute_practice_quality(result)
-    if _practice_semantic_review_should_run(result, payload):
-        try:
-            result["semantic_review"] = review_practice_semantics(result, payload)
-        except PracticeGenerationStopped:
-            raise
-        except Exception as exc:
-            # A reviewer outage must not erase a usable generated set. Surface
-            # the missing review so the user can keep or edit the result.
-            result["semantic_review"] = {
-                "status": "failed",
-                "triggered": True,
-                "review_scope": "complete_set",
-                "items": [],
-                "error": _clean(str(exc), 800),
-            }
-    elif payload.get("semantic_review_enabled") is True or payload.get("formal_quality_review") is True:
-        result["semantic_review"] = {
-            "status": "not_required",
-            "triggered": False,
-            "reason": "low_risk_set",
-            "items": [],
-        }
-    else:
-        result["semantic_review"] = {
-            "status": "disabled",
-            "triggered": False,
-            "reason": "fast_mode",
-            "items": [],
-        }
+    # Generation ends at deterministic quality recomputation; no second model-review stage is created.
     result["quality"] = recompute_practice_quality(result)
     return result
 
@@ -10300,6 +9968,7 @@ def generate_practice_from_contract(payload: dict[str, Any]) -> dict[str, Any]:
     slots = [dict(item) for item in contract.get("slots") or [] if isinstance(item, dict)]
     adapter_plan = {
         "schema_version": "answer_book.practice_plan.v1",
+        "focus": practice_user_focus(payload, contract),
         "source_mode": contract.get("source_mode") or payload.get("source_mode") or "exam",
         "source_scope": contract.get("source_scope") or payload.get("source_scope") or {},
         "source_analysis": contract.get("source_analysis") or payload.get("source_analysis") or {},
@@ -10337,12 +10006,13 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     image_orchestration = image_orchestration_from_payload(payload)
     payload = {**payload, "image_orchestration": image_orchestration}
     ensure_practice_generation_active(payload)
-    practice = payload.get("practice") if isinstance(payload.get("practice"), dict) else {}
+    practice = copy.deepcopy(payload["practice"]) if isinstance(payload.get("practice"), dict) else {}
     exercises = practice.get("exercises") if isinstance(practice.get("exercises"), list) else []
     index = int(payload.get("exercise_index") or 0)
     if index < 0 or index >= len(exercises):
         raise ValueError("需要重新生成的题目序号无效。")
     current = exercises[index] if isinstance(exercises[index], dict) else {}
+    repair_only = payload.get("repair_only") is True
     include_source_content = _include_source_content_in_generation(payload, practice)
     source_files = payload.get("source_files") if isinstance(payload.get("source_files"), list) else []
     source_text = str(payload.get("question_text") or "").strip()
@@ -10550,6 +10220,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         knowledge_mode=is_knowledge_mode,
     )
     generation_context = {
+        "user_focus": practice_user_focus(payload, practice),
         "source_mode": _clean(payload.get("source_mode") or practice.get("source_mode"), 30) or "exam",
         "generation_strategy": _clean(payload.get("generation_strategy") or practice.get("generation_strategy"), 60),
         "required_knowledge_points": required_knowledge_points,
@@ -10560,7 +10231,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             item_for_generation,
             main_model_image_tools=image_orchestration == MAIN_MODEL_TOOL_LOOP,
         ),
-        "change_contract": _plan_change_contract(item_for_generation),
+        "change_contract": {} if repair_only else _plan_change_contract(item_for_generation),
         "forbidden_peer_patterns": peer_patterns,
         "stem_figure_required": _plan_requires_stem_figure(item_for_generation),
         "figure_design": _figure_design(item_for_generation.get("figure_design"), required=True) if _plan_requires_stem_figure(item_for_generation) else None,
@@ -10575,6 +10246,13 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         _main_model_practice_image_rules([item_for_generation])
         if image_orchestration == MAIN_MODEL_TOOL_LOOP
         else []
+    )
+    revision_rules = (
+        "- 当前题目是修复基线，只解决已报告的问题；保留未受影响的题意、条件、数值和选项顺序。\n"
+        "- 不要求新变式或实质差异；不要为了去重改变情境、未知量或公式链。"
+        if repair_only else
+        "- 当前题目和 forbidden_peer_patterns 都是反例；新题必须执行 change_contract，并改变情境、主要未知量、认知操作或核心公式链中的至少两项\n"
+        "- 必须返回忠实的 diversity_signature 供系统去重；不得把同一道题换数字、单位、题型外壳或同义措辞"
     )
     task = f"""# 任务
 
@@ -10594,7 +10272,9 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
 
 ## 用户补充要求
 
-{_clean(payload.get("instruction"), 1000) or "保持训练目标，换一种有效变式。"}
+{PRACTICE_REQUIREMENT_PRIORITY}
+
+{str(payload.get("instruction") or "").strip() or ("只修复当前已报告的问题。" if repair_only else "保持训练目标，换一种有效变式。")}
 
 ## 约束
 
@@ -10604,8 +10284,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
 - required_constraints 只适用于本题，必须落实到题干条件或考查要求中
 - difficulty_intent 是防退化边界而非硬模板；选择一种最适合本题的主要机制，最多再加一种辅助机制，并返回不含答案的 difficulty_evidence
 - 优先避免与 forbidden_peer_patterns 重复主要难度机制，但如果重复机制对本题最自然，允许保留，不得为了形式差异硬堆高阶任务
-- 当前题目和 forbidden_peer_patterns 都是反例；新题必须执行 change_contract，并改变情境、主要未知量、认知操作或核心公式链中的至少两项
-- 必须返回忠实的 diversity_signature 供系统去重；不得把同一道题换数字、单位、题型外壳或同义措辞
+{revision_rules}
 - {"仅参考 batch_index 1 绑定来源的 source_content、图片和约束。" if include_source_content else "不得复述、引用或假设原题题面、教材原文、图片和表格。"}
 {chr(10).join(f'- {rule}' for rule in single_image_rules)}
 {('' if image_orchestration == MAIN_MODEL_TOOL_LOOP else ('- stem_figure_required=true：必须返回可渲染的题干图；图表至少两个数据点，示意图至少两个节点及必要关系，不能只写 description。' if _plan_requires_stem_figure(item_for_generation) else '- stem_figure_required=false：不要返回 figures；作图题要求学生绘图不等于题干需要配图。'))}
@@ -10634,7 +10313,7 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     if image_orchestration == MAIN_MODEL_TOOL_LOOP:
         raw = _bind_practice_generated_images(raw)
     first_candidate = next((item for item in (raw.get("exercises") or []) if isinstance(item, dict)), {})
-    if first_candidate and not _regenerated_exercise_substantively_changed(current, first_candidate):
+    if not repair_only and first_candidate and not _regenerated_exercise_substantively_changed(current, first_candidate):
         retry_messages = [
             *messages,
             {"role": "assistant", "content": json.dumps(raw, ensure_ascii=False)},
@@ -10667,6 +10346,8 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     for raw_item in raw.get("exercises") or []:
         if isinstance(raw_item, dict):
             restored = dict(raw_item)
+            if item_for_generation.get("cloze_mapping"):
+                restored["cloze_literal"] = True
             restored["plan_item_id"] = _clean(current.get("plan_item_id"), 80) or f"plan_item_{index + 1:02d}"
             restored["source_question_id"] = primary_source_id
             restored["source_refs"] = list(source_refs)
@@ -10697,6 +10378,9 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         "variant_role",
     ):
         exercise[field] = current.get(field)
+    provenance_issue = cloze_issue(exercise, item_for_generation, practice)
+    if provenance_issue:
+        raise ValueError("单题原句填空核验失败：" + provenance_issue["message"])
     structure_issue = _question_structure_issue(
         exercise,
         question_type=_effective_question_type(exercise, item_for_generation),
@@ -10754,7 +10438,8 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
                 item["message"] for item in figure_issues
             )
             raise ValueError("单题重生未通过题干配图门禁：" + detail)
-    _randomize_choice_option_order(exercise)
+    if not repair_only:
+        _randomize_choice_option_order(exercise)
     exercise["exercise_id"] = _clean(current.get("exercise_id"), 100) or f"practice_{index + 1:02d}"
     exercise["number"] = index + 1
     merged = list(exercises)
@@ -10762,53 +10447,10 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_unique_figure_ids(merged)
     exercise = merged[index]
     updated_practice = {**practice, "exercises": merged, "quality": {}}
-    semantic_review = practice.get("semantic_review") if isinstance(practice.get("semantic_review"), dict) else {}
-    review_enabled = payload.get("semantic_review_enabled") is True or payload.get("formal_quality_review") is True
-    if review_enabled:
-        single_review_practice = {
-            **updated_practice,
-            "requested_count": 1,
-            "exercises": [exercise],
-            "blueprint": {**blueprint, "exercise_plan": [item_for_generation]},
-            "semantic_review": {},
-        }
-        try:
-            replacement_review = review_practice_semantics(single_review_practice, payload)
-        except PracticeGenerationStopped:
-            raise
-        except Exception as exc:
-            replacement_review = {
-                "status": "failed",
-                "triggered": True,
-                "review_scope": "single_question",
-                "items": [],
-                "error": _clean(str(exc), 800),
-            }
-        semantic_review = _merge_incremental_semantic_review(
-            {**updated_practice, "semantic_review": semantic_review},
-            replacement_review,
-            target_number=index + 1,
-        )
-    else:
-        # Every regenerated question invalidates its previous verdict. Keep
-        # unchanged questions' latest valid reviews, but never reuse the
-        # changed question's old green state when review is disabled.
-        semantic_review = _merge_incremental_semantic_review(
-            updated_practice,
-            {
-                "status": "failed",
-                "triggered": False,
-                "items": [{"number": index + 1, "status": "not_reviewed", "risks": []}],
-                "error": "本题已重生成，但本次未启用语义复核；原结论已失效。",
-            },
-            target_number=index + 1,
-        )
-    updated_practice["semantic_review"] = semantic_review
     quality = recompute_practice_quality(updated_practice)
     return {
         "exercise": exercise,
         "quality": quality,
-        "semantic_review": semantic_review,
         "include_source_content_in_generation": include_source_content,
         "generation": {
             "provider": provider.name,
@@ -10878,6 +10520,12 @@ def regenerate_plan_item(payload: dict[str, Any]) -> dict[str, Any]:
     task = f"""# 任务
 
 只重新设计一个研究生训练蓝图项；不得改动来源绑定或其它蓝图项。
+
+## 用户原始要求
+
+{PRACTICE_REQUIREMENT_PRIORITY}
+
+{practice_user_focus(payload, plan) or "未另行指定"}
 
 ## 修改约束（最高优先级）
 
@@ -11109,6 +10757,12 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
 
 只生成蓝图中的一个计划项对应的题目**草案**（第 {index + 1} 项）。不要生成整套，不要改动其他计划项。
 
+## 用户原始要求
+
+{PRACTICE_REQUIREMENT_PRIORITY}
+
+{practice_user_focus(payload, plan) or "未另行指定"}
+
 ## 模式
 
 {"知识点模拟题" if is_knowledge_mode else "专项练习"} · 生成策略：{strategy}
@@ -11165,6 +10819,8 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
     for raw_item in raw.get("exercises") or []:
         if isinstance(raw_item, dict):
             restored = dict(raw_item)
+            if item.get("cloze_mapping"):
+                restored["cloze_literal"] = True
             restored["plan_item_id"] = _clean(item.get("plan_item_id"), 100) or f"plan_item_{index + 1:02d}"
             restored["source_question_id"] = source_question_id
             raw_exercises.append(restored)
@@ -11185,6 +10841,9 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
     draft["plan_item_id"] = _clean(item.get("plan_item_id"), 100) or f"plan_item_{index + 1:02d}"
     draft["source_question_id"] = source_question_id
     draft["number"] = index + 1
+    provenance_issue = cloze_issue(draft, item, plan)
+    if provenance_issue:
+        raise ValueError("草案原句填空核验失败：" + provenance_issue["message"])
     quality = recompute_practice_quality({"exercises": [draft]})
     return {
         "draft": draft,

@@ -15,10 +15,12 @@ from .officecli_word import selected_word_tool_variant, word_tool_runtime_info
 from .pandoc_word import PANDOC_CONTRACT
 from .paths import CACHE_DIR
 from .practice_document_contracts import PRACTICE_DOCUMENT_CONTRACT_VERSION
-from .practice_export import build_practice_question_docx, validate_docx_output, validate_practice_export
+from .practice_export import assert_practice_exportable, build_practice_question_docx, validate_docx_output, validate_practice_export
+from .practice_unit_delivery import preserve_practice_units
 from .runtime_monitor import append_runtime_log
+from .unit_delivery import build_unit_package
 
-EXPORT_CACHE_VERSION = "practice-word-v8"
+EXPORT_CACHE_VERSION = "practice-word-v10"
 EXPORT_CACHE_DIR = CACHE_DIR / "practice_exports"
 _LOCK = threading.RLock()
 _JOBS: dict[str, dict[str, Any]] = {}
@@ -28,6 +30,36 @@ try:
 except ValueError:
     _MAX_CONCURRENT_EXPORTS = 2
 _RUN_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_EXPORTS)
+
+
+_RECOVERABLE_DOCX_ISSUE_PREFIXES = (
+    "DOCX Office 公式对象中仍含提供方的 LaTeX/Markdown 定界标记。",
+    "DOCX 可见文本中仍含未渲染的 LaTeX 标记。",
+    "DOCX 页脚缺少页码字段。",
+    "DOCX 仅有 ",
+)
+
+
+def _recoverable_docx_candidate_issues(report: dict[str, Any]) -> list[str] | None:
+    """Return visible-format issues that may ship as an editable candidate.
+
+    This deliberately uses an allow-list. Package corruption, missing question
+    content, formulas, figures, tables, or relationships remain hard failures.
+    """
+    issues = [str(item).strip() for item in report.get("issues") or [] if str(item).strip()]
+    if report.get("ok"):
+        return []
+    if not issues or any(not item.startswith(_RECOVERABLE_DOCX_ISSUE_PREFIXES) for item in issues):
+        return None
+    return list(dict.fromkeys(issues))
+
+
+def _review_candidate_filename(filename: str) -> str:
+    value = str(filename or "专项练习-题目.docx")
+    if "待复核" in value:
+        return value
+    stem, extension = os.path.splitext(value)
+    return f"{stem}-待复核{extension or '.docx'}"
 
 
 def _now() -> str:
@@ -41,6 +73,10 @@ def _cache_key(data: dict[str, Any]) -> str:
         "cache_version": EXPORT_CACHE_VERSION,
         "word_tool_variant": selected_word_tool_variant(),
         "pandoc_contract": PANDOC_CONTRACT,
+        "document_contract": PRACTICE_DOCUMENT_CONTRACT_VERSION,
+        "quality": data.get("quality"),
+        "export_scope": data.get("export_scope"),
+        "export_omitted_numbers": data.get("export_omitted_numbers"),
         "source_mode": data.get("source_mode"),
         "title": data.get("title"),
         "goal": data.get("goal"),
@@ -150,6 +186,21 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
         _ACTIVE.add(job_id)
     try:
         _update_job(job_id, status="running", current_operation="正在准备 Word 文档")
+        try:
+            preserve_practice_units(
+                EXPORT_CACHE_DIR / "units" / job_id, data,
+                on_update=lambda manifest: _update_job(
+                    job_id, unit_delivery={"available_count": manifest["available_count"],
+                                           "missing_count": len(manifest["missing"]),
+                                           "revision": manifest["revision"]},
+                ),
+            )
+        except Exception as exc:
+            _update_job(job_id, unit_delivery={"available_count": 0, "error": str(exc)})
+
+        # Preserve valid units first; an invalid whole set must never become a
+        # downloadable document merely because its OOXML is well formed.
+        assert_practice_exportable(data)
 
         def report_progress(completed: int, total: int) -> None:
             _update_job(
@@ -172,14 +223,9 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             word_tool_variant = selected_word_tool_variant()
             content = build_practice_question_docx(data, progress_callback=report_progress)
             docx_report = validate_docx_output(content, data)
-            if not docx_report.get("ok"):
-                issues = list(
-                    dict.fromkeys(
-                        str(issue)
-                        for issue in docx_report.get("issues") or []
-                        if str(issue).strip()
-                    )
-                )
+            candidate_issues = _recoverable_docx_candidate_issues(docx_report)
+            if candidate_issues is None:
+                issues = list(dict.fromkeys(str(issue) for issue in docx_report.get("issues") or [] if str(issue).strip()))
                 raise DocumentToolFailure(
                     code="PRACTICE_DOCX_CONTRACT_VALIDATION_FAILED",
                     message="生成的练习 Word 未通过完整性校验。",
@@ -194,6 +240,7 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             output["content"] = content
             return {
                 "validation": docx_report,
+                "candidate_issues": candidate_issues,
                 "size_bytes": len(content),
                 "question_count": len(data.get("exercises") or []),
                 "word_tool_variant": word_tool_variant,
@@ -211,11 +258,12 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             error = document_tool_result.get("error") or {}
             raise ValueError(str(error.get("message") or "练习 Word 文档工具执行失败。"))
         content = output["content"]
+        candidate_issues = list((document_tool_result.get("data") or {}).get("candidate_issues") or [])
         elapsed = time.perf_counter() - started
         _update_job(
             job_id,
             status="completed",
-            current_operation="Word 已生成并通过完整性校验，可下载",
+            current_operation=("Word 已生成，可下载待复核候选" if candidate_issues else "Word 已生成并通过完整性校验，可下载"),
             completed_count=len(data.get("exercises") or []),
             total_count=len(data.get("exercises") or []),
             size_bytes=len(content),
@@ -224,6 +272,14 @@ def _execute_export_job(job_id: str, data: dict[str, Any]) -> None:
             cached=False,
             document_contract_version=PRACTICE_DOCUMENT_CONTRACT_VERSION,
             word_tool_variant=selected_word_tool_variant(),
+            release_level=("review_candidate" if candidate_issues
+                           else str(_JOBS[job_id].get("release_level") or "formal")),
+            filename=(_review_candidate_filename(str(_JOBS[job_id].get("filename") or ""))
+                      if candidate_issues else str(_JOBS[job_id].get("filename") or "专项练习-题目.docx")),
+            warning_issues=list(dict.fromkeys([
+                *(_JOBS[job_id].get("warning_issues") or []),
+                *[f"Word 格式转换待复核：{issue}" for issue in candidate_issues],
+            ])),
         )
         append_runtime_log(
             "practice_export",
@@ -284,10 +340,11 @@ def create_or_reuse_practice_export_job(
         existing = _JOBS.get(job_id) or _load_persisted_job(job_id)
         if existing is not None:
             _JOBS[job_id] = existing
-        if cache_path.is_file():
+        if export_validation.get("ok") and cache_path.is_file():
             cached_content = cache_path.read_bytes()
             docx_report = validate_docx_output(cached_content, data)
-            if not docx_report.get("ok"):
+            candidate_issues = _recoverable_docx_candidate_issues(docx_report)
+            if candidate_issues is None:
                 cache_path.unlink(missing_ok=True)
                 append_runtime_log(
                     "practice_export",
@@ -300,21 +357,25 @@ def create_or_reuse_practice_export_job(
                     "job_id": job_id,
                     "history_id": str(data.get("history_id") or ""),
                     "status": "completed",
-                    "current_operation": "已复用通过完整性校验的 Word 缓存",
+                    "current_operation": "已复用可下载的 Word 缓存",
                     "created_at": existing.get("created_at", now) if existing else now,
                     "updated_at": now,
                     "completed_count": total,
                     "total_count": total,
                     "size_bytes": cache_path.stat().st_size,
-                    "filename": filename,
+                    "filename": _review_candidate_filename(filename) if candidate_issues else filename,
                     "cache_key": key,
                     "cache_path": str(cache_path),
                     "cached": True,
                     "error": "",
-                    "warning_issues": warning_issues,
-                    "release_level": release_level,
+                    "warning_issues": list(dict.fromkeys([
+                        *warning_issues,
+                        *[f"Word 格式转换待复核：{issue}" for issue in candidate_issues],
+                    ])),
+                    "release_level": "review_candidate" if candidate_issues else release_level,
                     "document_contract_version": PRACTICE_DOCUMENT_CONTRACT_VERSION,
                     "payload": data,
+                    "unit_delivery": existing.get("unit_delivery", {}) if existing else {},
                 }
                 _JOBS[job_id] = record
                 _persist_job(record)
@@ -362,7 +423,22 @@ def create_or_reuse_practice_export_job(
 def load_practice_export_job(job_id: str) -> dict[str, Any]:
     with _LOCK:
         record = _load_job_record(job_id)
+        payload = record.get("payload")
+        if record.get("status") == "completed" and isinstance(payload, dict):
+            validation = validate_practice_export(payload)
+            if not validation.get("ok"):
+                record = _update_job(job_id, status="failed", release_level="blocked",
+                                     current_operation="整套交付未通过检查，分题成果仍保留",
+                                     error="；".join(validation["blocking_issues"]))
         return _public_job(dict(record))
+
+
+def practice_unit_package(job_id: str, revision: str) -> Path:
+    with _LOCK:
+        _load_job_record(job_id)
+    if not revision:
+        raise ValueError("请指定已显示的分题成果版本。")
+    return build_unit_package(EXPORT_CACHE_DIR / "units" / job_id, revision)
 
 
 def retry_practice_export_job(job_id: str) -> dict[str, Any]:
@@ -371,9 +447,12 @@ def retry_practice_export_job(job_id: str) -> dict[str, Any]:
         record = dict(_load_job_record(job_id))
         status = str(record.get("status") or "")
         cache_path = Path(str(record.get("cache_path") or ""))
-        if status in {"queued", "running"} or (status == "completed" and cache_path.is_file()):
+        if status in {"queued", "running"}:
             return _public_job(record)
         payload = record.get("payload")
+        if status == "completed" and cache_path.is_file() and isinstance(payload, dict):
+            if validate_practice_export(payload).get("ok"):
+                return _public_job(record)
         filename = str(record.get("filename") or "专项练习-题目.docx")
     if not isinstance(payload, dict):
         raise ValueError("Word 导出请求快照不可用，请返回原练习重新下载。")
@@ -389,6 +468,11 @@ def practice_export_download(job_id: str, *, refresh_from_disk: bool = False) ->
             _JOBS[job_id] = record
         if record.get("status") != "completed":
             raise ValueError("Word 尚未生成完成。")
+        payload = record.get("payload")
+        if record.get("release_level") == "blocked":
+            raise ValueError("整套题目未通过交付检查，请下载已通过检查的分题成果。")
+        if isinstance(payload, dict):
+            assert_practice_exportable(payload)
         path = Path(str(record.get("cache_path") or ""))
         filename = str(record.get("filename") or "专项练习-题目.docx")
     if not path.is_file():
@@ -424,17 +508,25 @@ def recover_practice_export_jobs() -> dict[str, int]:
                 continue
             payload = record.get("payload")
             cache_path = Path(str(record.get("cache_path") or ""))
-            if isinstance(payload, dict) and cache_path.is_file():
+            if isinstance(payload, dict) and validate_practice_export(payload).get("ok") and cache_path.is_file():
                 report = validate_docx_output(cache_path.read_bytes(), payload)
-                if report.get("ok"):
+                candidate_issues = _recoverable_docx_candidate_issues(report)
+                if candidate_issues is not None:
                     record.update(
                         status="completed",
-                        current_operation="服务恢复后复用已完成的 Word 文件",
+                        current_operation=("服务恢复后复用待复核 Word 候选" if candidate_issues else "服务恢复后复用已完成的 Word 文件"),
                         completed_count=len(payload.get("exercises") or []),
                         total_count=len(payload.get("exercises") or []),
                         size_bytes=cache_path.stat().st_size,
                         cached=True,
                         error="",
+                        release_level="review_candidate" if candidate_issues else str(record.get("release_level") or "formal"),
+                        filename=(_review_candidate_filename(str(record.get("filename") or ""))
+                                  if candidate_issues else str(record.get("filename") or "专项练习-题目.docx")),
+                        warning_issues=list(dict.fromkeys([
+                            *(record.get("warning_issues") or []),
+                            *[f"Word 格式转换待复核：{issue}" for issue in candidate_issues],
+                        ])),
                         updated_at=_now(),
                     )
                     _persist_job(record)

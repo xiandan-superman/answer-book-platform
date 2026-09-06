@@ -32,6 +32,234 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260906-22｜以展示版本校验单题编辑并发令牌
+
+- status: verified
+- scope: 保存后局部重生成题目的并发编辑保护。
+- changed: 更新单题时以与浏览器响应相同的标准化题目表示重算编辑令牌，再与页面携带的令牌比较。
+- trigger: 已确认蓝图身份在保存响应标准化时补齐局部批次题的编号和 `exercise_id`，而落盘旧字段尚未重写，导致未并发修改的局部修复被误判为冲突。
+- invariants: 真正的题干、选项、来源、答案或计划身份变更仍必须拒绝旧页面覆盖；不放宽缺失令牌校验，不调用模型。
+- do_not_regress: 编辑令牌的服务端比较必须与前端收到的公开表示一致；不得因身份标准化而绕过实际并发写冲突。
+- verification: Python 3.11 定向 `pytest tests/test_practice_partial_generation.py::test_audit_failed_item_can_be_repaired_reviewed_generated_and_saved_locally -q` 1 passed，Ruff 通过；随后完整 `scripts/run_quality_gates.py --full` 通过（2197 passed，覆盖率 72%）。
+
+### OPT-20260906-21｜恢复上下文规划兼容导出
+
+- status: verified
+- scope: 练习上下文规划模块的公共辅助函数导入。
+- changed: 重新导出 `estimate_text_tokens` 和 `model_stage_quality_limit`，保持既有调用方可从 `practice_context_planner` 访问它们。
+- trigger: 锁定 Python 3.11 全量质量门在测试收集时发现这两个既有导出被遗漏，导致上下文规划回归测试无法导入。
+- invariants: 不改变上下文计划、来源证据、模型额度、调用次数或网络行为；仅恢复已存在的模块接口。
+- do_not_regress: 后续整理导入时不得删除已由测试和调用方依赖的公共兼容导出。
+- verification: Python 3.11 定向 `pytest tests/test_practice_context_planner.py -q` 11 passed，Ruff 通过；随后完整 `scripts/run_quality_gates.py --full` 通过（2197 passed，覆盖率 72%）。
+
+### OPT-20260906-20｜按确认蓝图恢复题目身份
+
+- status: verified
+- scope: 练习候选保存前的统一生成对账与质量问题定位。
+- changed: 当确认蓝图与当前题目是同一组唯一 `plan_item_id` 时，对账入口以蓝图中 `plan_item_id → number` 为唯一身份来源，恢复题目 `number` 和 `exercise_id`。这只处理完整的一一对应集合，变式或不完整集合保持原有身份，不从当前排序猜测。
+- trigger: 已恢复的真实 10 题候选把多个单题批次的局部编号 `1` 和 `practice_01` 带入保存结果，质量门禁把第 2、10 题缺图误报为“第 1 题”。
+- invariants: 不改变题干、选项、公式、表格、题图资产、来源绑定或蓝图；不生成、补造或删除图片；不调用模型。
+- do_not_regress: 不得对变式/不完整集合按位置重编号；质量问题必须依据确认蓝图中的计划身份显示；不能用编号恢复掩盖实际缺图门禁。
+- verification: `tests/test_practice_generation_batching.py`、`tests/test_practice_model_image_tools.py`、公式与导出门共 75 passed，Ruff、`py_compile` 与 `git diff --check` 通过。真实候选零调用恢复后题号与 `exercise_id` 均为 1..10 / `practice_01`..`practice_10`，除身份字段外 10 题正文 SHA-256 均未变；不满足一一对应条件时记录 `identity_reconciliation=skipped` 和明确原因。随后原始主模型已接受的第 2、10 题图从 manifest 重绑，当前质量门通过。
+
+### OPT-20260906-19｜保留后续已定界行内公式的百分比闭合修复
+- status: verified
+- scope: 练习题生成、质量门与 Word 导出共享的行内 LaTeX 规范化。
+- changed: 仅当行内数学以 `\\%` 结束、其后立即为中文标点且中间没有美元符或换行时补闭合美元符；避免未闭合百分比公式跨越并拆坏后续已有边界的 `\\text` 等行内表达。
+- trigger: 保存的知识点题干中前一百分比公式漏闭合，旧匹配将后续合法 `$L \\rightarrow \\text{固相}$` 错配并改写为不可渲染标记。
+- invariants: 已完整定界的公式字节和边界保持不变；不为未知命令、任意控制字符或任意中文公式猜测补符；现有题图、来源、难度、答案与 Word 门不放宽。
+- do_not_regress: 不得重新跨越后续已定界公式配对；百分比闭合规则不得扩展到普通文本、跨行内容或一般未闭合 LaTeX。
+- verification: Python 3.11 定向 `pytest tests/test_practice_export_gate.py tests/test_practice_formula_protocol_guard.py tests/test_exercise_generation.py::test_blueprint_audit_treats_shared_binary_qualifier_as_bound_parent_scope -q` 47 passed；Ruff、py_compile、diff-check 通过。保存的题 10 响应零调用规范化为 completed，题 1 至 9 的序列化摘要均未变。
+
+### OPT-20260906-18｜工具循环输出无损修复已识别的 LaTeX 控制转义
+- status: verified
+- scope: 专项练习主模型工具循环的结构化生成结果、跨来源蓝图审计与历史失败项恢复。
+- changed: 工具循环在返回已解码 JSON 后，只将明确对应 LaTeX 命令的控制转义恢复为反斜线命令；未知控制字符仍交由现有门拒绝。审计把绑定来源已覆盖的“二元”共享限定词视为父级范围，避免误暂停已绑定题项。
+- trigger: 真实知识点续跑中，三个模型 JSON 的单反斜线 LaTeX 被 JSON 解码为 U+0009，导致逐题失败；另一个来源已绑定题项因共享“二元共晶相图”词面被误标跨来源泄漏。
+- invariants: 不删除或猜测未知控制字符、公式定界符或学科内容；保留所有来源、范围、难度、答案、题图、公式和单题失败门；不新增模型调用、重试或网络请求。
+- do_not_regress: 不得把任意制表符替换为 LaTeX；只能恢复明确命令后缀，控制字符残留必须继续可诊断并拒绝。不得将真正未绑定的来源主题当作共享词面放行。
+- verification: Python 3.11 定向 `pytest tests/test_practice_formula_protocol_guard.py tests/test_exercise_generation.py tests/test_practice_cloze.py -q` 209 passed；Ruff、py_compile、diff-check 通过。三个保存响应零调用回放均消除 U+0009；其中两项通过完整规范化并恢复，第三项随后命中独立的 Markdown/LaTeX 定界门，未猜测修复。
+
+### OPT-20260906-17｜综合模式仅按显式跨来源要求阻断
+- status: verified
+- scope: 按题整套专项补强与知识点综合练习的蓝图提示、模式合同和历史蓝图归一化。
+- changed: 将综合模式的默认跨来源配额和连接/综合角色从硬门移除；只有可核验的 `requirements_contract.cross_source=explicit` 才保留跨来源题数与角色门。提示明确默认综合可在整套内覆盖、单题只绑定实际范围；历史恢复不再自动补第二来源或迁移合同。
+- trigger: 两类真实十题混合蓝图在用户未要求单题跨来源时，分别因 0/2 和 1/2 跨来源配额被规划门阻断。
+- invariants: 保留显式跨来源、逐来源题数、难度、来源合法性、整套覆盖提示与蓝图审计；不修改历史保存内容，不新增模型调用、重试或网络请求。
+- do_not_regress: 不得把综合选题或默认连接角色重新解释为固定比例的单题跨来源要求；缺合同历史记录不得被自动补来源或迁移。
+- verification: Python 3.11 定向 `pytest tests/test_exercise_generation.py tests/test_practice_cloze.py -q` 189 passed；Ruff、py_compile、diff-check 通过；复用两类保存的十题蓝图零模型归一化回放均 passed。
+
+### OPT-20260906-16｜移除专项练习独立语义审查阶段
+- status: verified
+- scope: 按题/知识点练习的生成后模型审查、质量投影、历史继续/编辑、提示合同、导出缓存和前端请求合同。
+- changed: 删除专项练习第二次模型语义审查的调用、schema、预算、提示注册和增量合并；当前质量、完成状态和 Word 导出只消费确定性结构、来源、边界、公式与交付检查。历史记录中的原始 `semantic_review` 保留可读取，但不再改变当前质量、复核状态、缓存身份、诊断或 Word 提示。
+- trigger: 已生成内容又被独立语义审查标为待复核，造成模型判断重复进入当前交付路径；用户要求完整移除该练习专用阶段，同时保留确定性门禁和真题审查。
+- invariants: 不删除历史原始记录，不放宽题干、来源、原句、答案泄漏、公式、题图、范围、难度或 Word 完整性门禁；不触碰真题审查、模型工具安全闭环或用户确认；不新增模型调用、预算或网络请求。
+- upstream_reference: 2026-09-06 动态核验 OpenAI https://github.com/openai/codex.git 默认 main，ac192cd7937b0d73edc6dffe009940ae53782dd4，读取 `codex-rs/core/src/session/turn.rs`；DeepSeek https://github.com/deepseek-ai/deepseek-harness.git 默认 master，d347e703908d0406b7a7ef80e3a0e594d86b2215，读取 `packages/core/agent-loop/src/agent.ts`。本改动只删除本地第二模型阶段；保留现有结构化请求/结果与持久化边界，不依赖上游替代教学或 Word 校验。
+- do_not_regress: 不得重新用历史 semantic_review 生成当前待复核状态、Word 警示、缓存分叉或模型调用；不得把移除模型审查误解为可跳过确定性校验或真题审查。
+- verification: Python 3.11 定向 492 passed；相关 Ruff、`node --check web/app.js` 与 `git diff --check` 通过。未运行付费模型、完整工程门禁、Windows Word 或发布。
+
+### OPT-20260906-15｜待复核 Word 提示采用可分页正文布局
+- status: verified
+- scope: 练习题目 Word 的 review_candidate 提示区及其导出回归。
+- changed: 将候选复核提示从无显式属性的段落改为正文专用段落：取消首行缩进，设置小间距、左对齐，并显式允许跨页和不与后续段落绑定；提示全文仍逐条写入正文，页眉保持为空。
+- trigger: 真实知识点候选单页渲染的页面顶部裁切了复核提示首段，现有 OOXML 也确认提示并非页眉而是缺少可分页约束的正文段落。
+- invariants: 不修改题目、答案、语义复核结论、模型路由或调用次数；候选仍保持 review_candidate，不能据排版修复宣称正式发布。
+- do_not_regress: 不得把复核信息写入页眉、截断或缩小至不可读；长提示不得继承标题的 keep 约束而造成页面裁切。
+- verification: `.venv/bin/python -m pytest tests/test_practice_export.py -q` 36 passed；`.venv/bin/python -m ruff check app/practice_export.py tests/test_practice_export.py` 通过；同一真实候选离线重建后 `validate_docx_output` 无 issue，三条 warning 全在正文且不在 header；LibreOffice 逐页渲染 1/1 页，标题和全部复核文字清晰可见。
+
+### OPT-20260906-14｜严格原句蓝图范围不外溢
+- status: verified
+- scope: 按题与知识点严格原句填空的蓝图规划、蓝图审计、保存恢复及题目Word交付核验。
+- changed: 明确严格原句填空的必考知识点只描述已选连续原句及空位实际考查的内容；单来源全量知识点相等检查不再把来源目录中无关公式、边界强加给已有逐字映射的严格填空。非严格题和未映射项仍保持原覆盖规则。
+- trigger: 两类真实候选均将整条来源的公式或扩展知识写为单题必考内容，随后题干正确保留短原句而被误判为蓝图偏离。
+- invariants: 用户原句、40字限制、来源哈希与空位坐标不变；不本地猜测或改写模型选择的学科知识点；不新增模型调用、图片审计、角色体系或发布行为。
+- do_not_regress: 不得恢复严格填空的来源全量知识点强制绑定；也不得把该例外扩展到非严格题、缺少逐字映射的历史题，或把模型输出偏离静默改成正式内容。
+- verification: 相关pytest 197 passed，扩大到原句/规划/导出集258 passed；Ruff和diff-check通过。全文件Mypy扩大检查报告257项，未作修改前对照，归因未确定。两类真实流程各4次、合计8个唯一invocation_id；规划、生成、保存恢复、导出及OOXML Word门均成功。模型在完整输入和修复后的提示下仍输出不匹配的必考点，语义审查保留为review_candidate，属于未自动修复的模型输出警告。最终渲染：按题Word 1页清晰；知识点Word 1页顶部复核文字被裁切，不能作为可交付版式，未重建。
+
+### OPT-20260906-13｜原句填空证据合同与来源绑定保真
+- status: verified
+- scope: 按题/知识点新规划、生成/修复/草案、规范化、保存恢复、审查、题干预览和题目Word。
+- changed: 完整规划要求结构化区分strict_verbatim/minimal_edit/unconstrained与原文引用；严格填空由模型选择真实source_content连续片段和空位，程序以Unicode坐标与来源哈希核验，仅保存位置和挖空题干，不复制答案正文。新规划不按索引替换未知来源、不补第二来源、不改primary凑覆盖；历史兼容路径保留。默认跨源配额只由不受严格原句限制的项承担，显式跨源及混合题其他项仍受门禁。生成/修复和导出重验当前候选；原句题预览/Word保留源编号，Word直接核对OOXML字面内容。练习公式接入共享唯一fN无损恢复helper。
+- trigger: 真实规划只绑定S1却被程序补S2；原句题实际改写而模型审查误称原句；少量填空被连接角色阻断；真实新增原序号又被Word改写且旧校验同样规范化后误通过。
+- responsibility: 补绑、未知ID替换、编号改写及缓存质量依赖为deterministic_postprocess；无逐字证据及强制模式冲突为model_input/harness_orchestration。仍存在模型规划语义范围偏离，不冒充已解决。
+- invariants: 保留既有工作树、用户范围、已有候选、主模型图片闭环与调用预算；不恢复独立图片审计或真题PDF门，不猜教学语义或删除必考范围提高通过率；旧缺合同历史保持unknown，不批量迁移或失效旧下载；宽松要求不升级严格。不发布。
+- upstream_reference: 本次动态核验精确origin/远端HEAD：OpenAI https://github.com/openai/codex.git 默认main ac192cd7937b0d73edc6dffe009940ae53782dd4，读取该SHA codex-rs/core/src/session/turn.rs；DeepSeek https://github.com/deepseek-ai/deepseek-harness.git 默认master d347e703908d0406b7a7ef80e3a0e594d86b2215，读取packages/core/agent-loop/src/agent.ts deriveMessages/buildRequest。与接入标准引用一致；原句/教学及Word是本地必要合同，上游不保证语义正确。
+- impact_matrix: 两类真实各2题，新合同/mapping保存加载不丢失；strict改写及来源变化被导出拒绝，minimal及历史不升级strict；按题/知识点共享生成、修复、审查及Word回归，前端仅编辑性规范化guard；真题不用生题合同，共享公式由另一执行项验证。未做历史全版本迁移、Windows Word或真实浏览器；内部校验数据与题干预览/题目文件分开，不新增角色体系。
+- real_result: 两类合计7个唯一invocation_id（4+3），网络均ok，但两套均review_candidate；4题JSON来源映射通过，3题有蓝图范围风险，按题短片段不能签收完整原句语义。知识点Word源序号改写已零模型调用离线修复，最终4题题干文字保真且映射答案未进入文件。四主任务正式验收仍0/4。
+- do_not_regress: 不得把模型引用真实当解释正确，不得把字串通过或Word gate true当教学/整套通过；不得恢复新规划任意补绑、源摘要冒充原文、严格题号改写、旧质量缓存替代当前导出核验；不为可确定性恢复公式重生。
+- verification: Python3.11扩大定向296 passed；真实编号修复后原句/前端/Word/导出定向206 passed；相关Ruff、新模块Mypy、JS语法、diff检查通过。两类真实各2题保全/存储/Word完成，4+3次请求，重建Word零请求。最终完整门禁由负责人安排另行集中执行，不能用此前全库计数代替。 最终知识点Word经内置LibreOffice渲染并检查全部1页，源“2、”保留，两题与空位完整，未见裁切/重叠/缺字；仅页面QA，语义风险不变，零新请求。
+
+### OPT-20260906-12｜共享公式引用的无损恢复
+- status: verified
+- scope: 真题答案草稿转换、按题/知识点出题共享公式转换，以及未解决公式引用的候选诊断。
+- changed: 新增位置敏感的公式规范化 helper；仅将唯一、非空且与原数组 1-based 位置一致的 `fN` 文本键恢复为 `latex`。同时出现的 `latex` 或 `formula_id` 必须一致；多键、错位或矛盾显式失败，不重排或推断公式。未解决引用保留可见的“公式缺失”提示和既有 review flag，不再删为空白。
+- trigger: 已保存高物草稿和原模型最终结构响应含三条完整公式，但消费者只读取 `latex` 而静默丢弃非规范 `fN` 键，后续清理再删除引用，形成空句。
+- invariants: `latex` 仍是生产合同；非规范 `fN` 不作为历史协议合法化。无付费重生成，不改用户原任务、确认依据、同卷其他题目或图片；歧义候选必须保持待复核，局部恢复不得改变整套正式验收结论。
+- do_not_regress: 不得按过滤后的列表重编号；不得在多个候选键中静默择一；不得把未解决引用删除后作为正常正式答案；不得以 Word/OOXML 机器检查通过冒充教学内容合格。
+- verification: 真实保存草稿三式经真题及两类练习共享消费者均恢复 3/3，LaTeX 文本不变且引用顺序保持 1/3/2。针对性 10 文件 pytest 263 passed；Ruff、helper Mypy、git diff --check 通过。离线待复核 Word 原生公式 157→160，机器审计无 issue，渲染 18→19 页并检查受影响页；原始数据未写入，未运行付费模型、Windows Word、完整工程门禁或发布。四主候选正式通过仍为 0/4。
+
+### OPT-20260906-11｜当前生命周期与历史成果分开投影
+- status: verified
+- scope: 真题有/无教材任务状态，按题/知识点同批次历史与继续任务的公开投影。
+- changed: 旧待复核验收仅在当前本已完成时转换完成等级，不能覆盖运行、暂停、待确认、失败、取消；旧报告及结果/文件访问继续保留。同批最新job保持权威，活跃及较新失败/取消与旧history并存，成功job由历史代表避免重复；缺时间戳时保守保留。
+- trigger: 旧候选报告把running/paused/failed都改成completed_with_issues并撤销控制；旧history无条件隐藏新running续生job。均有纯函数实际复现。
+- responsibility: deterministic_postprocess（公开状态投影）；与模型输入输出无关，不用模型重试修复。
+- invariants: 不改持久化状态、原始输入、用户确认、历史候选、Word/质量门、模型路由或调用预算；不恢复独立图片审计与真题PDF；不新增付费调用，不引入run_id迁移。
+- impact_matrix: 两种真题profile参数化验证六种非完成状态及旧候选访问；按题/知识点分别验证queued/running/paused/failed/cancelled与旧历史并存、成功去重、旧失败被新成果覆盖、未知时间戳和取消重试；前端动作/服务端控制/继续幂等合同回归通过。最终交付文件和下载接口不变，未执行真实浏览器、Windows或付费模型验收。
+- do_not_regress: 不得用旧验收覆盖当前生命周期；不得用旧running盖过较新终止job；不得为显示当前运行而删除已有候选；不得让成功job和其history重复出现。
+- verification: 修复专项与相关pytest 199 passed；初始只读跨业务审查74 passed。修改文件Ruff与diff-check通过。单文件Mypy23项报错，经修改前shadow-file对照除行号外完全一致，没有新增；不宣称Mypy通过。不独立运行完整门禁，由负责人集中验收。新增专属回归28项；未提交、推送、部署、发布。
+
+### OPT-20260906-10｜完整蓝图请求与消费结构对齐
+- status: verified
+- scope: 按题/知识点完整蓝图、细化、恢复与生成要求。
+- changed: 完整规划请求改用 blueprint.exercise_plan 合同，细化继续使用 plan_items/exercise_plan 合同，按已知阶段显式选择；兼容读取历史顶层题目列表，双列表冲突明确报错，禁止忽略实际模型设计再补默认题。综合蓝图显式空约束保持为空，缺失字段仍沿用历史补缺；大题量全局规划必须先选约束再锁定细化。统一用户要求优先级，移除禁止原句挖空的反向提示；填空不因复用来源句式被拒，题间重复检查保留。
+- trigger: 新真实响应的题目列表在顶层，请求 schema 本身要求该位置，消费者只读内层；模型已给出精确设计却被程序替换默认目标与来源。另发现自适应全局规划省略约束选择，随后把全量来源约束锁定，细化无法清理。
+- responsibility: 请求/消费者结构冲突及显式空值覆盖属于 deterministic_postprocess / harness_orchestration；规划要求矛盾为 model_input。模型语义覆盖不足与服务商524独立记录，不把此次误绑一概归咎模型。
+- invariants: 保存已有工作树及原任务；用户已授权真实付费测试，新增数据使用隔离目录与不同任务身份。不改真题合同、图片工具决策、默认调用预算；不静默删确认知识点，不放宽重复题及模式质量门，不发布。
+- upstream_reference: 2026-09-06 再次动态核验 exact origin/远端HEAD： https://github.com/openai/codex.git 默认main，ac192cd7937b0d73edc6dffe009940ae53782dd4；https://github.com/deepseek-ai/deepseek-harness.git 默认master，d347e703908d0406b7a7ef80e3a0e594d86b2215。实际阅读 codex-rs/core/src/session/turn.rs 完成响应记录，与 packages/core/agent-loop/src/agent.ts deriveMessages/buildRequest。参考请求/结果身份一致与续轮，不引入上游执行器；蓝图结构、语义覆盖与Word是本项目独有合同。
+- impact_matrix: 按题/知识点共享完整规划消费者，两类各10题真实蓝图完成；两类填空各2题前后测试分别保存。历史顶层计划兼容及显式空约束往返有回归，不迁移或重写全部历史。Word保留当前题目/复核结果，知识点最终2题候选另行校验渲染。真题不使用 PracticePlanningOutput，但纳入整库回归；前端接口形状保持既有规范化 blueprint，不新增页面字段；没有本轮真实浏览器/Windows Word实机。
+- real_result: 修复后两类10题蓝图均通过模式门，各含2填空；知识点蓝图仍有审计warning。知识点2填空经一次524后仅补审查，两题满足原句/字数要求，一题仍缺蓝图反应式覆盖。按题2填空在模式门因缺连接/综合角色被拦下，未生成默认替代题。完整10题方案本轮只测规划，没有重生整套题目，不能声称4主任务正式通过。
+- do_not_regress: 不能给模型要求顶层列表却只读内层；不能把忽略模型结果后的默认补题称为模型幻觉；不能把显式空集合当缺失；填空来源复用与重复出题必须分开；不得靠降低门禁掩盖确认要求冲突。
+- verification: 定向176 passed；请求边界schema选择/历史兼容/重复填空回归通过。最终 Python 3.11 scripts/run_quality_gates.py --full 通过：2133 passed、17 deselected、覆盖率71%，Ruff/Mypy/版本/编译/公式/许可证/完整性全部通过；git diff --check通过。最终2题Word内容校验通过，1页渲染查看。复核模型称两题符合原句/字数，但人工逐字对照仍有压缩改写，故不宣称严格原文挖空完成；第一题覆盖偏差保留。
+
+### OPT-20260906-09｜真实任务驱动的合同与局部修复收敛
+- status: verified
+- scope: 两类生题生成/审查/局部修复，共用模型 JSON 解码，真题人工确认分值与 Word 误阻断。
+- changed: 自动混合题型补入填空；已有内容审查接收完整题干/公式/表格/来源与最终题图像素，每图就地标注附件身份；可用题允许在部分失败时继续审查，单题审查不得将子集当整套。局部修复模式不再强制换题或打乱选项，修复前复制输入，保留未变题；完整保留补充要求。共用解码优先识别完整终末 JSON，避免前置说明花括号导致重复调用，不改写内容/转义、不替代 schema。人工确认本题分值不再被章节总分覆盖；移除“模型分析”类科学表述的草稿误判；否定词重叠不再将非稳态误判稳态冲突。
+- trigger: 四主任务及两填空补充任务真实生成暴露程序误阻断、无填空、审查图像指代混淆、修复与换题指令冲突。一次单题修复服务商连续返回带说明的响应，后五份含合法 JSON 却被首个花括号提取失败；修正后同一案例两次请求完成生成和审查。
+- responsibility: 分值/词语误判/JSON 提取为 deterministic_postprocess；图像标识、子集范围、修复指令为 model_input / harness_orchestration；短题干、蓝图错绑及挖空来源问题仍属未解决的内容合同问题。测试脚本一度误传列表作为数字字段，另缺少隔离教材缓存，均已纠正，不记作平台模型失败。
+- invariants: 用户本轮明确授权付费真实测试；所有任务在新隔离数据目录，不覆盖历史、不伪造确认、不推送/发布。部分成果与正式验收分开，不清除未解决语义风险；不新增独立图片审核阶段，不增默认轮数，不用正则改学科答案。
+- upstream_reference: 2026-09-06 再次动态核验 exact origin 与远端 HEAD：https://github.com/openai/codex.git 默认 main，ac192cd7937b0d73edc6dffe009940ae53782dd4；https://github.com/deepseek-ai/deepseek-harness.git 默认 master，d347e703908d0406b7a7ef80e3a0e594d86b2215。实际阅读 codex-rs/core/src/session/turn.rs 完成响应入会话及 packages/core/agent-loop/src/agent.ts deriveMessages/buildRequest 续轮。对应完整候选/真实附件/结果身份与有界重试；终末 JSON 兼容提取、教学范围及 Word 合同是本地必要扩展，上游不提供本项目的教学质量保证。
+- impact_matrix: 真题有/无教材共享 JSON 解码、确认分值，真实有教材两卷新生成 18/15 条；按题/知识点共用审查、修复、默认题型，真实各10题及各2填空。历史导出/恢复沿用保存原要求及新内容校验，真实结果重新保存并导出；分题保全为10/10/2/1，不把知识填空整卷硬阻断放行。Word 实际渲染两真题19/18页、两练习5/5页、填空1页并逐页查看；最新修订另行渲染。前端/API/恢复共享回归纳入整库测试；本轮没有真实浏览器与 Windows Word 实机测试，真题 PDF 按既有约定不启用。
+- remaining: 四主任务正式整套通过仍为0/4；真题存在证据引用空缺及待复核项；生题存在短题干/原句挖空/蓝图绑定冲突；知识填空一题泄漏答案被阻断。规划检索前移、历史全量迁移、细粒度失效传播尚未完成，不得将本轮修复或测试通过转述成全平台重构完成。
+- do_not_regress: 不得用网络成功代替任务成功；不得将模型审查误读当客观事实；修复不强制换题；不得用例子 JSON 替代真正最终结果；不静默删条件以凑字数。
+- verification: 定向审查/协议/局部修复68 passed；随后子集范围回归23 passed。最终 Python 3.11 `scripts/run_quality_gates.py --full` 通过：2128 passed、17 deselected、覆盖率71%，Ruff/Mypy/编译/版本/公式/许可证/完整度均通过，git diff --check通过。两份最新练习各5页再次渲染逐页查看；本轮共查看58页（含前后版本），存在版面/内容待改项，非正式成品签收。调用账本191条尝试记录，188成功/3失败，不能据此推导任务质量通过率；价格未核账，不估算金额。
+
+### OPT-20260906-08｜练习 Word 按当前题目核对内容
+- status: verified
+- scope: 按题/知识点出题共用 Word 校验、历史导出、分题缓存及练习合同样例脚本。
+- changed: 按题号分区核对当前题干、选项文字/标签/顺序和 Office 公式结构，避免对象数量相同而内容不同仍通过；答案卷显式声明校验范围并核对答案/步骤。图片、表格期望数按题目卷或答案卷的实际用途计算。练习 Word 合同升至 v4，使分题旧校验缓存失效；合同样例脚本同步声明文档类型。
+- trigger: 主项目复现：将已生成 Word 的题干替换成无关文字，原校验仍返回 ok；同时旧计数要求题目卷包含 solution 图片/表格，与排版入口冲突。
+- responsibility: deterministic_postprocess / delivery validation；未更改模型请求、工具、提示词、学科结论、任务状态或重试，无新增模型调用，不依赖 Harness 行为变更。
+- invariants: 保留原始数据和所有已有未提交改动；内容校验不等于学科正确性，不隐藏失败或待复核意见；只读历史输入，重放输出和图片派生写入隔离目录。
+- impact_matrix: 按题与知识点参数化覆盖改写题干/选项/公式、跨题错位、原编号选题及答案资源隔离；历史导出、缓存读取/下载、分题共用 validate_docx_output，合同版本使分题缓存重新验证。真题有/无教材使用独立 docx_v4，未修改其校验或渲染；两份真实真题保存结果离线回归仍为 18/15 分题，不能据此声称真题内容已逐项验收。前端及共享模型设施不变。
+- limitations: 当前检查覆盖源字段到题内文字/公式的一致性，忽略空白与字体差异；共享底层公式转换器，不能独立证明转换器的数学语义、图表内容、版面或学科正确性。真题全字段对应检查仍待完成。
+- do_not_regress: 不得退回只数题号/公式；不得从待校验文档猜测题目卷/答案卷来绕过当前导出范围；不得要求学生题目卷含答案资产；不得将离线重放当新生成端到端通过。
+- verification: 初轮定向 74 passed；完整回归发现合同样例脚本遗漏答案卷类型，已修正，修正后相关 71 passed。最终 `/tmp/abp-py311-gate/bin/python scripts/run_quality_gates.py --full` 通过：2119 passed、17 deselected，整库分支覆盖率 71%，Ruff/Mypy/编译/版本/公式/许可证/完整性检查均通过。最终代码再次核对两份真实练习 19 题均通过。四份保存结果重放分题数 10/9/18/15，两份练习 19 题通过新题干/公式检查，保留原失败/复核状态。按题练习三页已查看；高化已渲染，尚未完成全页验收。检查工具须显式加载其 bundled fontconfig 配置，否则中文缺字；未更改平台字体合同。未提交、推送、部署、发布或重新生成真实模型任务。
+
+### OPT-20260906-07｜共同原因收敛与离线验收隔离
+- status: implementing
+- scope: 两类生题用户原始要求的合同/蓝图/生成/审查/单题恢复；三业务保存结果离线重放工具。
+- changed: 新增统一原始要求读取入口，替代蓝图、生成合同、生成上下文及历史请求存储的 1000 字静默截断；蓝图和生成结果持久化相同原文，恢复请求缺省时读取保存值，最终审查、单题重生成、蓝图细化/单项重设计/草案及直接合同适配共享读取逻辑。重放工具将绝对/相对资产引用及原题 image_refs 映射到独立副本，保留同一资产身份，缺失资产仍缺失，拒绝远程资产，防止排版缓存写回历史目录。
+- trigger: 本轮方向校正要求从共同原因处理，而非继续加样本规则；发现要求在不同阶段截断不一致，及此前离线工具复制相对图片却未隔离绝对图片。
+- invariants: 保留既有工作树，不回滚，不重跑付费任务，不操作用户机，不推送/发布；模型语义错误不由正则改写。此次零模型请求；后续超过旧截断长度的要求完整入上下文可能增加输入 token，不增加调用轮数、不放宽预算。
+- upstream_reference: 2026-09-06 再次核验官方远端 HEAD 与精确 origin，Codex main ac192cd7937b0d73edc6dffe009940ae53782dd4，DeepSeek master d347e703908d0406b7a7ef80e3a0e594d86b2215；沿用模型标准中 turn.rs 输入续轮及 agent.ts preStep/buildRequest 耐久消息合同，相关源码与前次一致。
+- impact_matrix: 按题/知识点共用要求入口并覆盖缺省恢复；真题不使用生题 focus，未改变真题用户合同；三业务离线资产隔离测试覆盖同名异图、相对/绝对同图、缺图及拒绝远程图；线上历史记录不迁移、不重写。Word/PDF 排版未在本次改动，PDF/Windows 实机尚未验收。
+- existing_fix_review: 行内公式保留、选题身份及硬阻断下载修复继续保留；新增函数/单位识别及摘要投影计数仅为现有候选修复，尚未证明完整内容对应关系，不能将本次可交付数量提升视为质量通过。需求条件理解、整套语义风险、分流时点和逐对象恢复仍需集中完成，禁止继续堆样本规则。
+- do_not_regress: 禁止将长要求截断后当原文保存，禁止恢复时凭空重建历史要求，禁止离线验证写回源资产缓存，禁止以数量代替内容保真验收。
+- verification: 要求/生成/重放定向 pytest 174 passed；完整门禁通过，2105 passed、17 deselected、覆盖率 71%。最后补齐历史请求存储入口后，要求/生成/历史恢复/部分生成/修订/来源存储等定向 234 passed（含真实磁盘往返）；这一最后存储改动未再整库重跑。相关 Ruff、新要求模块 Mypy、git diff --check 通过。四任务独立副本离线重放完成，分题可交付计数为 10/9/18/15，仅说明本地门禁结果，不代表正确性或正式整套验收。本次未新增付费请求，未做新的全页渲染验收；逐项保真与剩余缺口见 OUTPUT_FIDELITY_ACCEPTANCE.md。
+
+### OPT-20260906-06｜四任务真实验收后的交付缺陷修复
+- status: implementing
+- scope: 两类生题分题保全/整套导出、缓存/重试/恢复/下载、用户约束语义审查、真题计算步骤公式和单位审计。
+- changed: 分题依赖身份映射到导出选择身份，拒绝歧义或缺失选择；先保全有效题再执行整套内容门禁，缓存和下载不能绕过；选题文件保留原编号与遗漏清单，候选文件带复核提示，浏览器优先服务端文件名；缓存纳入质量/审查/格式合同。删除将所有行内公式视作重复的排版跳过逻辑，保留相邻条件；单位审计包含实际引用的原生公式但排除审计镜像。已有语义审查显式携带用户原始要求，不新增审查调用。新增只读输入、独立输出的离线交付重放脚本。
+- trigger: 四个真实任务发现双 ID 导致出题分题包为空、blocked 整卷仍可下载、子集重编号、计算题条件公式被程序吞掉、公式中已有单位仍报警，以及用户要求未进入语义审查上下文。
+- invariants: 不重跑付费生成，不改历史结果和用户确认，不操作用户机，不部署/发布；保留待复核成果但不冒充正式通过，硬阻断不放行，不能静默截断题干或猜测补写答案。
+- upstream_reference: 2026-09-06 动态核验官方 origin/远端 HEAD：Codex main ac192cd7937b0d73edc6dffe009940ae53782dd4，DeepSeek master d347e703908d0406b7a7ef80e3a0e594d86b2215；已同步模型接入标准中的实际文件、对应关系与差异。程序排版错误不归因于模型。
+- impact_matrix: 真题有/无教材共享步骤排版与内容审计；按题/知识点分别覆盖双 ID 和局部失败；历史导出下载重新执行内容门禁，待复核仍允许；Word 保留原生公式和范围说明，未恢复真题 PDF；共享单位/整套验收仍分开，前端不将分题数量覆盖整套状态。
+- do_not_regress: 不得用 inline 标记推断公式可删除；不得把 OOXML 完整当内容验收通过；不得把 selected 静默选空或选错后返回正常；不得把真实生成结束当重构完成。
+- verification: 定向六文件 pytest 246 passed；相关 Ruff 与 git diff --check 通过。第一轮真实数据离线重放：两类出题分题数量恢复至 10 和 9，高化恢复至 17；高物因重放脚本未复制相对图片路径未完成，正在修正重放工具，非新增模型故障。完整门禁、渲染及其余真实验收问题 pending，不能宣称整个优化完成。
+
+### OPT-20260906-05｜选择题选项统一首行缩进三字符
+- status: verified
+- scope: 按题出题与知识点出题共用的结果预览、蓝图候选预览、复制到 Word、正式题目卷/合并卷及历史 Word 检查点复用。
+- changed: 选择题选项由 22 pt 悬挂缩进改为首行正向缩进 3 字符；DOCX 同时保存 `firstLineChars=300` 与 11 pt 正文对应的 33 pt 兼容值，网页和富文本复制使用 `3em`。解析编号列表继续使用原有悬挂缩进；生题 Word 合同升级至 v2，使旧格式缓存不会作为当前合同成果复用。
+- trigger: 用户明确要求选项改成首行缩进 3 字符；此前正式 DOCX、网页预览和复制到 Word 分别采用悬挂缩进、无明确缩进和整体左缩进，表现不一致。
+- invariants: 不修改题干、选项文字/标签/顺序、答案、模型提示词、调用次数、任务状态或用户历史数据；真题解析交付合同、正文首行缩进和解析步骤编号格式不变。
+- do_not_regress: 选择题选项不得恢复悬挂缩进或整体左缩进；“3 字符”必须写入 DOCX 字符单位属性，不能只用像素近似；不得把选项规则复用到解析编号列表；历史旧合同文件不得冒充 v2 格式命中缓存。
+- verification: 生题 Word、正式导出门禁、分题交付、检查点及前端合同定向回归 190 passed；修改文件 Ruff 通过，`node --check web/app.js` 与 `git diff --check` 通过。单独直接运行 Mypy 扫描 `practice_export.py` 命中该文件已有的 25 项严格类型问题，本次改动所在行无新增类型诊断；未运行完整门禁、真实浏览器、Windows Word 或付费模型任务，未连接用户机、提交、推送或发布。
+
+### OPT-20260906-04｜逐批 Word 预检、依赖恢复与共用修复闭环
+- status: implementing
+- scope: 真题生成与 Word 回修、按题/知识点生成批次与分题导出、模型调用预算、恢复及浏览器回归。
+- changed: 真题每个完成批次及出题每个完成批次进行不调用模型的本地 Word 预检，明确不等于内容/整套验收；版本快照绑定题目、证据、配置、合同及资产字节，真题可从对象快照恢复，出题分题 Word 可复用未变化且哈希正确的文件。通用并发池改为滚动补位并在提交回调后补位，取消不进入单题回退。Word 修复改用内容修复的完整候选/原题/证据/图像与有界循环，保留原 Word 并发配置和实际文档诊断；修复后更新分题验收。数值观察区分通过/失败/未知，单位未验证不冒充已验证；从原有调用余量预留至多 9 次修复额度，已用预留不重复扣留，总调用与显式 Token/时间预算不增加。
+- trigger: 后置 Word 故障暴露太晚；已完成对象重复调用与重复装配；全量提交缺少下游背压；分离的 Word 修复缺少共用上下文与最新受检候选。
+- review_followup: 最终 HTTPS 回归发现失败返回被历史诊断扫描拖慢。cProfile 实测两次网络首字节等待约 2 秒，诊断保留检查约 6.7 秒，其中附件引用扫描约 5.6 秒；修复为没有附件不读历史、从最新记录查引用且全部找到后提前结束，损坏记录不能证明附件孤立则保留，拒绝扫描附件目录符号链接。不改变保留期/额度，不手工清理用户历史；TLS 测试独立诊断和调用账本目录，新增三项扫描/保留回归。该问题是程序后处理开销，不能归咎模型超时或以放宽时间断言掩盖。
+- invariants: 保留用户确认、教材共享前置、蓝图与集合质量门、原生 OMML、主模型图像工具路由和不可变下载；预检不发布成果、不增加模型调用；环境故障不永久缓存、不猜测为模型责任。局部成果不冒充整套完成。仅本地，未连接用户机、未发布、未运行真实付费模型。
+- do_not_regress: 不得在取消后继续补位；不得将旧依赖快照直接视为通过；不得把单位 unknown 当 passed；不得以无进展修复增加上限；不得把生成后预检描述为规划/检索已按题组分流。历史迁移与共享故障调度的完整接通仍须继续实现，详见实施清单。
+- upstream_reference: 2026-09-06 本轮实时查询官方 origin/default HEAD：OpenAI Codex `https://github.com/openai/codex.git`，main `6af345407d9c2a568da9d01b6c4b81a9e61495c0`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git`，master `d347e703908d0406b7a7ef80e3a0e594d86b2215`。实际读取前者 `codex-rs/core/src/session/turn.rs` 的工具结果进入后续采样边界，后者 `packages/core/agent-loop/src/tool-calls.ts` 的滚动池、独占屏障、取消排空与调用结果配对。对应本地完整候选反馈与回调后补位；本项目不导入上游执行器，不据此声称上游实现了本项目的 Word/学科验收或完全不会失败。
+- verification: 最终在全新独立数据目录运行 Python 3.11 `scripts/run_quality_gates.py --full`：2090 passed、17 deselected，分支覆盖率 71%；编译、版本、公式、许可证、完整度、Ruff/Mypy 全通过。独立 Chromium 合并 E2E 17 passed（含真实 HTTP ZIP 下载、固定版本、轮询失败保留及任务切换隔离）；新增模块另行 Ruff/Mypy、JS 语法和 diff 空白检查通过。诊断扫描与 HTTPS 定向 13 passed，未放宽超时断言；修正 Windows 启动测试对外部数据目录环境变量的依赖并新增显式覆盖目录回归。未执行 Windows 真机与真实模型任务，不能视为全范围验收完成。
+
+### OPT-20260906-03｜分题 Word 交付与不可变下载快照
+- status: implementing
+- scope: 真题整卷交付前、按题/知识点共用 Word 导出、任务进度/结果页、恢复下载接口。
+- changed: 新增显式依赖组划分、局部内容/结构/Word 验收、内容寻址文件与版本清单；失败题体不进入分题包，保留原编号和遗漏清单，明确非整套验收。真题按输入/证据/图片字节与合同版本复用已通过对象；出题仍重建检查，不把输入摘要冒充资产复用合同。新增下载哈希校验、固定 ZIP 元数据、前端独立成果入口；分题读取失败不改变执行状态。
+- trigger: 整卷 Word 后置失败导致用户无法取得已完成题目；重试浪费已通过对象的装配工作。
+- invariants: 不修改用户确认结果；不降低整卷门禁；不交付未解决审查标记、缺失依赖/变式组和损坏文件；不新增模型调用；不连接用户机、不发布。局部通过不代表全局覆盖、去重、难度或版式验收通过。
+- harness: 2026-09-06 动态 HEAD/精确 origin 已核对：OpenAI https://github.com/openai/codex.git，main，6af345407d9c2a568da9d01b6c4b81a9e61495c0，实际阅读 codex-rs/core/src/session/turn.rs 的工具结果续轮和会话记录；DeepSeek https://github.com/deepseek-ai/deepseek-harness.git，master，d347e703908d0406b7a7ef80e3a0e594d86b2215，实际阅读 packages/core/agent-loop/src/tool-calls.ts 的有界执行池、取消排空和工具结果持久化。对应保留已完成结果与显式状态；教学依赖组及 Word 局部门禁属于本项目必要差异，非上游内置能力。
+- impact_matrix: 真题有/无教材均走同一适配器；按题/知识点走同一出题适配器且分别实测真实 DOCX；历史恢复仅真题精确版本复用，缺草稿保守阻断；Word 独立成果保留，PDF 未新增；服务器接口校验固定版本和字节，网页仅展示独立成果，不覆盖整套状态。
+- verification: 定向 46 项既有交付/导出回归通过；Python 3.11 `scripts/run_quality_gates.py --full` 两轮通过，最近一轮 2075 passed、16 deselected、分支覆盖率 71%，含新增模块持续 Ruff/Mypy 门禁。随后补充同时依赖/变式关系、非规范身份、重试开始前停止和原题编号错配边界，三个新测试文件最终 17 passed；最终六个新增源码/测试文件 Ruff/Mypy、`node --check web/app.js`、`git diff --check` 通过。该四项末尾边界在定向回归中验证，未将此前全量计数冒充其全量结果。真实浏览器交互、Windows 实机、付费任务 pending。
+- remaining: 当前真题接入点仍在整卷 Word 前，出题在导出时；更早逐对象分流、统一 Word 模型修复闭环、依赖失效传播、共享故障背压/预算预留、网页交互及跨平台与用户真实任务验收仍未完成，不得据此宣称整个重构完成。
+
+### OPT-20260906-02｜输出保真与对象检查点第一阶段
+- status: implementing
+- scope: 真题生成/审查修复、两类出题共用规范化与 Word 导出、历史裸 TeX 表达式兼容；整体逐对象交付重构尚未完成。
+- changed: 保护完整 TeX 命令及参数不被子串规则拆开，沿用晶面指数括号合同并在提升前调用权威 OMML 预检，未知表达式仍阻断；移除正文、选项、公式和表格内容的若干静默长度/数量截断；消除小量级计算比较的无量纲绝对容差下限。修复重试保留原题/证据/图片与最新草稿，同时回传实际受检候选及其哈希；相同候选重复失败停止继续调用。真题逐对象生成完成和修复候选均原子保存任务内内容寻址检查点，不替换已接受集合、不自动授权交付。两类出题规范化将已知蓝图对象的非法控制字符正文隔离为失败项，保留其编号与其他结果；共享输入或身份损坏仍阻断。
+- trigger: 正确公式经本地提升后遗留反斜杠、小量级计算相差百倍仍通过、重试丢原始上下文以及单题非法字符导致已生成集合整体无法保存。
+- invariants: 不降低内容/证据/图示采用/Word 门禁，不静默猜测损坏公式含义，不额外调用模型掩盖确定性错误；失败正文不作为有效结果；检查点不是已验收或可下载成果。原子替换失败保留旧指针，任务/阶段/对象隔离，已有用户数据与 API Key 修复不变。
+- do_not_regress: 不得把检查点已接入宣称为部分下载或早分流完成；保留用户确认、蓝图与依赖组整体约束及原有批量调用。后续按 `OUTPUT_DELIVERY_REFACTOR.md` 完成版本失效、题组验收、部分交付与调度，不恢复混合云或旧 Word 引擎。
+- verification: 首轮完整门禁 2049 passed / 3 failed（晶面指数边界及未知命令误判），已修正且相关定向 24 passed；出题/非法字符/保真/检查点/真题复用定向 195 passed；最新检查点及无进展退出定向 11 passed。最终执行锁定 Python 3.11 的 `scripts/run_quality_gates.py --full` 全部通过：2062 passed、16 deselected、分支覆盖率 71%，Ruff、Mypy、编译、版本、公式、第三方声明及完整度检查均通过；新增检查点模块另行 Ruff/Mypy 通过，`git diff --check` 通过。真实付费任务、浏览器下载字节一致性及 Windows 实机验收 pending；未连接用户机、未提交、推送或发布。
+
+### OPT-20260906-01｜Windows API Key 持久化恢复
+- status: verified
+- scope: API Key 首次保存、替换、删除、损坏配置恢复及 Windows 源码质量门禁。
+- changed: POSIX 运行时继续在写入前将临时文件和损坏配置备份限制为仅所有者可读写；不提供 `os.fchmod` 的 Windows 运行时改为继承用户数据目录 ACL，不再因调用 Unix 专用接口而中断原子写入。增加无 `fchmod` 环境下的创建、替换、删除、恢复和 HTTP 保存回归，并让发布候选的 Windows 作业实际运行 Key 持久化测试。
+- trigger: Windows 新用户可使用临时 Key 完成连接测试，但点击保存时后端因 `os.fchmod` 不存在返回 HTTP 500，配置文件没有生成；既有 Windows 作业只验证依赖导入，没有执行该保存链路。
+- invariants: API Key 仍只写入系统用户数据目录，不回显或进入日志/源码包；保存继续使用同目录临时文件、fsync 和原子替换；任何写入失败必须保留旧配置并清理本次临时文件；Unix 的 0600 权限保护不得削弱。
+- do_not_regress: 不得在跨平台路径无条件调用 Unix 专用文件接口；不得通过去掉原子替换、写盘同步或失败回滚换取 Windows 可用；Windows 发布候选不得再只做依赖导入而跳过首次保存、替换、删除和恢复。
+- verification: 锁定 Python 3.11 完整门禁通过：coverage-backed pytest 2048 passed、16 deselected，分支覆盖率 71%，Python 编译、版本一致性、公式、第三方声明、项目完整度、Ruff 和 Mypy 全部通过；无 `fchmod` 环境及发布工作流最终定向回归 30 passed。独立用户数据目录真实启动 0.9.47 源码服务后，首次保存、读取保存状态、替换和删除测试 Key 的 HTTP 请求均返回 200，最终配置计数恢复为 0，服务正常停止；测试响应未回显 Key。未连接用户机、未发起模型请求、未提交、推送或发布。
+
 ### OPT-20260905-18｜按发布状态分级并行质量门禁
 - status: verified
 - scope: 本地日常/完整质量门禁、GitHub main push 与拉取请求、源码发布前 Python/Chromium/macOS/Windows 验证编排。

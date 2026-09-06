@@ -7,7 +7,9 @@ from typing import Any, Callable
 
 from .audit_review_gate import enforce_unattended_audit_report
 from .capabilities.shadow_quality import build_shadow_quality_report
+from .concurrency import ModelRequestAborted
 from .document_contracts import DOCUMENT_CONTRACT_VERSION
+from .exam_unit_delivery import preserve_exam_units
 from .figure_size_audit import audit_docx_figure_sizes
 from .final_acceptance import (
     answer_fragment_blocking_findings,
@@ -213,6 +215,8 @@ def complete_pipeline_delivery(
     mark: Callable[[str, str, Any], None],
     write_json: Callable[[Path, Any], None],
     build_docx_with_repair: Callable[..., dict[str, Any]],
+    image_provider: Any = None,
+    image_model: str = "",
 ) -> dict[str, Any]:
     """Build and audit either a formal deliverable or a labelled review candidate."""
 
@@ -240,6 +244,19 @@ def complete_pipeline_delivery(
     if stale_skip_record.exists():
         write_json(stale_skip_record, skip_decision)
 
+    # Retain validated units before attempting the all-or-nothing assembly.
+    # A partial-delivery diagnostic must not prevent the existing full path.
+    try:
+        units = preserve_exam_units(
+            stage_dir, structured_exam=structured_exam, fragments_json=fragments_json,
+            selection_data=selection_data, checkpoint=lambda: checkpoint(task_id),
+        )
+        mark("unit_delivery", "passed", {"available_count": units["available_count"], "missing_count": len(units["missing"])})
+    except ModelRequestAborted:
+        raise
+    except Exception as exc:
+        mark("unit_delivery", "advisory", {"message": "分题成果保存未完成，继续原整卷交付路径。", "error": str(exc)})
+
     checkpoint(task_id)
     update_task(task_id, current_stage="docx")
     # Construction and intermediate audits use a neutral internal name.  A
@@ -259,8 +276,22 @@ def complete_pipeline_delivery(
         provider=provider,
         model=model,
         use_model=use_model,
+        **({"image_provider": image_provider, "image_model": image_model} if image_provider is not None else {}),
     )
     if docx_result.get("content_changed"):
+        # Re-evaluate changed objects after repair. Old pinned manifests remain
+        # immutable; the latest pointer may now include newly accepted units.
+        try:
+            units = preserve_exam_units(
+                stage_dir, structured_exam=structured_exam, fragments_json=fragments_json,
+                selection_data=selection_data, checkpoint=lambda: checkpoint(task_id),
+            )
+            mark("unit_delivery", "passed", {"available_count": units["available_count"],
+                                            "missing_count": len(units["missing"]), "after_repair": True})
+        except ModelRequestAborted:
+            raise
+        except Exception as exc:
+            mark("unit_delivery", "advisory", {"after_repair": True, "error": str(exc)})
         refreshed_content_quality = docx_result.get("content_quality")
         if isinstance(refreshed_content_quality, dict) and refreshed_content_quality:
             content_quality = refreshed_content_quality

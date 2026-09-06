@@ -7,6 +7,20 @@
 
 ## 1. 总原则
 
+### 2026-09-06 真实验收后的上下文复查
+
+OPT-20260906-10 再次核验下列官方HEAD未变。真实证据发现完整蓝图规划错误复用了细化的顶层数组schema，而消费者读取 blueprint.exercise_plan；现按明确任务阶段选择不同结构，并保留历史顶层布局的无损读取，遇到双版本冲突不自动择一。此为本项目生产者/消费者合同修复，不改变上游或图片工具循环，也不以schema通过代替教学质量。
+
+同日方向校正后再次动态核验两官方仓库远端 HEAD 与本地 origin，提交与下述记录一致。补查发现生题合同、蓝图与生成将用户要求截断为 1000 字，而审查/单题恢复读取另一个版本；统一为 `practice_requirements.practice_user_focus`，在已有上下文中保留完整原文并随蓝图/结果持久化，不增加调用轮数。缺省恢复沿用保存要求，不根据题目反推或编造历史要求。长要求可能增加实际输入 token，仍受现有请求预算约束；这不是完整耐久会话实现，也不证明模型一定遵守要求。
+
+再次动态核验官方远端 HEAD 和本地精确 origin：Codex `https://github.com/openai/codex.git` 默认 main，`ac192cd7937b0d73edc6dffe009940ae53782dd4`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 master，`d347e703908d0406b7a7ef80e3a0e594d86b2215`。读取 Codex `codex-rs/core/src/session/turn.rs` 的输入/工具结果续轮（该文件与前次基线无差异），以及 DeepSeek `packages/core/agent-loop/src/agent.ts` 的 preStep/step/buildRequest：每轮显式组装上下文并使用耐久会话消息。本地缺口是另建语义审查请求时遗漏用户原始要求，不能以生成阶段曾接收要求视为审查也已接收。修复在已有审查调用中携带原要求，不新增长审查链、不恢复独立生图后视觉审查；上游本身不保证教学语义或 Word 交付质量。
+
+本轮追加验证（OPT-20260906-09）：上述相同官方 HEAD 再次核验未变。已有内容审查携带完整来源及最终采用的图片像素，并在每个附件前写明来源/交付身份；不恢复独立图片审核阶段。局部修复与主动换题区分，单题复核显式声明子集范围。服务商前置说明中的花括号不得遮蔽完整终末 JSON；此为本地兼容层的无损解码，不声称来自上游实现，也不放宽 schema 或图片采用校验。真实测试证明可减少一类无效语法重试，但内容质量仍需独立验收。
+
+### 2026-09-06 输出保真与逐对象交付实施基线
+
+本次动态核验官方远端与本地 origin：OpenAI Codex `https://github.com/openai/codex.git`，默认 `main`，HEAD `6af345407d9c2a568da9d01b6c4b81a9e61495c0`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git`，默认 `master`，HEAD `d347e703908d0406b7a7ef80e3a0e594d86b2215`。读取 Codex `codex-rs/core/src/session/turn.rs` 的结果入会话、后续循环与上下文管理，DeepSeek `packages/core/agent-loop/src/agent.ts`、`tool-calls.ts` 的耐久消息与调用结果关联。对应本平台：回修保留原始依据及最新候选，校验版本与错误绑定，逐对象隔离并保留有效成果；不将事件日志本身称为完整 Harness 闭环。教学范围、题组依赖、Word/OMML、部分交付与集合验收是本项目必要扩展。真实付费任务验收由用户后续提供场景，不能以离线测试替代。
+
 接入对象不是只有“服务商”，而是 **服务商通道 + 模型 ID + 协议版本**。同名模型通过官方直连和代理商调用时，必须建立两条独立记录，不能继承另一通道的验证结论。
 
 新增模型的完成标准不是“设置页可选、测试按钮成功”，而是：

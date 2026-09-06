@@ -73,6 +73,14 @@ class StructuredAnswerTokenTests(unittest.TestCase):
                 reusable_fragments={"q1": reused},
             )
             payload = json.loads(output.read_text(encoding="utf-8"))
+            checkpoint_pointers = list(output.parent.glob("output_checkpoints/*/latest.json"))
+            self.assertEqual(2, len(checkpoint_pointers))
+            checkpoints = [json.loads((path.parent / json.loads(path.read_text())["snapshot"]).read_text())
+                           for path in checkpoint_pointers]
+            self.assertEqual({"answer_generation", "word_preflight"}, {row["stage"] for row in checkpoints})
+            checkpoint = next(row for row in checkpoints if row["stage"] == "answer_generation")
+            self.assertEqual("q2", checkpoint["object_id"])
+            self.assertEqual("not_evaluated", checkpoint["delivery_status"])
             drafts_payload = json.loads(
                 (output.parent / "answer_drafts.json").read_text(encoding="utf-8")
             )

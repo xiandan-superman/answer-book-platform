@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -1053,3 +1055,16 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_terminal_json_after_provider_prose_preserves_payload():
+    from app.llm_client import parse_json_content
+    expected = {"exercises": [{"stem": r"$\frac{a}{2}$", "nested": {"value": 3}}]}
+    content = 'Explanation with {not JSON} and example {"example": 1}.\n```json\n' + json.dumps(expected) + '\n```'
+    assert parse_json_content(content) == expected
+
+
+def test_terminal_json_recovery_does_not_accept_malformed_outer_object():
+    from app.llm_client import StructuredOutputError, parse_json_content
+    with pytest.raises(StructuredOutputError):
+        parse_json_content('prefix {"broken":, "nested": {"valid": 1}}')

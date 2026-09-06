@@ -30,6 +30,47 @@ def _sample_data() -> dict:
 
 
 class PracticeExportJobTests(unittest.TestCase):
+    def test_blocked_whole_export_preserves_valid_units_and_cannot_download(self) -> None:
+        data = _sample_data()
+        data["exercises"][0].update(exercise_id="generated_1", plan_item_id="plan_1")
+        data["exercises"].append({
+            "exercise_id": "generated_2", "plan_item_id": "plan_2", "number": 2,
+            "stem": "失败占位题", "generation_status": "failed",
+        })
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
+            practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)
+        ), patch.object(practice_export_jobs, "append_runtime_log"), patch.object(
+            practice_export_jobs, "_queue_automatic_failure_report"
+        ):
+            created = practice_export_jobs.create_or_reuse_practice_export_job(data, "测试.docx")
+            terminal = self._wait_for_terminal_job(created["job_id"])
+            self.assertEqual("failed", terminal["status"])
+            self.assertEqual("blocked", terminal["release_level"])
+            self.assertEqual(1, terminal["unit_delivery"]["available_count"])
+            self.assertTrue(practice_export_jobs.practice_unit_package(
+                created["job_id"], terminal["unit_delivery"]["revision"]
+            ).is_file())
+            with self.assertRaises(ValueError):
+                practice_export_jobs.practice_export_download(created["job_id"])
+            # A persisted old-version completed record must not bypass the gate.
+            record = practice_export_jobs._JOBS[created["job_id"]]
+            record["status"] = "completed"
+            Path(record["cache_path"]).write_bytes(b"old-invalid-whole-document")
+            practice_export_jobs._persist_job(record)
+            with self.assertRaises(ValueError):
+                practice_export_jobs.practice_export_download(created["job_id"], refresh_from_disk=True)
+            retried = practice_export_jobs.retry_practice_export_job(created["job_id"])
+            self.assertEqual("failed", self._wait_for_terminal_job(retried["job_id"])["status"])
+            record = practice_export_jobs._JOBS[created["job_id"]]
+            record["status"] = "running"
+            practice_export_jobs._persist_job(record)
+            practice_export_jobs._JOBS.clear()
+            recovered = practice_export_jobs.recover_practice_export_jobs()
+            self.assertEqual(0, recovered["completed_from_cache"])
+            terminal = self._wait_for_terminal_job(created["job_id"])
+            self.assertEqual("failed", terminal["status"])
+            self.assertEqual(1, terminal["unit_delivery"]["available_count"])
+
     def setUp(self) -> None:
         practice_export_jobs._JOBS.clear()
         practice_export_jobs._ACTIVE.clear()
@@ -64,6 +105,7 @@ class PracticeExportJobTests(unittest.TestCase):
         self.assertTrue(cached["cached"])
         self.assertEqual(PRACTICE_DOCUMENT_CONTRACT_VERSION, cached["document_contract_version"])
         self.assertEqual(created["job_id"], cached["job_id"])
+        self.assertEqual(completed["unit_delivery"], cached["unit_delivery"])
 
     def test_review_candidate_metadata_survives_background_generation_and_cache(self) -> None:
         data = _sample_data()
@@ -104,6 +146,32 @@ class PracticeExportJobTests(unittest.TestCase):
         self.assertEqual("ValueError", internal["diagnostic_context"]["exception_type"])
         self.assertIn("未通过完整性校验", internal["diagnostic_context"]["traceback"])
         self.assertEqual([], cached_files)
+
+    def test_recoverable_latex_marker_is_saved_as_editable_review_candidate(self) -> None:
+        report = {"ok": False, "issues": ["DOCX 可见文本中仍含未渲染的 LaTeX 标记。"]}
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.object(
+            practice_export_jobs, "EXPORT_CACHE_DIR", Path(raw_tmp)
+        ), patch.object(practice_export_jobs, "append_runtime_log"), patch.object(
+            practice_export_jobs, "validate_docx_output", return_value=report
+        ):
+            created = practice_export_jobs.create_or_reuse_practice_export_job(
+                _sample_data(), "候选.docx"
+            )
+            completed = self._wait_for_terminal_job(created["job_id"])
+            download, filename = practice_export_jobs.practice_export_download(created["job_id"])
+            download_exists = download.is_file()
+            practice_export_jobs._JOBS.clear()
+            cached = practice_export_jobs.create_or_reuse_practice_export_job(
+                _sample_data(), "候选.docx"
+            )
+
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual("review_candidate", completed["release_level"])
+        self.assertTrue(any("LaTeX" in issue for issue in completed["warning_issues"]))
+        self.assertTrue(download_exists)
+        self.assertEqual("候选-待复核.docx", filename)
+        self.assertTrue(cached["cached"])
+        self.assertEqual("review_candidate", cached["release_level"])
 
     def test_failed_export_can_retry_from_server_snapshot_without_browser_content(self) -> None:
         original_build = practice_export_jobs.build_practice_question_docx

@@ -82,7 +82,6 @@ def _request(blueprint: dict | None = None) -> dict:
         "plan": {"source_mode": "knowledge", "blueprint": blueprint},
         "practice_batch_id": "original_batch",
         "blueprint_review_enabled": False,
-        "semantic_review_enabled": False,
         "generation_batch_size": 3,
         "generation_concurrency": 1,
         "generation_transport_attempts": 1,

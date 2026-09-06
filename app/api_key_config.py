@@ -57,6 +57,19 @@ class ApiKeyConfigUnavailable(RuntimeError):
         self.recovery_allowed = recovery_allowed
 
 
+def _restrict_file_descriptor_to_owner(descriptor: int) -> None:
+    """Apply POSIX owner-only permissions when the runtime supports them.
+
+    Windows does not expose ``os.fchmod``. Files created in the per-user data
+    directory inherit that directory's Windows ACL, so the portable write path
+    must not fail merely because POSIX mode bits are unavailable.
+    """
+
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is not None:
+        fchmod(descriptor, 0o600)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -90,7 +103,7 @@ def _copy_private_backup(source: Path) -> Path:
         if not stat.S_ISREG(os.fstat(source_fd).st_mode):
             raise ApiKeyConfigUnavailable(ApiKeyConfigUnavailable.public_message)
         target_fd = os.open(backup, target_flags, 0o600)
-        os.fchmod(target_fd, 0o600)
+        _restrict_file_descriptor_to_owner(target_fd)
         while True:
             chunk = os.read(source_fd, 64 * 1024)
             if not chunk:
@@ -149,7 +162,7 @@ def _write_payload(path: Path, keys: dict[str, str]) -> None:
     )
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o600)
+        _restrict_file_descriptor_to_owner(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             descriptor = -1
             handle.write(content)

@@ -1,167 +1,56 @@
+"""Word-specific localization, shared candidate/context/repair execution."""
 from __future__ import annotations
 
-import copy
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
-from .answer_generation import attach_program_evidence_block, evidence_for_answer_generation, fragment_from_analysis_draft
-from .concurrency import model_request_slot, run_limited_concurrent
-from .formula_audit import audit_text_segments_no_formula, formula_like_matches
-from .image_orchestration import ensure_generation_image_label_language_requirement
-from .llm_client import OpenAICompatibleClient
-from .prompt_registry import prompt_contract
+from .audit_model_repair import _repair_prompt as audit_repair_prompt
+from .audit_model_repair import repair_fragments_with_model_for_audit
+from .formula_audit import formula_like_matches
 from .retrieval import EvidenceCandidate
-from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
-from .v4_schema import validate_v4_answer_fragment
+from .settings import ProviderConfig
 
 
 def docx_model_repair_worker_count() -> int:
-    raw = os.environ.get("DOCX_MODEL_REPAIR_MAX_WORKERS", "4")
     try:
-        return max(1, min(6, int(raw)))
+        return max(1, min(6, int(os.environ.get("DOCX_MODEL_REPAIR_MAX_WORKERS", "4"))))
     except ValueError:
         return 4
 
 
-def _qid(value: dict[str, Any]) -> str:
-    return str(value.get("question_id") or "").strip()
-
-
-def _selection_map(selection_data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    if not selection_data:
-        return {}
-    if isinstance(selection_data.get("selections"), list):
-        return {
-            _qid(selection): selection
-            for selection in selection_data.get("selections", [])
-            if isinstance(selection, dict) and _qid(selection)
-        }
-    return {
-        str(key).strip(): value
-        for key, value in selection_data.items()
-        if str(key).strip() and isinstance(value, dict)
-    }
-
-
 def _collect_docx_formula_findings(fragments: list[dict[str, Any]], docx_issues: list[str]) -> list[dict[str, Any]]:
-    issue_text = "\n".join(str(issue) for issue in docx_issues)
-    findings: list[dict[str, Any]] = []
+    issue_text = "\n".join(docx_issues)
+    findings = []
     for fragment in fragments:
-        qid = _qid(fragment)
         for block_index, block in enumerate(fragment.get("blocks", [])):
-            label = str(block.get("label") or "")
-            if label == "教材依据":
+            if block.get("label") == "教材依据":
                 continue
             for segment_index, segment in enumerate(block.get("segments", [])):
-                if not isinstance(segment, dict) or segment.get("type") != "text":
+                if segment.get("type") != "text":
                     continue
                 text = str(segment.get("text") or "")
                 matches = formula_like_matches(text, include_chinese_paraphrase=True)
-                if not matches:
-                    continue
-                directly_reported = any(match in issue_text or text[:80] in issue_text for match in matches)
-                findings.append(
-                    {
-                        "question_id": qid,
-                        "block_label": label,
-                        "block_index": block_index,
-                        "segment_index": segment_index,
-                        "text": text,
-                        "matches": matches[:5],
-                        "directly_reported": directly_reported,
-                    }
-                )
-    findings.sort(key=lambda item: (not item.get("directly_reported"), str(item.get("question_id"))))
-    return findings
+                if matches:
+                    findings.append({
+                        "question_id": str(fragment.get("question_id") or ""),
+                        "code": "docx_formula_content", "message": text,
+                        "block_index": block_index, "segment_index": segment_index,
+                        "matches": matches,
+                        "document_diagnostics": list(docx_issues),
+                        "directly_reported": any(match in issue_text or text[:80] in issue_text for match in matches),
+                    })
+    return sorted(findings, key=lambda item: (not item["directly_reported"], item["question_id"]))
 
 
-def _compact_fragment_for_prompt(fragment: dict[str, Any]) -> dict[str, Any]:
-    value = copy.deepcopy(fragment)
-    for key in ("_review_candidate_fragment", "_meta", "_draft", "evidence_ids"):
-        value.pop(key, None)
-    blocks = []
-    for block in value.get("blocks", []) or []:
-        if not isinstance(block, dict):
-            continue
-        if str(block.get("label") or "").strip() == "教材依据":
-            continue
-        blocks.append(block)
-    value["blocks"] = blocks
-    return value
-
-
-def _repair_prompt(
-    question: dict[str, Any],
-    evidence: list[dict[str, Any]],
-    fragment: dict[str, Any],
-    findings: list[dict[str, Any]],
-    docx_issues: list[str],
-    *,
-    include_textbook_evidence: bool = True,
-) -> list[dict[str, str]]:
-    messages = [
-        {
-            "role": "system",
-            "content": "你是真题解析平台的单题结构化修复器。只能返回 JSON，不要返回 Markdown。",
-        },
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "task": "repair_one_answer_draft_after_docx_audit_failed",
-                    "failure_stage": "docx",
-                    "docx_issues": docx_issues[:10],
-                    "question": question,
-                    "confirmed_evidence": evidence[:20],
-                    "current_fragment": _compact_fragment_for_prompt(fragment),
-                    "offending_segments": findings[:10],
-                    "output_schema": {
-                        "schema_version": "answer_book.answer_draft.v1",
-                        "question_id": _qid(question),
-                        "answer": "答案。计算题可写最终答案摘要；若含公式，公式也必须进入 formulas。",
-                        "analysis": "解析思路。计算题不要堆完整计算过程。",
-                        "analysis_segments": "非计算题使用；公式必须用 {f1} 等占位符真正融入句子。",
-                        "answer_units": [{"number": "多小问题必填的原始编号", "question_type": "确认题型", "answer": "该小问结论", "analysis_segments": [], "steps": []}],
-                        "steps": "计算题必须逐步写。text 只写本步目标；不要在 text 中写 {f1}。每步用 relation_formula_indices / substitution_formula_indices / result_formula_indices 引用 formulas。",
-                        "formulas": [{"latex": "公式 LaTeX", "role": "relation|substitution|result|definition", "meaning": "用途"}],
-                        "figure_specs": [],
-                        "mistake_notes": [],
-                        "uncertainties": [],
-                    },
-                    "hard_rules": [
-                        "只修复当前这一题，不要改变题号、题型和教材依据含义。",
-                        "题目有多个作答单元时，必须返回 answer_units，并为每个原始小问编号返回一个独立对象；答案、解析和步骤只能放入所属小问，不能混写在顶层字段。",
-                        "current_fragment 已移除程序生成的教材依据块；不要输出教材依据、页码、课本-p、evidence_id 或引用格式。",
-                        "不得把公式、判据、等量关系、比例关系、反应式或中文公式化表达写成普通正文。",
-                        "出现“等于、正比于、乘积、差值、为零、大于零、小于零”等公式语义时，必须改成 formulas 中的公式，并在步骤或 analysis_segments 中引用。",
-                        "计算题必须保留循序渐进的解题步骤：先说明本步目的，再给关系式、带入数值和求得结果，不能只罗列公式。",
-                        "计算题 step.text 只写本步要计算什么和依据什么，不能写 {f1}、公式正文、代入式或结果式；公式统一放入 formulas 并通过索引字段引用。",
-                        "计算题不得丢失代入数据、单位和最终结果。",
-                        "不得在 第(2)问、第2小问、第3步 这类中文序号标签中间插入换行。",
-                        "非计算题如需公式，必须在 analysis_segments.text 中用 {f1} 这类占位符把公式自然嵌入解析句子，不要集中罗列公式。",
-                        "Return exactly one valid JSON object.",
-                    ],
-                },
-                ensure_ascii=False,
-            ),
-        },
-    ]
-    if not include_textbook_evidence:
-        messages[0]["content"] = "你是题目解析平台的单题结构化修复器。不得使用教材依据；只能返回 JSON，不要返回 Markdown。"
-        payload = json.loads(messages[1]["content"])
-        payload["analysis_profile"] = "question_only"
-        payload["confirmed_evidence"] = []
-        payload["hard_rules"] = [
-            str(rule)
-            .replace("不要改变题号、题型和教材依据含义", "不要改变题号、题型和原题含义")
-            .replace("current_fragment 已移除程序生成的教材依据块；", "")
-            for rule in payload.get("hard_rules", [])
-        ]
-        messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
-    return ensure_generation_image_label_language_requirement(messages)
+def _repair_prompt(question, evidence, fragment, findings, docx_issues, *, include_textbook_evidence=True):
+    """Compatibility entry; there is no separate Word prompt implementation."""
+    return audit_repair_prompt(
+        audit_stage="docx", question=question, evidence=evidence, fragment=fragment,
+        issues=[*findings, *({"message": issue} for issue in docx_issues)],
+        include_textbook_evidence=include_textbook_evidence,
+    )
 
 
 def repair_fragments_with_model_for_docx(
@@ -176,126 +65,20 @@ def repair_fragments_with_model_for_docx(
     client: Any | None = None,
     backup_path: Path | None = None,
     max_repairs: int = 3,
+    image_provider: ProviderConfig | None = None,
+    image_model: str = "",
 ) -> dict[str, Any]:
     data = json.loads(fragments_json.read_text(encoding="utf-8"))
-    original = copy.deepcopy(data)
-    fragments = [fragment for fragment in data.get("fragments", []) if isinstance(fragment, dict)]
-    findings = _collect_docx_formula_findings(fragments, docx_issues)
+    findings = _collect_docx_formula_findings(data.get("fragments", []), docx_issues)
     if not findings:
-        return {"ok": False, "changed": False, "repaired_count": 0, "repaired_question_ids": [], "issues": ["未定位到可交给模型修复的公式化正文片段。"]}
-
-    questions = {
-        _qid(question): question
-        for question in structured_exam.get("items", [])
-        if isinstance(question, dict) and _qid(question)
-    }
-    selections = _selection_map(selection_data)
-    include_textbook_evidence = str((selection_data or {}).get("analysis_profile") or "") != "question_only"
-    grouped_findings: dict[str, list[dict[str, Any]]] = {}
-    for finding in findings:
-        qid = str(finding.get("question_id") or "").strip()
-        if qid and qid not in grouped_findings:
-            grouped_findings[qid] = []
-        if qid:
-            grouped_findings[qid].append(finding)
-
-    repaired_qids: list[str] = []
-    repair_issues: list[dict[str, Any]] = []
-    fragments_by_qid = {_qid(fragment): fragment for fragment in fragments if _qid(fragment)}
-
-    target_rows = list(grouped_findings.items())[: max(1, max_repairs)]
-    max_workers = 1 if client is not None else docx_model_repair_worker_count()
-
-    def repair_one(target: tuple[str, list[dict[str, Any]]]) -> tuple[str, dict[str, Any] | None, list[str]]:
-        qid, q_findings = target
-        question = questions.get(qid)
-        fragment = fragments_by_qid.get(qid)
-        if not question or not fragment:
-            return qid, None, ["缺少题目结构或原 fragment，无法模型修复。"]
-        evidence_selection = selections.get(qid)
-        evidence = evidence_for_answer_generation(candidates, qid, evidence_selection)
-        messages = _repair_prompt(
-            question,
-            evidence,
-            fragment,
-            q_findings,
-            docx_issues,
-            include_textbook_evidence=include_textbook_evidence,
-        )
-        try:
-            repair_client = client or OpenAICompatibleClient(provider)
-            with prompt_contract("exam.answer_docx_repair"):
-                with model_request_slot(provider):
-                    draft = repair_client.chat_json_object(
-                        messages,
-                        model=model,
-                        max_tokens=max(int(provider.max_tokens or DEFAULT_MODEL_MAX_TOKENS), DEFAULT_MODEL_MAX_TOKENS),
-                        task_stage="format_repair",
-                        item_ids=[qid],
-                        enforce_context_budget=True,
-                    )
-            repaired = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
-            attach_program_evidence_block(repaired, evidence, evidence_selection)
-            syntax_issues = validate_v4_answer_fragment(repaired)
-            formula_leaks = audit_text_segments_no_formula(repaired.get("blocks", []), ignored_block_labels={"教材依据"}, include_chinese_paraphrase=True)
-            if syntax_issues or formula_leaks:
-                return qid, None, syntax_issues + formula_leaks[:10]
-            meta = dict(repaired.get("_meta") or {})
-            retry_report = getattr(repair_client, "last_json_retry_report", {})
-            meta.update(
-                {
-                    "provider": provider.name,
-                    "model": model,
-                    "recovered_by": "docx_model_repair",
-                    "docx_repair_findings": q_findings[:10],
-                    "llm_retry": retry_report,
-                }
-            )
-            repaired["_meta"] = meta
-        except Exception as exc:
-            return qid, None, [str(exc)]
-        return qid, repaired, []
-
-    repair_results = run_limited_concurrent(target_rows, repair_one, max_workers=max_workers)
-    for qid, repaired, issues in repair_results:
-        if issues:
-            repair_issues.append({"question_id": qid, "issues": issues})
-            continue
-        if repaired is None:
-            continue
-        for index, current in enumerate(fragments):
-            if _qid(current) == qid:
-                fragments[index] = repaired
-                repaired_qids.append(qid)
-                break
-
-    changed = bool(repaired_qids)
-    report = {
-        "ok": changed and not repair_issues,
-        "changed": changed,
-        "repaired_count": len(repaired_qids),
-        "repaired_question_ids": repaired_qids,
-        "issue_count": len(repair_issues),
-        "issues": repair_issues[:30],
-        "findings": findings[:30],
-        "concurrency": {
-            "max_workers": min(max_workers, len(target_rows)) if target_rows else 1,
-            "parallel_enabled": max_workers > 1 and len(target_rows) > 1,
-        },
-    }
-    if not changed:
-        return report
-
-    if backup_path:
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(fragments_json, backup_path)
-        report["backup"] = str(backup_path)
-    data["fragments"] = fragments
-    data.setdefault("recovery_events", []).extend(
-        {"question_id": qid, "strategy": "docx_model_repair", "issues": docx_issues[:5]}
-        for qid in repaired_qids
+        return {"ok": False, "changed": False, "repaired_count": 0, "repaired_question_ids": [],
+                "issues": ["未定位到可交给模型修复的公式化正文片段。"]}
+    report = repair_fragments_with_model_for_audit(
+        fragments_json, structured_exam, candidates, selection_data=selection_data,
+        provider=provider, model=model, audit_stage="docx", audit_report={"issues": findings},
+        client=client, backup_path=backup_path, max_repairs=max_repairs,
+        image_provider=image_provider, image_model=image_model,
+        worker_limit=docx_model_repair_worker_count(),
     )
-    data["recovered_count"] = int(data.get("recovered_count", 0)) + len(repaired_qids)
-    fragments_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    report["original_preserved"] = original != data
+    report["findings"] = findings
     return report

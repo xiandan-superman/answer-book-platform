@@ -20,7 +20,7 @@ class PracticeExportGateTests(unittest.TestCase):
         report = validate_practice_export({
             "quality": {"status": "passed"},
             "semantic_review": {"status": "disabled", "triggered": False, "items": []},
-            "exercises": [{"number": 1, "stem": "说明晶格常数的物理意义。", "generation_status": "completed"}],
+            "exercises": [{"number": 1, "stem": "说明晶格常数的物理意义。", "generation_status": "completed", "answerability_check_status": "reported", "knowledge_points": ["晶格常数"]}],
         })
 
         self.assertTrue(report["ok"])
@@ -64,6 +64,8 @@ class PracticeExportGateTests(unittest.TestCase):
                 "question_type": "填空题",
                 "stem": r"物种数 $S=________$，独立反应数 $R'=____$。",
                 "generation_status": "completed",
+                "answerability_check_status": "reported",
+                "knowledge_points": ["反应计量"],
             }],
         }
 
@@ -232,6 +234,15 @@ class PracticeExportGateTests(unittest.TestCase):
         self.assertFalse(has_unrenderable_practice_markup(normalized))
         self.assertEqual(audit_practice_export_data({"exercises": [{"stem": normalized}]}), [])
 
+    def test_closes_unambiguous_percent_math_without_rewrapping_later_inline_latex(self):
+        source = r"质量分数 $W = \frac{2E}{ME} \times 100\%。随后在 $L \rightarrow \text{固相}$ 阶段比较组织。"
+
+        normalized = normalize_practice_markup(source)
+
+        assert normalized == r"质量分数 $W = \frac{2E}{ME} \times 100\%$。随后在 $L \rightarrow \text{固相}$ 阶段比较组织。"
+        assert normalized.count("$L \\rightarrow \\text{固相}$") == 1
+        assert not has_unrenderable_practice_markup(normalized)
+
     def test_control_characters_inside_math_are_not_exportable(self):
         self.assertTrue(has_unrenderable_practice_markup("$\beta$"))
         self.assertTrue(has_unrenderable_practice_markup("$\frac{1}{2}$"))
@@ -381,8 +392,8 @@ class PracticeExportGateTests(unittest.TestCase):
             "history_id": "practice_demo",
             "quality": {"blocking_issues": ["未选择题目的旧问题。"]},
             "exercises": [
-                {"plan_item_id": "p1", "number": 1, "stem": "解释理想气体状态方程的适用条件。", "generation_status": "completed"},
-                {"plan_item_id": "p2", "number": 2, "stem": "说明角速度与线速度之间的关系。", "generation_status": "completed"},
+                {"plan_item_id": "p1", "number": 1, "stem": "解释理想气体状态方程的适用条件。", "generation_status": "completed", "answerability_check_status": "reported", "knowledge_points": ["理想气体"]},
+                {"plan_item_id": "p2", "number": 2, "stem": "说明角速度与线速度之间的关系。", "generation_status": "completed", "answerability_check_status": "reported", "knowledge_points": ["角速度"]},
                 {"plan_item_id": "p3", "number": 3, "stem": "失败占位。", "generation_status": "failed"},
             ],
         }
@@ -398,15 +409,12 @@ class PracticeExportGateTests(unittest.TestCase):
         self.assertEqual("formal", report["release_level"])
 
     def test_empty_selected_export_is_blocked(self):
-        from app.practice_export import validate_practice_export
-
-        resolved = resolve_practice_export_payload(
-            {"export_scope": "selected", "selected_exercise_ids": ["missing"]},
-            {"exercises": [{"plan_item_id": "p1", "stem": "第一题。"}]},
-        )
-
-        self.assertFalse(validate_practice_export(resolved)["ok"])
-        self.assertIn("没有可导出的题目。", validate_practice_export(resolved)["blocking_issues"])
+        for selected in (["missing"], ["p1", "missing"]):
+            with self.assertRaisesRegex(ValueError, "所选题目已不存在"):
+                resolve_practice_export_payload(
+                    {"export_scope": "selected", "selected_exercise_ids": selected},
+                    {"exercises": [{"plan_item_id": "p1", "stem": "第一题。"}]},
+                )
 
 
 if __name__ == "__main__":

@@ -1,19 +1,18 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.47",
+  "version": "0.9.48",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.47",
+  "source_revision": "release-v0.9.48",
   "build_kind": "stable-source-release",
-  "created_at": "2026-09-05T20:34:08+08:00",
+  "created_at": "2026-09-06T23:30:00+08:00",
   "validation": {
-    "pytest": "Locked Python 3.11 full gate passed: 2045 tests, 16 configured deselections, zero skips; 71 percent branch coverage.",
-    "platform_quality_gate": "Local compilation, version consistency, coverage-backed full pytest, formula conversion, third-party notices, project completeness, Ruff and Mypy passed. Source package reverse verification and isolated startup are required before push.",
-    "version_consistency": "passed",
-    "saved_real_task_replay": "The affected Windows task evidence was diagnosed without rerunning paid stages. MinerU inline markup and per-item score inference now have deterministic regression coverage.",
-    "cross_subject_regressions": "Request-scoped structured output, exam analysis, both practice modes, history recovery, task cleanup, Word/PDF delivery and source-launch dependency progress are covered by local automated regressions. No new native Windows or Microsoft Word visual run was performed for this patch.",
-    "paid_model_regression": "No paid model call is required by the release gate. GPT-6 Astra capability evidence comes from the separately recorded live probe; release verification does not repeat it.",
-    "cost_model_routing": "Structured correction remains bounded to one same-provider, same-model, same-protocol retry and is charged to existing budgets. Chat-compatible schema prompts add input tokens; no hidden route switch is introduced.",
+    "release_readiness": "Locked Python 3.11 full gate passed: 2197 passed, 17 deselected, total coverage 72%. Isolated browser E2E passed: 17 passed. The staged 0.9.48 source ZIP passed secret scanning, package verification and isolated startup/version/homepage checks.",
+    "real_task_scope": "Release evidence keeps completed and review-candidate states distinct. A normal 2018 high-physics task reached completed_with_issues with delivery_ready review-candidate output and an HTTP 200 DOCX download; historic failed records remain failed unless their own application download chain is restored.",
+    "paid_model_regression": "No new paid model call is required by release verification; existing bounded live evidence and deterministic replay remain separately recorded.",
+    "staged_secret_scan": "98 staged files scanned; no private-key, API-key, bearer-token or credential-assignment pattern matched.",
+    "source_package": "403 files; 15086330 bytes; SHA-256 ba15bce25e3e14d269ec33bacf6bb1f0f83bc7a0574cbed5c52dc956aa0f47d2; package verifier passed with zero issues.",
+    "isolated_startup": "Extracted source ZIP started with an isolated data directory; /api/version reported 0.9.48 with matching package manifest and the homepage returned successfully.",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }
