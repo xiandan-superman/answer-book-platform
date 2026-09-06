@@ -11,7 +11,7 @@
     "real_task_scope": "Release evidence keeps completed and review-candidate states distinct. A normal 2018 high-physics task reached completed_with_issues with delivery_ready review-candidate output and an HTTP 200 DOCX download; historic failed records remain failed unless their own application download chain is restored.",
     "paid_model_regression": "No new paid model call is required by release verification; existing bounded live evidence and deterministic replay remain separately recorded.",
     "staged_secret_scan": "98 staged files scanned; no private-key, API-key, bearer-token or credential-assignment pattern matched.",
-    "source_package": "403 files; 15086330 bytes; SHA-256 ba15bce25e3e14d269ec33bacf6bb1f0f83bc7a0574cbed5c52dc956aa0f47d2; package verifier passed with zero issues.",
+    "source_package": "403 files; 15086741 bytes; SHA-256 dd66e1b14164bfe8b05a8e5d6ceca32d047cf57c182986d0d1121cf6aa7bf113; package verifier passed with zero issues.",
     "isolated_startup": "Extracted source ZIP started with an isolated data directory; /api/version reported 0.9.48 with matching package manifest and the homepage returned successfully.",
     "local_credentials_included": false,
     "runtime_user_data_included": false

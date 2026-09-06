@@ -32,6 +32,12 @@ def _isolated_config(tmp_path: Path):
     )
 
 
+def _assert_posix_private_mode(path: Path) -> None:
+    """Validate POSIX mode bits only where the platform exposes them."""
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def _request(httpd: ThreadingHTTPServer, path: str) -> tuple[int, dict]:
     host = str(httpd.server_address[0])
     port = int(httpd.server_address[1])
@@ -290,7 +296,7 @@ def test_damaged_configuration_is_backed_up_privately_and_rebuilt(tmp_path: Path
     assert result == {"recovered": True, "already_recovered": False, "backup_created": True, "configured_count": 0}
     assert len(backups) == 1
     assert hashlib.sha256(backups[0].read_bytes()).digest() == original_digest
-    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+    _assert_posix_private_mode(backups[0])
     assert json.loads(key_file.read_text(encoding="utf-8"))["keys"] == {
         name: "" for name in sorted(api_key_config.ALLOWED_API_KEY_NAMES)
     }
@@ -331,7 +337,7 @@ def test_recovery_write_failure_preserves_original_and_private_backup(tmp_path: 
     assert error.value.recovery_allowed is False
     assert hashlib.sha256(key_file.read_bytes()).digest() == original_digest
     assert len(backups) == 1
-    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+    _assert_posix_private_mode(backups[0])
 
 
 def test_recovery_backup_failure_preserves_original_without_partial_backup(tmp_path: Path) -> None:

@@ -32,6 +32,16 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260906-23｜按平台验证受损密钥备份权限
+
+- status: verified
+- scope: Windows 与 POSIX 的本地 API Key 损坏恢复回归测试。
+- changed: 将受损配置备份的 `0600` 位检查限定到公开该 POSIX 表示的平台；Windows 继续验证备份完整性、固定路径、原文件保留和恢复结果。
+- trigger: 云端 Windows 3.11 使用 NTFS ACL，`stat` 显示的兼容模式为 `0666`，不能表达实际 per-user ACL；此前两个 POSIX 位断言错误地使 Windows 源码依赖门失败。
+- invariants: 不改变 API Key 写入、备份、原子替换、ACL 继承或恢复流程；所有平台继续验证备份内容和失败时原文件不被覆盖。
+- do_not_regress: 不得把 Windows ACL 等同于 POSIX 位，也不得删除任何备份完整性或恢复失败保全断言。
+- verification: Python 3.11 定向 `pytest -q tests/test_local_config.py tests/test_api_key_config_concurrency.py` 22 passed，Ruff 通过；完整 `scripts/run_quality_gates.py --full` 通过（2197 passed，17 deselected，覆盖率 72%）。云端失败日志确认 Windows 的失败仅为 NTFS 上不可表示的 POSIX 位断言。
+
 ### OPT-20260906-22｜以展示版本校验单题编辑并发令牌
 
 - status: verified
