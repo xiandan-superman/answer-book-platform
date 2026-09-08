@@ -2,7 +2,7 @@
 
 > 文档日期：2026-08-17  
 > 状态：待用户确认，尚未开始任何 A/B 测试  
-> 项目目录：`/Users/ljj/Documents/分析多模态问题/answer_book_platform_v1_v6.8_material_figure_schema_flow_standalone`
+> 项目目录：`/Users/ljj/Documents/分析多模态问题/answer-book-platform`
 
 ## 1. 测试目标
 

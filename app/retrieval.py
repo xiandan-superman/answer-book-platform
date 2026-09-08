@@ -47,9 +47,15 @@ CATALOG_LINE_RE = re.compile(r"(?:章|§\s*\d|第[一二三四五六七八九十
 LEADER_DOT_RE = re.compile(r"(?:…{2,}|\.{3,}|……)")
 TABLE_TAG_RE = re.compile(r"</?(table|tr|td|th)\b", re.IGNORECASE)
 NON_EVIDENCE_BLOCK_TYPES = {"page_number", "page-num", "page_num", "page"}
-RETRIEVAL_CONTEXT_POLICY_VERSION = "answer_book.retrieval_context.v3"
+RETRIEVAL_CONTEXT_POLICY_VERSION = "answer_book.retrieval_context.v4"
 TABLE_QUERY_RE = re.compile(r"(表|表格|数据|数值|参数|比较|对照|列出|计算|查表|性能|成分|波长|电压|温度)")
 FIGURE_QUERY_RE = re.compile(r"(图|图示|曲线|示意|坐标|图像|谱)")
+SEMANTIC_SCOPE_FAMILIES = (
+    ("一元", "二元", "三元", "四元"),
+    ("一组元", "二组元", "三组元", "四组元"),
+    ("一维", "二维", "三维"),
+)
+SEMANTIC_SCOPE_CONFLICT_PENALTY = 48.0
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -231,6 +237,74 @@ def source_type_score_bonus(query: str, row: dict[str, str]) -> float:
     return 0.0
 
 
+def semantic_scope_conflict_penalty(query: str, row_text: str) -> float:
+    """Penalize explicit scope contradictions without banning transferable evidence.
+
+    Broad lexical matches such as ``三相`` previously allowed ternary/four-phase
+    chapters to crowd binary/three-phase candidates out of a small top-k.  A
+    penalty keeps those rows available for model review while reserving the
+    first candidate slots for material with the requested dimensional scope.
+    """
+
+    compact_query = re.sub(r"\s+", "", clean_text(query))
+    compact_text = re.sub(r"\s+", "", clean_text(row_text))
+    penalty = 0.0
+    for family in SEMANTIC_SCOPE_FAMILIES:
+        requested = [term for term in family if term in compact_query]
+        if len(requested) != 1:
+            continue
+        requested_count = compact_text.count(requested[0])
+        conflicting_count = sum(compact_text.count(term) for term in family if term != requested[0])
+        if conflicting_count and (requested_count == 0 or conflicting_count > requested_count):
+            penalty += SEMANTIC_SCOPE_CONFLICT_PENALTY
+    return penalty
+
+
+def _diverse_scored_rows(
+    scored: list[tuple[float, dict[str, str], str]],
+    top_k: int,
+    page_lookup: dict[tuple[str, str, str], dict[str, str]],
+) -> list[tuple[float, dict[str, str], str]]:
+    """Prefer distinct verified pages before filling remaining top-k slots."""
+
+    selected: list[tuple[float, dict[str, str], str]] = []
+    deferred: list[tuple[float, dict[str, str], str]] = []
+    seen_pages: set[tuple[str, str, str]] = set()
+    for item in scored:
+        _score, row, _text = item
+        page = page_lookup.get(_page_identity(row), {})
+        page_key = (
+            str(page.get("citation_textbook") or row.get("textbook") or ""),
+            str(row.get("source_file") or ""),
+            str(page.get("printed_page") or row.get("page_idx") or ""),
+        )
+        if page_key in seen_pages:
+            deferred.append(item)
+            continue
+        selected.append(item)
+        seen_pages.add(page_key)
+        if len(selected) >= top_k:
+            return selected
+    if len(selected) < top_k:
+        selected.extend(deferred[: top_k - len(selected)])
+    return selected
+
+
+def _semantic_scope_context(row: dict[str, str], row_text: str, page_rows: list[dict[str, str]]) -> str:
+    """Add bounded same-page prose so isolated blocks retain semantic scope."""
+
+    parts = [row_text, str(row.get("chapter_section") or ""), str(row.get("caption") or "")]
+    for other in page_rows:
+        if other is row:
+            continue
+        text = retrieval_text_for_row(other)
+        if text:
+            parts.append(text[:700])
+        if sum(len(part) for part in parts) >= 2800:
+            break
+    return clean_text(" ".join(parts))[:3200]
+
+
 def planned_formulas_for_query(query: str, knowledge_plan: dict[str, Any] | None) -> list[str]:
     """Find planned formulas explicitly associated with a knowledge-point query."""
     if not knowledge_plan:
@@ -350,11 +424,15 @@ def build_candidates(
 ) -> list[EvidenceCandidate]:
     blocks = read_csv(blocks_csv)
     page_lookup = build_page_lookup(page_map_csv)
-    retrieval_texts = [retrieval_text_for_row(row) for row in blocks]
-    text_scorer = CorpusTextScorer(retrieval_texts)
     rows_by_page: dict[tuple[str, str, str], list[dict[str, str]]] = {}
     for row in blocks:
         rows_by_page.setdefault(_page_identity(row), []).append(row)
+    retrieval_texts = [retrieval_text_for_row(row) for row in blocks]
+    semantic_scope_texts = [
+        _semantic_scope_context(row, text, rows_by_page.get(_page_identity(row), []))
+        for row, text in zip(blocks, retrieval_texts, strict=True)
+    ]
+    text_scorer = CorpusTextScorer(retrieval_texts)
     candidates: list[EvidenceCandidate] = []
     fields = [
         "evidence_id",
@@ -407,6 +485,7 @@ def build_candidates(
                 if clean_text("".join(q_tokens)) in clean_text(row_text):
                     score += 8.0
                 score += source_type_score_bonus(query, row)
+                score -= semantic_scope_conflict_penalty(query, semantic_scope_texts[row_index])
                 if score <= 0:
                     continue
                 row_key = (*_page_identity(row), row.get("block_index", ""))
@@ -419,10 +498,16 @@ def build_candidates(
                         (formula_match_score(formula, row_text, context=query) for formula in planned_formulas),
                         default=0.0,
                     )
-                    if formula_score > 0:
+                    # An algebraically identical reaction in a different
+                    # component/phase scope is not an exact evidence match.
+                    # Keep it in lexical ranking, but do not reserve one of
+                    # the formula slots ahead of scope-compatible pages.
+                    formula_scope = semantic_scope_texts[row_index]
+                    if formula_score > 0 and semantic_scope_conflict_penalty(query, formula_scope) == 0:
                         formula_scored.append((formula_score, row, row_text))
             scored.sort(key=lambda x: x[0], reverse=True)
             formula_scored.sort(key=lambda x: x[0], reverse=True)
+            diverse_scored = _diverse_scored_rows(scored, top_k, page_lookup)
             selected_rows: list[tuple[float, dict[str, str], str]] = []
             selected_keys: set[tuple[str, str, str, str]] = set()
             # Preserve exact/equivalent planned formulas even if lexical ranking is poor.
@@ -430,7 +515,7 @@ def build_candidates(
                 key = (*_page_identity(row), row.get("block_index", ""))
                 selected_rows.append((score, row, row_text))
                 selected_keys.add(key)
-            for score, row, row_text in scored[:top_k]:
+            for score, row, row_text in diverse_scored:
                 key = (*_page_identity(row), row.get("block_index", ""))
                 if key not in selected_keys:
                     selected_rows.append((score, row, row_text))

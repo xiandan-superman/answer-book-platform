@@ -32,6 +32,10 @@ class TaskRecord:
     selected_textbooks: list[str] | None = None
     textbook_display_names: dict[str, str] | None = None
     model_thinking: str = "auto"
+    reasoning_thinking: str = ""
+    answer_thinking: str = ""
+    reasoning_protocol: str = ""
+    answer_protocol: str = ""
     reasoning_provider: str = ""
     reasoning_model: str = ""
     answer_provider: str = ""
@@ -93,6 +97,10 @@ def create_task(
     provider: str,
     model: str,
     model_thinking: str = "auto",
+    reasoning_thinking: str = "",
+    answer_thinking: str = "",
+    reasoning_protocol: str = "",
+    answer_protocol: str = "",
     reasoning_provider: str = "",
     reasoning_model: str = "",
     answer_provider: str = "",
@@ -116,6 +124,10 @@ def create_task(
         provider=provider,
         model=model,
         model_thinking=model_thinking,
+        reasoning_thinking=reasoning_thinking or model_thinking,
+        answer_thinking=answer_thinking or model_thinking,
+        reasoning_protocol=reasoning_protocol,
+        answer_protocol=answer_protocol,
         reasoning_provider=reasoning_provider,
         reasoning_model=reasoning_model,
         answer_provider=answer_provider,
@@ -170,6 +182,10 @@ def load_task(task_id: str) -> TaskRecord:
     with _STORE_LOCK:
         data = json.loads(task_record_path(task_id).read_text(encoding="utf-8"))
     data.setdefault("reasoning_provider", "")
+    data.setdefault("reasoning_thinking", data.get("model_thinking", "auto"))
+    data.setdefault("answer_thinking", data.get("model_thinking", "auto"))
+    data.setdefault("reasoning_protocol", "")
+    data.setdefault("answer_protocol", "")
     data.setdefault("reasoning_model", "")
     data.setdefault("answer_provider", "")
     data.setdefault("answer_model", "")

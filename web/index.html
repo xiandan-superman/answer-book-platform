@@ -179,6 +179,19 @@
           </div>
         </section>
 
+        <section class="home-utility-entry" aria-labelledby="textbookEvidenceUtilityTitle">
+          <div class="utility-entry-icon utility-entry-icon-analysis" aria-hidden="true"><i class="fas fa-book-bookmark"></i></div>
+          <div class="utility-entry-copy">
+            <span>辅助工具</span>
+            <h2 id="textbookEvidenceUtilityTitle">教材引用定位</h2>
+            <p>上传试题并复用已建立索引的教材，仅产出逐题知识点与已核验教材页码。</p>
+          </div>
+          <div class="utility-entry-actions">
+            <button class="utility-entry-primary" type="button" onclick="startTextbookEvidenceTool()">打开工具<i class="fas fa-arrow-right"></i></button>
+            <button class="utility-entry-link" type="button" onclick="openTaskManager('exam')">查看相关任务</button>
+          </div>
+        </section>
+
         <section class="platform-strengths" aria-labelledby="platformStrengthsTitle">
           <h2 id="platformStrengthsTitle">平台特点</h2>
           <div class="platform-strength-grid">
@@ -214,8 +227,8 @@
         <div class="page-title reference-title key-config-title">
           <span class="key-config-title-icon"><i class="fas fa-key"></i></span>
           <div>
-            <h2>API Key 配置</h2>
-            <p>配置一次，全软件共用。选择已接入的平台，填写 Key，测试连接成功后再保存。</p>
+            <h2>供应商与模型配置</h2>
+            <p>配置一次，全软件共用。这里管理供应商凭证和可接入模型，具体任务中再选择实际使用的模型。</p>
           </div>
         </div>
         <div class="key-config-safety-note">
@@ -226,19 +239,13 @@
           </div>
         </div>
         <div class="key-provider-toolbar" aria-label="筛选 API 平台">
-          <div class="key-provider-filter-tabs" role="group" aria-label="按配置状态筛选">
-            <button class="key-provider-filter active" type="button" data-key-filter="all" onclick="filterKeyProviders('all')">全部平台</button>
-            <button class="key-provider-filter" type="button" data-key-filter="saved" onclick="filterKeyProviders('saved')">已配置</button>
-            <button class="key-provider-filter" type="button" data-key-filter="unsaved" onclick="filterKeyProviders('unsaved')">未配置</button>
-          </div>
           <label class="key-provider-search">
             <span class="visually-hidden">搜索 API 平台</span>
             <i class="fas fa-search" aria-hidden="true"></i>
             <input id="keyProviderSearch" type="search" placeholder="搜索平台或能力" oninput="searchKeyProviders(this.value)">
           </label>
-          <span id="keyProviderFilterSummary" class="key-provider-filter-summary" aria-live="polite"></span>
         </div>
-        <div id="keyProviderGrid" class="key-provider-grid">
+        <div id="keyProviderGrid" class="key-provider-grid key-provider-split-pane">
           <p class="empty-hint">正在加载已接入的平台...</p>
         </div>
         <div id="keyProviderFilterEmpty" class="key-provider-filter-empty hidden">
@@ -1190,38 +1197,41 @@
           <span><i class="fas fa-layer-group"></i></span>
           <div>
             <p class="model-page-eyebrow">模拟出题 · 按题出题</p>
-            <h2>按题出题模型配置</h2>
-            <p>这套选择只供“按题出题”使用，不会修改真题解析或知识点出题。API Key 仍由全局配置中心统一管理。</p>
+            <h2>选择按题出题使用的模型</h2>
+            <p>这里只显示已配置且适合按题出题的模型；不会修改真题解析或知识点出题的选择。</p>
           </div>
         </div>
         <div class="task-model-grid task-model-grid-simplified">
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-pen-ruler"></i></span>
             <div><h3>主生成模型</h3><p>一个模型完成原题分析、考点提取、蓝图设计、题目生成和解析；支持多模态时也直接读图。</p></div>
-            <label>服务商<select id="practiceTextProviderSelect"></select></label>
-            <label>具体模型<select id="practiceTextModelSelect"></select></label>
+            <label>已配置供应商<select id="practiceTextProviderSelect"></select></label>
+            <label>可用模型<select id="practiceTextModelSelect"></select></label>
             <input id="practiceTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            <label>思考深度<select id="practiceThinkingModeSelect"></select></label>
+            <p id="practiceProtocolHint">请求类型和可选档位随模型更新。</p>
             <p id="practiceTextModelSummary">正在读取模型...</p>
           </article>
-          <details class="task-model-fallback-details">
+          <details id="practiceVisionFallbackDetails" class="task-model-fallback-details">
             <summary><i class="fas fa-image"></i>高级：主模型不能读图时的图片回退</summary>
             <article class="practice-model-setting">
               <div><h3>图片回退模型</h3><p>仅当主生成模型不支持多模态、输入又包含图片时调用。</p></div>
-              <label>服务商<select id="practiceVisionProviderSelect"></select></label>
-              <label>具体模型<select id="practiceVisionModelSelect"></select></label>
+              <label>已配置供应商<select id="practiceVisionProviderSelect"></select></label>
+              <label>可用识图模型<select id="practiceVisionModelSelect"></select></label>
               <input id="practiceVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
               <p id="practiceVisionModelSummary">正在读取模型...</p>
             </article>
           </details>
-          <article class="practice-model-setting">
+          <article id="practiceImageModelCard" class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>生图模型</h3><p>平台统一使用默认生图流程，不再切换历史程序绘图链路。</p></div>
+            <div><h3>生图模型</h3><p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p></div>
             <input id="practiceImageOrchestrationSwitch" type="checkbox" checked hidden>
-            <label>服务商<select id="practiceImageProviderSelect"></select></label>
-            <label>具体模型<select id="practiceImageModelSelect"></select></label>
+            <label>已配置供应商<select id="practiceImageProviderSelect"></select></label>
+            <label>可用生图模型<select id="practiceImageModelSelect"></select></label>
             <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
             <p id="practiceImageModelSummary">正在读取模型...</p>
           </article>
+          <div id="practiceModelCompatibility" class="task-model-compatibility" aria-live="polite"></div>
         </div>
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
@@ -1237,38 +1247,41 @@
           <span><i class="fas fa-lightbulb"></i></span>
           <div>
             <p class="model-page-eyebrow">模拟出题 · 知识点出题</p>
-            <h2>知识点出题模型配置</h2>
-            <p>这套选择只供“知识点出题”使用，不会修改真题解析或按题出题。API Key 仍由全局配置中心统一管理。</p>
+            <h2>选择知识点出题使用的模型</h2>
+            <p>这里只显示已配置且适合知识点出题的模型；不会修改真题解析或按题出题的选择。</p>
           </div>
         </div>
         <div class="task-model-grid task-model-grid-simplified">
           <article class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-brain"></i></span>
             <div><h3>主生成模型</h3><p>一个模型完成材料理解、难度与题型规划、题目生成和完整解析；支持多模态时也直接读图。</p></div>
-            <label>服务商<select id="knowledgeTextProviderSelect"></select></label>
-            <label>具体模型<select id="knowledgeTextModelSelect"></select></label>
+            <label>已配置供应商<select id="knowledgeTextProviderSelect"></select></label>
+            <label>可用模型<select id="knowledgeTextModelSelect"></select></label>
             <input id="knowledgeTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            <label>思考深度<select id="knowledgeThinkingModeSelect"></select></label>
+            <p id="knowledgeProtocolHint">请求类型和可选档位随模型更新。</p>
             <p id="knowledgeTextModelDetail">正在读取模型...</p>
           </article>
-          <details class="task-model-fallback-details">
+          <details id="knowledgeVisionFallbackDetails" class="task-model-fallback-details">
             <summary><i class="fas fa-file-image"></i>高级：主模型不能读图时的图片回退</summary>
             <article class="practice-model-setting">
               <div><h3>图片回退模型</h3><p>仅当主生成模型不能读图，而材料包含截图、插图或公式图片时调用。</p></div>
-              <label>服务商<select id="knowledgeVisionProviderSelect"></select></label>
-              <label>具体模型<select id="knowledgeVisionModelSelect"></select></label>
+              <label>已配置供应商<select id="knowledgeVisionProviderSelect"></select></label>
+              <label>可用识图模型<select id="knowledgeVisionModelSelect"></select></label>
               <input id="knowledgeVisionModelInput" type="text" hidden placeholder="填写视觉模型 ID">
               <p id="knowledgeVisionModelDetail">正在读取模型...</p>
             </article>
           </details>
-          <article class="practice-model-setting">
+          <article id="knowledgeImageModelCard" class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>生图模型</h3><p>平台统一使用默认生图流程，不再切换历史程序绘图链路。</p></div>
+            <div><h3>生图模型</h3><p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p></div>
             <input id="knowledgeImageOrchestrationSwitch" type="checkbox" checked hidden>
-            <label>服务商<select id="knowledgeImageProviderSelect"></select></label>
-            <label>具体模型<select id="knowledgeImageModelSelect"></select></label>
+            <label>已配置供应商<select id="knowledgeImageProviderSelect"></select></label>
+            <label>可用生图模型<select id="knowledgeImageModelSelect"></select></label>
             <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
             <p id="knowledgeImageModelDetail">正在读取模型...</p>
           </article>
+          <div id="knowledgeModelCompatibility" class="task-model-compatibility" aria-live="polite"></div>
         </div>
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
@@ -1311,14 +1324,14 @@
         <article class="reference-card provider-card">
           <div class="model-config-header">
             <div>
-              <h3 id="examModelSelectionTitle"><i class="fas fa-key text-purple"></i>模型选择</h3>
-              <p>先选择一套默认方案即可开始；只有需要精细控制时才展开详细分工。</p>
+              <h3 id="examModelSelectionTitle"><i class="fas fa-microchip text-purple"></i>本次任务使用的模型</h3>
+              <p id="examModelSelectionDescription">这里只显示已配置且适合当前环节的模型；默认选择主模型，需要时再展开读图、生图或高级分工。</p>
             </div>
-            <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置默认模型和 Thinking 模式"><i class="fas fa-sliders"></i>全局设置</button>
+            <button id="modelAdvancedToggleBtn" class="model-advanced-button" type="button" onclick="toggleModelAdvanced()" title="配置读图、生图和高风险复核"><i class="fas fa-sliders"></i>其他模型设置</button>
           </div>
           <div class="reference-form-stack">
             <p id="modelCapabilityRisk" class="model-capability-risk hidden"></p>
-            <section class="exam-model-preset-panel">
+            <section class="exam-model-preset-panel hidden" aria-hidden="true">
               <div>
                 <strong><i class="fas fa-wand-magic-sparkles"></i>默认模型组合</strong>
                 <p>选择一次，程序自动完成解析、复核、读图和作图兜底的内部模型分工。</p>
@@ -1336,8 +1349,13 @@
                 <button id="testExamModelRoutesBtn" class="outline-button" type="button"><i class="fas fa-plug"></i>测试当前模型组合</button>
               </div>
             </section>
+            <section class="model-progressive-shell">
+              <div id="examPrimaryModelMount" class="model-progressive-primary"></div>
+              <div id="examCapabilityNotice" class="model-progressive-notice" aria-live="polite"></div>
+              <div id="examConditionalModelMount" class="model-progressive-conditional"></div>
+            </section>
             <details id="examModelRoleDetails" class="exam-model-role-details">
-              <summary><i class="fas fa-sliders"></i>高级：查看或自定义各环节模型</summary>
+              <summary><i class="fas fa-sliders"></i>高级模型分工</summary>
               <div class="model-role-config-grid">
               <section id="reasoningModelRoleCard" class="model-role-config-card">
                 <div class="model-role-card-head">
@@ -1348,34 +1366,40 @@
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <label><i class="fas fa-cloud"></i>已配置供应商</label>
                   <select id="reasoningProviderSelect"></select>
-                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="reasoningModelSelect"></select>
                   <input id="reasoningModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <label><i class="fas fa-brain"></i>教材依据思考深度</label>
+                  <select id="reasoningThinkingModeSelect"></select>
+                  <p id="reasoningProtocolHint" class="safe-note"></p>
                   <p id="reasoningModelHint" class="safe-note"><i class="fas fa-list-check"></i>用于判断考查内容、检索意图和二次确认教材依据。</p>
                   <span id="reasoningRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-              <section class="model-role-config-card">
+              <section id="answerModelRoleCard" class="model-role-config-card">
                 <div class="model-role-card-head">
                   <span class="model-role-icon blue"><i class="fas fa-file-lines"></i></span>
                   <div>
-                    <strong>结构化解析</strong>
-                    <p>生成结构化解析与完整答案。</p>
+                    <strong>主解析模型</strong>
+                    <p>负责答案生成、结构化解析，并默认承担其他文字阶段。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <label><i class="fas fa-cloud"></i>已配置供应商</label>
                   <select id="answerProviderSelect"></select>
-                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="answerModelSelect"></select>
                   <input id="answerModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <label><i class="fas fa-brain"></i>题目解析思考深度</label>
+                  <select id="answerThinkingModeSelect"></select>
+                  <p id="answerProtocolHint" class="safe-note"></p>
                   <p id="answerModelHint" class="safe-note"><i class="fas fa-pen-to-square"></i>用于生成最终结构化答案、解析和答案修复。</p>
                   <span id="answerRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-              <section class="model-role-config-card">
+              <section id="correctnessModelRoleCard" class="model-role-config-card">
                 <div class="model-role-card-head">
                   <span class="model-role-icon green"><i class="fas fa-shield-check"></i></span>
                   <div>
@@ -1384,16 +1408,16 @@
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <label><i class="fas fa-cloud"></i>已配置供应商</label>
                   <select id="correctnessProviderSelect"></select>
-                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="correctnessModelSelect"></select>
                   <input id="correctnessModelInput" type="text" hidden placeholder="填写模型 ID">
                   <p id="correctnessModelHint" class="safe-note"><i class="fas fa-shield-check"></i>仅在高风险题复核及其单题修复时调用；默认与结构化解析模型相同。</p>
                   <span id="correctnessRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-              <section class="model-role-config-card">
+              <section id="visionModelRoleCard" class="model-role-config-card">
                 <div class="model-role-card-head">
                   <span class="model-role-icon teal"><i class="fas fa-image"></i></span>
                   <div>
@@ -1402,28 +1426,28 @@
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <label><i class="fas fa-cloud"></i>已配置供应商</label>
                   <select id="visionProviderSelect"></select>
-                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="visionModelSelect"></select>
                   <input id="visionModelInput" type="text" hidden placeholder="填写 vision model ID">
                   <p id="visionModelHint" class="safe-note"><i class="fas fa-eye"></i>有图片或复杂表格时，先用该模型提取图像/表格信息。</p>
                   <span id="visionRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-              <section class="model-role-config-card">
+              <section id="imageModelRoleCard" class="model-role-config-card">
                 <div class="model-role-card-head">
                   <span class="model-role-icon orange"><i class="fas fa-wand-magic-sparkles"></i></span>
                   <div>
                     <strong>作图题生图</strong>
-                    <p>统一使用默认生图流程，不再显示历史程序绘图选项。</p>
+                    <p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
                   <input id="imageOrchestrationSwitch" type="checkbox" checked hidden>
-                  <label><i class="fas fa-cloud"></i>服务商</label>
+                  <label><i class="fas fa-cloud"></i>已配置供应商</label>
                   <select id="imageProviderSelect"></select>
-                  <label><i class="fas fa-microchip"></i>模型</label>
+                  <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="imageModelSelect"></select>
                   <input id="imageModelInput" type="text" placeholder="填写 image model ID">
                   <p id="imageModelHint" class="safe-note"><i class="fas fa-image"></i>规则化绘图失败时，使用该模型做兜底生图。</p>
@@ -1436,7 +1460,7 @@
               <summary>全局模型设置</summary>
               <div class="model-advanced-copy">
                 <strong>全局设置用于管理所有题型共用的基础能力</strong>
-                <span>这里只管理服务商、具体模型和 Thinking 模式；API Key 请到独立的“API 配置”页面统一管理。</span>
+                <span>此处仅保留旧任务兼容的基础路由；教材依据、题目解析和生题强度都在各自任务模型卡中选择。</span>
               </div>
               <div class="model-base-settings">
                 <label>API 服务商</label>
@@ -1445,8 +1469,7 @@
                 <select id="modelSelect"></select>
                 <input id="modelInput" type="text" hidden placeholder="留空使用默认模型">
               </div>
-              <label>Thinking 模式</label>
-              <div class="thinking-mode-box">
+              <div class="thinking-mode-box" hidden aria-hidden="true">
                 <select id="thinkingModeSelect">
                   <option value="auto">自动使用模型默认设置</option>
                   <option value="disabled">关闭 thinking 模式</option>
@@ -1976,6 +1999,7 @@
                   <span>近期重试 <strong id="systemModelRetries">0</strong></span>
                   <span>当前并发 / 上限 <strong id="systemModelConcurrency">0 / 0</strong></span>
                 </div>
+                <div id="systemProviderRoutes" class="system-provider-route-list"></div>
               </details>
             </section>
             <section class="system-running-health">

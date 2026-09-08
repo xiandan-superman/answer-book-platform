@@ -49,6 +49,18 @@
 | 智谱 BigModel 官方 | `glm-5.3-flash` | text_generation | text、image → text | 未登记/禁用 | platform_verified_json | required | 材料理解:18000 tokens；考查内容规划:14000 tokens；教材证据确认:18000 tokens；蓝图规划:16000 tokens；正式生题:20000 tokens；答案生成:22000 tokens；正确性复核:18000 tokens；语义审查:20000 tokens；格式修复:12000 tokens；插图结构规划:14000 tokens；作图代码生成:14000 tokens | 材料理解:allowed；考查内容规划:allowed；教材证据确认:allowed；蓝图规划:allowed；蓝图规划:allowed；正式生题:allowed；答案生成:allowed；答案生成:allowed；正确性复核:limited；语义审查:limited；格式修复:allowed；插图结构规划:allowed；作图代码生成:allowed | B | 2026-08-27 |
 | 元衡 API | `gpt-5.6-luna` | text_generation | text、image → text | 未登记/禁用 | provider_declared | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 元衡 API | `gpt-5.6-terra` | text_generation | text、image → text | 未登记/禁用 | provider_declared | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · GPT | `gpt-5.6-sol` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · GPT | `gpt-5.6-terra` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · GPT | `gpt-6-astra` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · Gemini | `gemini-3.8-flash` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · Gemini | `gemini-3.7-flash` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · Gemini | `gemini-3.6-flash` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · Grok | `grok-4.6` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · Grok | `grok-4.5` | text_generation | text、image → text | 未登记/禁用 | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
+| WawAPI · GPT 图片 | `gpt-image-2` | image_generation | text → image | 未登记/禁用 | not_applicable | not_applicable | 待验证 | 图片生成:limited | C | unknown |
+| WawAPI · Gemini 图片 | `gemini-3-pro-image-preview` | image_generation | text → image | 未登记/禁用 | not_applicable | not_applicable | 待验证 | 图片生成:limited | C | unknown |
+| WawAPI · Gemini 图片 | `gemini-3.1-flash-image-preview` | image_generation | text → image | 未登记/禁用 | not_applicable | not_applicable | 待验证 | 图片生成:limited | C | unknown |
+| WawAPI · Grok 图片 | `grok-imagine-image-2.0` | image_generation | text → image | 未登记/禁用 | not_applicable | not_applicable | 待验证 | 图片生成:limited | C | unknown |
 | 灵算 OpenAI | `gpt-6-astra` | text_generation | text、image → text | 已验证（responses，2026-09-05） | platform_verified_json | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | 2026-09-05 |
 | 灵算 OpenAI | `gpt-5.6-sol` | text_generation | text、image → text | 已验证（responses，2026-08-29） | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |
 | 灵算 OpenAI | `gpt-5.6-terra` | text_generation | text、image → text | 已验证（responses，2026-08-29） | unknown | unknown | 待验证 | 材料理解:limited；蓝图规划:limited；正式生题:limited；答案生成:limited；正确性复核:unknown | C | unknown |

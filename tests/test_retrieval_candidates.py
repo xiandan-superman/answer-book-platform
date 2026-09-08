@@ -19,6 +19,54 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 class RetrievalCandidateTests(unittest.TestCase):
+    def test_scope_conflict_penalty_keeps_binary_query_ahead_of_ternary_match(self) -> None:
+        from app.retrieval import SEMANTIC_SCOPE_CONFLICT_PENALTY, semantic_scope_conflict_penalty
+
+        query = "二元合金相图中的三相不变反应"
+
+        self.assertEqual(0.0, semantic_scope_conflict_penalty(query, "二元相图中三相平衡为水平线。"))
+        self.assertEqual(
+            SEMANTIC_SCOPE_CONFLICT_PENALTY,
+            semantic_scope_conflict_penalty(query, "三元相图中的三相平衡和四相反应。"),
+        )
+        self.assertEqual(
+            SEMANTIC_SCOPE_CONFLICT_PENALTY,
+            semantic_scope_conflict_penalty(query, "三元相图与三元系的三相区不同于二元相图的水平线。"),
+        )
+
+    def test_scope_conflict_policy_generalizes_beyond_phase_diagrams(self) -> None:
+        from app.retrieval import SEMANTIC_SCOPE_CONFLICT_PENALTY, semantic_scope_conflict_penalty
+
+        self.assertEqual(
+            SEMANTIC_SCOPE_CONFLICT_PENALTY,
+            semantic_scope_conflict_penalty("二维点阵的对称性", "三维空间点阵的对称操作"),
+        )
+        self.assertEqual(
+            SEMANTIC_SCOPE_CONFLICT_PENALTY,
+            semantic_scope_conflict_penalty("二组元扩散体系", "三组元合金中的交叉扩散"),
+        )
+
+    def test_candidate_top_k_prefers_distinct_pages_before_duplicate_blocks(self) -> None:
+        from app.retrieval import _diverse_scored_rows, _page_identity
+
+        rows = [
+            {"textbook": "教材", "source_file": "book.json", "page_idx": "1", "block_index": "1"},
+            {"textbook": "教材", "source_file": "book.json", "page_idx": "1", "block_index": "2"},
+            {"textbook": "教材", "source_file": "book.json", "page_idx": "2", "block_index": "1"},
+        ]
+        lookup = {
+            _page_identity(rows[0]): {"citation_textbook": "教材", "printed_page": "10"},
+            _page_identity(rows[2]): {"citation_textbook": "教材", "printed_page": "11"},
+        }
+
+        selected = _diverse_scored_rows(
+            [(9.0, rows[0], "A"), (8.0, rows[1], "B"), (7.0, rows[2], "C")],
+            2,
+            lookup,
+        )
+
+        self.assertEqual(["1", "2"], [row[1]["page_idx"] for row in selected])
+
     def test_corpus_scorer_uses_bm25s_and_rewards_rare_terms(self) -> None:
         from app.retrieval import CorpusTextScorer
         from app.text_utils import tokenize_zh_en

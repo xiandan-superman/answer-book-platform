@@ -219,13 +219,15 @@ def test_hidden_providers_are_omitted_from_every_user_facing_model_entry() -> No
         assert f'  "{provider}",' in APP_JS
     assert '  "ark_image",' not in APP_JS.split("const HIDDEN_USER_PROVIDER_NAMES", 1)[1].split("]);", 1)[0]
     assert "function userVisibleProviderEntries" in APP_JS
-    assert "const entries = userVisibleProviderEntries();" in APP_JS
-    assert "const entries = userVisibleProviderEntries().sort" in APP_JS
+    assert "return userVisibleProviderEntries()" in APP_JS
+    assert '.filter(([, cfg]) => cfg.api_key_set === true)' in APP_JS
+    assert "HIDDEN_API_CONFIG_PROVIDER_NAMES" in APP_JS
+    assert "Object.entries(providerConfigs || {}).filter" in APP_JS
 
 
 def test_practice_generation_defaults_to_lingsuan_gemini_and_image_two() -> None:
     assert 'const preferredProvider = kind === "image" ? "lingsuan_image" : "lingsuan_google";' in APP_JS
-    assert 'populateProviderSelect("imageProviderSelect", "image", "lingsuan_image");' in APP_JS
+    assert 'populateProviderSelect("imageProviderSelect", "image", "lingsuan_image", "image_generation");' in APP_JS
     assert 'populateImageModelControls("gpt-image-2");' in APP_JS
     assert 'id="practiceImageProviderSelect"' in INDEX_HTML
     assert 'id="knowledgeImageProviderSelect"' in INDEX_HTML
@@ -739,15 +741,41 @@ def test_saved_api_key_cards_render_as_configured_instead_of_waiting_for_test() 
     assert '<div class="key-provider-status idle" data-key-status><strong>等待测试</strong>' not in key_cards
 
 
-def test_api_key_platforms_use_single_card_progressive_disclosure() -> None:
+def test_api_key_platforms_use_provider_navigation_and_detail_pane() -> None:
     key_cards_start = APP_JS.index("function renderKeyProviderCards()")
     key_cards_end = APP_JS.index("async function recoverDamagedApiConfiguration", key_cards_start)
     key_cards = APP_JS[key_cards_start:key_cards_end]
 
     assert 'data-key-card-toggle="${escapeHtml(name)}"' in key_cards
     assert 'class="key-provider-details${expanded ? "" : " hidden"}"' in key_cards
-    assert 'expandedKeyProviderName = shouldExpand ? selectedName : "";' in key_cards
+    assert 'data-key-group="${escapeHtml(entry.id)}"' in key_cards
+    assert 'class="key-split-layout"' in key_cards
     assert 'aria-expanded="${expanded ? "true" : "false"}"' in key_cards
+
+
+def test_api_configuration_and_task_model_selection_have_separate_jobs() -> None:
+    assert "供应商与模型配置" in INDEX_HTML
+    assert "这里管理供应商凭证和可接入模型，具体任务中再选择实际使用的模型" in INDEX_HTML
+    assert 'class="key-model-catalog"' in APP_JS
+    assert "该通道支持的模型" in APP_JS
+    assert "function configuredTaskProviderEntries(" in APP_JS
+    assert '.filter(([, cfg]) => cfg.api_key_set === true)' in APP_JS
+    assert "registeredModelSupportsKind(cfg, model, kind, purpose)" in APP_JS
+    assert "当前没有适合此用途的模型" in APP_JS
+    assert "暂无可用模型，请先完成 API 配置" in APP_JS
+    assert "input.hidden = true;" in APP_JS
+
+
+def test_task_model_capability_filter_is_registry_driven() -> None:
+    start = APP_JS.index("function registeredModelSupportsKind(")
+    end = APP_JS.index("function configuredTaskProviderEntries(", start)
+    capability_filter = APP_JS[start:end]
+
+    assert "registeredModelProfile(cfg, model)" in capability_filter
+    assert "profile.native_inputs" in capability_filter
+    assert 'profile.kind || "text_generation"' in capability_filter
+    assert "combined.includes" not in capability_filter
+    assert 'label.includes("多模态")' not in capability_filter
 
 
 def test_monitor_prioritizes_health_and_collapses_infrequent_settings() -> None:
@@ -772,12 +800,27 @@ def test_monitor_prioritizes_health_and_collapses_infrequent_settings() -> None:
 
 def test_desktop_operational_pages_preserve_balanced_layouts() -> None:
     assert "@media (max-width: 1100px)" in PLATFORM_THEME_CSS
-    assert "#page-keys .key-provider-card.expanded {\n  grid-column: 1 / -1;" in PLATFORM_THEME_CSS
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in PLATFORM_THEME_CSS
     assert "#page-textbook .file-card-grid:has(> .library-option:only-child)" in PLATFORM_THEME_CSS
     assert "#page-exam #taskTextbookChecklist:has(> .library-option:only-child)" in PLATFORM_THEME_CSS
     assert "@media (min-width: 821px)" in WORD_FORMAT_HTML
     assert ".file-picker { min-height: 100px; }" in WORD_FORMAT_HTML
     assert ".submit-row { margin-top: 18px; margin-bottom: -18px;" in WORD_FORMAT_HTML
+
+
+def test_model_configuration_progressively_discloses_visual_and_image_routes() -> None:
+    assert 'id="examPrimaryModelMount"' in INDEX_HTML
+    assert 'id="examCapabilityNotice"' in INDEX_HTML
+    assert 'id="answerModelRoleCard"' in INDEX_HTML
+    assert 'id="practiceVisionFallbackDetails"' in INDEX_HTML
+    assert 'id="knowledgeVisionFallbackDetails"' in INDEX_HTML
+    assert "function syncExamProgressiveModelUi()" in APP_JS
+    assert "syncExamFollowerRolesFromAnswer();" in APP_JS
+    assert 'advancedDetails.addEventListener("toggle"' in APP_JS
+    assert "function syncTaskProgressiveModelUi(profile" in APP_JS
+    assert 'visionCard.classList.toggle("hidden", readsImages)' in APP_JS
+    assert 'imageCard.hidden = !supportsImageTools' in APP_JS
+    assert 'return $(ids[0])?.checked ? "main_model_tool_loop" : "legacy_figure_pipeline";' in APP_JS
 
 
 def test_practice_review_pages_keep_context_and_show_long_fields() -> None:
@@ -787,7 +830,19 @@ def test_practice_review_pages_keep_context_and_show_long_fields() -> None:
     assert 'class="practice-plan-wide">变化方式<textarea class="practice-plan-compact-textarea" rows="2" data-plan-field="variation_type"' in APP_JS
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in PLATFORM_THEME_CSS
     assert "#page-tasks .task-manager-needs_input .task-manager-progress" in PLATFORM_THEME_CSS
-    assert 'setText("knowledgeModelSummary", `${shortTaskModelName(textModel, textProviderName)}${textKeyState}`);' in APP_JS
+    assert 'setText("knowledgeModelSummary", `${shortTaskModelName(textModel, textProviderName)} · ${thinkingLabel}${textKeyState}`);' in APP_JS
+
+
+def test_task_model_pages_bind_thinking_depth_to_each_business_route() -> None:
+    assert 'id="reasoningThinkingModeSelect"' in INDEX_HTML
+    assert 'id="answerThinkingModeSelect"' in INDEX_HTML
+    assert 'id="practiceThinkingModeSelect"' in INDEX_HTML
+    assert 'id="knowledgeThinkingModeSelect"' in INDEX_HTML
+    assert 'reasoning_thinking: selectedRoleThinkingMode("reasoning")' in APP_JS
+    assert 'answer_thinking: selectedRoleThinkingMode("answer")' in APP_JS
+    assert 'thinking: selectedTaskThinkingMode(knowledgeMode ? "knowledge" : "practice")' in APP_JS
+    assert 'function modelRequestProtocol(cfg, model)' in APP_JS
+    assert 'profile.supported_thinking_modes' in APP_JS
 
 
 def test_practice_question_actions_have_visible_labels() -> None:

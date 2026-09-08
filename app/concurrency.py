@@ -13,6 +13,8 @@ from .provider_errors import classify_provider_error
 from .runtime_capacity import (
     bigmodel_rate_limit_backoff,
     model_request_max_concurrency,
+    provider_capacity_profile,
+    provider_pressure_backoff,
     provider_request_max_concurrency,
 )
 
@@ -89,11 +91,16 @@ class _FairProviderGate:
             self._active -= 1
             self._condition.notify_all()
 
-    def record_rate_limit(self, retry_after_seconds: float | None = None) -> None:
+    def record_rate_limit(
+        self,
+        retry_after_seconds: float | None = None,
+        *,
+        backoff: tuple[float, float] | None = None,
+    ) -> None:
         with self._condition:
             self._rate_limit_streak = min(8, self._rate_limit_streak + 1)
             self._rate_limited_count += 1
-            base, cap = bigmodel_rate_limit_backoff()
+            base, cap = backoff or bigmodel_rate_limit_backoff()
             exponential = min(cap, base * (2 ** (self._rate_limit_streak - 1)))
             retry_after = (
                 max(0.0, min(cap, float(retry_after_seconds)))
@@ -147,6 +154,10 @@ def _is_bigmodel_provider(provider: object | None) -> bool:
     return str(getattr(provider, "name", "") or "").strip().lower() == "bigmodel"
 
 
+def _is_profiled_provider(provider: object | None) -> bool:
+    return bool(provider_capacity_profile(provider))
+
+
 def _is_rate_limit_error(exc: BaseException) -> bool:
     info = classify_provider_error(
         exc,
@@ -154,6 +165,13 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
         retry_after_seconds=getattr(exc, "retry_after_seconds", None),
     )
     return info.kind in {"provider_concurrency_limit", "provider_rate_limit"}
+
+
+def _is_provider_pressure_error(exc: BaseException) -> bool:
+    if _is_rate_limit_error(exc):
+        return True
+    text = str(exc or "").lower()
+    return "server_is_overloaded" in text or "server is currently overloaded" in text or "http 524" in text
 
 
 @contextmanager
@@ -239,9 +257,15 @@ def model_request_slot(provider: object | None):
             if _is_bigmodel_provider(provider) and _is_rate_limit_error(exc):
                 retry_after = getattr(exc, "retry_after_seconds", None)
                 gate.record_rate_limit(retry_after if isinstance(retry_after, (int, float)) else None)
+            elif _is_profiled_provider(provider) and _is_provider_pressure_error(exc):
+                retry_after = getattr(exc, "retry_after_seconds", None)
+                gate.record_rate_limit(
+                    retry_after if isinstance(retry_after, (int, float)) else None,
+                    backoff=provider_pressure_backoff(provider),
+                )
             raise
         else:
-            if _is_bigmodel_provider(provider):
+            if _is_bigmodel_provider(provider) or _is_profiled_provider(provider):
                 gate.record_success()
     finally:
         _MODEL_REQUEST_HELD_KEYS.reset(token)

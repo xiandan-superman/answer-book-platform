@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -13,10 +12,14 @@ class RuntimeMonitorFrontendTests(unittest.TestCase):
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="systemHealthOverview"', html)
         self.assertIn('id="systemModelHealthLabel"', html)
+        self.assertIn('id="systemProviderRoutes"', html)
         self.assertIn('id="systemRunningTasks"', html)
         self.assertIn("function startSystemMonitorPolling()", script)
         self.assertIn("}, 10000);", script)
         self.assertIn("if (document.hidden) stopSystemMonitorPolling();", script)
+        self.assertIn("models.provider_gates", script)
+        self.assertIn("cooldown_remaining_seconds", script)
+        self.assertIn("运行 ${Number(gate.active || 0)}/${Number(gate.limit || 0)} · 等待 ${Number(gate.waiting || 0)}", script)
 
     def test_task_manager_maps_health_to_four_user_states(self) -> None:
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

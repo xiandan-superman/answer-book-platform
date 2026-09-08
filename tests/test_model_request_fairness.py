@@ -101,6 +101,53 @@ class ModelRequestFairnessTests(unittest.TestCase):
 
         self.assertEqual(2, maximum_active)
 
+    def test_wawapi_empirical_ceiling_is_shared_across_tasks(self) -> None:
+        provider = _ProviderIdentity("wawapi_openai", "https://wawapi-concurrency.invalid/v1")
+        active = 0
+        maximum_active = 0
+        lock = threading.Lock()
+
+        def request(index: int) -> None:
+            nonlocal active, maximum_active
+            with model_request_context(f"wawapi-task-{index}"):
+                with model_request_slot(provider):
+                    with lock:
+                        active += 1
+                        maximum_active = max(maximum_active, active)
+                    time.sleep(0.025)
+                    with lock:
+                        active -= 1
+
+        with patch.dict(os.environ, {}, clear=True):
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                list(executor.map(request, range(6)))
+
+        self.assertEqual(2, maximum_active)
+
+    def test_wawapi_overload_starts_shared_cooldown(self) -> None:
+        provider = _ProviderIdentity("wawapi_openai", "https://wawapi-cooldown.invalid/v1")
+        entered = threading.Event()
+        with (
+            patch("app.concurrency.provider_pressure_backoff", return_value=(0.25, 0.25)),
+            patch("app.concurrency.random.uniform", return_value=0.0),
+        ):
+            with self.assertRaises(LLMError):
+                with model_request_slot(provider):
+                    raise LLMError("server_is_overloaded")
+
+            def wait_for_slot() -> None:
+                with model_request_slot(provider):
+                    entered.set()
+
+            started = time.monotonic()
+            waiter = threading.Thread(target=wait_for_slot)
+            waiter.start()
+            time.sleep(0.05)
+            self.assertFalse(entered.is_set())
+            waiter.join(1.0)
+            self.assertTrue(entered.is_set())
+            self.assertGreaterEqual(time.monotonic() - started, 0.22)
+
     def test_bigmodel_429_pauses_other_waiting_requests(self) -> None:
         provider = _ProviderIdentity("bigmodel", "https://bigmodel-cooldown.invalid/v1")
         entered = threading.Event()

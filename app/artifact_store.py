@@ -14,7 +14,24 @@ from .paths import DATA_ROOT
 ARTIFACT_REPORT_SCHEMA = "answer_book.artifact_integrity.v1"
 
 
-def fsync_directory_best_effort(directory: Path) -> None:
+def long_path(value: Path | str) -> str:
+    r"""Return an absolute path accepted by Win32 long-path aware APIs.
+
+    ``pathlib`` handles the ``\\?\`` prefix for many operations, but the plain
+    OS calls used by the atomic writer do not.  Windows otherwise reports a
+    misleading ``FileNotFoundError`` when a valid checkpoint path reaches the
+    legacy ``MAX_PATH`` boundary.
+    """
+
+    raw = os.path.abspath(str(value))
+    if os.name != "nt" or raw.startswith("\\\\?\\"):
+        return raw
+    if len(raw) <= 240:
+        return raw
+    return "\\\\?\\" + raw
+
+
+def fsync_directory_best_effort(directory: Path | str) -> None:
     """Flush a directory entry where supported without rejecting Windows writes."""
 
     try:
@@ -55,17 +72,23 @@ def verify_immutable_file(path: Path, *, sha256: str, size_bytes: int | None = N
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(prefix=f".{target.name}-", dir=str(target.parent))
-    tmp = Path(raw_tmp)
+    # Repeating a 64-character content hash in the temporary filename can push
+    # deep checkpoint paths over Windows MAX_PATH.  Keep the temporary leaf
+    # short and route every low-level path through the same long-path adapter.
+    parent = long_path(target.parent)
+    fd, raw_tmp = tempfile.mkstemp(prefix=".tmp-", dir=parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, target)
-        fsync_directory_best_effort(target.parent)
+        os.replace(raw_tmp, long_path(target))
+        fsync_directory_best_effort(parent)
     finally:
-        tmp.unlink(missing_ok=True)
+        try:
+            os.unlink(raw_tmp)
+        except FileNotFoundError:
+            pass
 
 
 def _read_manifest(path: Path) -> dict[str, Any] | None:

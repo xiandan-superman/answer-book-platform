@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from .analysis_profiles import QUESTION_ONLY_ANALYSIS, is_question_only_excluded_artifact
 from .final_acceptance import build_final_acceptance_report
 from .model_usage_report import MODEL_USAGE_REPORT_NAME, build_model_usage_report
 
@@ -87,6 +88,12 @@ def build_task_delivery_package(
     stage_dir: Path,
     output_dir: Path,
 ) -> dict[str, Any]:
+    fragments_path = stage_dir / "answer_fragments.json"
+    try:
+        fragments_data = json.loads(fragments_path.read_text(encoding="utf-8")) if fragments_path.exists() else {}
+    except (OSError, ValueError, TypeError):
+        fragments_data = {}
+    question_only = fragments_data.get("analysis_profile") == QUESTION_ONLY_ANALYSIS
     stored_candidate = output_dir / "answer_book_review_candidate.docx"
     final = build_final_acceptance_report(
         stage_dir,
@@ -125,6 +132,8 @@ def build_task_delivery_package(
                     added.append(arcname)
                     integrity.append(_integrity_entry(path, arcname))
             for name in STAGE_REPORTS:
+                if question_only and is_question_only_excluded_artifact(name):
+                    continue
                 path = stage_dir / name
                 if path.exists():
                     arcname = f"reports/{name}"

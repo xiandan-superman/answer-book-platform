@@ -15,7 +15,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .analysis_profiles import analysis_uses_textbook_evidence, normalize_analysis_profile
+from .analysis_profiles import (
+    analysis_generates_answers,
+    analysis_uses_textbook_evidence,
+    is_question_only_excluded_artifact,
+    normalize_analysis_profile,
+)
 from .answer_coverage_audit import audit_answer_coverage
 from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info, recover_damaged_api_key_file
 from .artifact_store import build_artifact_integrity_report
@@ -330,13 +335,62 @@ def _format_duration(seconds: int) -> str:
 
 def _normalize_thinking_mode(value: object) -> str:
     text = str(value or "auto").strip().lower()
-    if text in {"low", "medium", "high", "xhigh"}:
+    if text in {"minimal", "low", "medium", "high", "xhigh"}:
         return text
     if text in {"enabled", "enable", "on", "true"}:
         return "enabled"
     if text in {"disabled", "disable", "off", "false"}:
         return "disabled"
     return "auto"
+
+
+_THINKING_MODE_ORDER = ("disabled", "minimal", "low", "medium", "high", "xhigh")
+
+
+def _model_request_protocol(provider: object, model: str) -> str:
+    profiles = getattr(provider, "model_profiles", {}) or {}
+    profile = profiles.get(str(model or "").strip(), {}) if isinstance(profiles, dict) else {}
+    return str(
+        (profile.get("api_protocol") if isinstance(profile, dict) else "")
+        or getattr(provider, "api_protocol", "chat_completions")
+        or "chat_completions"
+    ).strip().lower()
+
+
+def _validate_model_thinking_choice(provider: object, model: str, thinking: str) -> None:
+    selected_model = str(model or "").strip()
+    protocol = _model_request_protocol(provider, selected_model)
+    if selected_model.lower().startswith("gpt-") and protocol != "responses":
+        raise ValueError(f"GPT 模型 {selected_model} 必须使用已验证的 Responses 请求类型。")
+    profiles = getattr(provider, "model_profiles", {}) or {}
+    profile = profiles.get(selected_model, {}) if isinstance(profiles, dict) else {}
+    if not isinstance(profile, dict):
+        return
+    explicit = profile.get("supported_thinking_modes")
+    if isinstance(explicit, list) and explicit:
+        supported = {_normalize_thinking_mode(item) for item in explicit}
+        if thinking not in supported:
+            raise ValueError(
+                f"模型 {selected_model} 在 {protocol} 请求类型下不支持推理强度 {thinking}；"
+                f"可用值：{', '.join(str(item) for item in explicit)}。"
+            )
+        return
+    minimum = _normalize_thinking_mode(profile.get("thinking_minimum"))
+    if minimum not in _THINKING_MODE_ORDER or thinking == "auto":
+        return
+    normalized = "medium" if thinking == "enabled" else thinking
+    if normalized not in _THINKING_MODE_ORDER or _THINKING_MODE_ORDER.index(normalized) < _THINKING_MODE_ORDER.index(minimum):
+        raise ValueError(f"模型 {selected_model} 的最低推理强度为 {minimum}，不能选择 {thinking}。")
+
+
+def _validate_requested_model_protocol(provider: object, model: str, requested: object) -> str:
+    configured = _model_request_protocol(provider, model)
+    selected = str(requested or configured).strip().lower()
+    if selected != configured:
+        raise ValueError(
+            f"模型 {model} 已登记请求类型为 {configured}，不能在任务中改为 {selected}。"
+        )
+    return configured
 
 
 def _optional_bool(value: object, default: bool) -> bool:
@@ -1389,11 +1443,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
             return
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "files":
             task_id = parts[2]
+            record = load_task(task_id)
+            question_only = not analysis_uses_textbook_evidence(record.analysis_profile)
             files = []
             for root in (stage_dir(task_id), output_dir(task_id)):
                 if root.exists():
                     for p in sorted(root.rglob("*")):
                         if p.is_file():
+                            if question_only and is_question_only_excluded_artifact(p.name):
+                                continue
                             files.append(
                                 {
                                     "path": str(p),
@@ -1566,6 +1624,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/practice/generate":
                 body = persist_practice_source_files(self.read_json())
+                practice_provider = get_provider(str(body.get("provider") or "").strip() or None)
+                practice_model = resolve_provider_model(practice_provider, body.get("model"))
+                _validate_requested_model_protocol(practice_provider, practice_model, body.get("api_protocol"))
+                _validate_model_thinking_choice(
+                    practice_provider,
+                    practice_model,
+                    _normalize_thinking_mode(body.get("thinking")),
+                )
                 result = generate_practice_set(body)
                 record = save_practice_record(result, request=body)
                 result = record["data"]
@@ -1584,6 +1650,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 operation = str(body.get("operation") or "")
                 payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                practice_provider = get_provider(str(payload.get("provider") or "").strip() or None)
+                practice_model = resolve_provider_model(practice_provider, payload.get("model"))
+                _validate_requested_model_protocol(practice_provider, practice_model, payload.get("api_protocol"))
+                _validate_model_thinking_choice(
+                    practice_provider,
+                    practice_model,
+                    _normalize_thinking_mode(payload.get("thinking")),
+                )
                 _validate_main_model_tool_route(payload)
                 record = _start_practice_job(operation, payload)
                 append_runtime_log(
@@ -1923,9 +1997,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 analysis_profile = normalize_analysis_profile(body.get("analysis_profile"))
                 uses_textbook_evidence = analysis_uses_textbook_evidence(analysis_profile)
+                generates_answers = analysis_generates_answers(analysis_profile)
                 provider = get_provider(str(body.get("provider") or "").strip() or None)
                 model = resolve_provider_model(provider, body.get("model"))
                 model_thinking = _normalize_thinking_mode(body.get("model_thinking") or body.get("thinking_mode"))
+                reasoning_thinking = _normalize_thinking_mode(body.get("reasoning_thinking") or model_thinking)
+                answer_thinking = _normalize_thinking_mode(body.get("answer_thinking") or model_thinking)
                 def resolve_text_role(provider_key: str, model_key: str) -> tuple[str, str]:
                     role_provider_name = str(body.get(provider_key) or provider.name).strip()
                     role_provider = get_provider(role_provider_name)
@@ -1935,6 +2012,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
 
                 reasoning_provider_name, reasoning_model = resolve_text_role("reasoning_provider", "reasoning_model")
                 answer_provider_name, answer_model = resolve_text_role("answer_provider", "answer_model")
+                reasoning_provider_config = get_provider(reasoning_provider_name)
                 answer_provider_config = get_provider(answer_provider_name)
                 direct_answer_multimodal = provider_model_supports_vision(answer_provider_config, answer_model)
                 if body.get("correctness_provider") or body.get("correctness_model"):
@@ -1943,6 +2021,17 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     )
                 else:
                     correctness_provider_name, correctness_model = answer_provider_name, answer_model
+                correctness_provider_config = get_provider(correctness_provider_name)
+                _validate_model_thinking_choice(
+                    provider,
+                    model,
+                    reasoning_thinking if not generates_answers else answer_thinking,
+                )
+                if uses_textbook_evidence:
+                    _validate_model_thinking_choice(reasoning_provider_config, reasoning_model, reasoning_thinking)
+                if generates_answers:
+                    _validate_model_thinking_choice(answer_provider_config, answer_model, answer_thinking)
+                    _validate_model_thinking_choice(correctness_provider_config, correctness_model, answer_thinking)
                 vision_provider_name = str(body.get("vision_provider") or "").strip()
                 vision_model = str(body.get("vision_model") or "").strip()
                 image_provider_name = str(body.get("image_provider") or "").strip()
@@ -1954,7 +2043,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         vision_model = str(getattr(vision_provider, "vision_model", "") or vision_provider.default_model or "").strip()
                     if not getattr(vision_provider, "supports_vision", False) or not vision_model:
                         raise ValueError(f"Provider {vision_provider.name} is not configured for vision_model")
-                if image_provider_name:
+                if image_provider_name and generates_answers:
                     image_provider = get_provider(image_provider_name)
                     if not provider_supports_image_generation(image_provider):
                         raise ValueError(f"Provider {image_provider.name} is not configured for image generation")
@@ -1962,28 +2051,32 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         image_model = str(getattr(image_provider, "image_model", "") or "").strip()
                     if not image_model:
                         raise ValueError(f"Provider {image_provider.name} is not configured for image_model")
-                if image_orchestration == MAIN_MODEL_TOOL_LOOP and not (image_provider_name and image_model):
+                if generates_answers and image_orchestration == MAIN_MODEL_TOOL_LOOP and not (image_provider_name and image_model):
                     raise ValueError("主模型自主生图模式必须配置可用的生图服务商和模型。")
-                _validate_main_model_tool_route(
-                    {
-                        **body,
-                        "image_provider": image_provider_name,
-                        "image_model": image_model,
-                        "image_orchestration": image_orchestration,
-                    },
-                    provider_name=answer_provider_name,
-                    model_name=answer_model,
-                )
-                key_checks = [
-                    ("基础/作图规则模型", provider),
-                    ("答案生成模型", get_provider(answer_provider_name)),
-                    ("高风险正确性复核模型", get_provider(correctness_provider_name)),
-                ]
+                if generates_answers:
+                    _validate_main_model_tool_route(
+                        {
+                            **body,
+                            "image_provider": image_provider_name,
+                            "image_model": image_model,
+                            "image_orchestration": image_orchestration,
+                        },
+                        provider_name=answer_provider_name,
+                        model_name=answer_model,
+                    )
+                key_checks = [("基础题目识别模型", provider)]
+                if generates_answers:
+                    key_checks.extend(
+                        [
+                            ("答案生成模型", get_provider(answer_provider_name)),
+                            ("高风险正确性复核模型", get_provider(correctness_provider_name)),
+                        ]
+                    )
                 if uses_textbook_evidence:
                     key_checks.insert(1, ("知识点与教材依据模型", get_provider(reasoning_provider_name)))
                 if vision_provider_name and not direct_answer_multimodal:
                     key_checks.append(("读图模型", get_provider(vision_provider_name)))
-                if image_provider_name and image_model:
+                if generates_answers and image_provider_name and image_model:
                     key_checks.append(("作图生图模型", get_provider(image_provider_name)))
                 key_errors = _provider_key_validation_errors(key_checks)
                 if key_errors:
@@ -2008,6 +2101,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     provider=provider.name,
                     model=model,
                     model_thinking=model_thinking,
+                    reasoning_thinking=reasoning_thinking,
+                    answer_thinking=answer_thinking,
+                    reasoning_protocol=_model_request_protocol(reasoning_provider_config, reasoning_model),
+                    answer_protocol=_model_request_protocol(answer_provider_config, answer_model),
                     reasoning_provider=reasoning_provider_name,
                     reasoning_model=reasoning_model,
                     answer_provider=answer_provider_name,
@@ -2029,6 +2126,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         "provider": provider.name,
                         "model": model,
                         "model_thinking": model_thinking,
+                        "reasoning_thinking": reasoning_thinking,
+                        "answer_thinking": answer_thinking,
+                        "reasoning_protocol": _model_request_protocol(reasoning_provider_config, reasoning_model),
+                        "answer_protocol": _model_request_protocol(answer_provider_config, answer_model),
                         "reasoning_provider": reasoning_provider_name,
                         "reasoning_model": reasoning_model,
                         "answer_provider": answer_provider_name,

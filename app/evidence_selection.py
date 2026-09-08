@@ -21,8 +21,8 @@ from .text_utils import clean_text
 
 SCHEMA_VERSION = "answer_book.evidence_selection.v3"
 # Evidence selection is classification over a bounded candidate set, not answer
-# writing.  Large reasoning budgets previously consumed 11k-13k hidden tokens
-# per question and dominated runtime without adding user-visible detail.
+# writing. Keep its output ceiling bounded, but preserve the reasoning strength
+# selected for the task instead of silently changing it for this stage.
 EVIDENCE_SELECTION_MAX_TOKENS = 8192
 EVIDENCE_SELECTION_TIMEOUT_SECONDS = 90
 
@@ -736,7 +736,7 @@ def _select_one(
                 messages,
                 model=model,
                 max_tokens=EVIDENCE_SELECTION_MAX_TOKENS,
-                thinking="disabled",
+                thinking=provider.thinking_mode,
                 timeout=EVIDENCE_SELECTION_TIMEOUT_SECONDS,
                 task_stage="evidence_selection",
                 item_ids=[str(question.get("question_id") or question.get("number") or "")],

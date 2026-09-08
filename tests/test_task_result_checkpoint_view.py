@@ -260,3 +260,100 @@ def test_task_result_view_preserves_formula_boundaries_for_web_math(tmp_path, mo
 
     assert r"\(\frac{a}{b}=c\)" in analysis
     assert r"公式：\frac" not in analysis
+
+
+def test_question_only_result_view_hides_stale_textbook_evidence(tmp_path, monkeypatch) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "structured_exam.json").write_text(
+        json.dumps({"items": [{"question_id": "q1", "number": "1", "stem": "题一"}]}),
+        encoding="utf-8",
+    )
+    (stage / "answer_fragments.json").write_text(
+        json.dumps(
+            {
+                "fragments": [
+                    {
+                        "question_id": "q1",
+                        "answer": "答案",
+                        "evidence_ids": ["e1"],
+                        "blocks": [
+                            {"label": "教材依据", "segments": [{"type": "text", "text": "旧教材引用"}]},
+                            {"label": "解析", "segments": [{"type": "text", "text": "解析正文"}]},
+                        ],
+                        "formulas": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (stage / "knowledge_plans.json").write_text(
+        json.dumps({"plans": [{"question_id": "q1", "knowledge_points": ["旧教材考点"]}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    record = SimpleNamespace(
+        status="completed",
+        current_stage="completed",
+        error="",
+        analysis_profile="question_only",
+    )
+    monkeypatch.setattr(task_result_view, "stage_dir", lambda _task_id: stage)
+    monkeypatch.setattr(task_result_view, "load_task", lambda _task_id: record)
+
+    report = task_result_view.build_task_result_view("task")
+
+    assert report["metrics"]["evidence_count"] == 0
+    assert report["questions"][0]["evidence_ids"] == []
+    assert [block["label"] for block in report["questions"][0]["blocks"]] == ["解析"]
+    assert report["questions"][0]["knowledge_points"] == []
+
+
+def test_textbook_evidence_only_result_view_uses_public_projection(tmp_path, monkeypatch) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "structured_exam.json").write_text(
+        json.dumps({"items": [{"question_id": "q1", "number": "1", "stem": "题一"}]}),
+        encoding="utf-8",
+    )
+    (stage / "textbook_evidence.json").write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "q1",
+                        "knowledge_points": [
+                            {
+                                "knowledge_point": "扩散路径",
+                                "citations": [
+                                    {"textbook": "课本", "printed_page": "157", "evidence_id": "ev1"}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+                "unresolved": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    record = SimpleNamespace(
+        status="completed",
+        current_stage="completed",
+        error="",
+        analysis_profile="textbook_evidence_only",
+    )
+    monkeypatch.setattr(task_result_view, "stage_dir", lambda _task_id: stage)
+    monkeypatch.setattr(task_result_view, "load_task", lambda _task_id: record)
+
+    report = task_result_view.build_task_result_view("task")
+
+    question = report["questions"][0]
+    assert question["answer"] == ""
+    assert question["has_answer"] is False
+    assert question["knowledge_points"] == ["扩散路径"]
+    assert question["evidence_ids"] == ["ev1"]
+    assert question["blocks"] == [{"label": "教材依据", "text": "扩散路径：课本-p157"}]
+    assert report["metrics"]["covered_count"] == 1

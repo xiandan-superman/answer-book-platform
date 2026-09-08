@@ -52,6 +52,28 @@ def test_task_updates_remain_valid_under_concurrent_health_writes(tmp_path, monk
     assert not list(task_store.task_dir("atomic-task").glob("*.tmp"))
 
 
+def test_legacy_task_inherits_split_thinking_and_new_task_persists_protocols(tmp_path, monkeypatch) -> None:
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    monkeypatch.setattr(task_store, "TASKS_DIR", tasks_dir)
+    task_store.task_dir("legacy").mkdir()
+    legacy = _record().__dict__.copy()
+    legacy["task_id"] = "legacy"
+    legacy["model_thinking"] = "high"
+    legacy.pop("reasoning_thinking", None)
+    legacy.pop("answer_thinking", None)
+    legacy.pop("reasoning_protocol", None)
+    legacy.pop("answer_protocol", None)
+    task_store.task_record_path("legacy").write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = task_store.load_task("legacy")
+
+    assert loaded.reasoning_thinking == "high"
+    assert loaded.answer_thinking == "high"
+    assert loaded.reasoning_protocol == ""
+    assert loaded.answer_protocol == ""
+
+
 def test_interrupted_task_is_queued_for_checkpoint_recovery(tmp_path, monkeypatch) -> None:
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

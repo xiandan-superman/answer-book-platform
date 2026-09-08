@@ -11,6 +11,7 @@ from typing import Any
 from .api_key_config import load_api_keys
 from .model_capability_registry import (
     ensure_provider_registry_sync,
+    get_model_capability,
     get_native_tool_route,
     model_accepts_input,
     provider_has_capability_registry,
@@ -52,10 +53,15 @@ LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
 }
 LINGSUAN_PROVIDER_NAMES = frozenset(LINGSUAN_OFFICIAL_THINKING_DEFAULTS)
 LINGSUAN_GATEWAY_BASE_URL = "https://lingsuan.org/v1"
+WAWAPI_PROVIDER_NAMES = frozenset({
+    "wawapi_openai", "wawapi_google", "wawapi_xai", "wawapi_image_openai", "wawapi_image_google", "wawapi_image_xai",
+})
+WAWAPI_GATEWAY_BASE_URL = "https://wawapii.com/v1"
 LINGSUAN_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"
 )
+WAWAPI_BROWSER_USER_AGENT = LINGSUAN_BROWSER_USER_AGENT
 BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "deepseek",
     "ark",
@@ -65,6 +71,10 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "lingsuan_openai",
     "lingsuan_image",
     "lingsuan_xai",
+    "wawapi_openai",
+    "wawapi_xai",
+    "wawapi_image_openai",
+    "wawapi_image_xai",
 }
 BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
     "sensenova",
@@ -72,6 +82,7 @@ BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
     "bigmodel",
     "google_ai",
     "lingsuan_google",
+    "wawapi_google",
 }
 BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES = {"lingsuan_anthropic"}
 
@@ -109,6 +120,25 @@ class ProviderConfig:
     user_agent: str = ""
 
     def redacted(self) -> dict[str, Any]:
+        public_model_profiles: dict[str, dict[str, Any]] = {}
+        configured_models = dict.fromkeys(
+            (
+                self.default_model,
+                self.vision_model,
+                self.image_model,
+                *self.model_options,
+                *self.vision_model_options,
+                *self.image_model_options,
+            )
+        )
+        for model in configured_models:
+            if not model:
+                continue
+            registry_profile = get_model_capability(self.name, model) or {}
+            public_model_profiles[model] = {
+                **registry_profile,
+                **dict(self.model_profiles.get(model, {})),
+            }
         return {
             "name": self.name,
             "type": self.type,
@@ -133,7 +163,7 @@ class ProviderConfig:
             "vision_model_options": list(self.vision_model_options),
             "supports_vision": self.supports_vision,
             "model_capabilities": {key: list(value) for key, value in self.model_capabilities.items()},
-            "model_profiles": {key: dict(value) for key, value in self.model_profiles.items()},
+            "model_profiles": public_model_profiles,
             "thinking_mode": self.thinking_mode,
             "json_mode_unsupported_models": list(self.json_mode_unsupported_models),
             "api_protocol": self.api_protocol,
@@ -210,6 +240,9 @@ def list_providers() -> dict[str, ProviderConfig]:
             # The current gateway also rejects urllib's default client signature
             # with Cloudflare 1010, so both transport values are vendor defaults.
             base_url = LINGSUAN_GATEWAY_BASE_URL
+        if name in WAWAPI_PROVIDER_NAMES:
+            # Keep copied local configurations on the public gateway endpoint.
+            base_url = WAWAPI_GATEWAY_BASE_URL
         env_name = str(item.get("api_key_env", "")).strip()
         # Frontend key saving writes to .env. Let that saved value override
         # legacy providers.local.json entries so replacing a bad key takes effect.
@@ -375,6 +408,8 @@ def list_providers() -> dict[str, ProviderConfig]:
             user_agent=(
                 LINGSUAN_BROWSER_USER_AGENT
                 if name in LINGSUAN_PROVIDER_NAMES
+                else WAWAPI_BROWSER_USER_AGENT
+                if name in WAWAPI_PROVIDER_NAMES
                 else str(item.get("user_agent", "") or "").strip()
             ),
         )

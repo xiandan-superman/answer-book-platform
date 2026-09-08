@@ -17,6 +17,7 @@ from app.model_capability_registry import (
     render_model_capability_markdown,
     validate_provider_registry_sync,
 )
+from app.settings import list_providers
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDER_CONFIG = ROOT / "config" / "providers.example.json"
@@ -78,6 +79,16 @@ def test_registry_drives_input_and_task_eligibility() -> None:
     assert get_model_capability("missing", "missing") is None
     assert get_native_tool_route("bailian", "qwen3.7-plus")["protocol"] == "responses"
     assert get_native_tool_route("bailian", "qwen-vl-max") is None
+
+
+def test_public_provider_catalog_includes_registry_task_metadata_without_keys() -> None:
+    public = list_providers()["deepseek"].redacted()
+    profile = public["model_profiles"]["deepseek-v4-flash"]
+
+    assert profile["kind"] == "text_generation"
+    assert profile["native_inputs"] == ["text"]
+    assert profile["task_support"]["answer"] == "allowed"
+    assert "api_key" not in public
 
 
 def test_public_tool_profile_cannot_drift_from_verified_registry() -> None:

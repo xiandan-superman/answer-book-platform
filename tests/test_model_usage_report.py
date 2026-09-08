@@ -7,6 +7,43 @@ from pathlib import Path
 
 
 class ModelUsageReportTests(unittest.TestCase):
+    def test_question_only_report_has_no_textbook_stage_columns(self) -> None:
+        from app.model_usage_report import build_model_usage_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage = root / "stage_outputs"
+            output = root / "outputs"
+            stage.mkdir()
+            (stage / "structured_exam.json").write_text(
+                json.dumps({"items": [{"question_id": "q1", "number": "1", "stem": "测试题"}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            stale_feedback = {
+                "provider": "stale",
+                "model": "stale-model",
+                "model_token_feedback": [{"question_id": "q1", "attempts": [{"model": "stale-model"}]}],
+            }
+            (stage / "knowledge_plans.json").write_text(json.dumps(stale_feedback), encoding="utf-8")
+            (stage / "evidence_selection.json").write_text(json.dumps(stale_feedback), encoding="utf-8")
+            (stage / "answer_fragments.json").write_text(
+                json.dumps(
+                    {
+                        "analysis_profile": "question_only",
+                        "provider": "answer",
+                        "model": "answer-model",
+                        "fragments": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            text = build_model_usage_report(stage, output, "question-only").read_text(encoding="utf-8")
+            self.assertIn("答案生成", text)
+            self.assertNotIn("知识点识别", text)
+            self.assertNotIn("教材证据确认", text)
+            self.assertNotIn("stale-model", text)
+
     def test_build_report_lists_final_models_and_figure_source(self) -> None:
         from app.model_usage_report import MODEL_USAGE_REPORT_NAME, build_model_usage_report
 

@@ -22,6 +22,9 @@ def test_default_capacity_uses_workflow_concurrency_without_a_global_provider_ga
         "provider_request_ceiling": 0,
         "bigmodel_request_ceiling": 2,
         "lingsuan_request_ceiling": 6,
+        "wawapi_openai_request_ceiling": 2,
+        "wawapi_google_request_ceiling": 2,
+        "wawapi_xai_request_ceiling": 2,
     }
 
 
@@ -71,3 +74,11 @@ def test_lingsuan_variants_share_six_slots_and_respect_emergency_cap() -> None:
         "Provider", (), {"name": "lingsuan_openai", "base_url": "https://lingsuan.org/v1"}
     )()
     assert _provider_key(google_with_url) == _provider_key(openai_with_url)
+
+
+def test_wawapi_uses_empirically_verified_default_and_global_emergency_cap() -> None:
+    provider = type("Provider", (), {"name": "wawapi_openai"})()
+    with patch.dict("os.environ", {}, clear=True):
+        assert provider_request_max_concurrency(provider) == 2
+    with patch.dict("os.environ", {"MODEL_REQUEST_MAX_CONCURRENCY": "1"}, clear=True):
+        assert provider_request_max_concurrency(provider) == 1

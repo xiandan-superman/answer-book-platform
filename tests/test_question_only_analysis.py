@@ -8,14 +8,19 @@ from docx import Document
 from app.analysis_profiles import (
     EVIDENCE_BACKED_ANALYSIS,
     QUESTION_ONLY_ANALYSIS,
+    TEXTBOOK_EVIDENCE_ONLY_ANALYSIS,
+    analysis_generates_answers,
     analysis_uses_textbook_evidence,
+    is_textbook_evidence_only,
     normalize_analysis_profile,
+    sanitize_question_only_fragments,
 )
 from app.answer_coverage_audit import audit_answer_coverage
 from app.audit_model_repair import _repair_prompt as build_audit_repair_prompt
 from app.docx_model_repair import _repair_prompt as build_docx_repair_prompt
 from app.docx_v4 import build_docx_from_fragments
 from app.prompts import build_answer_draft_prompt
+from app.review_export import build_question_review, write_question_review_csv
 from app.task_read_model import build_exam_run
 
 
@@ -31,6 +36,9 @@ def test_analysis_profile_defaults_and_textbook_policy() -> None:
     assert normalize_analysis_profile(QUESTION_ONLY_ANALYSIS) == QUESTION_ONLY_ANALYSIS
     assert analysis_uses_textbook_evidence(EVIDENCE_BACKED_ANALYSIS)
     assert not analysis_uses_textbook_evidence(QUESTION_ONLY_ANALYSIS)
+    assert analysis_uses_textbook_evidence(TEXTBOOK_EVIDENCE_ONLY_ANALYSIS)
+    assert is_textbook_evidence_only(TEXTBOOK_EVIDENCE_ONLY_ANALYSIS)
+    assert not analysis_generates_answers(TEXTBOOK_EVIDENCE_ONLY_ANALYSIS)
     coverage = audit_answer_coverage(
         {"items": [{"question_id": "q1", "section": "", "number": "1"}]},
         {"fragments": [{"question_id": "q1", "section": "", "number": "1", "answer": "答案"}]},
@@ -112,10 +120,104 @@ def test_question_only_document_title_and_public_task_label(tmp_path: Path) -> N
             "created_at": "2026-08-29 00:00:00",
             "updated_at": "2026-08-29 00:00:00",
             "analysis_profile": QUESTION_ONLY_ANALYSIS,
+            "selected_textbooks": ["/tmp/stale-textbook.pdf"],
         }
     )
     assert task["analysis_profile"] == QUESTION_ONLY_ANALYSIS
     assert task["display_title"].startswith("题目解析")
+    assert task["textbook_material_names"] == []
+
+
+def test_question_only_sanitizes_stale_textbook_evidence_from_data_and_docx(tmp_path: Path) -> None:
+    payload = {
+        "schema_version": "answer_book.answer_fragments.v4",
+        "analysis_profile": QUESTION_ONLY_ANALYSIS,
+        "document_title": "真题答案解析",
+        "recovery_events": [{"question_id": "q1", "strategy": "program_evidence_binding"}],
+        "fragments": [
+            {
+                "schema_version": "answer_book.answer_fragment.v4",
+                "question_id": "q1",
+                "section": "一、简答题",
+                "question_type": "简答题",
+                "number": "1",
+                "answer": "答案正文。",
+                "answer_summary": "答案正文。",
+                "evidence_ids": ["e1"],
+                "warnings": ["程序自动绑定教材依据", "保留提示"],
+                "_meta": {"evidence_binding": {"strategy": "program_top_evidence"}, "other": True},
+                "formulas": [],
+                "blocks": [
+                    {"label": "教材依据", "segments": [{"type": "text", "text": "不应出现的教材内容"}]},
+                    {"label": "解析", "segments": [{"type": "text", "text": "解析正文。"}]},
+                ],
+            }
+        ],
+    }
+    sanitized = sanitize_question_only_fragments(payload)
+    fragment = sanitized["fragments"][0]
+    assert sanitized["document_title"] == "题目解析"
+    assert fragment["evidence_ids"] == []
+    assert [block["label"] for block in fragment["blocks"]] == ["解析"]
+    assert fragment["warnings"] == ["保留提示"]
+    assert fragment["_meta"] == {"other": True}
+    assert sanitized["recovery_events"] == []
+
+    # Defense in depth: the Word builder must also suppress a stale evidence
+    # block even when called directly with an unsanitized checkpoint file.
+    payload["fragments"][0]["blocks"].insert(
+        0,
+        {"label": "教材依据", "segments": [{"type": "text", "text": "仍不应进入 Word"}]},
+    )
+    payload["fragments"][0]["evidence_ids"] = ["e2"]
+    source = tmp_path / "question-only.json"
+    output = tmp_path / "question-only.docx"
+    source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    build_docx_from_fragments(source, output)
+    text = "\n".join(paragraph.text for paragraph in Document(output).paragraphs)
+    assert "题目解析" in text
+    assert "教材依据" not in text
+    assert "仍不应进入 Word" not in text
+
+
+def test_question_only_review_omits_stale_evidence_columns_and_candidates(tmp_path: Path) -> None:
+    (tmp_path / "structured_exam.json").write_text(
+        json.dumps({"items": [{"question_id": "q1", "number": "1", "stem": "测试题"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "answer_fragments.json").write_text(
+        json.dumps(
+            {
+                "analysis_profile": QUESTION_ONLY_ANALYSIS,
+                "fragments": [
+                    {
+                        "question_id": "q1",
+                        "answer": "答案",
+                        "evidence_ids": ["e1"],
+                        "_meta": {"evidence_binding": {"strategy": "program_top_evidence"}},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "retrieval_candidates.csv").write_text(
+        "question_id,evidence_id,textbook\nq1,e1,不应读取的教材\n",
+        encoding="utf-8-sig",
+    )
+    review = build_question_review(tmp_path)
+    row = review["review_rows"][0]
+    assert review["uses_textbook_evidence"] is False
+    assert review["auto_evidence_count"] == 0
+    assert row["evidence_id_count"] == 0
+    assert row["candidate_count"] == 0
+    assert row["top_candidates"] == []
+
+    output = write_question_review_csv(review, tmp_path / "question_review.csv")
+    header = output.read_text(encoding="utf-8-sig").splitlines()[0]
+    assert "evidence" not in header
+    assert "candidate" not in header
 
 
 def test_question_only_analysis_uses_shared_manual_structure_review_gate() -> None:
@@ -143,3 +245,8 @@ def test_question_only_entry_and_request_contract_are_present() -> None:
     assert "function examRequiredTextRoutes()" in app
     assert "analysis_profile: currentExamAnalysisProfile" in app
     assert "if (!questionOnly) await requirePreparedTextbookIndex();" in app
+    assert 'let activeTaskAnalysisProfile = "evidence_backed";' in app
+    assert 'if (page !== "task") stopTaskPolling();' in app
+    assert 'currentPage !== "task" || activeTaskId !== taskId' in app
+    assert 'currentExamAnalysisProfile = task.analysis_profile' not in app
+    assert '["result-question-evidence", "教材引用", !questionOnly]' in app

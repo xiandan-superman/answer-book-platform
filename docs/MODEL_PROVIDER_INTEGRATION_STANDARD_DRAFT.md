@@ -7,6 +7,36 @@
 
 ## 1. 总原则
 
+### 2026-09-08 教材依据独立工具与安全并行
+
+教材依据已收口为统一公开产物合同：题号、知识点、已核验印刷页码。教材原文仅留在任务内部候选与诊断文件，不进入该辅助工具的 Markdown/JSON 结果。新增 `textbook_evidence_only` 任务模式复用题面识别、知识点规划、教材索引、候选检索、证据审定和模型用量记账，完成后立即交付，不调用答案生成、正确性复核、生图和 Word 答案链。
+
+完整真题解析只在纯文本、无作图要求、无可复用答案检查点时，允许“无教材答案草稿”与教材依据链并行。依据审定后必须重新绑定已确认证据，并继续原有内容质量审查和有界回修；投机草稿失败则回到依据完成后的原生成路径。含图/作图题、教材定位辅助工具和恢复任务不投机并行。并行不绕过服务商容量档案、跨任务共享准入、冷却、取消和 Token 记账。
+
+### 2026-09-08 供应商容量实测与 WawAPI 默认值
+
+本次动态核验官方远端与本地检出 origin：OpenAI Codex `https://github.com/openai/codex.git` 默认分支 `main`、HEAD `553df1c691fe8bf7747e50da22f1342984495ae0`，阅读 `codex-rs/core/src/responses_retry.rs` 的 Responses 流错误有界退避、可见重连和保持当前 turn 配置的同请求恢复；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/llm/llm-retry/src/index.ts` 的按供应商耐久重试状态、`packages/core/agent-loop/src/tool-calls.ts` 的有界滚动并行池与取消排空。上游没有提供聚合网关账号容量的通用默认值，因此本项目通过真实原生协议探针建立本地容量档案；教学证据阶段还必须保持用户选择的任务推理强度，不以阶段优化名义静默降级。
+
+WawAPI 真实探针分别使用 GPT-5.6 Sol/Terra Responses、Gemini 3.7 Flash Chat Completions 和 Grok 4.6 Responses，每个模型独立测试 1/2/4 并发、每档 2 轮，另做 Sol/Terra 同账号混合 2/4 并发。修复平台缺少浏览器兼容 User-Agent 导致的 Cloudflare 1010 后，有效样本显示 4 并发能完成短请求，但 Terra 出现 `server_is_overloaded`，Sol 单请求亦有失败，Gemini/Grok 有明显尾延迟；此外既有长任务已观察到 524 与过载。因此 `config/provider_capacity_profiles.json` 为 WawAPI OpenAI、Google、xAI 三个独立密钥通道均设定生产默认 2，保留 4 作为已测短请求峰值而非生产默认。限流、并发拒绝、过载和 524 会在同通道跨任务触发共享冷却；最终请求经内部重试成功不能掩盖底层过载尝试。
+
+今后新供应商不得直接沿用 WawAPI、灵算或官方通道的并发值。接入顺序固定为：原生协议与 User-Agent 连通性 → 单模型 1/2/4 并发短请求 → 同密钥多模型混合波次 → 至少一个平台真实长任务 → 保守地写入生产默认和冷却参数。实测工具 `scripts/probe_provider_capacity.py` 不接受命令行 Key，只读平台本机私密配置，报告不保存凭据或正文。
+
+### 2026-09-08 配置目录与任务模型选择分离
+
+本次动态核验并校验本地检出的官方远端：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `d6489472f3c15e87d2d7763a5fde033545c530f8`，阅读 `codex-rs/app-server-protocol/src/protocol/v2/model.rs` 的公开模型目录字段和 `codex-rs/app-server/src/message_processor.rs` 的服务商能力读取入口；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/client/ui-model-selection/README.md` 与 `packages/session/session-format-v0-to-v1/src/dispositions.ts` 的服务商分组模型目录、完整 `provider/model/reasoningEffort` 选择和耐久选择事件。
+
+对应本平台，API 页面只承担供应商凭证、通道和已登记模型目录；真题解析、按题出题与知识点出题在进入具体任务时，才从“已保存 Key + 当前任务阶段适配 + 输入模态匹配 + 未记录连接失败”的交集中展示模型。任务选择不再接受未登记的自定义模型 ID，也不按模型名称关键词猜测视觉能力；视觉输入、生成类型和任务适配均来自 `config/model_capabilities.json`，服务端通过脱敏 `/api/providers` 投影给页面。与上游的必要差异是：本平台按教学阶段进一步过滤目录，并在无候选时引导回配置中心；不改变已创建任务的耐久路由，不新增模型调用或自动切换。
+
+### 2026-09-07 渐进式模型配置与能力门
+
+本次动态核验了官方远端：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `d665e3bbc81b013baa73d067507169c20395b988`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed`。实际阅读 Codex `codex-rs/core/src/tools/spec_plan.rs` 的 `image_generation_available`：图片工具只能在功能开关、服务商能力与当前模型图片输入能力同时满足时暴露；同时阅读 DeepSeek `packages/core/agent-loop/src/agent.ts` 的 `preStep`/`turn` 上下文组装和步骤循环。
+
+对应本平台，真题、按题生成与按知识点生成的默认页面只显示主模型：选中纯文本模型时才展开独立识图路由；只有当前“服务商 + 模型 + 协议”已进入本地原生工具闭环白名单且能读图时，才显示并启用主模型自主生图。其他模型明示使用 `legacy_figure_pipeline`，不在提交任务后再才拒绝，也不将未验证网关的 `supports_tool_calls` 声明当作通过证据。高级文字分工未展开时，推理与正确性复核跟随主解析模型；展开后才允许独立选择。本次只改变前端选择与请求中的显式编排模式，未改动模型工具循环、重试、计费或输出合同。
+
+### 2026-09-07 WawAPI 聚合通道登记
+
+本次新增 WawAPI 通道时动态核验了官方远端：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `16ff14c266179e6a762dc8081e9dab73a96683e0`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed`。此改动只新增本地服务商、模型和密钥隔离登记，未改变请求编排、工具循环或重试逻辑；因此没有将新网关模型声称为已通过 Harness 或平台实测。其公开首页仅声明统一 API 接入，实际模型目录与协议仍须以连接测试和真实任务验收为准。
+
 ### 2026-09-06 真实验收后的上下文复查
 
 OPT-20260906-10 再次核验下列官方HEAD未变。真实证据发现完整蓝图规划错误复用了细化的顶层数组schema，而消费者读取 blueprint.exercise_plan；现按明确任务阶段选择不同结构，并保留历史顶层布局的无损读取，遇到双版本冲突不自动择一。此为本项目生产者/消费者合同修复，不改变上游或图片工具循环，也不以schema通过代替教学质量。
@@ -31,14 +61,22 @@ OPT-20260906-10 再次核验下列官方HEAD未变。真实证据发现完整蓝
 4. 输出合同、错误翻译、限流和降级策略已验证；
 5. 任务开始前能判断该模型是否兼容当前输入和任务阶段。
 
+### 2026-09-08 请求类型与推理强度准入合同
+
+核对时间：2026-09-08（Asia/Shanghai）。动态核验 OpenAI Codex 官方远端 `https://github.com/openai/codex.git` 默认分支 `main`、完整 SHA `2cbbf0c9b542a36a1c3284b5e804917635b6f666`，阅读 `codex-rs/protocol/src/openai_models.rs` 的逐模型 `supported_reasoning_efforts`、默认推理强度及 Responses 推理参数合同，并核对核心测试使用 `/v1/responses`；动态核验 DeepSeek Harness 官方远端 `https://github.com/deepseek-ai/deepseek-harness.git` 默认分支 `master`、完整 SHA `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/api/session-controller/src/types.ts` 与 `packages/subagent/tool-subagent/src/list-models.ts` 的精确供应商/模型路由、可选推理强度和默认强度目录。
+
+因此，新服务商或新模型的准入单位进一步固定为 **服务商通道 + 模型 ID + 请求类型 + 推理强度**。请求类型必须通过真实调用明确登记为 `responses`、`chat_completions`、`anthropic_messages` 或其他原生协议；不能因接口兼容 OpenAI、模型名称相同或另一供应商已经验证，就默认选择 Chat 或 Responses。每条请求类型都要分别验证支持的推理档位、默认档位、最低档位、线上参数映射和不支持时的错误表现。新记录缺少任一项时只能处于待验证状态，不得出现在任务模型选择器中。
+
+GPT 文本模型在本平台统一使用并实测登记 Responses；供应商不支持 Responses 时，该 GPT 路由不予准入，除非用户后续明确修改这项平台合同。不得以 Chat 作为运行时回退，也不得根据一般超时、限流或 5xx 静默改协议。Gemini、Grok 及其他模型则以该供应商该模型的实测结论确定 Chat、Responses 或原生协议，而不是按模型家族写死。用户选择的推理强度必须随任务持久化；重试、恢复、并行分支和结构纠错不得改变模型、请求类型或推理强度。
+
 ### 1.1 官方 Harness 身份与刷新纪律
 
 所有模型调用相关的实现、故障和设计，优先对照以下两个官方开源上游；同名项目、Fork、镜像、包管理器页面、搜索摘要和第三方解读都不能替代官方源码：
 
-| 上游 | 唯一认可的官方 Git 地址 | 2026-09-05 核验快照 |
+| 上游 | 唯一认可的官方 Git 地址 | 2026-09-08 核验快照 |
 |---|---|---|
-| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`ddf04ad26789d040f9ef6a96736f76602e35a6cc` |
-| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`d347e703908d0406b7a7ef80e3a0e594d86b2215` |
+| OpenAI Codex Harness | `https://github.com/openai/codex.git` | 默认分支 `main`；`2cbbf0c9b542a36a1c3284b5e804917635b6f666` |
+| DeepSeek Harness | `https://github.com/deepseek-ai/deepseek-harness.git` | 默认分支 `master`；`c389f96bf3a9b6807cb71ed6bdad5849be0df6d8` |
 
 快照只用于判断参考是否过期，不代表永久锁定分支或提交。每次相关排障或修改开始前必须查询官方远端 `HEAD`，动态取得默认分支和最新提交；使用本地检出时还必须确认 `origin` 精确匹配上表 Git 地址并取得最新远端引用。实际结论必须记录仓库 URL、默认分支、完整提交 SHA、核对时间和阅读文件，不能只写“参考 Codex/DeepSeek”。
 
@@ -277,19 +315,30 @@ Word B 版直接核验 `https://github.com/iOfficeAI/OfficeCLI.git` 默认分支
 
 ## 8. 配置与代码要求
 
-后续实现时建议将当前 `model_capabilities: [text, vision]` 升级为逐模型结构化记录，并满足：
+后续实现时必须将当前 `model_capabilities: [text, vision]` 升级为逐模型结构化记录，并满足：
 
 - 内置模型不得通过名称规则推断能力；
 - 服务商级能力只能描述接口是否具备某功能，不能覆盖模型级结论；
 - 任何新增 `model_options` 必须同时新增能力记录和测试；
+- 每个“服务商通道 + 模型 ID”必须显式登记并实测 `api_protocol`，区分 `responses`、`chat_completions`、`anthropic_messages` 或其他原生请求类型；不得按模型名称推断，也不得跨服务商、跨协议复用结论；
+- 每个已登记请求类型必须列出 `supported_thinking_modes`、`default_thinking_mode`、可选的 `thinking_minimum`、线上参数映射及验证日期；“支持思考”这一布尔值不能代替可选档位清单；
+- 新模型在请求类型或推理强度仍为 `unknown`、未完成真实探针、默认档位不在支持集合中，或用户所选档位没有对应线上参数时，不得发布到任务选择器；
+- 任务界面只能展示当前精确路由支持的推理档位，并把最终采用的模型、请求类型和推理强度共同写入任务与调用账本；
+- 重试、结构纠错、恢复和并行分支必须保持原请求类型与原推理强度；协议切换只能走已单独验证并显式允许的等价路径；
 - 示例配置与实际本地配置使用同一 schema，但实际密钥永不写入能力表；
 - 能力表变更应触发相关模型合同测试；
 - 模型或上游版本变化后，原验证结论自动过期并重新测试；
 - 管理页面应能展示“已验证能力、验证日期、适用任务、限制”，而不是只展示营销名称。
 
+2026-09-08 已落地第一阶段运行合同：真题解析将教材依据与题目解析的模型、推理强度和请求类型分别固化到任务记录，恢复与并行分支继续使用创建时快照；题目解析的正确性复核沿用题目解析强度。按题出题和知识点出题各自只保存一个主模型、一个推理强度和一个请求类型，不再读取真题解析页的全局 Thinking 值。前端按逐模型 `supported_thinking_modes` 和 `thinking_minimum` 收窄选项，并显示实际请求类型；尚未迁移到新字段的既有路由保留原可选范围以兼容历史配置，但后续新增路由不得使用该兼容分支。服务端拒绝低于已登记最低值、超出显式支持集合、任务中擅改协议以及非 Responses 的 GPT 文本路由。
+
 ## 9. 发布审查清单
 
 - [ ] 新模型有独立能力记录，不依赖同系列模型推断
+- [ ] 已对该供应商通道和模型分别实测请求类型，并明确登记 Responses、Chat Completions、Anthropic Messages 或其他原生协议
+- [ ] 已实测并登记全部可用推理档位、默认档位、最低档位及每个协议的参数映射；未知或未测档位不向用户展示
+- [ ] 用户选择器只显示精确路由支持的推理档位，任务与调用账本能追溯实际模型、请求类型和推理强度
+- [ ] 重试、恢复、并行分支和结构纠错保持原请求类型与推理强度；任何协议回退均已独立验证、显式允许且能力等价
 - [ ] 官方文档与查阅日期已登记
 - [ ] 输入、输出、上下文、图片和结构化限制已填写
 - [ ] 文本/图片/JSON/长输出测试按声明完成

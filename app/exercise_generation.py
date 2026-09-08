@@ -9,6 +9,7 @@ import random
 import re
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -5209,9 +5210,21 @@ def _provider_model_supports_vision(provider, model: str) -> bool:
     return provider_model_supports_vision(provider, model)
 
 
+def _pin_practice_request_protocol(provider, model: str, protocol: object):
+    selected_protocol = _clean(protocol, 40).lower()
+    if not selected_protocol:
+        return provider
+    profiles = {key: dict(value) for key, value in (getattr(provider, "model_profiles", {}) or {}).items()}
+    profile = dict(profiles.get(model) or {})
+    profile["api_protocol"] = selected_protocol
+    profiles[model] = profile
+    return replace(provider, api_protocol=selected_protocol, model_profiles=profiles)
+
+
 def _model_runtime(payload: dict[str, Any], has_images: bool):
     primary = get_provider(_clean(payload.get("provider"), 100) or None)
     primary_model = resolve_provider_model(primary, _clean(payload.get("model"), 200) or None)
+    primary = _pin_practice_request_protocol(primary, primary_model, payload.get("api_protocol"))
     if not has_images or _provider_model_supports_vision(primary, primary_model):
         return primary, primary_model
 
@@ -5234,7 +5247,8 @@ def _primary_model_runtime(payload: dict[str, Any]):
     generation must not silently switch away from the user's selected model.
     """
     primary = get_provider(_clean(payload.get("provider"), 100) or None)
-    return primary, resolve_provider_model(primary, _clean(payload.get("model"), 200) or None)
+    model = resolve_provider_model(primary, _clean(payload.get("model"), 200) or None)
+    return _pin_practice_request_protocol(primary, model, payload.get("api_protocol")), model
 
 
 def _practice_generation_client(provider, model: str) -> OpenAICompatibleClient:

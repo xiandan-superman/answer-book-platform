@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-08-29",
+  "updated_at": "2026-09-07",
   "task_labels": {
     "source_analysis": "材料理解",
     "knowledge_planning": "考查内容规划",
@@ -135,6 +135,32 @@
         "gpt-5.6-terra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"provider_declared","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
       }
     },
+    "wawapi_openai": {
+      "display_name": "WawAPI · GPT",
+      "models": {
+        "gpt-5.6-sol": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gpt-5.6-terra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gpt-6-astra": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "wawapi_google": {
+      "display_name": "WawAPI · Gemini",
+      "models": {
+        "gemini-3.8-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gemini-3.7-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "gemini-3.6-flash": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "wawapi_xai": {
+      "display_name": "WawAPI · Grok",
+      "models": {
+        "grok-4.6": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"},
+        "grok-4.5": {"kind":"text_generation","evidence_grade":"C","native_inputs":["text","image"],"native_outputs":["text"],"structured_output":"unknown","thinking":"unknown","task_support":{"source_analysis":"limited","blueprint":"limited","generation":"limited","answer":"limited","review":"unknown"},"last_verified_at":"unknown"}
+      }
+    },
+    "wawapi_image_openai": {"display_name":"WawAPI · GPT 图片","models":{"gpt-image-2":{"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}}},
+    "wawapi_image_google": {"display_name":"WawAPI · Gemini 图片","models":{"gemini-3-pro-image-preview":{"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"},"gemini-3.1-flash-image-preview":{"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}}},
+    "wawapi_image_xai": {"display_name":"WawAPI · Grok 图片","models":{"grok-imagine-image-2.0":{"kind":"image_generation","evidence_grade":"C","native_inputs":["text"],"native_outputs":["image"],"structured_output":"not_applicable","thinking":"not_applicable","task_support":{"image_generation":"limited"},"last_verified_at":"unknown"}}},
     "lingsuan_openai": {
       "display_name": "灵算 OpenAI",
       "models": {

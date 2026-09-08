@@ -14,6 +14,7 @@ from docx.shared import Cm, Pt, RGBColor
 from lxml import etree
 from PIL import Image
 
+from .analysis_profiles import sanitize_question_only_fragments
 from .capabilities.expression_rendering import build_expression_render_plan, preflight_expression_render, render_expression_omml
 from .capabilities.text_expression_rendering import build_text_expression_render_plans
 from .document_contracts import (
@@ -1445,6 +1446,7 @@ def _add_indented_answer_text(
 
 def _build_docx_from_fragments_c(fragments_json: Path, output_docx: Path, *, strict_answer_summary_formula_audit: bool = True) -> Path:
     data = json.loads(fragments_json.read_text(encoding="utf-8"))
+    sanitize_question_only_fragments(data)
     doc = setup_document()
     add_text_paragraph(
         doc,

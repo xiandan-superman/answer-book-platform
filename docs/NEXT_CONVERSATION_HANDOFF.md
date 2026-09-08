@@ -5,7 +5,7 @@
 
 ## 1. 当前状态
 
-- 项目目录：`/Users/ljj/Documents/分析多模态问题/answer_book_platform_v1_v6.8_material_figure_schema_flow_standalone`
+- 项目目录：`/Users/ljj/Documents/分析多模态问题/answer-book-platform`
 - 当前分支：`codex/unified-task-platform-v9`
 - 本地 HEAD：`cf31dcc`（`fix: stabilize practice generation and regeneration v8.23`）
 - `VERSION`：`8.23`，本轮未修改版本号。
@@ -227,7 +227,7 @@
 
 ```text
 继续完善真题解析与生题平台。项目目录是：
-/Users/ljj/Documents/分析多模态问题/answer_book_platform_v1_v6.8_material_figure_schema_flow_standalone
+/Users/ljj/Documents/分析多模态问题/answer-book-platform
 
 请先完整阅读：
 docs/NEXT_CONVERSATION_HANDOFF.md

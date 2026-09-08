@@ -468,6 +468,53 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "wawapi_openai": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_OPENAI_API_KEY",
+      "api_key": "",
+      "default_model": "gpt-5.6-sol",
+      "vision_model": "gpt-5.6-sol",
+      "vision_model_options": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"],
+      "supports_vision": true,
+      "model_capabilities": {"gpt-5.6-sol": ["text", "vision"], "gpt-5.6-terra": ["text", "vision"], "gpt-6-astra": ["text", "vision"]},
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"],
+      "model_option_labels": {"gpt-5.6-sol": "GPT-5.6 Sol", "gpt-5.6-terra": "GPT-5.6 Terra", "gpt-6-astra": "GPT-6 Astra"},
+      "allow_custom_model": false,
+      "model_hint": "WawAPI 聚合网关 · GPT 文本与多模态理解模型。",
+      "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+    },
+    "wawapi_google": {
+      "type": "openai_compatible", "api_protocol": "chat_completions", "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_GOOGLE_API_KEY", "api_key": "", "default_model": "gemini-3.8-flash", "vision_model": "gemini-3.8-flash",
+      "vision_model_options": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"], "supports_vision": true,
+      "model_capabilities": {"gemini-3.8-flash": ["text", "vision"], "gemini-3.7-flash": ["text", "vision"], "gemini-3.6-flash": ["text", "vision"]},
+      "supports_image_generation": false, "image_model": "", "model_options": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"],
+      "model_option_labels": {"gemini-3.8-flash": "Gemini 3.8 Flash", "gemini-3.7-flash": "Gemini 3.7 Flash", "gemini-3.6-flash": "Gemini 3.6 Flash"},
+      "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Gemini 文本与多模态理解模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+    },
+    "wawapi_xai": {
+      "type": "openai_compatible", "api_protocol": "responses", "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_XAI_API_KEY", "api_key": "", "default_model": "grok-4.6", "vision_model": "grok-4.6", "vision_model_options": ["grok-4.6", "grok-4.5"], "supports_vision": true,
+      "model_capabilities": {"grok-4.6": ["text", "vision"], "grok-4.5": ["text", "vision"]}, "supports_image_generation": false, "image_model": "",
+      "model_options": ["grok-4.6", "grok-4.5"], "model_option_labels": {"grok-4.6": "Grok 4.6", "grok-4.5": "Grok 4.5"},
+      "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Grok 文本与多模态理解模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+    },
+    "wawapi_image_openai": {
+      "type": "openai_compatible", "api_protocol": "responses", "base_url": "https://wawapii.com/v1", "api_key_env": "WAWAPI_IMAGE_OPENAI_API_KEY", "api_key": "",
+      "default_model": "gpt-image-2", "supports_text_generation": false, "supports_vision": false, "supports_image_generation": true, "image_model": "gpt-image-2", "image_model_options": ["gpt-image-2"], "image_model_option_labels": {"gpt-image-2": "GPT Image 2"}, "image_size": "1024x1024", "model_options": [], "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · GPT 生图模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+    },
+    "wawapi_image_google": {
+      "type": "openai_compatible", "api_protocol": "chat_completions", "base_url": "https://wawapii.com/v1", "api_key_env": "WAWAPI_IMAGE_GOOGLE_API_KEY", "api_key": "",
+      "default_model": "gemini-3-pro-image-preview", "supports_text_generation": false, "supports_vision": false, "supports_image_generation": true, "image_model": "gemini-3-pro-image-preview", "image_model_options": ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"], "image_model_option_labels": {"gemini-3-pro-image-preview": "Gemini 3 Pro Image Preview", "gemini-3.1-flash-image-preview": "Gemini 3.1 Flash Image Preview"}, "image_size": "1024x1024", "model_options": [], "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Gemini 生图模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+    },
+    "wawapi_image_xai": {
+      "type": "openai_compatible", "api_protocol": "responses", "base_url": "https://wawapii.com/v1", "api_key_env": "WAWAPI_IMAGE_XAI_API_KEY", "api_key": "",
+      "default_model": "grok-imagine-image-2.0", "supports_text_generation": false, "supports_vision": false, "supports_image_generation": true, "image_model": "grok-imagine-image-2.0", "image_model_options": ["grok-imagine-image-2.0"], "image_model_option_labels": {"grok-imagine-image-2.0": "Grok Imagine Image 2.0"}, "image_size": "1024x1024", "model_options": [], "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Grok 生图模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+    },
     "lingsuan_image": {
       "type": "openai_compatible",
       "base_url": "https://lingsuan.org/v1",

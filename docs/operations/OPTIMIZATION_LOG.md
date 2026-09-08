@@ -32,6 +32,155 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260909-01｜v0.9.49 正式源码版本收口
+
+- status: verified
+- scope: 本轮教材引用定位、教材复用、真题安全并行、模型协议/思考深度分流、WawAPI 容量与全平台并发治理的正式更新。
+- changed: 将用户可见版本号、发布清单与更新说明同步到 `0.9.49`；待暂存索引完成凭据扫描、源码包反向验证和隔离启动后推送 `main`，正式标签与附件仍由受保护工作流产生。
+- trigger: 用户确认已完成的目标配置需要推送更新版本，而日常 `main` 推送不会自动对普通用户下发新版。
+- invariants: 发布不得加入 API Key、用户材料、任务、日志、缓存或输出；不手工打标签，不绕过 Python 3.11 完整门禁、源码包反向验证和隔离启动。
+- do_not_regress: 版本号、发布清单和 Changelog 必须一致；正式更新必须等待 GitHub 完整质量流程成功后才能称为已公开，本地 ZIP 和 Git push 不等于已发布。
+- impact_matrix: 版本元数据覆盖真题解析、按题出题、知识点出题、辅助工具、历史任务恢复、Word/PDF 交付及共享模型基础设施；发布收口不改写用户数据或历史结果，不发起付费模型请求。
+- verification: Python 3.11.15 锁定临时环境执行 `python scripts/run_quality_gates.py --full` 通过：Ruff 通过，Mypy 89 个源文件无问题，pytest 2228 passed、17 deselected、12 warnings，总覆盖率 72%。版本一致性及 17 项发布回归通过；59 个暂存文件的脱敏凭据扫描无命中。从 Git 索引生成的 `0.9.49` 候选 ZIP 反向验证零问题；解压后使用隔离数据目录启动，`/api/version` 返回 `0.9.49`且首页 HTTP 200。最终包大小与校验值记录于发布清单。
+
+### OPT-20260908-09｜任务级模型协议与推理强度分流
+
+- status: verified
+- scope: 真题解析、教材引用定位、题目解析、按题出题、知识点出题的模型选择、任务持久化、恢复和请求准入。
+- changed: 真题解析主界面同时显示“教材依据”和“题目解析”两张模型卡，各自选择模型与思考深度；教材链使用 `reasoning_thinking`，答案、正确性复核和修复链使用 `answer_thinking`。按题出题和知识点出题分别保存一个主模型及一个思考深度。任务同时固化精确请求类型，恢复时钉住模型与协议；界面随模型显示 Chat/Responses/Messages 及可用档位，服务端拒绝不支持档位、低于最低档位、任务内改协议和非 Responses 的 GPT 文本路由。
+- trigger: 既有页面只有一个全局 Thinking 值，教材依据、答案解析及两条生题业务会错误共享；请求协议只从当前供应商配置临时读取，无法保证恢复时仍是创建任务时选择的 Chat 或 Responses。
+- invariants: 不改变教材依据、答案生成、复核、质量门和生图的调用次数；不以优化阶段为由降推理强度；旧任务缺少新字段时继承原 `model_thinking` 并继续可恢复。真题解析保留教材与答案两条可独立配置的文字路线，生题系统仍只有一个主模型和一次强度选择；API Key 不进入任务或仓库。
+- do_not_regress: 教材依据不得再读取答案强度，答案与复核不得读取教材强度；按题/知识点出题不得再读取真题页隐藏的全局 Thinking；重试、恢复和并行分支不得更换已存模型、协议或强度；GPT 文本模型不得退回 Chat Completions。
+- upstream_reference: 延续 OPT-20260908-08 的当日动态核验：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `2cbbf0c9b542a36a1c3284b5e804917635b6f666`，`openai_models.rs` 按模型列出支持与默认推理强度并使用 Responses 推理合同；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，`types.ts` 与 `list-models.ts` 按精确供应商/模型路由公开推理档位。聚合网关仍以本平台实测登记为准。
+- impact_matrix: 完整真题解析保存两套文字强度与协议；教材引用定位只消费教材设置；题目解析只消费解析设置；按题和知识点出题各保存自己的单一设置。视觉回退、生图模型、历史任务内容、教材缓存、Word/PDF 和交付格式不变；未进行付费模型调用或发布。
+- verification: 整库 `.venv/bin/python -m pytest -q` 2228 passed、17 deselected；受影响 Python 文件 Ruff、`node --check web/app.js`、能力表同步检查与 `git diff --check` 全部通过。使用隔离数据目录和仅用于显示配置状态的虚拟 Key 启动真实本地服务，Playwright 验证真题页同时展示教材依据/题目解析两套模型与思考深度，WawAPI GPT 显示 Responses；按题出题页只展示一个主模型和一个思考深度；页面无 console error。隔离数据与浏览器会话已清理，未发起模型请求。
+
+### OPT-20260908-08｜模型请求类型与推理强度准入清单
+
+- status: verified
+- scope: 新服务商、新模型接入标准及发布审查清单。
+- changed: 将准入单位明确为“服务商通道 + 模型 ID + 请求类型 + 推理强度”；要求分别实测并登记 Responses、Chat Completions、Anthropic Messages 或其他原生协议，以及支持档位、默认/最低档位和线上参数映射。新路由存在未知项时不得进入任务选择器；重试、恢复、并行分支和结构纠错必须保持原协议与原推理强度。GPT 文本模型统一使用 Responses；供应商不支持时该 GPT 路由不予准入，不能回退 Chat。其他模型按精确路由实测确定请求类型。
+- trigger: 用户补充确认，新模型/服务商接入除可用推理强度外，还必须确定请求类型是 Chat 还是 Responses，避免再次出现同一 GPT 模型误走 Chat 或跨供应商套用配置。
+- invariants: 不修改现有模型路由、用户选择、任务数据或调用行为；不执行真实付费请求；协议和推理能力只能由精确供应商/模型路由的实测证据确定，不能按名称推断。后续任务选择必须保留用户分别为教材依据和题目解析选择的模型与推理强度，生题任务仍只使用一个主模型及一次强度选择。
+- do_not_regress: 新增模型不得只填写“支持思考”布尔值或供应商默认协议；不得把官方直连、聚合网关、Chat 和 Responses 的验证结论互相继承；未知/未测档位不得向用户展示；一般超时、429 或 5xx 不得触发静默协议切换。
+- upstream_reference: 2026-09-08 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `2cbbf0c9b542a36a1c3284b5e804917635b6f666`，阅读 `codex-rs/protocol/src/openai_models.rs` 并核对核心 `/v1/responses` 测试；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/api/session-controller/src/types.ts` 与 `packages/subagent/tool-subagent/src/list-models.ts`。两者均按精确模型路由暴露推理档位和默认档位；聚合网关实际协议仍由本平台独立实测。
+- impact_matrix: 本次只更新接入标准与验收门槛，现有真题解析、题目解析、按题出题、知识点出题、辅助工具、已存配置和历史任务均不改变；后续新路由必须补齐协议及推理档位证据后才能发布。
+- verification: `python3 scripts/sync_model_capability_docs.py --check` 通过，确认现有服务商配置、能力注册表和自动生成审阅表保持同步；`git diff --check` 通过。未执行真实付费模型调用。
+
+### OPT-20260908-07｜教材检索范围泛化与并发路由交付验收
+
+- status: verified
+- scope: 真题解析和“教材引用定位”共用的教材候选检索、纯文本完整解析并行、任务生命周期、全平台模型通道监控。
+- changed: 教材候选检索升级为通用语义范围一致性策略，覆盖元数、组元数和维度的显式冲突；孤立公式/图块补充有界同页语境，公式保留位不再抢占范围冲突证据，top-k 先保留不同已核验页再补同页块。运行监控新增供应商共享通道行，展示实际活动模型、运行/上限、等待和冷却。完成辅助工具暂停/恢复/取消/下载、完整解析安全并行、缓存复用和浏览器验收。
+- trigger: 一道二元相图题的候选曾被同词的三元章节及同页重复块挤占；同类问题也可能发生在组元数、空间维度和其他教材中，不能按题号或页码修补。全平台共享并发虽已生效，但管理页此前无法解释同一供应商不同模型为什么共同等待或冷却。
+- invariants: 不写死题号、年份、教材章节或页码；不改变用户选择的服务商、模型、Responses 协议或推理强度，不扩大 top-k、提示上下文、调用次数和 token 预算；范围冲突只降权而不删除可迁移证据。所有并行请求继续共用实测容量 2、同一公平队列和冷却；教材依据完成后仍须重绑并经过原质量门，公开辅助结果仍只含知识点和已核验页码。
+- do_not_regress: 后续范围词扩展必须作为语义族和跨领域回归实现，不得增加单题/单页例外；候选前排不得再次被同一页重复块垄断；运行监控必须按真实共享通道聚合而不是伪装成每任务独立配额；暂停、取消、恢复和安全下载边界不得因并行化失效。
+- upstream_reference: 2026-09-08 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `553df1c691fe8bf7747e50da22f1342984495ae0`，阅读 `codex-rs/core/src/responses_retry.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/llm/llm-retry/src/index.ts`。本地仍按聚合网关密钥通道统一限流，教材语义范围与页码多样性是教学证据层的必要附加约束。
+- impact_matrix: 真题解析与教材引用辅助工具共用检索修复；题目解析不使用教材候选，按题/知识点出题不走该证据链；全平台三条业务线及辅助工具共用供应商通道监控和公平准入；历史任务文件、既有检查点及 Word/PDF 不改写；新任务的最终 Word 继续使用已确认证据。
+- verification: 定向回归 51 passed，跨领域样本覆盖二元/三元、二维/三维、二组元/三组元及不同页优先；整库 `/tmp/answer-book-py311/bin/python -m pytest -q` 2225 passed、17 deselected。受影响文件 Ruff、`node --check web/app.js` 和 `git diff --check` 通过。隔离数据目录真实运行辅助工具，暂停后恢复为 `completed_with_issues` 并可安全下载 Markdown/JSON/调用明细，另一任务在结构确认处取消后保持 `cancelled`。以 WawAPI Responses、`gpt-5.6-sol`、low 和已缓存教材完成 2 题完整解析：145.3 秒、8 次请求、已返回输入 53,484/输出 4,807 token，`answer_generation_parallel` 为 started→passed，最终正式 Word 通过；一次 15.1 秒供应商超时由原同路由有界补偿恢复。Playwright 实页验证同一 WawAPI 通道显示 Sol/Terra、运行 2/2、等待 1 和冷却倒计时。临时 Key 未落盘；未提交、推送或发布。
+
+### OPT-20260908-06｜教材证据阶段保持任务推理强度
+
+- status: verified
+- scope: 真题解析与“教材引用定位”辅助工具共用的教材证据确认、扩展检索重审、模型调用账本。
+- changed: 教材证据确认不再固定关闭推理，改为逐次透传当前服务商配置中的任务推理强度；保留 8192 输出上限、90 秒硬截止和同路由有界补偿。
+- trigger: WawAPI 真实任务账本显示知识点识别使用用户选择的 low，但教材证据确认被静默记为 disabled，违背“分阶段推理强度不调整”的明确合同。
+- invariants: 不换服务商、模型或协议，不放宽页码核验和未解决标记，不增加重试次数；推理强度变化可能影响供应商返回的推理 token 和耗时，必须由用户任务选择决定，程序不得自行降级。
+- do_not_regress: 初次证据确认、扩展候选重审及视觉回退均须使用其当前活动 ProviderConfig 的 `thinking_mode`；不得为节省时间或 token 在单个阶段写死 `disabled`。
+- upstream_reference: 2026-09-08 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `553df1c691fe8bf7747e50da22f1342984495ae0`，阅读 `codex-rs/core/src/responses_retry.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/llm/llm-retry/src/index.ts`。两者的恢复机制保留当前请求/turn 或 provider 配置，本项目据此不在证据子阶段改写用户的推理选择。
+- impact_matrix: 真题解析和辅助工具统一修复；题目解析不启用教材证据，按题/知识点出题不调用该模块；历史结果和恢复检查点不改写；Word/PDF 与公开教材依据格式不变。
+- verification: 教材证据选择、绑定、未解决策略、追踪导出、共享教材库、缓存、DOCX 索引、教材包和页码身份回归共 37 passed；受影响文件 Ruff 与 `git diff --check` 通过。修复后以同一 WawAPI Responses 模型、low、已缓存教材完成一套 9 题真实任务，模型汇总只出现 `thinking=low`，确认两个阶段均保持任务强度；墙钟 522.1 秒，22 次请求成功 20 次、两次供应商读取超时均按现有有界流程结束，交付 36 个知识点、72 条页码引用并将受影响的 5 个知识点明确标为未解决。临时 Key 未写入配置；未提交、推送或发布。
+
+### OPT-20260908-05｜Windows 长路径 checkpoint 原子写入修复
+
+- status: verified
+- scope: 真题/题目解析答案检查点、按题/知识点出题分题预检、图片资产与共享 JSON 原子写入、历史任务恢复。
+- changed: Windows 低层文件调用对深路径统一补 `\\?\` 前缀，checkpoint 临时文件改用短叶子名，保留写入、fsync、原子替换和失败清理语义。
+- trigger: Windows 用户任务在答案生成后写 checkpoint 时，旧临时文件路径恰好 260 字符，Win32 误报 `FileNotFoundError` 并使整任务失败。
+- invariants: 不改候选内容、检查点格式、摘要校验、最新指针提交顺序、任务状态、模型路由或调用预算；旧任务和短路径行为保持兼容。
+- do_not_regress: 不得再将完整内容哈希复制到临时文件名；Windows 上的 `mkstemp`/`replace` 路径必须经长路径适配；不得为规避路径错误改用非原子覆盖或放宽检查点完整性。
+- impact_matrix: 真题与无教材题目解析共用 output checkpoint；按题/知识点出题共用分题预检和交付 manifest；图片 manifest 同用原子写入；历史检查点格式不变、仅后续写入受保护；Word/PDF 内容与交付门禁不变。
+- verification: 共享存储/检查点/图片/恢复/分题交付定向回归 61 passed；整库 `.venv/bin/python -m pytest -q` 2221 passed、17 deselected；`mypy app/artifact_store.py`、受影响文件 Ruff、Python 编译和 `git diff --check` 全部通过。回归显式构造旧临时路径≥260 字符、新临时路径<240 字符的边界；未运行 Windows CI/本地付费模型任务，未提交、推送、发布或部署。
+
+### OPT-20260908-04｜教材依据独立交付与安全并行
+
+- status: verified
+- scope: 辅助工具入口与结果页、真题任务 profile、教材索引复用、教材依据产物、纯文本真题解析的答案/依据并行。
+- changed: 新增统一 `TextbookEvidenceService` 与只含题号、知识点、已核验页码的公开 JSON/Markdown 投影；新增“教材引用定位”辅助工具，复用已预处理教材并在依据审定后提前交付；完整真题仅对无图无作图要求的新任务并行生成无教材草稿，依据完成后重绑并继续原质量门。
+- trigger: 多套真题重复使用同一教材时不应反复预处理；独立 Runner 需要只交付知识点和页码；完整解析的教材依据与部分答案草稿存在重叠执行窗口。
+- invariants: 不改用户选择的推理强度、模型和协议；未验证页码不得公开交付；教材原文不进入辅助工具结果；并行草稿必须经确认证据重绑、内容审查和回修，且所有请求继续受共享并发门、冷却、取消和记账约束。
+- do_not_regress: 辅助工具不得重新引入答案/生图/Word 交付链；不得向公开产物复制候选教材原文；含图、作图、恢复检查点或无答案 Key 任务不得开启投机草稿；新供应商仍必须实测后配置并发值。
+- upstream_reference: 2026-09-08 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `3f76e88a480f15258eab3512e7eafca77bbe80ee`，阅读 `codex-rs/core/src/responses_retry.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/llm/llm-retry/src/index.ts` 与 `packages/core/agent-loop/src/tool-calls.ts`。本项目额外保留教学证据绑定和质量门。
+- impact_matrix: 辅助工具产出 Markdown/JSON 与用量报告；完整纯文本真题可缩短墙钟时间，但不减少必需质量门；含图题、题目解析和历史恢复保持原执行顺序。未提交、推送或发布。
+- verification: 最终全量 `.venv/bin/python -m pytest -q` 2222 passed、17 deselected；Ruff、`node --check web/app.js` 与 `git diff --check` 通过。使用隔离临时数据目录启动真实本地服务，Playwright 验证首页入口、教材定位模型页、无答案/生图要求和下一步文案通过；隔离目录已移入废纸篓。另以 WawAPI Responses、`gpt-5.6-sol`、low 完成一套 9 题真实付费教材定位任务：复用 5850 块教材缓存，交付 39 个知识点、93 条页码引用，仅 1 个知识点因证据不足明确标记未解决；23 次请求中成功 21 次、两次在 90 秒硬截止后由同路由有界补偿，通道实际并发保持 2。墙钟 617.5 秒，已返回 usage 为输入 144242、输出 28415 token；临时测试 Key 未写入本机配置。
+
+### OPT-20260908-03｜WawAPI 实测容量与共享冷却
+
+- status: verified
+- scope: WawAPI GPT/Gemini/Grok 通道、平台网络客户端、跨任务模型请求准入、后续新供应商容量测试。
+- changed: 为 WawAPI 六条文字/图片通道固定网关可接受的浏览器客户端标识；新增不保存 Key 的原生协议容量探针和机器可读容量档案；实测后将 WawAPI OpenAI/Google/xAI 三个独立密钥通道的跨任务默认并发均设为 2，对 429、并发拒绝、`server_is_overloaded` 和 524 启用通道共享冷却。
+- trigger: 平台 WawAPI 原始请求被 Cloudflare 1010 拒绝；修复后的 1/2/4 并发真实探针和既有长任务显示短请求可到 4，但 GPT 通道存在过载/524，Gemini/Grok 存在尾延迟波动，不能让每个用户任务各自开满。
+- invariants: GPT 统一 Responses、Gemini 使用 Chat Completions、Grok 使用 Responses；不改推理强度，不换模型/协议/服务商，不降低教材依据或交付门禁；所有真实请求仍记账，临时 Key 测试后已从本机配置移除。
+- do_not_regress: 新供应商不得未实测直接复制其他通道并发值；不得将内部重试后的最终成功当作零过载；同通道多任务必须共享准入和冷却，不得按任务拆成各自 2 个名额。
+- upstream_reference: 2026-09-08 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `3f76e88a480f15258eab3512e7eafca77bbe80ee`，阅读 `codex-rs/core/src/responses_retry.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/llm/llm-retry/src/index.ts` 与 `packages/core/agent-loop/src/tool-calls.ts`。本项目额外按聚合网关密钥通道限流，上游未提供该供应商默认值。
+- impact_matrix: 真题解析、按题出题、知识点出题和辅助工具的 WawAPI 请求共用同一通道门；非 WawAPI 默认不变；历史任务数据、候选、Word/PDF 和交付文件不改写。未提交、推送或发布。
+- verification: WawAPI 原生短请求实测 56 个并发样本，有效波次完成后另做 12 个 Sol/Terra 同密钥混合样本；定向 `pytest` 65 passed，受影响文件 Ruff 和 `git diff --check` 通过。第一批因缺 User-Agent 的 56 个 403/1010 只用于证明客户端接入缺陷，不计入容量样本。
+
+### OPT-20260908-02｜配置目录与任务模型选择分离
+
+- status: verified
+- scope: API 配置中心、真题解析、题目解析、按题出题、知识点出题的模型目录与任务级模型选择。
+- changed: API 页面改为供应商凭证与可接入模型目录，逐通道显示文本/图文/生图模型；三条任务线只列出已保存 Key、能力注册存在、输入模态匹配且当前阶段未禁止的模型，隐藏任务中的自定义模型 ID。主模型仍为默认入口，识图和生图继续按能力渐进显示；无可用候选时提供明确的 API 配置入口。服务端脱敏服务商投影补充机器能力登记，页面不按名称猜测模型能力。
+- trigger: 配置中心与任务使用选择混在一起，任务下拉框同时出现未配置、能力不适合和自定义模型入口，用户需要在大量无效选项中判断哪些模型实际能运行当前阶段。
+- invariants: 不回显或迁移 API Key；已创建任务继续使用其持久化路由；能力过滤只读取机器登记与本地连接状态，不自动切换服务商/模型，不新增模型调用、Token、重试或费用；主模型自主生图仍受逐通道工具闭环白名单约束。
+- do_not_regress: API 页面不得重新承担具体任务的运行模型选择；任务选择不得显示未配置 Key、能力未登记、当前阶段 forbidden 或已记录连接失败的模型；不得以名称关键词推断视觉或生图能力；无候选不得提交空路由或静默恢复旧自定义 ID。
+- upstream_reference: 2026-09-08 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `d6489472f3c15e87d2d7763a5fde033545c530f8`，阅读 `codex-rs/app-server-protocol/src/protocol/v2/model.rs` 与 `codex-rs/app-server/src/message_processor.rs`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `c389f96bf3a9b6807cb71ed6bdad5849be0df6d8`，阅读 `packages/client/ui-model-selection/README.md` 与 `packages/session/session-format-v0-to-v1/src/dispositions.ts`。本项目额外按教学任务阶段过滤模型目录。
+- impact_matrix: 真题/题目解析按主解析、证据判断、复核、识图和生图阶段筛选；按题/知识点出题按规划与生成能力筛选；历史任务内容、恢复、Word/PDF 与交付链不变；共享 `/api/providers` 仍为脱敏只读投影。未进行真实付费模型调用、Git 提交或发布。
+- verification: 定向 pytest 150 passed；最终全量 `.venv/bin/python -m pytest -q` 2206 passed、17 deselected；Ruff、`node --check web/app.js` 与 `git diff --check` 通过。真实本地浏览器验证配置中心展示模型目录，按题出题下拉只含已配置供应商和三条适配 Gemini 模型，真题解析默认仅显示主模型并按能力展开识图模型；页面有内容、无错误遮罩。
+
+### OPT-20260908-01｜解析模式与任务视图彻底隔离
+
+- status: verified
+- scope: 真题解析、题目解析、任务列表/详情/结果、历史任务恢复、Word/审查表/模型汇总/交付包；附带补齐 WawAPI Grok 协议登记。
+- changed: 新建任务模式与当前查看任务改用独立状态；离开任务页会停止进度轮询，所有异步任务读取在回写前校验页面、任务 ID 与导航版本，切换任务时关闭且不提交旧任务人工确认弹窗。题目解析在恢复检查点和最终交付前确定性清除教材依据块、ID、绑定元数据与证据恢复记录；结果页、审查 CSV、模型调用汇总、文件接口、任务卡和交付包均不再展示或打包教材专属字段/文件。全量门禁同时发现并补齐 `wawapi_xai` 的 Responses 协议白名单。
+- trigger: 任务列表读取会把历史任务的 profile 写回新建流程；运行中任务的轮询离开页面后仍会覆盖 `activeTaskId` 并打开人工确认。旧检查点和共享导出器还能把教材引用结构带入“不使用教材”的题目解析结果。
+- invariants: 任务记录中的 `analysis_profile` 是历史结果与恢复的唯一依据；题目解析仍保留题面理解、答案、公式、图片和质量门，不因清理教材字段降低内容审查；真题解析的教材检索、引用、审查和交付保持不变；不新增模型请求、Token、重试或网络调用，不改写用户原题与答案语义。
+- do_not_regress: 任务列表/结果读取不得修改下一次新建任务模式；轮询或人工确认请求不得跨任务、跨页面回写；题目解析不得生成、显示或打包教材候选、教材依据块、依据排查表及相应审查列；旧任务恢复也必须经过同一 profile 边界清理。
+- impact_matrix: 真题解析继续完整使用教材证据链；题目解析统一跳过并清理教材专属数据和产物；按题出题、知识点出题不使用本次 exam profile 状态，仅共享的任务管理导航防竞态保护适用；历史任务只在读取/重新交付时过滤不适用字段，不删除答案；Word、审查 CSV、模型汇总和 ZIP 已分别覆盖。未进行真实付费模型调用、PDF 渲染、Git 提交或发布。
+- verification: 全量 `.venv/bin/python -m pytest -q` 通过（2203 passed，17 deselected）；相关 Ruff、`node --check web/app.js`、Python 编译与 `git diff --check` 通过。真实本地浏览器按“题目解析 → 旧真题任务 → 环境配置”切换后仍显示“题目解析模型选择”，旧任务未弹出其他任务确认流程；页面有内容、无错误遮罩、无 console error。源码服务运行于 `127.0.0.1:8766`。
+
+### OPT-20260907-03｜三条业务线渐进式模型配置
+
+- status: verified
+- scope: 真题解析、按题生成、按知识点生成的模型选择、能力提示与图片编排请求。
+- changed: 默认只呈现主模型；主模型为纯文本时才展开独立识图模型，具备图片输入且通过原生工具闭环白名单时才展开自主生图配置。未通过时显式提交 `legacy_figure_pipeline`，不再携带无法执行的 `main_model_tool_loop`。真题的推理与正确性复核在“高级模型分工”未展开时自动跟随主解析模型。
+- trigger: 纯文本答案模型与已默认勾选的“主模型自主生图”冲突，用户直到创建任务才看到能力验证失败；五个并列阶段也让常规用户误以为每项都必须单独配置。
+- invariants: 只能由模型能力登记和原生工具路由白名单开启自主生图；不增加模型请求、Token、重试或费用，不改已存任务和历史结果，不回显或保存用户 Key。界面隐藏是能力驱动的渐进展开，不得隐藏路由降级事实。
+- do_not_regress: 不得再对纯文本或未验证工具模型默认提交主模型自主生图；不得让已能直接读图的主模型重复配置识图回退；不得在高级分工关闭时保留与主模型不一致的默认文字角色。
+- upstream_reference: 动态核验 OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `d665e3bbc81b013baa73d067507169c20395b988`，阅读 `codex-rs/core/src/tools/spec_plan.rs` 的图片工具能力门；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed`，阅读 `packages/core/agent-loop/src/agent.ts` 的 `preStep`/`turn` 上下文与步骤循环。
+- impact_matrix: 三条新任务流程共用能力驱动显示与显式编排模式；真题额外合并三个默认文字角色。历史任务、持久化模式、后端能力门和输出合同不变；无真实付费模型调用、Word 或发布。
+- verification: `node --check web/app.js`通过；`pytest` 覆盖前端合同、图片编排、真题角色路由、练习重设计、任务合同、模型协议、真题抽取/单元/字卷交付共 273 passed，文案收口后相关子集 229 passed；`git diff --check`通过。本地真实浏览器验证三个配置入口：纯文本模型显示识图回退并隐藏自主生图，已验证多模态工具模型反之；页面有内容、无错误遮罩且无 console error。
+
+### OPT-20260907-02｜聚合网关集中配置与 WawAPI 路由
+
+- status: verified
+- scope: 本地 API Key 配置页、服务商路由、模型能力登记与审阅文档。
+- changed: 配置页改为“分类 → 供应商”的二级分栏；OpenRouter、灵算与 WawAPI 在聚合网关分类下各自只占一个入口，模型家族集中在右栏配置；灵算与 WawAPI 生图通道独立归入图片分类。已配置供应商从下方分类去重，隐藏不再提供配置入口的商汤、Google AI Studio 与智谱，并将右侧卡片压缩为宽屏双列。新增 WawAPI 的 GPT、Gemini、Grok 与三组生图路由及本地 Key 槽位。
+- trigger: 聚合网关按模型拆成左侧条目会混淆服务商归属，也无法清晰配置独立密钥。
+- invariants: Key 仍仅写入用户数据目录、不会回显或进入源码；新增模型均按未实测能力登记，不放宽任务质量、调用预算或工具闭环。
+- do_not_regress: 聚合网关不得在左侧按模型家族重复出现；不得把聚合通道能力继承为官方通道已验证能力。
+- verification: `.venv/bin/python -m pytest -q tests/test_lingsuan_provider_config.py tests/test_api_key_config_concurrency.py tests/test_server_api_not_found.py` 27 passed；运行中 `/api/providers` 确认 OpenRouter、灵算、WawAPI 及独立图片通道均存在；`node --check web/app.js`、JSON 解析、能力审阅文档同步与 `git diff --check` 通过。
+
+### OPT-20260907-01｜清理弃用项目路径引用
+
+- status: verified
+- scope: 当前 GitHub 项目文档中的工作区路径说明。
+- changed: 将现行任务说明、流程文档、A/B 测试计划和交接文档中的已弃用 Gitee 工作树路径改为当前 `answer-book-platform` 路径；历史实验快照和历史验收报告保持原始路径。
+- trigger: 根工作区已确定只保留 GitHub 项目目录，旧 Gitee 项目已移入废纸篓，现行文档继续引用旧路径会误导后续维护。
+- invariants: 不修改业务代码、用户数据、任务结果、模型调用、发布状态或历史证据；路径修正不得改变文档描述的历史结论。
+- do_not_regress: 后续当前项目文档不得把已弃用的 Gitee 工作树作为现行代码入口；历史报告中的原始路径不得为了整洁而改写。
+- verification: `rg` 检查当前文档中的路径引用；GitHub 项目工作区保持可检查状态，未运行业务测试。
+
 ### OPT-20260906-23｜按平台验证受损密钥备份权限
 
 - status: verified

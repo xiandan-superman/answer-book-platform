@@ -363,6 +363,10 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
     knowledge = _read_json(stage_dir / "knowledge_plans.json")
     evidence = _read_json(stage_dir / "evidence_selection.json")
     answers = _read_json(stage_dir / "answer_fragments.json")
+    question_only = str(answers.get("analysis_profile") or "") == "question_only"
+    if question_only:
+        knowledge = {}
+        evidence = {}
     progress = _read_json(stage_dir / "answer_generation_progress.json")
     final_acceptance = _read_json(stage_dir / "final_acceptance_report.json")
     questions = _questions(structured_exam)
@@ -395,15 +399,28 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
         "",
         "| 阶段 | 默认服务商/模型 |",
         "|---|---|",
-        f"| 知识点识别 | {_escape_cell(_format_model(knowledge_fallback))} |",
-        f"| 教材证据确认 | {_escape_cell(_format_model(evidence_fallback))} |",
-        f"| 答案生成 | {_escape_cell(_format_model(answer_fallback))} |",
-        "",
-        "## 每题最终使用模型",
-        "",
-        "| 题目 | 类型/分值 | 题干摘要 | 知识点识别 | 教材证据确认 | 答案生成 | 作图/图片 | 总计 token |",
-        "|---|---:|---|---|---|---|---|---:|",
     ]
+    if not question_only:
+        lines.extend(
+            [
+                f"| 知识点识别 | {_escape_cell(_format_model(knowledge_fallback))} |",
+                f"| 教材证据确认 | {_escape_cell(_format_model(evidence_fallback))} |",
+            ]
+        )
+    lines.extend(
+        [
+            f"| 答案生成 | {_escape_cell(_format_model(answer_fallback))} |",
+            "",
+            "## 每题最终使用模型",
+            "",
+            (
+                "| 题目 | 类型/分值 | 题干摘要 | 答案生成 | 作图/图片 | 总计 token |"
+                if question_only
+                else "| 题目 | 类型/分值 | 题干摘要 | 知识点识别 | 教材证据确认 | 答案生成 | 作图/图片 | 总计 token |"
+            ),
+            "|---|---:|---|---|---|---:|" if question_only else "|---|---:|---|---|---|---|---|---:|",
+        ]
+    )
 
     for question in questions:
         qid = str(question.get("question_id") or question.get("id") or "").strip()
@@ -413,28 +430,40 @@ def build_model_usage_report(stage_dir: Path, output_dir: Path, task_id: str = "
         type_score = f"{qtype}<br>{score}分" if score != "" and score is not None else qtype
         figure_required = delivery_figure_required(question)
         figure_text = figure_models.get(qid, "不涉及" if not figure_required else "未记录<br>tokens：未记录")
-        total_text = _question_token_total(
-            [
+        stage_models = [("答案生成", answer_models.get(qid))]
+        if not question_only:
+            stage_models[0:0] = [
                 ("知识点识别", knowledge_models.get(qid)),
                 ("教材证据确认", evidence_models.get(qid)),
-                ("答案生成", answer_models.get(qid)),
-            ],
+            ]
+        total_text = _question_token_total(
+            stage_models,
             figure_token_missing=qid in figure_models or figure_required,
+        )
+        row_cells = [
+            f"`{qid}`<br>{number}",
+            type_score,
+            _short_text(question.get("stem") or question.get("question") or question.get("text")),
+        ]
+        if not question_only:
+            row_cells.extend(
+                [
+                    _format_model(knowledge_models.get(qid), knowledge_fallback, include_tokens=True),
+                    _format_model(evidence_models.get(qid), evidence_fallback, include_tokens=True),
+                ]
+            )
+        row_cells.extend(
+            [
+                _format_model(answer_models.get(qid), answer_fallback, include_tokens=True),
+                figure_text,
+                total_text,
+            ]
         )
         lines.append(
             "| "
             + " | ".join(
                 _escape_cell(cell)
-                for cell in [
-                    f"`{qid}`<br>{number}",
-                    type_score,
-                    _short_text(question.get("stem") or question.get("question") or question.get("text")),
-                    _format_model(knowledge_models.get(qid), knowledge_fallback, include_tokens=True),
-                    _format_model(evidence_models.get(qid), evidence_fallback, include_tokens=True),
-                    _format_model(answer_models.get(qid), answer_fallback, include_tokens=True),
-                    figure_text,
-                    total_text,
-                ]
+                for cell in row_cells
             )
             + " |"
         )

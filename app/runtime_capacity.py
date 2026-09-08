@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
+
+from .paths import CONFIG_DIR
 
 
 def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -16,6 +21,30 @@ def model_request_max_concurrency() -> int:
     return bounded_env_int("MODEL_REQUEST_MAX_CONCURRENCY", 0, 0, 64)
 
 
+@lru_cache(maxsize=1)
+def _provider_capacity_profiles() -> dict[str, dict[str, Any]]:
+    path = Path(CONFIG_DIR) / "provider_capacity_profiles.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    providers = payload.get("providers") if isinstance(payload, dict) else None
+    if not isinstance(providers, dict):
+        return {}
+    return {
+        str(name).strip().lower(): dict(profile)
+        for name, profile in providers.items()
+        if str(name).strip() and isinstance(profile, dict)
+    }
+
+
+def provider_capacity_profile(provider: object | None) -> dict[str, Any]:
+    provider_name = str(
+        provider if isinstance(provider, str) else getattr(provider, "name", "") or ""
+    ).strip().lower()
+    return dict(_provider_capacity_profiles().get(provider_name, {}))
+
+
 def provider_request_max_concurrency(provider: object | None) -> int:
     """Return the shared ceiling for one provider across all user tasks."""
     global_limit = model_request_max_concurrency()
@@ -25,6 +54,11 @@ def provider_request_max_concurrency(provider: object | None) -> int:
     if provider_name == "lingsuan" or provider_name.startswith("lingsuan_"):
         lingsuan_limit = bounded_env_int("LINGSUAN_REQUEST_MAX_CONCURRENCY", 6, 1, 8)
         return min(global_limit, lingsuan_limit) if global_limit > 0 else lingsuan_limit
+    profile = provider_capacity_profile(provider_name)
+    configured_limit = profile.get("request_concurrency")
+    if isinstance(configured_limit, int) and configured_limit > 0:
+        provider_limit = max(1, min(64, configured_limit))
+        return min(global_limit, provider_limit) if global_limit > 0 else provider_limit
     if provider_name != "bigmodel":
         return global_limit
     bigmodel_limit = bounded_env_int("BIGMODEL_REQUEST_MAX_CONCURRENCY", 2, 1, 8)
@@ -39,6 +73,19 @@ def bigmodel_rate_limit_backoff() -> tuple[float, float]:
         base = 2.0
     try:
         cap = max(base, min(120.0, float(os.environ.get("BIGMODEL_RATE_LIMIT_CAP_SECONDS", "30"))))
+    except (TypeError, ValueError):
+        cap = 30.0
+    return base, cap
+
+
+def provider_pressure_backoff(provider: object | None) -> tuple[float, float]:
+    profile = provider_capacity_profile(provider)
+    try:
+        base = max(0.25, min(30.0, float(profile.get("cooldown_base_seconds", 2))))
+    except (TypeError, ValueError):
+        base = 2.0
+    try:
+        cap = max(base, min(120.0, float(profile.get("cooldown_cap_seconds", 30))))
     except (TypeError, ValueError):
         cap = 30.0
     return base, cap
@@ -73,4 +120,7 @@ def runtime_capacity_summary() -> dict[str, int]:
         "provider_request_ceiling": provider,
         "bigmodel_request_ceiling": provider_request_max_concurrency("bigmodel"),
         "lingsuan_request_ceiling": provider_request_max_concurrency("lingsuan"),
+        "wawapi_openai_request_ceiling": provider_request_max_concurrency("wawapi_openai"),
+        "wawapi_google_request_ceiling": provider_request_max_concurrency("wawapi_google"),
+        "wawapi_xai_request_ceiling": provider_request_max_concurrency("wawapi_xai"),
     }

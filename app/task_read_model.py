@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
-from .analysis_profiles import QUESTION_ONLY_ANALYSIS
+from .analysis_profiles import QUESTION_ONLY_ANALYSIS, TEXTBOOK_EVIDENCE_ONLY_ANALYSIS
 from .runtime_monitor import task_health_summary
 from .task_contracts import (
     QualityStatus,
@@ -196,12 +196,17 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     elif status.value == "completed" and quality == QualityStatus.WARNING and not formally_accepted:
         status = practice_run_status("completed", quality=quality)
     exam_name = _display_basename(row.get("exam_display_name") or row.get("exam_path"), fallback="未命名真题")
-    textbook_names = _textbook_display_names(row)
     question_only = str(row.get("analysis_profile") or "") == QUESTION_ONLY_ANALYSIS
-    task_label = "题目解析" if question_only else "真题解析"
-    display_model = row.get("actual_model") or row.get("answer_model") or row.get("model")
-    display_provider = row.get("actual_provider") or row.get("answer_provider") or row.get("provider")
-    model_source = "actual_call" if row.get("actual_model") else "configured_answer"
+    evidence_only = str(row.get("analysis_profile") or "") == TEXTBOOK_EVIDENCE_ONLY_ANALYSIS
+    textbook_names = [] if question_only else _textbook_display_names(row)
+    task_label = "教材引用定位" if evidence_only else "题目解析" if question_only else "真题解析"
+    display_model = row.get("actual_model") or (
+        row.get("reasoning_model") if evidence_only else row.get("answer_model")
+    ) or row.get("model")
+    display_provider = row.get("actual_provider") or (
+        row.get("reasoning_provider") if evidence_only else row.get("answer_provider")
+    ) or row.get("provider")
+    model_source = "actual_call" if row.get("actual_model") else "configured_reasoning" if evidence_only else "configured_answer"
     model_label = short_model_label(display_model, display_provider)
     public_row = {
         **row,

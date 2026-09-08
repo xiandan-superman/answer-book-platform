@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -14,11 +15,17 @@ from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from PIL import Image
 
-from .analysis_profiles import analysis_uses_textbook_evidence
+from .analysis_profiles import (
+    QUESTION_ONLY_EXCLUDED_ARTIFACT_NAMES,
+    analysis_uses_textbook_evidence,
+    is_textbook_evidence_only,
+    sanitize_question_only_fragments,
+)
 from .answer_coverage_audit import audit_answer_coverage
 from .answer_generation import (
     attach_program_evidence_block,
@@ -110,6 +117,7 @@ from .runtime_monitor import configure_model_call_task_shape, model_call_context
 from .settings import get_provider, provider_model_supports_vision, provider_supports_image_generation
 from .task_control import TaskCancelled, checkpoint
 from .task_store import load_task, task_dir, update_task
+from .textbook_evidence_service import publish_concise_evidence_artifacts
 from .textbook_index_cache import install_textbook_index_cache, textbook_index_key
 from .v4_schema import validate_v4_answer_fragment
 
@@ -162,16 +170,23 @@ def _isolated_image_routes(
     return routes
 
 
-def _pin_text_provider_model(provider: object, model: str):
+def _pin_text_provider_model(provider: object, model: str, protocol: str = ""):
     """Keep every recovery path on the model explicitly selected for a task role."""
 
     selected = str(model or "").strip()
     if not selected:
         return provider
+    profiles = {key: dict(value) for key, value in (getattr(provider, "model_profiles", {}) or {}).items()}
+    if protocol:
+        profile = dict(profiles.get(selected) or {})
+        profile["api_protocol"] = str(protocol).strip().lower()
+        profiles[selected] = profile
     return replace(
         provider,
         default_model=selected,
         model_options=(selected,),
+        api_protocol=str(protocol).strip().lower() or getattr(provider, "api_protocol", "chat_completions"),
+        model_profiles=profiles,
     )
 
 
@@ -1098,12 +1113,31 @@ def runtime_environment_issue(env: dict) -> str:
     )
 
 
+def _parallel_answer_draft_eligible(
+    structured_exam: dict[str, Any],
+    *,
+    textbook_evidence_only: bool,
+    use_model: bool,
+    reuse_fragments: bool,
+    answer_key_available: bool,
+) -> bool:
+    """Only speculate where the existing downstream gates can safely reconcile the draft."""
+
+    if textbook_evidence_only or not use_model or reuse_fragments or not answer_key_available:
+        return False
+    questions = [item for item in structured_exam.get("items", []) or [] if isinstance(item, dict)]
+    if not questions:
+        return False
+    return not any(question.get("image_refs") or answer_figure_required(question) for question in questions)
+
+
 def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, run_id: str = "") -> dict:
     options = options or PipelineOptions()
     quality_budget = QualityExecutionBudget.from_environment()
     ensure_project_dirs()
     record = load_task(task_id)
     textbook_evidence_enabled = analysis_uses_textbook_evidence(record.analysis_profile)
+    textbook_evidence_only = is_textbook_evidence_only(record.analysis_profile)
     sdir = stage_dir(task_id)
     odir = output_dir(task_id)
     sdir.mkdir(parents=True, exist_ok=True)
@@ -1124,6 +1158,9 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
     schema_future: Future | None = None
     figure_schema_plan: dict | None = None
     schema_checkpoint_reused = False
+    answer_draft_executor: ThreadPoolExecutor | None = None
+    answer_draft_future: Future | None = None
+    answer_draft_path = sdir / "answer_fragments.parallel_draft.json"
     mark = telemetry.mark
 
     try:
@@ -1167,15 +1204,20 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         if textbook_evidence_enabled and not textbooks_dir.exists():
             raise FileNotFoundError(f"Textbooks dir not found: {textbooks_dir}")
         thinking_mode = getattr(record, "model_thinking", "auto") or "auto"
-        provider = replace(get_provider(record.provider), thinking_mode=thinking_mode)
+        reasoning_thinking = getattr(record, "reasoning_thinking", "") or thinking_mode
+        answer_thinking = getattr(record, "answer_thinking", "") or thinking_mode
+        provider = replace(
+            get_provider(record.provider),
+            thinking_mode=reasoning_thinking if textbook_evidence_only else answer_thinking,
+        )
         reasoning_provider_name = getattr(record, "reasoning_provider", "") or record.provider
-        reasoning_provider = replace(get_provider(reasoning_provider_name), thinking_mode=thinking_mode)
+        reasoning_provider = replace(get_provider(reasoning_provider_name), thinking_mode=reasoning_thinking)
         reasoning_model = str(getattr(record, "reasoning_model", "") or (record.model if reasoning_provider_name == record.provider else reasoning_provider.default_model) or record.model).strip()
         answer_provider_name = getattr(record, "answer_provider", "") or record.provider
-        answer_provider = replace(get_provider(answer_provider_name), thinking_mode=thinking_mode)
+        answer_provider = replace(get_provider(answer_provider_name), thinking_mode=answer_thinking)
         answer_model = str(getattr(record, "answer_model", "") or (record.model if answer_provider_name == record.provider else answer_provider.default_model) or record.model).strip()
         correctness_provider_name = getattr(record, "correctness_provider", "") or answer_provider_name
-        correctness_provider = replace(get_provider(correctness_provider_name), thinking_mode=thinking_mode)
+        correctness_provider = replace(get_provider(correctness_provider_name), thinking_mode=answer_thinking)
         correctness_model = str(
             getattr(record, "correctness_model", "")
             or (answer_model if correctness_provider_name == answer_provider_name else correctness_provider.default_model)
@@ -1183,10 +1225,15 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         ).strip()
         vision_provider = get_provider(getattr(record, "vision_provider", "") or record.provider)
         vision_model = str(getattr(record, "vision_model", "") or getattr(vision_provider, "vision_model", "") or record.model).strip()
-        provider = _pin_text_provider_model(provider, record.model)
-        reasoning_provider = _pin_text_provider_model(reasoning_provider, reasoning_model)
-        answer_provider = _pin_text_provider_model(answer_provider, answer_model)
-        correctness_provider = _pin_text_provider_model(correctness_provider, correctness_model)
+        base_protocol = (
+            getattr(record, "reasoning_protocol", "")
+            if textbook_evidence_only
+            else getattr(record, "answer_protocol", "")
+        )
+        provider = _pin_text_provider_model(provider, record.model, base_protocol)
+        reasoning_provider = _pin_text_provider_model(reasoning_provider, reasoning_model, getattr(record, "reasoning_protocol", ""))
+        answer_provider = _pin_text_provider_model(answer_provider, answer_model, getattr(record, "answer_protocol", ""))
+        correctness_provider = _pin_text_provider_model(correctness_provider, correctness_model, getattr(record, "answer_protocol", ""))
         vision_provider = _pin_vision_provider_model(vision_provider, vision_model)
         direct_answer_multimodal = provider_model_supports_vision(answer_provider, answer_model)
         image_provider = get_provider(getattr(record, "image_provider", "") or record.provider)
@@ -1264,6 +1311,10 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 "use_model": bool(options.use_model),
                 "allow_demo_without_key": bool(options.allow_demo_without_key),
                 "thinking_mode": thinking_mode,
+                "reasoning_thinking": reasoning_thinking,
+                "answer_thinking": answer_thinking,
+                "reasoning_protocol": getattr(record, "reasoning_protocol", ""),
+                "answer_protocol": getattr(record, "answer_protocol", ""),
                 "primary": {"provider": provider.name, "model": record.model},
                 "reasoning": {"provider": reasoning_provider.name, "model": reasoning_model},
                 "answer": {"provider": answer_provider.name, "model": answer_model},
@@ -1480,8 +1531,40 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 },
             )
 
+        if _parallel_answer_draft_eligible(
+            structured_exam,
+            textbook_evidence_only=textbook_evidence_only,
+            use_model=options.use_model,
+            reuse_fragments=options.reuse_fragments,
+            answer_key_available=bool(answer_provider.api_key),
+        ):
+            answer_draft_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="answer-draft-background")
+            answer_draft_future = answer_draft_executor.submit(
+                copy_context().run,
+                generate_answer_fragments,
+                copy.deepcopy(structured_exam),
+                [],
+                answer_provider,
+                answer_model,
+                answer_draft_path,
+                progress_json=sdir / "answer_generation_parallel_progress.json",
+                evidence_selections={},
+                reusable_fragments={},
+                include_textbook_evidence=False,
+            )
+            mark(
+                "answer_generation_parallel",
+                "started",
+                {
+                    "mode": "text_only_speculative_draft",
+                    "quality_contract": "confirmed evidence binding plus existing content-quality audit and repair",
+                },
+            )
+
         checkpoint(task_id)
         if not textbook_evidence_enabled:
+            for filename in QUESTION_ONLY_EXCLUDED_ARTIFACT_NAMES:
+                (sdir / filename).unlink(missing_ok=True)
             index_detail = {"ok": True, "analysis_profile": record.analysis_profile, "reason": "题目解析不处理教材。"}
             mark("textbook_index", "skipped", index_detail)
         else:
@@ -1624,6 +1707,30 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             }
             candidates = confirmed_candidates
 
+        if textbook_evidence_only:
+            checkpoint(task_id)
+            update_task(task_id, current_stage="textbook_evidence_delivery")
+            evidence_delivery = publish_concise_evidence_artifacts(
+                structured_exam=structured_exam,
+                selection_data=selection_data,
+                candidates=candidates,
+                stage_dir=sdir,
+                output_dir=odir,
+                label=exam_path.stem,
+            )
+            usage_report = build_model_usage_report(sdir, odir, task_id)
+            evidence_delivery["model_usage_report"] = str(usage_report)
+            write_json(sdir / "textbook_evidence_delivery.json", evidence_delivery)
+            mark("textbook_evidence_delivery", evidence_delivery["status"], evidence_delivery)
+            update_task(
+                task_id,
+                status=evidence_delivery["status"],
+                current_stage="completed",
+                error=("部分知识点没有可靠的教材页码，已在结果中标记。" if not evidence_delivery["ok"] else ""),
+            )
+            mark("completed", evidence_delivery["status"], evidence_delivery)
+            return evidence_delivery
+
         checkpoint(task_id)
         # Answer generation needs the per-answer-unit drawing contract.  Schema
         # planning still runs in the background alongside understanding,
@@ -1705,7 +1812,28 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             if not reusable_answers
             else {}
         )
-        if reusable_answers:
+        parallel_draft_result = None
+        if answer_draft_future is not None:
+            try:
+                parallel_draft_result = answer_draft_future.result()
+            except Exception as exc:
+                mark("answer_generation_parallel", "advisory", {"error": str(exc), "fallback": "evidence_aware_generation"})
+            finally:
+                if answer_draft_executor is not None:
+                    answer_draft_executor.shutdown(wait=True)
+                    answer_draft_executor = None
+                answer_draft_future = None
+        if parallel_draft_result is not None and parallel_draft_result.ok and answer_draft_path.exists():
+            shutil.copyfile(answer_draft_path, fragments_json)
+            generation_detail = asdict(parallel_draft_result)
+            generation_detail["parallel_draft"] = True
+            generation_detail["evidence_reconciliation_required"] = True
+            mark(
+                "answer_generation_parallel",
+                "passed",
+                {"fragment_count": parallel_draft_result.fragment_count, "draft": str(answer_draft_path)},
+            )
+        elif reusable_answers:
             if not fragments_json.exists():
                 raise RuntimeError("Cannot reuse fragments: answer_fragments.json not found")
             fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
@@ -1725,10 +1853,14 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     evidence,
                     "previous model run did not produce valid structured JSON; auto-filled for review",
                 )
-                fragments.append(attach_program_evidence_block(fragment, evidence))
+                fragments.append(
+                    attach_program_evidence_block(fragment, evidence)
+                    if textbook_evidence_enabled
+                    else fragment
+                )
                 existing_ids.add(qid)
                 recovered_missing.append(qid)
-            for fragment in fragments:
+            for fragment in fragments if textbook_evidence_enabled else []:
                 qid = str(fragment.get("question_id", "")).strip()
                 if not qid or qid not in questions_by_id or has_bound_evidence(fragment):
                     continue
@@ -1741,7 +1873,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     reason="历史结构化结果未提供不绑定候选证据的原因，程序按检索排序补充最相关教材证据。",
                 )
                 recovered_evidence.append(qid)
-            for fragment in fragments:
+            for fragment in fragments if textbook_evidence_enabled else []:
                 qid = str(fragment.get("question_id", "")).strip()
                 meta = dict(fragment.get("_meta") or {})
                 if not qid or not has_bound_evidence(fragment) or meta.get("evidence_binding"):
@@ -1823,6 +1955,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
         fragments_data["analysis_profile"] = record.analysis_profile
         fragments_data["document_title"] = "题目解析" if not textbook_evidence_enabled else "真题答案解析"
+        sanitize_question_only_fragments(fragments_data)
         write_json(fragments_json, fragments_data)
         reconciled_evidence_bindings: list[str] = []
         for fragment in fragments_data.get("fragments", []) or []:
@@ -2925,6 +3058,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         # Reassert immutable source-question images after every possible repair
         # and immediately before document construction, so a valid content
         # repair cannot silently remove required source material from Word.
+        fragments_data = json.loads(fragments_json.read_text(encoding="utf-8"))
+        fragments_data["analysis_profile"] = record.analysis_profile
+        fragments_data["document_title"] = "题目解析" if not textbook_evidence_enabled else "真题答案解析"
+        sanitize_question_only_fragments(fragments_data)
+        write_json(fragments_json, fragments_data)
         final_source_image_delivery = attach_source_images_to_fragments(structured_exam, fragments_json)
         mark(
             "source_image_delivery_finalizer",
@@ -3005,6 +3143,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         telemetry.stop()
         if schema_executor is not None:
             schema_executor.shutdown(wait=False, cancel_futures=True)
+        if answer_draft_executor is not None:
+            answer_draft_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def run_pipeline(task_id: str, options: PipelineOptions | None = None) -> dict:

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 
 
 class EvidenceSelectionTokenTests(unittest.TestCase):
-    def test_evidence_selection_uses_bounded_non_reasoning_budget(self) -> None:
+    def test_evidence_selection_uses_bounded_budget_and_preserves_reasoning_strength(self) -> None:
         from app.evidence_selection import EVIDENCE_SELECTION_MAX_TOKENS, EVIDENCE_SELECTION_TIMEOUT_SECONDS, _select_one
         from app.retrieval import EvidenceCandidate
         from app.settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig
@@ -49,6 +49,7 @@ class EvidenceSelectionTokenTests(unittest.TestCase):
             model_hint="",
             temperature=0.1,
             max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+            thinking_mode="low",
         )
         client = FakeClient()
         _select_one(
@@ -77,7 +78,7 @@ class EvidenceSelectionTokenTests(unittest.TestCase):
 
         self.assertEqual(8192, EVIDENCE_SELECTION_MAX_TOKENS)
         self.assertEqual(EVIDENCE_SELECTION_MAX_TOKENS, client.max_tokens)
-        self.assertEqual("disabled", client.thinking)
+        self.assertEqual("low", client.thinking)
         self.assertEqual(EVIDENCE_SELECTION_TIMEOUT_SECONDS, client.timeout)
 
     def test_text_model_on_multimodal_provider_does_not_receive_candidate_images(self) -> None:

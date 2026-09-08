@@ -21,10 +21,12 @@ def _provider() -> ProviderConfig:
 
 
 def test_text_role_recovery_cannot_silently_switch_away_from_selected_model() -> None:
-    pinned = _pin_text_provider_model(_provider(), "gpt-5.6-terra")
+    pinned = _pin_text_provider_model(_provider(), "gpt-5.6-terra", "responses")
 
     assert pinned.default_model == "gpt-5.6-terra"
     assert pinned.model_options == ("gpt-5.6-terra",)
+    assert pinned.api_protocol == "responses"
+    assert pinned.model_profiles["gpt-5.6-terra"]["api_protocol"] == "responses"
 
 
 def test_vision_role_recovery_is_pinned_to_selected_vision_model() -> None:

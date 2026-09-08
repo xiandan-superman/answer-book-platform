@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .analysis_profiles import sanitize_question_only_fragments
 from .figure_artifact_audit import audit_figure_artifacts
 from .question_requirements import answer_figure_required, source_image_required
 
@@ -81,6 +82,7 @@ def audit_ok(name: str, data: dict[str, Any] | None, require_render: bool) -> tu
 
 def diagnostic_advisories(stage_dir: Path) -> dict[str, Any]:
     fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
+    sanitize_question_only_fragments(fragments_data)
     review_docx = read_json(stage_dir / "question_review_docx.json") or {}
     content_quality = read_json(stage_dir / "content_quality_audit.json") or {}
     answer_coverage = read_json(stage_dir / "answer_coverage_audit.json") or {}
@@ -262,7 +264,14 @@ def model_retry_summary(stage_dir: Path) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
 
-    for filename in ("knowledge_plans.json", "evidence_selection.json", "answer_fragments.json"):
+    fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
+    question_only = str(fragments_data.get("analysis_profile") or "") == "question_only"
+    filenames = ("answer_fragments.json",) if question_only else (
+        "knowledge_plans.json",
+        "evidence_selection.json",
+        "answer_fragments.json",
+    )
+    for filename in filenames:
         data = read_json(stage_dir / filename) or {}
         for item in data.get("model_token_feedback", []) if isinstance(data, dict) else []:
             if not isinstance(item, dict):
@@ -278,7 +287,6 @@ def model_retry_summary(stage_dir: Path) -> dict[str, Any]:
                     rows.append(row)
                     seen.add(key)
 
-    fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
     for fragment in fragments_data.get("fragments", []) if isinstance(fragments_data, dict) else []:
         if not isinstance(fragment, dict):
             continue
@@ -308,6 +316,16 @@ def model_retry_summary(stage_dir: Path) -> dict[str, Any]:
 
 def non_direct_evidence_summary(stage_dir: Path) -> dict[str, Any]:
     data = read_json(stage_dir / "evidence_selection.json") or {}
+    fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
+    if str(fragments_data.get("analysis_profile") or "") == "question_only":
+        return {
+            "applied": False,
+            "question_count": 0,
+            "item_count": 0,
+            "items": [],
+            "message": "",
+            "not_applicable": True,
+        }
     items: list[dict[str, Any]] = []
     for selection in data.get("selections", []) if isinstance(data, dict) else []:
         if not isinstance(selection, dict):

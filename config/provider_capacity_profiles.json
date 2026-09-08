@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "providers": {
+    "wawapi_openai": {
+      "request_concurrency": 2,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-08",
+      "evidence": "native Responses probes at concurrency 1/2/4 plus long-task 524 and server overload observations"
+    },
+    "wawapi_google": {
+      "request_concurrency": 2,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-08",
+      "evidence": "native Chat Completions probes at concurrency 1/2/4; production default keeps headroom below the tested peak"
+    },
+    "wawapi_xai": {
+      "request_concurrency": 2,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-08",
+      "evidence": "native Responses probes at concurrency 1/2/4; production default keeps headroom below the tested peak"
+    }
+  }
+}
