@@ -125,7 +125,8 @@ def test_newest_practice_terminal_record_is_batch_authority(status: str) -> None
         },
     ], [])
 
-    assert runs[0]["task_id"] == "new-authority"
+    assert runs[0]["task_id"] == "batch-authority"
+    assert runs[0]["job_id"] == "new-authority"
     expected = "needs_input" if status == "completed" else status
     assert runs[0]["status"] == expected
     assert runs[0]["engine_status"] == status

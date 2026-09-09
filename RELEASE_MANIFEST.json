@@ -1,18 +1,19 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.49",
+  "version": "0.9.50",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.49",
+  "source_revision": "release-v0.9.50",
   "build_kind": "stable-source-release",
-  "created_at": "2026-09-09T00:02:56+08:00",
+  "created_at": "2026-09-09T22:09:01+08:00",
   "validation": {
-    "release_readiness": "Locked Python 3.11 full gate passed: 2228 passed, 17 deselected, total coverage 72%; Ruff and Mypy passed. Real isolated-browser checks covered the two-route exam model controls, the single-route practice controls and protocol labels without invoking a model.",
-    "real_task_scope": "Bounded WawAPI evidence covered Responses protocol routing, shared provider capacity, reusable textbook indexing, textbook citation delivery and the safe parallel answer-draft path. Final delivery remained subject to the existing evidence rebinding and quality gates; provider timeout samples remained visible rather than being counted as content failures.",
-    "paid_model_regression": "No new paid model call was made for release verification; the previously recorded bounded WawAPI runs and deterministic regressions remain the model evidence for this release.",
-    "staged_secret_scan": "59 staged files scanned; no private-key, API-key, bearer-token or credential-assignment pattern matched.",
-    "source_package": "406 files; 15125741 bytes; SHA-256 9a98623e2b05e22173755a9785eb42de65c580a9950758c7dbe5c42630b29a46; package verifier passed with zero issues.",
-    "isolated_startup": "The staged 0.9.49 source ZIP started with an isolated data directory; /api/version reported 0.9.49 and the homepage returned HTTP 200.",
+    "release_readiness": "Python 3.11 full quality gate passed: 2258 passed, 17 deselected, 12 warnings; coverage, PyCompile, version consistency, formula, license, completeness, controlled Ruff and Mypy checks passed.",
+    "real_task_scope": "Deterministic regression covers task identity, upload restrictions, blueprint confirmation, image-tool admission, partial delivery, Windows runtime and public API contracts. No real model or Word COM task is claimed for this release verification.",
+    "paid_model_regression": "No paid model call was made for this release verification.",
+    "staged_secret_scan": "66 staged files scanned for high-risk credentials, private keys and newly added local absolute paths; zero matches.",
+    "source_package": "Git-index source package contained 407 allowlisted files; reverse verification passed with zero issues (candidate size 15140914 bytes, SHA-256 de0a104fd913d0cdeae8f5995c705825e78912ffd05975a7734f5dc4f5b642e4).",
+    "browser_regression": "Local isolated service browser regression passed: 16 passed; no paid model call was made.",
+    "isolated_startup": "Extracted candidate started with an isolated data directory; /api/version reported 0.9.50 with a matching manifest and the home page returned HTTP 200.",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

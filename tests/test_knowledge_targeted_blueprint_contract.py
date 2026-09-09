@@ -158,22 +158,23 @@ def test_unbound_knowledge_targeted_accepts_partitioned_set_union_coverage() -> 
     assert audit["status"] != "blocked", audit["errors"]
 
 
-def test_unbound_knowledge_targeted_rejects_whole_set_coverage_gap() -> None:
+def test_unbound_knowledge_targeted_flags_whole_set_coverage_gap_for_confirmation() -> None:
     audit = audit_practice_blueprint(_plan([[GLOBAL_HEAT_POINTS[0]], GLOBAL_HEAT_POINTS[1:5]]))
 
-    assert audit["status"] == "blocked"
-    assert any("整套必考知识点未覆盖全局目标" in error for error in audit["errors"])
-    assert any(GLOBAL_HEAT_POINTS[5] in error for error in audit["errors"])
+    assert audit["status"] == "warning"
+    assert audit["requires_manual_confirmation"] is True
+    assert any("整套必考知识点未覆盖全局目标" in warning for warning in audit["semantic_scope_warnings"])
+    assert any(GLOBAL_HEAT_POINTS[5] in warning for warning in audit["semantic_scope_warnings"])
 
 
-def test_unbound_knowledge_targeted_rejects_out_of_scope_point() -> None:
+def test_unbound_knowledge_targeted_flags_out_of_scope_point_for_confirmation() -> None:
     audit = audit_practice_blueprint(_plan([
         GLOBAL_HEAT_POINTS[:3] + ["辐射换热角系数"],
         GLOBAL_HEAT_POINTS[3:],
     ]))
 
-    assert audit["status"] == "blocked"
-    assert any("材料范围外" in error and "辐射换热角系数" in error for error in audit["errors"])
+    assert audit["status"] == "warning"
+    assert any("材料范围外" in warning and "辐射换热角系数" in warning for warning in audit["semantic_scope_warnings"])
 
 
 def test_unbound_knowledge_targeted_does_not_alias_parallel_to_series() -> None:
@@ -182,8 +183,8 @@ def test_unbound_knowledge_targeted_does_not_alias_parallel_to_series() -> None:
         global_points=["串联热阻网络"],
     ))
 
-    assert audit["status"] == "blocked"
-    assert any("材料范围外" in error and "并联热阻网络" in error for error in audit["errors"])
+    assert audit["status"] == "warning"
+    assert any("材料范围外" in warning and "并联热阻网络" in warning for warning in audit["semantic_scope_warnings"])
 
 
 def test_unbound_knowledge_targeted_rejects_empty_item() -> None:
@@ -214,7 +215,7 @@ def test_unbound_knowledge_targeted_deduplicates_repeated_points_and_allocations
 
 
 @pytest.mark.parametrize("strategy", ["parallel_exam", "per_question", "knowledge_targeted"])
-def test_bound_source_modes_keep_strict_per_item_source_contract(strategy: str) -> None:
+def test_bound_source_modes_require_confirmation_for_semantic_scope_mismatch(strategy: str) -> None:
     source = {
         "source_question_id": "source_01",
         "title": "已绑定来源",
@@ -227,5 +228,6 @@ def test_bound_source_modes_keep_strict_per_item_source_contract(strategy: str) 
         sources=[source],
     ))
 
-    assert audit["status"] == "blocked"
-    assert any("必考知识点与绑定来源规则不一致" in error for error in audit["errors"])
+    assert audit["status"] == "warning"
+    assert audit["requires_manual_confirmation"] is True
+    assert any("必考知识点与绑定来源规则不一致" in warning for warning in audit["semantic_scope_warnings"])

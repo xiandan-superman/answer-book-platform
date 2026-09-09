@@ -3486,6 +3486,7 @@ def test_enabled_generation_uses_selected_primary_and_confirmed_material_without
 
     monkeypatch.setattr(exercise_generation, "_primary_model_runtime", fake_runtime)
     monkeypatch.setattr(exercise_generation, "OpenAICompatibleClient", lambda _provider: object())
+    monkeypatch.setattr(exercise_generation, "_practice_model_tool_loop", lambda *_args, **_kwargs: object())
 
     def fake_call(_client, messages, **_kwargs):
         captured["content"] = messages[-1]["content"]

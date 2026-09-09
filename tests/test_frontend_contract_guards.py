@@ -240,11 +240,12 @@ def test_practice_and_knowledge_expose_one_primary_model_by_default() -> None:
     assert 'class="task-model-fallback-details"' in INDEX_HTML
 
 
-def test_image_route_is_user_selected_and_main_mode_requires_configuration() -> None:
-    assert 'id="imageOrchestrationSwitch"' in INDEX_HTML
-    assert 'id="practiceImageOrchestrationSwitch"' in INDEX_HTML
-    assert 'id="knowledgeImageOrchestrationSwitch"' in INDEX_HTML
+def test_main_model_image_route_is_fixed_and_requires_configuration() -> None:
+    assert 'id="imageOrchestrationSwitch"' not in INDEX_HTML
+    assert 'id="practiceImageOrchestrationSwitch"' not in INDEX_HTML
+    assert 'id="knowledgeImageOrchestrationSwitch"' not in INDEX_HTML
     assert "function imageOrchestrationMode(" in APP_JS
+    assert 'return "main_model_tool_loop";' in APP_JS
     assert "const imageFallbackConfigured = Boolean" in APP_JS
     assert 'image_provider: imageFallbackConfigured ?' in APP_JS
     assert 'image_model: imageFallbackConfigured ?' in APP_JS
@@ -538,7 +539,7 @@ def test_action_required_task_cards_do_not_present_as_fully_completed() -> None:
 def test_generation_task_title_can_be_renamed_from_task_manager() -> None:
     assert 'data-action="rename-title"' in APP_JS
     assert "async function renameGenerationTask(task)" in APP_JS
-    assert "/api/practice/tasks/${encodeURIComponent(task.task_id)}/title" in APP_JS
+    assert "/api/practice/tasks/${encodeURIComponent(taskResourceId(task))}/title" in APP_JS
 
 
 def test_completed_practice_result_cannot_resurface_scope_confirmation() -> None:
@@ -820,7 +821,8 @@ def test_model_configuration_progressively_discloses_visual_and_image_routes() -
     assert "function syncTaskProgressiveModelUi(profile" in APP_JS
     assert 'visionCard.classList.toggle("hidden", readsImages)' in APP_JS
     assert 'imageCard.hidden = !supportsImageTools' in APP_JS
-    assert 'return $(ids[0])?.checked ? "main_model_tool_loop" : "legacy_figure_pipeline";' in APP_JS
+    assert 'return "main_model_tool_loop";' in APP_JS
+    assert 'id="imageOrchestrationSwitch"' not in INDEX_HTML
 
 
 def test_practice_review_pages_keep_context_and_show_long_fields() -> None:
@@ -969,6 +971,8 @@ def test_practice_requests_include_the_configured_image_route() -> None:
 
 def test_practice_and_knowledge_preflight_missing_model_configuration_before_job_submission() -> None:
     assert "function practiceSubmissionConfigurationIssue(" in APP_JS
+    assert "function practiceRequestRequiresImageTools(" in APP_JS
+    assert "practiceRequestRequiresImageTools(request)" in APP_JS
     assert "showPracticeSubmissionConfigurationIssue(sourceMode, configurationIssue)" in APP_JS
     assert 'showPracticeSubmissionConfigurationIssue("knowledge", configurationIssue)' in APP_JS
     assert "缺少 ${providerLabel} API Key" in APP_JS
@@ -976,6 +980,21 @@ def test_practice_and_knowledge_preflight_missing_model_configuration_before_job
     assert 'id="knowledgeConfigurationAction"' in INDEX_HTML
     assert 'title: "需要先完成 API 配置"' in APP_JS
     assert 'caps.retry && !configurationRequired' in APP_JS
+
+
+def test_blueprint_semantic_warnings_require_traceable_user_confirmation() -> None:
+    assert 'id="practicePlanSemanticConfirmation"' in APP_JS
+    assert "semantic_scope_confirmation" in APP_JS
+    assert "requires_manual_confirmation" in APP_JS
+    assert "JSON.stringify(confirmedWarnings) === JSON.stringify(semanticWarnings)" in APP_JS
+
+
+def test_exam_stepper_blocks_future_steps_and_exposes_accessible_state() -> None:
+    assert 'data-page="env" aria-current="step"' in INDEX_HTML
+    assert 'data-page="exam" aria-disabled="true" disabled' in INDEX_HTML
+    stepper = APP_JS[APP_JS.index("function updateStepIndicator(page)"):APP_JS.index("function switchTextbookTab", APP_JS.index("function updateStepIndicator(page)"))]
+    assert "button.disabled = unavailable" in stepper
+    assert 'button.setAttribute("aria-current", "step")' in stepper
 
 
 def test_practice_drawing_question_explains_why_answer_image_is_not_generated() -> None:
@@ -1018,7 +1037,9 @@ def test_generation_network_summary_exposes_each_transport_layer() -> None:
 def test_practice_loading_shows_copyable_task_id() -> None:
     assert 'id="practiceLoadingTaskId"' in INDEX_HTML
     assert 'id="practiceLoadingCopyTaskId"' in INDEX_HTML
-    assert "showPracticeLoadingTaskId(queued.job_id || queued.task_id)" in APP_JS
+    assert 'id="practiceLoadingRunId"' in INDEX_HTML
+    assert 'id="practiceLoadingCopyRunId"' in INDEX_HTML
+    assert 'showPracticeLoadingTaskId(queued.task_id || "", queued.run_id || queued.job_id || "")' in APP_JS
 
 
 def test_failed_analysis_material_is_replaced_and_scope_snapshot_is_pinned() -> None:

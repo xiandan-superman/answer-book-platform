@@ -158,7 +158,7 @@ def _finish_unusable_answer_delivery(
 
     report = {
         "task_id": task_id,
-        "status": "completed_with_issues",
+        "status": "failed",
         "execution_status": "skipped",
         "docx": "",
         "pipeline_status": str(stage_dir / "pipeline_status.json"),
@@ -172,7 +172,7 @@ def _finish_unusable_answer_delivery(
     update_task(task_id, current_stage="acceptance")
     mark("acceptance", "started", {"message": "答案不可用，保留诊断并跳过文档交付。"})
     write_json(stage_dir / "acceptance_report.json", report)
-    mark("acceptance", "completed_with_issues", report)
+    mark("acceptance", "failed", report)
 
     checkpoint(task_id)
     update_task(task_id, current_stage="model_usage_report")
@@ -452,6 +452,22 @@ def complete_pipeline_delivery(
         candidate_docx=docx_path,
     )
     if not final_report.get("delivery_ready", final_report.get("ok", False)):
+        # Keep the stage-level acceptance contract aligned with the final
+        # publication decision.  A successful DOCX construction is only an
+        # intermediate checkpoint; it must not remain reported as ``passed``
+        # when final delivery is blocked by content, figure, or artifact gates.
+        acceptance_path = stage_dir / "acceptance_report.json"
+        acceptance_record = read_json(acceptance_path) or {}
+        acceptance_record.update(
+            {
+                "status": str(final_report.get("status") or "failed"),
+                "delivery_tier": str(final_report.get("delivery_tier") or "blocked"),
+                "delivery_ready": bool(final_report.get("delivery_ready")),
+                "final_acceptance_report": str(stage_dir / "final_acceptance_report.json"),
+                "final_issues": list(final_report.get("issues") or [])[:50],
+            }
+        )
+        write_json(acceptance_path, acceptance_record)
         write_json(stage_dir / "final_acceptance_report.json", final_report)
         mark("final_acceptance", "failed", {"issues": final_report["issues"][:30]})
         raise RuntimeError("Final acceptance audit failed")

@@ -31,6 +31,15 @@ def long_path(value: Path | str) -> str:
     return "\\\\?\\" + raw
 
 
+def path_exists(value: Path | str) -> bool:
+    return os.path.exists(long_path(value))
+
+
+def read_text(value: Path | str, *, encoding: str = "utf-8") -> str:
+    with open(long_path(value), "r", encoding=encoding) as handle:
+        return handle.read()
+
+
 def fsync_directory_best_effort(directory: Path | str) -> None:
     """Flush a directory entry where supported without rejecting Windows writes."""
 

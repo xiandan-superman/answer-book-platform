@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -230,7 +231,7 @@ class Inbox:
         return connection
 
     def _initialize(self) -> None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS issues (
@@ -261,7 +262,7 @@ class Inbox:
             )
 
     def existing_receipt(self, report_id: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             row = connection.execute(
                 "SELECT r.report_id, r.fingerprint, i.report_id AS canonical_report_id FROM receipts r JOIN issues i USING(fingerprint) WHERE r.report_id = ?",
                 (report_id,),
@@ -275,7 +276,7 @@ class Inbox:
         summary = issue_summary(manifest)
         target = self.inbox / f"{fingerprint}.zip"
         received_at = now_iso()
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             previous = connection.execute("SELECT * FROM issues WHERE fingerprint = ?", (fingerprint,)).fetchone()
             versions = json.loads(previous["versions_json"]) if previous else {}
             devices = json.loads(previous["devices_json"]) if previous else {}
@@ -337,7 +338,7 @@ class Inbox:
         }
 
     def list_issues(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT * FROM issues ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, last_seen DESC LIMIT ? OFFSET ?",
                 (min(200, max(1, limit)), max(0, offset)),
@@ -345,12 +346,12 @@ class Inbox:
         return [dict(row) for row in rows]
 
     def issue(self, fingerprint: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             row = connection.execute("SELECT * FROM issues WHERE fingerprint = ?", (fingerprint,)).fetchone()
         return dict(row) if row else None
 
     def issue_by_report_id(self, report_id: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             row = connection.execute(
                 """
                 SELECT i.* FROM issues i
@@ -365,7 +366,7 @@ class Inbox:
     def set_status(self, fingerprint: str, status: str) -> bool:
         if status not in {"open", "resolved"}:
             return False
-        with self.connect() as connection:
+        with closing(self.connect()) as connection, connection:
             cursor = connection.execute(
                 "UPDATE issues SET status=?, resolved_at=? WHERE fingerprint=?",
                 (status, now_iso() if status == "resolved" else "", fingerprint),
@@ -373,7 +374,7 @@ class Inbox:
         return cursor.rowcount > 0
 
     def delete(self, fingerprint: str) -> bool:
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             row = connection.execute("SELECT bundle_path FROM issues WHERE fingerprint=?", (fingerprint,)).fetchone()
             if not row:
                 return False
@@ -391,7 +392,7 @@ class Inbox:
                     part.unlink(missing_ok=True)
             except OSError:
                 continue
-        with self.lock, self.connect() as connection:
+        with self.lock, closing(self.connect()) as connection, connection:
             rows = connection.execute("SELECT * FROM issues WHERE bundle_path != '' ORDER BY last_seen ASC").fetchall()
             for row in rows:
                 reference = parse_time(row["resolved_at"] if row["status"] == "resolved" and row["resolved_at"] else row["last_seen"])

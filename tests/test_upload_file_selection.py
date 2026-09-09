@@ -37,9 +37,9 @@ process.stdout.write(JSON.stringify(result));
 def test_prevalidation_is_atomic_and_independent_of_file_order() -> None:
     result = run_javascript(
         """
-const existing = [{name: '已选.txt', type: 'text/plain', size: 3, sha256: 'a'.repeat(64)}];
-const small = {name: '正常.txt', type: 'text/plain', size: 2};
-const oversized = {name: '超限.txt', type: 'text/plain', size: 12 * 1024 * 1024 + 1};
+const existing = [{name: '已选.pdf', type: 'application/pdf', size: 3, sha256: 'a'.repeat(64)}];
+const small = {name: '正常.pdf', type: 'application/pdf', size: 2};
+const oversized = {name: '超限.pdf', type: 'application/pdf', size: 12 * 1024 * 1024 + 1};
 const forward = upload.validateSelection(existing, [small, oversized]);
 const reverse = upload.validateSelection(existing, [oversized, small]);
 return {existing, forward, reverse};
@@ -47,12 +47,12 @@ return {existing, forward, reverse};
     )
 
     assert result["existing"] == [
-        {"name": "已选.txt", "type": "text/plain", "size": 3, "sha256": "a" * 64}
+        {"name": "已选.pdf", "type": "application/pdf", "size": 3, "sha256": "a" * 64}
     ]
     assert not result["forward"]["ok"]
     assert not result["reverse"]["ok"]
-    assert {item["name"] for item in result["forward"]["rejected"]} == {"正常.txt", "超限.txt"}
-    assert {item["name"] for item in result["reverse"]["rejected"]} == {"正常.txt", "超限.txt"}
+    assert {item["name"] for item in result["forward"]["rejected"]} == {"正常.pdf", "超限.pdf"}
+    assert {item["name"] for item in result["reverse"]["rejected"]} == {"正常.pdf", "超限.pdf"}
     assert any("同批次" in reason for reason in result["forward"]["rejected"][0]["reasons"])
 
 

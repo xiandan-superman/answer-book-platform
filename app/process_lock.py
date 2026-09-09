@@ -47,10 +47,14 @@ def _unlock_file(handle: BinaryIO) -> None:
 
 
 def _holder_description(path: Path) -> str:
+    metadata_path = path.with_name(f"{path.name}.meta.json")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return ""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return ""
     pid = str(data.get("pid") or "").strip()
     purpose = str(data.get("purpose") or "").strip()
     started_at = str(data.get("started_at") or "").strip()
@@ -68,6 +72,7 @@ def platform_process_lock(
     configured_path = str(os.environ.get("PLATFORM_INSTANCE_LOCK_PATH") or "").strip()
     lock_path = Path(path or configured_path or PLATFORM_INSTANCE_LOCK)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path = lock_path.with_name(f"{lock_path.name}.meta.json")
     handle = lock_path.open("a+b")
     try:
         try:
@@ -90,6 +95,7 @@ def platform_process_lock(
         handle.write(json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
         handle.flush()
         os.fsync(handle.fileno())
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         yield lock_path
     finally:
         try:
@@ -97,3 +103,7 @@ def platform_process_lock(
         except OSError:
             pass
         handle.close()
+        try:
+            metadata_path.unlink(missing_ok=True)
+        except OSError:
+            pass

@@ -1049,6 +1049,8 @@ def _combine_shared_composite_section(section: dict, items: list[dict]) -> list[
 
 def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
     image_dir = output_json.parent / "source_images"
+    # ``parse_document`` checks its durable cache before resolving/installing
+    # MinerU.  Preparing first makes a valid cache unusable while offline.
     package = parse_document(exam_file)
     paragraphs = paragraph_lines(
         package,

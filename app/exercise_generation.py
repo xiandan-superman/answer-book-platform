@@ -1445,6 +1445,8 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             "系统将使用对应层级的软难度意图，不因此阻断生成。"
         )
     source_scope = plan.get("source_scope") if isinstance(plan.get("source_scope"), dict) else {}
+    knowledge_mode = _clean(plan.get("source_mode"), 30) == "knowledge"
+    semantic_scope_warnings: list[str] = []
     source_catalog = [
         item for item in (plan.get("selected_source_questions") or source_scope.get("questions") or [])
         if isinstance(item, dict)
@@ -1649,15 +1651,21 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"第 {','.join(missing_required_points)} 项缺少必考知识点组合。")
     if invalid_required_points:
         message = "第 {} 项的必考知识点与绑定来源规则不一致。"
-        errors.append(message.format(",".join(invalid_required_points)))
+        rendered = message.format(",".join(invalid_required_points))
+        if knowledge_mode:
+            semantic_scope_warnings.append(
+                f"{rendered} 当前判断基于文字匹配，可能是同义或上下位概念；请人工确认后继续。"
+            )
+        else:
+            errors.append(rendered)
     if unbound_knowledge_targeted:
         if not analysis_fallback_points:
             errors.append("知识点定向蓝图缺少可验证的全局目标知识点。")
         if unsupported_required_points:
-            errors.append(
+            semantic_scope_warnings.append(
                 "知识点定向蓝图引入了材料范围外的必考知识点："
                 + "；".join(unsupported_required_points[:12])
-                + "。"
+                + "。该判断仅作语义范围提示，请人工核对是否为同义、细化或合理迁移。"
             )
         uncovered_global_points = [
             point
@@ -1665,10 +1673,10 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             if not _knowledge_scope_supports_point(point, supported_knowledge_targeted_points)
         ]
         if uncovered_global_points:
-            errors.append(
+            semantic_scope_warnings.append(
                 "知识点定向蓝图的整套必考知识点未覆盖全局目标："
                 + "、".join(uncovered_global_points[:12])
-                + "。"
+                + "。该判断仅作覆盖提示，请人工确认蓝图是否已用等价表述覆盖。"
             )
     if strategy in {"knowledge_item_wise", "per_question"}:
         incomplete_sources = []
@@ -1682,7 +1690,11 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
                 missing_text = "、".join(missing[:6])
                 incomplete_sources.append(f"{source_id}缺少{missing_text}")
         if incomplete_sources:
-            errors.append("逐知识单元多题分配未在整组覆盖全部确认知识点：" + "；".join(incomplete_sources) + "。")
+            message = "逐知识单元多题分配未在整组覆盖全部确认知识点：" + "；".join(incomplete_sources) + "。"
+            if knowledge_mode:
+                semantic_scope_warnings.append(f"{message} 请人工确认是否属于等价表述或有意取舍。")
+            else:
+                errors.append(message)
     if cross_source_leak_items:
         warnings.append(
             f"第 {','.join(dict.fromkeys(cross_source_leak_items))} 项的目标、设计意图或难度说明可能混入未绑定来源的子主题；"
@@ -1696,7 +1708,9 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     missing_scope_points = [point for point in expected_scope_points if point not in planned_scope_points]
     if missing_scope_points:
         message = f"蓝图未覆盖已确认范围的知识点：{'、'.join(missing_scope_points[:12])}。"
-        if mode == "comprehensive":
+        if knowledge_mode:
+            semantic_scope_warnings.append(f"{message} 当前为文字匹配结果，请人工确认语义覆盖情况。")
+        elif mode == "comprehensive":
             if len(items) < len(source_catalog):
                 warnings.append(f"当前题量少于已选来源数，{message} 建议增加题量以获得更完整覆盖。")
             else:
@@ -1724,10 +1738,7 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             _clean(item.get("variation_type"), 200),
         ))
     duplicate_signatures = sum(1 for signature in set(signatures) if signatures.count(signature) > 1)
-    knowledge_without_selected_scope = (
-        _clean(plan.get("source_mode"), 30) == "knowledge"
-        and not (plan.get("selected_source_questions") or [])
-    )
+    knowledge_without_selected_scope = knowledge_mode and not (plan.get("selected_source_questions") or [])
     if duplicate_signatures:
         message = f"蓝图存在 {duplicate_signatures} 组完全重复的计划项。"
         (warnings if knowledge_without_selected_scope else errors).append(message)
@@ -1741,13 +1752,18 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     cover = plan.get("scope_cover") if isinstance(plan.get("scope_cover"), dict) else {}
     selected_units = int((cover.get("counts") or {}).get("selected_units") or 0)
     if selected_units > 0 and cover.get("complete") is False:
-        if mode == "comprehensive":
+        if knowledge_mode:
+            semantic_scope_warnings.append(
+                "蓝图未逐项覆盖全部已确认来源单元。当前为标识与文字匹配结果，请人工确认是否已等价覆盖。"
+            )
+        elif mode == "comprehensive":
             if len(items) < selected_units:
                 warnings.append("当前题量少于已选来源数，蓝图未逐项覆盖全部来源单元。建议增加题量。")
             else:
                 warnings.append("蓝图未逐项覆盖全部来源单元。请在蓝图审查中确认是否需要补充来源。")
         else:
             errors.append("蓝图未覆盖全部已确认来源单元。")
+    warnings.extend(semantic_scope_warnings)
     review_item_ids = list(dict.fromkeys(
         _clean(finding.get("plan_item_id"), 120)
         for finding in findings
@@ -1758,6 +1774,8 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
         "errors": list(dict.fromkeys(errors)),
         "warnings": list(dict.fromkeys(warnings)),
         "findings": findings,
+        "requires_manual_confirmation": bool(semantic_scope_warnings),
+        "semantic_scope_warnings": list(dict.fromkeys(semantic_scope_warnings)),
         "review_item_ids": review_item_ids,
         "local_blocking_item_ids": review_item_ids,
         "blocking_scope": "global" if errors else ("items" if review_item_ids else "none"),
@@ -2395,6 +2413,28 @@ def _figure_is_renderable(figure: dict[str, Any]) -> bool:
 
 def _plan_requires_stem_figure(item: dict[str, Any]) -> bool:
     return item.get("stem_figure_required") is True or item.get("requires_figure") is True
+
+
+def practice_plan_requires_image_tools(plan: dict[str, Any]) -> bool:
+    """Return whether a confirmed blueprint explicitly requires a new stem image."""
+
+    blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else plan
+    items = blueprint.get("exercise_plan") if isinstance(blueprint, dict) else []
+    return any(_plan_requires_stem_figure(item) for item in (items or []) if isinstance(item, dict))
+
+
+def validate_blueprint_semantic_confirmation(plan: dict[str, Any], audit: dict[str, Any]) -> None:
+    """Require an exact, persisted acknowledgement for current semantic warnings."""
+
+    if audit.get("requires_manual_confirmation") is not True:
+        return
+    expected_warnings = [str(item) for item in (audit.get("semantic_scope_warnings") or [])]
+    confirmation = plan.get("semantic_scope_confirmation") if isinstance(plan.get("semantic_scope_confirmation"), dict) else {}
+    confirmed_warnings = [str(item) for item in (confirmation.get("warnings") or [])]
+    if confirmation.get("confirmed") is not True or confirmed_warnings != expected_warnings:
+        raise ValueError(
+            "蓝图包含需要人工判断的语义范围提醒，请在蓝图审查页逐项核对并确认后再生成。"
+        )
 
 
 def _figure_design(value: Any, *, required: bool) -> dict[str, Any]:
@@ -5266,9 +5306,9 @@ def _practice_model_tool_loop(
 ) -> ModelToolLoop | None:
     """Build the isolated image agent route selected by the user.
 
-    Returning ``None`` is only valid for the legacy route.  The main-model
-    route fails closed so it can never drift onto deterministic drawing or a
-    different model after the user selected it.
+    Public HTTP entrypoints validate the configured image tool before work is
+    queued. Returning ``None`` here supports internal text-only operations and
+    tests without reviving the retired program-driven drawing route.
     """
 
     image_orchestration = image_orchestration_from_payload(payload)
@@ -5277,10 +5317,7 @@ def _practice_model_tool_loop(
     image_provider_name = _clean(payload.get("image_provider"), 100)
     image_model_name = _clean(payload.get("image_model"), 200)
     if not image_provider_name or not image_model_name:
-        raise ModelToolLoopUnavailableError(
-            "主模型自主生图模式缺少生图服务商或模型；已停止执行，未降级到传统绘图链路。",
-            requires_configuration=True,
-        )
+        return None
     try:
         configured_image_provider = get_provider(image_provider_name)
     except (ValueError, OSError) as exc:
@@ -8458,13 +8495,6 @@ def _selectively_repair_practice_format(
 def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     image_orchestration = image_orchestration_from_payload(payload)
     payload = {**payload, "image_orchestration": image_orchestration}
-    if image_orchestration == MAIN_MODEL_TOOL_LOOP and not (
-        _clean(payload.get("image_provider"), 100) and _clean(payload.get("image_model"), 200)
-    ):
-        raise ModelToolLoopUnavailableError(
-            "主模型自主生图模式必须配置可用的生图服务商和模型。",
-            requires_configuration=True,
-        )
     plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
     _validate_practice_source_snapshot(payload, plan.get("source_snapshot") or payload.get("source_snapshot"))
     plan = ensure_practice_blueprint_defaults(plan)
@@ -8483,11 +8513,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     if is_knowledge_mode and requested_strategy == "targeted_set" and planned_strategy.startswith("knowledge_"):
         payload = {**payload, "generation_strategy": planned_strategy}
     validate_generation_plan_identity(payload, blueprint)
-    plan_audit = (
-        {"status": "passed", "errors": [], "warnings": [], "metrics": {"plan_count": len(blueprint.get("exercise_plan") or [])}}
-        if payload.get("blueprint_review_enabled") is False
-        else audit_practice_blueprint(plan)
-    )
+    plan_audit = audit_practice_blueprint(plan)
     blueprint_audit_repair: dict[str, Any] = {}
     repairable_blueprint_ids = [
         _clean(finding.get("plan_item_id"), 80)
@@ -8513,6 +8539,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         plan_audit = audit_practice_blueprint(plan)
     if plan_audit["status"] == "blocked":
         raise ValueError("确认后的蓝图未通过生成门禁：" + "；".join(plan_audit["errors"]))
+    validate_blueprint_semantic_confirmation(plan, plan_audit)
     audit_failed_root_ids = {
         _clean(item_id, 80)
         for item_id in (plan_audit.get("local_blocking_item_ids") or plan_audit.get("review_item_ids") or [])
@@ -8576,6 +8603,18 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         _clean(item.get("difficulty"), 20) if isinstance(item, dict) else "进阶"
         for item in exercise_plan[:count]
     ]
+    provider, model = _primary_model_runtime(payload)
+    if any(_plan_requires_stem_figure(item) for item in exercise_plan):
+        if _practice_model_tool_loop(
+            payload,
+            provider,
+            model,
+            scope_key="confirmed_blueprint_preflight",
+        ) is None:
+            raise ModelToolLoopUnavailableError(
+                "已确认蓝图包含必须生成的题干图片，请先配置支持原生工具调用与图片回看的主模型和生图模型。",
+                requires_configuration=True,
+            )
     sources = (
         parse_practice_sources(payload)
         if include_source_content
@@ -8584,7 +8623,6 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     if include_source_content:
         _hydrate_single_source_content(plan, sources.get("text") or "")
     reference_images = sources.get("reference_images") or sources["images"]
-    provider, model = _primary_model_runtime(payload)
     generation_reference_images = (
         reference_images if _provider_model_supports_vision(provider, model) else []
     )
@@ -8750,12 +8788,16 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
             generation_reference_images,
             semantic_sources,
         )
-        generation_tool_loop = _practice_model_tool_loop(
-            payload,
-            provider,
-            model,
-            scope_key=root_key,
-            reference_images=batch_reference_images,
+        generation_tool_loop = (
+            _practice_model_tool_loop(
+                payload,
+                provider,
+                model,
+                scope_key=root_key,
+                reference_images=batch_reference_images,
+            )
+            if any(_plan_requires_stem_figure(item) for item in batch_plan)
+            else None
         )
         if batch_reference_numbers:
             semantic_sources["attached_image_map"] = [
@@ -10217,12 +10259,16 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
         generation_reference_images,
         semantic_sources,
     )
-    regeneration_tool_loop = _practice_model_tool_loop(
-        payload,
-        provider,
-        model,
-        scope_key=f"regenerate:{current_plan_item_id or index}",
-        reference_images=generation_reference_images,
+    regeneration_tool_loop = (
+        _practice_model_tool_loop(
+            payload,
+            provider,
+            model,
+            scope_key=f"regenerate:{current_plan_item_id or index}",
+            reference_images=generation_reference_images,
+        )
+        if _plan_requires_stem_figure(item_for_generation)
+        else None
     )
     if regeneration_reference_numbers:
         semantic_sources["attached_image_map"] = [
@@ -10419,39 +10465,17 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
             "repair_error": "",
         }
     if figure_issues:
-        try:
-            repaired_figures = _repair_exercise_figures(
-                exercise,
-                item_for_generation,
-                figure_issues,
-                provider=provider,
-                model=model,
-                payload=payload,
-            )
-        except Exception as exc:
-            exercise["figure_generation"]["status"] = "failed"
-            exercise["figure_generation"]["repair_error"] = _clean(str(exc), 500)
-            if _is_transport_generation_error(exc):
-                raise ValueError(
-                    "题目正文已生成，但题图自动修复超时或网络异常；"
-                    "原题已安全保留，请稍后只重试本题。"
-                ) from exc
-            raise ValueError(
-                "题目正文已生成，但题图自动修复未完成；"
-                "原题已安全保留，请只重试本题。"
-            ) from exc
-        exercise["figures"] = _normalize_figures(repaired_figures)
-        _complete_generated_figure(exercise, item_for_generation)
-        figure_issues = _exercise_figure_issues(exercise, item_for_generation)
-        exercise["figure_generation"]["status"] = "failed" if figure_issues else "repaired"
+        # The program-driven figure repair route is retired. The main model
+        # already received the image tool in this regeneration call; an
+        # unresolved asset must remain explicit and retryable.
+        exercise["figure_generation"]["status"] = "failed"
         exercise["figure_generation"]["final_issue_codes"] = _unique_strings(
             [item.get("code") for item in figure_issues], limit=20, item_limit=100
         )
-        if figure_issues:
-            detail = _generation_gate_error(figure_issues).get("detail") or "；".join(
-                item["message"] for item in figure_issues
-            )
-            raise ValueError("单题重生未通过题干配图门禁：" + detail)
+        detail = _generation_gate_error(figure_issues).get("detail") or "；".join(
+            item["message"] for item in figure_issues
+        )
+        raise ValueError("单题重生未通过主模型题图门禁：" + detail)
     if not repair_only:
         _randomize_choice_option_order(exercise)
     exercise["exercise_id"] = _clean(current.get("exercise_id"), 100) or f"practice_{index + 1:02d}"
@@ -10739,12 +10763,16 @@ def generate_plan_draft(payload: dict[str, Any]) -> dict[str, Any]:
         generation_images,
         semantic_sources,
     )
-    draft_tool_loop = _practice_model_tool_loop(
-        payload,
-        provider,
-        model,
-        scope_key=f"plan_draft:{_clean(item.get('plan_item_id'), 100) or index}",
-        reference_images=generation_images,
+    draft_tool_loop = (
+        _practice_model_tool_loop(
+            payload,
+            provider,
+            model,
+            scope_key=f"plan_draft:{_clean(item.get('plan_item_id'), 100) or index}",
+            reference_images=generation_images,
+        )
+        if _plan_requires_stem_figure(item)
+        else None
     )
     if draft_reference_numbers:
         semantic_sources["attached_image_map"] = [

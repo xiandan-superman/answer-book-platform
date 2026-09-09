@@ -269,6 +269,11 @@ def create_practice_job(operation: str, payload: dict[str, Any]) -> dict[str, An
         ).isoformat(timespec="seconds")
     record = {
         "job_id": job_id,
+        # ``job_id`` identifies one durable execution attempt.  The batch id
+        # is the stable logical task identity used across refresh/recovery;
+        # keep both fields so legacy clients can continue polling by job_id.
+        "task_id": batch_id or job_id,
+        "run_id": job_id,
         "operation": operation,
         "task_kind": "knowledge" if source_mode == "knowledge" else "practice",
         "practice_batch_id": batch_id,
@@ -354,6 +359,9 @@ def load_practice_job(job_id: str, *, include_payload: bool = True) -> dict[str,
         if not path.exists():
             raise FileNotFoundError("出题任务不存在。")
         record = json.loads(path.read_text(encoding="utf-8"))
+    record["job_id"] = str(record.get("job_id") or job_id)
+    record["run_id"] = str(record.get("run_id") or record["job_id"])
+    record["task_id"] = str(record.get("task_id") or record.get("practice_batch_id") or record["job_id"])
     if not include_payload:
         record.pop("payload", None)
         record.pop("result", None)
@@ -366,7 +374,7 @@ def cancel_practice_job(job_id: str, reason: str = "用户取消出题任务") -
     with _LOCK:
         record = load_practice_job(job_id)
         if record.get("status") not in {"queued", "running", "paused"}:
-            return {"ok": False, "task_id": job_id, "message": "当前出题任务已经结束，不能取消。", "status": record.get("status")}
+            return {"ok": False, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "message": "当前出题任务已经结束，不能取消。", "status": record.get("status")}
         updated = update_practice_job(
             job_id,
             status="cancelled",
@@ -381,7 +389,7 @@ def cancel_practice_job(job_id: str, reason: str = "用户取消出题任务") -
             control_epoch=int(record.get("control_epoch") or 0) + 1,
             completed_at=_now(),
         )
-    return {"ok": True, "task_id": job_id, "status": updated.get("status"), "message": reason}
+    return {"ok": True, "task_id": updated["task_id"], "run_id": updated["run_id"], "job_id": job_id, "status": updated.get("status"), "message": reason}
 
 
 def pause_practice_job(job_id: str) -> dict[str, Any]:
@@ -389,7 +397,7 @@ def pause_practice_job(job_id: str) -> dict[str, Any]:
     with _LOCK:
         record = load_practice_job(job_id)
         if record.get("status") not in {"queued", "running"}:
-            return {"ok": False, "task_id": job_id, "status": record.get("status"), "message": "当前任务不能暂停。"}
+            return {"ok": False, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "status": record.get("status"), "message": "当前任务不能暂停。"}
         updated = update_practice_job(
             job_id,
             status="paused",
@@ -400,7 +408,7 @@ def pause_practice_job(job_id: str) -> dict[str, Any]:
             health_status="waiting",
             suggested_action="可继续本任务，仅补齐未完成项。",
         )
-    return {"ok": True, "task_id": job_id, "status": updated.get("status"), "message": "任务已暂停。"}
+    return {"ok": True, "task_id": updated["task_id"], "run_id": updated["run_id"], "job_id": job_id, "status": updated.get("status"), "message": "任务已暂停。"}
 
 
 def resume_practice_job(job_id: str) -> dict[str, Any]:
@@ -408,7 +416,7 @@ def resume_practice_job(job_id: str) -> dict[str, Any]:
     with _LOCK:
         record = load_practice_job(job_id)
         if record.get("status") != "paused":
-            return {"ok": False, "task_id": job_id, "status": record.get("status"), "message": "当前任务不能继续。"}
+            return {"ok": False, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "status": record.get("status"), "message": "当前任务不能继续。"}
         try:
             deadline = datetime.fromisoformat(str(record.get("generation_deadline_at") or ""))
         except ValueError:
@@ -416,7 +424,9 @@ def resume_practice_job(job_id: str) -> dict[str, Any]:
         if deadline is not None and deadline <= datetime.now().astimezone():
             return {
                 "ok": False,
-                "task_id": job_id,
+                "task_id": record["task_id"],
+                "run_id": record["run_id"],
+                "job_id": job_id,
                 "status": "paused",
                 "code": "generation_deadline_expired",
                 "message": "本批次生成截止时间已到，请从检查点重试未完成项。",
@@ -437,12 +447,12 @@ def delete_practice_job(job_id: str) -> dict[str, Any]:
     with _LOCK:
         record = load_practice_job(job_id)
         if record.get("status") in {"queued", "running", "paused"}:
-            return {"ok": False, "task_id": job_id, "message": "任务仍在进行，请先取消或等待完成后再删除。"}
+            return {"ok": False, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "message": "任务仍在进行，请先取消或等待完成后再删除。"}
         path = _path(job_id)
         removed_bytes = path.stat().st_size if path.exists() else 0
         path.unlink(missing_ok=True)
     delete_model_diagnostics(job_id)
-    return {"ok": True, "task_id": job_id, "removed_bytes": removed_bytes}
+    return {"ok": True, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "removed_bytes": removed_bytes}
 
 
 def rename_practice_job(job_id: str, title: str) -> dict[str, Any]:
@@ -468,7 +478,7 @@ def rename_practice_job(job_id: str, title: str) -> dict[str, Any]:
             record["payload"] = {**payload, "task_title": clean_title}
             _write(record)
             updated += 1
-    return {"ok": True, "task_id": job_id, "practice_batch_id": batch_id, "title": clean_title, "updated_jobs": updated}
+    return {"ok": True, "task_id": target["task_id"], "run_id": target["run_id"], "job_id": job_id, "practice_batch_id": batch_id, "title": clean_title, "updated_jobs": updated}
 
 
 def delete_jobs_for_history(history_id: str) -> dict[str, Any]:
@@ -901,7 +911,9 @@ def _queue_automatic_failure_report(record: dict[str, Any]) -> None:
         if isinstance(raw_payload, dict):
             payload = raw_payload
         queue_automatic_failure_report({
-            "task_id": str(record.get("job_id") or ""),
+            "task_id": str(record.get("task_id") or record.get("practice_batch_id") or record.get("job_id") or ""),
+            "run_id": str(record.get("run_id") or record.get("job_id") or ""),
+            "job_id": str(record.get("job_id") or ""),
             "task_kind": str(record.get("task_kind") or "practice"),
             "task_status": "failed",
             "task_stage": str(record.get("current_stage") or "failed"),

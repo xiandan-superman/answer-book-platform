@@ -861,7 +861,7 @@ def test_pre_generation_inputs_scope_and_blueprint_survive_reload_without_cross_
               const type = document.querySelector('input[name="practiceQuestionType"][value="计算题"]');
               type.checked = true;
               type.dispatchEvent(new Event('change', {bubbles: true}));
-              practiceSourceFiles = [{name: '原题附件.txt', type: 'text/plain', size: 6, data_url: 'data:text/plain;base64,5Y6f6aKY'}];
+              practiceSourceFiles = [{name: '原题附件.pdf', type: 'application/pdf', size: 6, data_url: 'data:application/pdf;base64,5Y6f6aKY'}];
               schedulePracticeWorkspaceDraftSave('exam');
             }"""
         )
@@ -875,7 +875,7 @@ def test_pre_generation_inputs_scope_and_blueprint_survive_reload_without_cross_
         assert page.locator("#practiceQuestionText").input_value() == "刷新后仍应保留的原题材料"
         assert page.locator("#practiceFocus").input_value() == "保留题生题专项要求"
         assert page.locator('input[name="practiceQuestionType"][value="计算题"]').is_checked()
-        assert page.evaluate("practiceSourceFiles[0]?.name") == "原题附件.txt"
+        assert page.evaluate("practiceSourceFiles[0]?.name") == "原题附件.pdf"
 
         page.evaluate("openKnowledgeEntry()")
         page.locator("#knowledgeTitleInput").fill("知识点独立草稿")
@@ -887,7 +887,7 @@ def test_pre_generation_inputs_scope_and_blueprint_survive_reload_without_cross_
               const type = document.querySelector('input[name="knowledgeQuestionType"][value="简答题"]');
               type.checked = true;
               type.dispatchEvent(new Event('change', {bubbles: true}));
-              knowledgeSourceFiles = [{name: '知识附件.txt', type: 'text/plain', size: 6, data_url: 'data:text/plain;base64,55+l6K+G'}];
+              knowledgeSourceFiles = [{name: '知识附件.pdf', type: 'application/pdf', size: 6, data_url: 'data:application/pdf;base64,55+l6K+G'}];
               schedulePracticeWorkspaceDraftSave('knowledge');
             }"""
         )
@@ -905,7 +905,7 @@ def test_pre_generation_inputs_scope_and_blueprint_survive_reload_without_cross_
         page.wait_for_function("() => document.getElementById('knowledgeTitleInput').value.length > 0")
         assert page.locator("#knowledgeTitleInput").input_value() == "知识点独立草稿"
         assert page.locator("#knowledgeTextInput").input_value() == "知识点模式不能覆盖题生题模式的内容"
-        assert page.evaluate("knowledgeSourceFiles[0]?.name") == "知识附件.txt"
+        assert page.evaluate("knowledgeSourceFiles[0]?.name") == "知识附件.pdf"
 
         page.evaluate("openPracticeEntry('exam')")
         page.locator("#practiceWorkspaceDraftNotice:not(.hidden)").wait_for()
@@ -1242,7 +1242,9 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
 
         page.evaluate("openTaskManager('knowledge')")
         page.locator("#page-tasks.active").wait_for(timeout=4000)
+        page.wait_for_function("() => !taskManagerLoading")
         card = page.locator("#taskManagerList .task-manager-item").filter(has_text="配置恢复测试")
+        card.wait_for(timeout=4000)
         task_copy = card.inner_text()
         assert presentation["message"] in task_copy
         assert presentation["retry_hint"] in task_copy
@@ -1319,9 +1321,10 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
         }
 
         def job_task(task_id: str, title: str, status: str, presentation, capabilities: dict) -> dict:
-            return {
-                "task_id": task_id,
-                "task_kind": "knowledge",
+                return {
+                    "task_id": task_id,
+                    "job_id": task_id,
+                    "task_kind": "knowledge",
                 "practice_batch_id": f"batch-{task_id}",
                 "is_generation_task": True,
                 "is_generation_job": True,
@@ -1410,14 +1413,19 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
 
         page.evaluate("openTaskManager('knowledge')")
         page.locator("#page-tasks.active").wait_for(timeout=4000)
+        page.wait_for_function("() => !taskManagerLoading")
         cards = page.locator("#taskManagerList .task-manager-item")
         assert cards.count() == 5
 
         cancelled_card = cards.filter(has_text="已取消记录")
         config_card = cards.filter(has_text="配置错误记录")
         malformed_card = cards.filter(has_text="异常字段记录")
-        assert cancelled_card.locator('[data-action="job-retry"]').is_visible()
+        cancelled_retry = cancelled_card.locator('[data-action="job-retry"]')
+        cancelled_retry.scroll_into_view_if_needed()
+        cancelled_retry.wait_for(state="visible")
         assert cancelled_card.locator('[data-action="job-config"]').count() == 0
+        config_card.scroll_into_view_if_needed()
+        config_card.wait_for(state="visible")
         config_card.locator(".task-card-more > summary").click()
         assert config_card.locator('[data-action="job-config"]').is_visible()
         assert malformed_card.locator('[data-action="job-config"]').count() == 0
@@ -1440,6 +1448,8 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
         page.locator("#taskManagerList .task-manager-item").filter(has_text="已取消记录").wait_for(state="detached", timeout=4000)
         assert page.locator("#taskManagerList .task-manager-item").count() == 4
         config_card = page.locator("#taskManagerList .task-manager-item").filter(has_text="配置错误记录")
+        config_card.scroll_into_view_if_needed()
+        config_card.wait_for(state="visible")
         config_card.locator(".task-card-more > summary").click()
         assert config_card.locator('[data-action="job-config"]').is_visible()
 
@@ -1508,6 +1518,7 @@ def test_practice_network_pause_resume_and_deadline_status_are_actionable() -> N
             }"""
         )
         card = page.locator(".task-manager-item").filter(has_text="网络故障闭环")
+        card.locator(".task-card-more > summary").click()
         assert card.locator('[data-action="job-resume"]').is_visible()
         assert page.locator("#practiceRecoveryEyebrow").inner_text() == "后台任务已暂停"
         card.locator(".task-card-more > summary").click()

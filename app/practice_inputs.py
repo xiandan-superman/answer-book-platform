@@ -22,6 +22,7 @@ from .practice_source_store import (
     load_extraction_cache,
     load_practice_source_file,
     save_extraction_cache,
+    validate_practice_source_file_type,
 )
 
 MAX_FILE_COUNT = 12
@@ -371,6 +372,7 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
     for raw in files:
         if not isinstance(raw, dict):
             continue
+        validate_practice_source_file_type(raw)
         name, mime, data = _decode_file(raw)
         total_bytes += len(data)
         if total_bytes > MAX_TOTAL_BYTES:
@@ -517,27 +519,6 @@ def parse_practice_sources(payload: dict[str, Any]) -> dict[str, Any]:
                 warning = "内嵌图片超过全局参考图像上限，部分图片未传给模型。"
                 if warning not in diagnostics["warnings"]:
                     diagnostics["warnings"].append(warning)
-        elif mime.startswith("text/") or suffix in {".txt", ".md"}:
-            decoded = data.decode("utf-8", errors="replace").strip()
-            replacement_count = decoded.count("\ufffd")
-            text_parts.append(f"## 文件：{name}\n\n{decoded}")
-            file_diagnostics.append({
-                "name": name,
-                "format": "text",
-                "analysis_mode": "text",
-                "representation_schema": REPRESENTATION_SCHEMA,
-                "representations": [{
-                    "kind": "structured_text",
-                    "status": "degraded" if replacement_count else "ready",
-                    "character_count": len(decoded),
-                }],
-                "partial_failures": ([{
-                    "code": "invalid_utf8_replaced",
-                    "representation": "structured_text",
-                    "message": "文件含有无法按 UTF-8 解码的字符，已使用替代符保留其位置。",
-                }] if replacement_count else []),
-                "warnings": (["文本文件包含无法按 UTF-8 解码的字符，需要复核。"] if replacement_count else []),
-            })
         else:
             raise ValueError(f"暂不支持文件类型：{name}")
 

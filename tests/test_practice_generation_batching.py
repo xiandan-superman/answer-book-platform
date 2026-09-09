@@ -673,6 +673,7 @@ def test_generation_keeps_successful_siblings_when_one_item_fails_a_quality_gate
     with (
         patch("app.exercise_generation._primary_model_runtime", return_value=(provider, "test-model")),
         patch("app.exercise_generation.OpenAICompatibleClient", return_value=object()),
+        patch("app.exercise_generation._practice_model_tool_loop", return_value=object()),
         patch("app.exercise_generation._call_practice_json", side_effect=fake_call),
     ):
         result = generate_practice_from_plan(payload)
@@ -684,7 +685,7 @@ def test_generation_keeps_successful_siblings_when_one_item_fails_a_quality_gate
     assert [row["plan_item_id"] for row in result["generation"]["batch_errors"]] == ["plan_item_01"]
 
 
-def test_figure_only_repair_preserves_question_text_and_healthy_sibling() -> None:
+def test_missing_main_model_image_asset_fails_only_that_item_and_preserves_healthy_sibling() -> None:
     calls: list[str] = []
     repair_call_options: list[dict] = []
 
@@ -759,18 +760,16 @@ def test_figure_only_repair_preserves_question_text_and_healthy_sibling() -> Non
     with (
         patch("app.exercise_generation._primary_model_runtime", return_value=(provider, "test-model")),
         patch("app.exercise_generation.OpenAICompatibleClient", return_value=object()),
+        patch("app.exercise_generation._practice_model_tool_loop", return_value=object()),
         patch("app.exercise_generation._call_practice_json", side_effect=fake_call),
     ):
         result = generate_practice_from_plan(payload)
 
     assert len(calls) == 2
-    assert [item["generation_status"] for item in result["exercises"]] == ["completed", "completed"]
-    assert result["exercises"][0]["stem"] == "根据附图回答过程问题。"
+    assert [item["generation_status"] for item in result["exercises"]] == ["failed", "completed"]
     assert result["exercises"][1]["stem"] == "说明状态函数的含义。"
-    assert result["exercises"][0]["figure_generation"]["status"] == "repaired"
-    assert result["exercises"][0]["figure_generation"]["repair_attempted"] is True
-    assert repair_call_options[0]["thinking"] == "disabled"
-    assert repair_call_options[0]["timeout_seconds"] == 120
+    assert result["exercises"][0]["generation_error"]["code"] == "generation_quality_gate_failed"
+    assert repair_call_options == []
 
 
 def test_partial_batch_keeps_returned_item_and_recovers_each_missing_slot() -> None:

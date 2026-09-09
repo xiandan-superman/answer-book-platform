@@ -421,6 +421,18 @@ def textbook_index_cache_status(selected_paths: list[str], citation_names_by_pat
         status = _ensure_composed_textbook_index_cache(key, manifest, paths, files) or {}
         indexed = bool(status)
     package_audits = _rebind_package_audits(status.get("textbook_package_audits") or [], files)
+    mapped_page_count = 0
+    page_map_path = paths["page_map"]
+    if page_map_path.is_file():
+        try:
+            mapped_page_count = sum(
+                1
+                for row in _read_csv_rows(page_map_path)
+                if str(row.get("printed_page") or "").strip()
+            )
+        except (OSError, ValueError):
+            mapped_page_count = 0
+    evidence_retrieval_supported = bool(indexed and mapped_page_count)
     return {
         "ok": True,
         "indexed": indexed,
@@ -429,6 +441,8 @@ def textbook_index_cache_status(selected_paths: list[str], citation_names_by_pat
         "textbook_count": int(status.get("textbook_count", len(files))),
         "block_count": int(status.get("block_count", 0)),
         "page_map_ok": bool(status.get("page_map_ok", True)),
+        "mapped_page_count": mapped_page_count,
+        "evidence_retrieval_supported": evidence_retrieval_supported,
         "page_map_issues": status.get("page_map_issues") or [],
         "blocks_csv": str(paths["blocks"]) if paths["blocks"].exists() else "",
         "page_map_csv": str(paths["page_map"]) if paths["page_map"].exists() else "",
@@ -459,7 +473,7 @@ def prepare_textbook_index_cache(selected_paths: list[str], citation_names_by_pa
             paths["manifest"].write_text(json.dumps({"key": key, "files": manifest}, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         status = validated[0]
-    return {
+    result = {
         **textbook_index_cache_status(selected_paths, citation_names_by_path),
         "ok": True,
         "indexed": True,
@@ -475,6 +489,10 @@ def prepare_textbook_index_cache(selected_paths: list[str], citation_names_by_pa
         "manifest": manifest,
         "message": "已建立索引可复用。" if cached else "教材索引已建立。",
     }
+    result["evidence_retrieval_supported"] = bool(result.get("mapped_page_count"))
+    if not result["evidence_retrieval_supported"]:
+        result["message"] = "索引已建立，但所选文件没有可验证页码，不能用于带教材页码的证据检索。"
+    return result
 
 
 def require_textbook_index_cache(selected_paths: list[str], citation_names_by_path: dict[str, str] | None = None) -> dict[str, Any]:
@@ -507,6 +525,8 @@ def install_textbook_index_cache(
         "cache_key": prepared["cache_key"],
         "cache_reused": prepared["cached"],
         "page_map_ok": prepared.get("page_map_ok", True),
+        "mapped_page_count": int(prepared.get("mapped_page_count", 0) or 0),
+        "evidence_retrieval_supported": bool(prepared.get("evidence_retrieval_supported", False)),
         "page_map_issues": prepared.get("page_map_issues") or [],
         "textbook_package_audit": str(stage_dir / "textbook_package_audit.json") if (stage_dir / "textbook_package_audit.json").exists() else "",
     }

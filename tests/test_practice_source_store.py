@@ -5,7 +5,7 @@ import base64
 from app import practice_inputs, practice_source_store, practice_store
 
 
-def _upload(name: str, content: bytes, mime: str = "text/plain") -> dict:
+def _upload(name: str, content: bytes, mime: str = "application/pdf") -> dict:
     encoded = base64.b64encode(content).decode("ascii")
     return {"name": name, "type": mime, "size": len(content), "data_url": f"data:{mime};base64,{encoded}"}
 
@@ -13,7 +13,7 @@ def _upload(name: str, content: bytes, mime: str = "text/plain") -> dict:
 def test_inline_source_is_replaced_with_durable_reference(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_source_store, "OBJECT_ROOT", tmp_path / "objects")
     monkeypatch.setattr(practice_source_store, "CACHE_ROOT", tmp_path / "cache")
-    payload = practice_source_store.persist_practice_source_files({"source_files": [_upload("材料.txt", b"alpha beta")]})
+    payload = practice_source_store.persist_practice_source_files({"source_files": [_upload("材料.pdf", b"alpha beta")]})
 
     source = payload["source_files"][0]
     assert source["resource_id"].startswith("psrc_")
@@ -24,8 +24,9 @@ def test_inline_source_is_replaced_with_durable_reference(tmp_path, monkeypatch)
 def test_extracted_source_is_reused_from_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_source_store, "OBJECT_ROOT", tmp_path / "objects")
     monkeypatch.setattr(practice_source_store, "CACHE_ROOT", tmp_path / "cache")
-    payload = practice_source_store.persist_practice_source_files({"source_files": [_upload("材料.txt", "知识材料".encode())]})
+    payload = practice_source_store.persist_practice_source_files({"source_files": [_upload("材料.pdf", "知识材料".encode())]})
 
+    monkeypatch.setattr(practice_inputs, "_pdf_content", lambda _name, _data: ("知识材料", [], {"warnings": []}))
     first = practice_inputs.parse_practice_sources(payload)
     monkeypatch.setattr(practice_inputs, "_decode_file", lambda _item: (_ for _ in ()).throw(AssertionError("should use cache")))
     second = practice_inputs.parse_practice_sources(payload)
@@ -45,3 +46,15 @@ def test_history_compaction_preserves_durable_source_reference(tmp_path, monkeyp
     assert compacted["source_files"][0]["resource_id"] == payload["source_files"][0]["resource_id"]
     assert compacted["source_recovery"] == {"status": "ready", "missing_files": []}
     assert practice_source_store.load_practice_source_file(compacted["source_files"][0]) == b"original-image"
+
+
+def test_text_and_markdown_uploads_are_rejected_before_persistence(tmp_path, monkeypatch):
+    monkeypatch.setattr(practice_source_store, "OBJECT_ROOT", tmp_path / "objects")
+
+    for name, mime in (("材料.txt", "text/plain"), ("材料.md", "text/markdown")):
+        try:
+            practice_source_store.persist_practice_source_files({"source_files": [_upload(name, b"text", mime)]})
+        except ValueError as exc:
+            assert "仅支持 PNG/JPG/WEBP/PDF/DOCX" in str(exc)
+        else:
+            raise AssertionError(f"{name} should be rejected")

@@ -547,10 +547,9 @@ def _compact_request(request: dict[str, Any] | None) -> dict[str, Any]:
         "question_types": request.get("question_types") or [],
         "focus": practice_user_focus(request),
         "generation_strategy": request.get("generation_strategy"),
-        # The orchestration mode and its concrete image route are one atomic
-        # user choice.  Persist all three so continuation/regeneration cannot
-        # silently lose the image service or drift onto another route.
-        "image_orchestration": str(request.get("image_orchestration") or "legacy_figure_pipeline")[:40],
+        # Program-driven image generation is retired. Persist the one public
+        # route so continuation/regeneration cannot revive a legacy choice.
+        "image_orchestration": "main_model_tool_loop",
         "image_provider": str(request.get("image_provider") or "")[:100],
         "image_model": str(request.get("image_model") or "")[:200],
         "include_source_content_in_generation": request.get("include_source_content_in_generation") is not False,

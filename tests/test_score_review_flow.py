@@ -18,6 +18,12 @@ def test_section_score_suggestions_cover_per_question_patterns():
     assert infer_suggested_score({"number": "1", "section_raw": "五、计算题 (本题共15分)"}) == 15
 
 
+def test_section_score_suggestions_cover_each_item_wording():
+    section = "一、名词解释（20分，每个2.5分）"
+    assert infer_suggested_score({"number": "1", "section_raw": section}) == 2.5
+    assert infer_suggested_score({"number": "17", "section_raw": section}) == 2.5
+
+
 def test_section_total_is_not_suggested_for_each_numbered_fill_item():
     question = {
         "number": "1",

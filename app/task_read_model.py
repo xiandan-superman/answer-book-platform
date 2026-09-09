@@ -188,7 +188,16 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
             or final_acceptance.get("delivery_tier") == "review_candidate"
         )
     )
-    if is_review_candidate and status.value in {"completed", "completed_with_issues"}:
+    candidate_docx_exists = bool(final_acceptance and final_acceptance.get("candidate_docx_exists"))
+    missing_review_candidate = (
+        is_review_candidate
+        and status.value in {"completed", "completed_with_issues"}
+        and not candidate_docx_exists
+    )
+    if missing_review_candidate:
+        quality = QualityStatus.BLOCKED
+        status = exam_run_status({**row, "status": "failed", "current_stage": "final_acceptance"})
+    elif is_review_candidate and status.value in {"completed", "completed_with_issues"}:
         quality = QualityStatus.WARNING
         status = practice_run_status("completed", quality=QualityStatus.WARNING)
     if status.value == "completed" and quality == QualityStatus.BLOCKED:
@@ -210,6 +219,11 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     model_label = short_model_label(display_model, display_provider)
     public_row = {
         **row,
+        "error": (
+            "任务没有生成可供复核的 Word 候选文件，不能标记为带问题完成。"
+            if missing_review_candidate
+            else row.get("error") or ""
+        ),
         "model_label": model_label,
         "model_source": model_source,
         "display_title": build_display_task_title(
@@ -236,7 +250,7 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     enriched["task_kind"] = "exam"
     enriched["analysis_profile"] = row.get("analysis_profile") or "evidence_backed"
     enriched["quality_summary"] = quality_summary
-    if is_review_candidate:
+    if is_review_candidate and candidate_docx_exists:
         # Saved artifacts remain inspectable, but cannot complete a newer run
         # or replace its pause/resume/cancel controls.
         enriched["capabilities"]["view_result"] = True
@@ -268,8 +282,11 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
     phases = record.get("generation_phases") if isinstance(record.get("generation_phases"), list) else []
     kind_label = "知识点出题" if task_kind == "knowledge" else "按题出题"
     task_title, material_names = _practice_material_metadata(record, task_kind)
+    stable_task_id = request.get("practice_batch_id") or record.get("practice_batch_id") or record.get("history_id")
     row = {
-        "task_id": record.get("history_id"),
+        "task_id": stable_task_id,
+        "history_id": record.get("history_id"),
+        "run_id": record.get("generation_run_id") or record.get("history_id"),
         "task_kind": task_kind,
         "practice_batch_id": request.get("practice_batch_id") or record.get("practice_batch_id") or "",
         "operation": "generate_from_plan",
@@ -346,8 +363,12 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         task_id=str(record.get("job_id") or ""),
     )
     network_statistics = practice_network_statistics(record)
+    stable_task_id = record.get("task_id") or record.get("practice_batch_id") or record.get("job_id")
     row = {
-        "task_id": record.get("job_id"),
+        "task_id": stable_task_id,
+        "job_id": record.get("job_id"),
+        "stable_task_id": stable_task_id,
+        "run_id": record.get("run_id") or record.get("job_id"),
         "task_kind": task_kind,
         "practice_batch_id": record.get("practice_batch_id") or "",
         "is_generation_task": True,

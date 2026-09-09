@@ -32,8 +32,9 @@ class PracticeTrustTests(unittest.TestCase):
         js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("按复核建议修复本题", js)
         self.assertNotIn("data-practice-semantic-fix", js)
-        self.assertIn("<span>阶段</span>", js)
-        self.assertIn("<span>流程</span>", js)
+        self.assertIn("<span>任务</span>", js)
+        self.assertIn("<span>执行</span>", js)
+        self.assertIn("function taskResourceId(task = {})", js)
         self.assertIn("button?.dataset.taskId || task?.task_id", js)
 
     def test_figure_ids_are_namespaced_and_unique_across_exercises(self) -> None:

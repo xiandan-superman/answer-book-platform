@@ -45,13 +45,13 @@
 
   <div id="stepIndicator" class="step-indicator hidden">
     <div class="step-track">
-      <button class="step-pill active" type="button" data-page="env"><span>1</span>环境配置</button>
+      <button class="step-pill active" type="button" data-page="env" aria-current="step"><span>1</span>环境配置</button>
       <i></i>
-      <button class="step-pill" type="button" data-page="exam"><span>2</span>选择真题</button>
+      <button class="step-pill" type="button" data-page="exam" aria-disabled="true" disabled><span>2</span>选择真题</button>
       <i></i>
-      <button class="step-pill" type="button" data-page="task"><span>3</span>执行解析</button>
+      <button class="step-pill" type="button" data-page="task" aria-disabled="true" disabled><span>3</span>执行解析</button>
       <i></i>
-      <button class="step-pill" type="button" data-page="result"><span>4</span>查看结果</button>
+      <button class="step-pill" type="button" data-page="result" aria-disabled="true" disabled><span>4</span>查看结果</button>
     </div>
   </div>
   </header>
@@ -294,7 +294,7 @@
           <div class="knowledge-mode-guide">
             <article><i class="fas fa-tag"></i><div><strong>只有知识点名称</strong><span>例如“晶胞 / 点阵参数”，平台会先补全合理的知识边界。</span></div></article>
             <article><i class="fas fa-align-left"></i><div><strong>粘贴简介或教材原文</strong><span>适合包含定义、公式、推导和注意事项的材料。</span></div></article>
-            <article><i class="fas fa-file-arrow-up"></i><div><strong>上传一批资料</strong><span>支持图片、PDF、Word、TXT 和 Markdown，可混合上传。</span></div></article>
+            <article><i class="fas fa-file-arrow-up"></i><div><strong>上传一批资料</strong><span>支持图片、PDF 和 Word，可混合上传；纯文字请直接粘贴。</span></div></article>
           </div>
         </details>
 
@@ -315,8 +315,8 @@
             <label class="knowledge-file-drop" for="knowledgeFileInput">
               <i class="fas fa-cloud-arrow-up"></i>
               <strong>选择知识材料文件</strong>
-              <span>图片、PDF、Word、TXT、Markdown；最多 12 个文件</span>
-              <input id="knowledgeFileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,.pdf,.docx,.txt,.md" hidden>
+              <span>图片、PDF、Word；最多 12 个文件</span>
+              <input id="knowledgeFileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.docx" hidden>
             </label>
             <div id="knowledgeFilePreview" class="knowledge-file-preview"><span>尚未选择文件</span></div>
             <details class="knowledge-advanced-settings">
@@ -630,7 +630,7 @@
                   <label class="flex cursor-pointer items-center gap-2 rounded-[var(--brand-radius-md)] border border-dashed border-[var(--brand-border)] bg-[var(--brand-muted)] px-3 py-2 text-[12px] text-[var(--brand-muted-foreground)] hover:border-[var(--brand-primary)] hover:text-[var(--brand-foreground)] transition">
                     <i data-lucide="paperclip" class="h-4 w-4"></i>
                     <span><strong id="practiceUploadLabel">上传题目文件</strong><small class="ml-2">图片、PDF、Word，可多选</small></span>
-                    <input id="practiceFile" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,.pdf,.docx,.txt,.md" hidden>
+                    <input id="practiceFile" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.docx" hidden>
                   </label>
                 <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择文件，也可以直接粘贴截图</span></div>
                 </div>
@@ -829,6 +829,10 @@
                   <div class="flex items-center justify-center gap-2">
                     <span>任务 ID：<code id="practiceLoadingTaskId"></code></span>
                     <button id="practiceLoadingCopyTaskId" type="button" class="text-button">复制</button>
+                  </div>
+                  <div class="flex items-center justify-center gap-2">
+                    <span>本次执行 ID：<code id="practiceLoadingRunId"></code></span>
+                    <button id="practiceLoadingCopyRunId" type="button" class="text-button">复制</button>
                   </div>
                 </details>
                 <p>可以离开当前页面，任务会继续；稍后从任务列表返回即可。</p>
@@ -1225,7 +1229,6 @@
           <article id="practiceImageModelCard" class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
             <div><h3>生图模型</h3><p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p></div>
-            <input id="practiceImageOrchestrationSwitch" type="checkbox" checked hidden>
             <label>已配置供应商<select id="practiceImageProviderSelect"></select></label>
             <label>可用生图模型<select id="practiceImageModelSelect"></select></label>
             <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
@@ -1275,7 +1278,6 @@
           <article id="knowledgeImageModelCard" class="practice-model-setting">
             <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
             <div><h3>生图模型</h3><p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p></div>
-            <input id="knowledgeImageOrchestrationSwitch" type="checkbox" checked hidden>
             <label>已配置供应商<select id="knowledgeImageProviderSelect"></select></label>
             <label>可用生图模型<select id="knowledgeImageModelSelect"></select></label>
             <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
@@ -1440,17 +1442,16 @@
                   <span class="model-role-icon orange"><i class="fas fa-wand-magic-sparkles"></i></span>
                   <div>
                     <strong>作图题生图</strong>
-                    <p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p>
+                    <p>由主模型判断是否需要图片、调用生图模型并回看生成结果。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <input id="imageOrchestrationSwitch" type="checkbox" checked hidden>
                   <label><i class="fas fa-cloud"></i>已配置供应商</label>
                   <select id="imageProviderSelect"></select>
                   <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="imageModelSelect"></select>
                   <input id="imageModelInput" type="text" placeholder="填写 image model ID">
-                  <p id="imageModelHint" class="safe-note"><i class="fas fa-image"></i>规则化绘图失败时，使用该模型做兜底生图。</p>
+                  <p id="imageModelHint" class="safe-note"><i class="fas fa-image"></i>主模型在确有需要时调用该模型生图，并在采用前检查真实图片。</p>
                   <span id="imageRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
@@ -1511,7 +1512,7 @@
           <details class="technical-details textbook-format-note textbook-guidance-details">
             <summary><i class="fas fa-circle-info"></i>教材格式说明</summary>
             <p><strong>推荐：</strong>上传 MinerU 教材 ZIP 包，可完整保留图、表、公式和版面位置。</p>
-            <p>包内应包含 content_list.json 和 images 文件夹；建议同时保留 full.md、layout.json、origin.pdf。旧 JSON、PDF、Word、Markdown、TXT 仍可用于文字检索，但无法保证完整读取图片和复杂版面。</p>
+            <p>包内应包含 content_list.json 和 images 文件夹；建议同时保留 full.md、layout.json、origin.pdf。教材库仅接受 PDF、Word、JSON 或 MinerU 教材 ZIP。</p>
           </details>
           <div id="textbookMergeBox" class="merge-box hidden"></div>
           <div id="textbookChecklist" class="file-card-grid"></div>
@@ -1545,13 +1546,13 @@
         <article id="textbook-upload" class="reference-card hidden">
           <div class="textbook-format-note upload-note">
             <strong><i class="fas fa-box-archive"></i> MinerU 教材 ZIP 包要求</strong>
-            <p>推荐直接压缩 MinerU 解析输出文件夹。必须包含 content_list.json 和 images/；建议包含 content_list_v2.json、layout.json、full.md、origin.pdf。旧 JSON/PDF/DOCX 仍允许上传，但只保证文字检索能力。</p>
+                    <p>推荐直接压缩 MinerU 解析输出文件夹。必须包含 content_list.json 和 images/；建议包含 content_list_v2.json、layout.json、full.md、origin.pdf。</p>
           </div>
           <label class="upload-zone" for="textbookUploadInput">
-            <input id="textbookUploadInput" type="file" multiple accept=".pdf,.docx,.json,.md,.txt,.zip">
+            <input id="textbookUploadInput" type="file" multiple accept=".pdf,.docx,.json,.zip">
             <span><i class="fas fa-cloud-upload-alt"></i></span>
             <strong>拖拽文件到此处，或点击上传</strong>
-            <small>支持 PDF、Word、JSON、Markdown、TXT、MinerU 教材 ZIP 包。</small>
+                    <small>支持 PDF、Word、JSON 和 MinerU 教材 ZIP 包；不接受 Markdown/TXT。</small>
           </label>
           <div id="textbookUploadList" class="upload-file-list hidden"></div>
           <button id="uploadTextbooksBtn" class="secondary-button" type="button">上传教材</button>

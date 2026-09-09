@@ -54,6 +54,19 @@ def test_second_process_is_rejected_and_lock_releases_after_owner_exits(tmp_path
     assert acquired.stdout.strip() == "acquired"
 
 
+def test_holder_metadata_is_available_from_sidecar(tmp_path, monkeypatch) -> None:
+    lock_path = tmp_path / "platform.lock"
+    with platform_process_lock(purpose="sidecar-parent", path=lock_path):
+        metadata = lock_path.with_name("platform.lock.meta.json")
+        assert metadata.is_file()
+        metadata_payload = metadata.read_text(encoding="utf-8")
+        assert "sidecar-parent" in metadata_payload
+        from app.process_lock import _holder_description
+
+        assert "sidecar-parent" in _holder_description(lock_path)
+    assert not metadata.exists()
+
+
 def test_same_process_second_lock_is_also_rejected(tmp_path) -> None:
     lock_path = tmp_path / "same-process.lock"
     with platform_process_lock(purpose="first", path=lock_path):

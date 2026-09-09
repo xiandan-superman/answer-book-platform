@@ -44,6 +44,7 @@ from .exercise_generation import (
     generate_practice_from_plan,
     generate_practice_set,
     plan_practice_set,
+    practice_plan_requires_image_tools,
     reconcile_practice_generation,
     regenerate_plan_item,
     regenerate_practice_exercise,
@@ -231,6 +232,7 @@ def _task_quality_summary(task_id: str) -> dict:
                 "warning_count": data.get("warning_count", len(data.get("warnings", [])) if isinstance(data.get("warnings"), list) else 0),
             }
             if key == "final_acceptance":
+                outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
                 item.update(
                     {
                         "status": str(data.get("status") or ""),
@@ -242,6 +244,7 @@ def _task_quality_summary(task_id: str) -> dict:
                                 str(data.get("status") or "") in {"passed", "passed_with_warnings"},
                             )
                         ),
+                        "candidate_docx_exists": bool(outputs.get("docx_exists")),
                         "issues": list(data.get("issues", []))[:50],
                         "warnings": list(data.get("warnings", []))[:50],
                     }
@@ -558,8 +561,11 @@ def _practice_task_row(record: dict) -> dict:
     phases = record.get("generation_phases") if isinstance(record.get("generation_phases"), list) else []
     if not phases:
         phases = [{"operation": "generate_from_plan", "label": "题目生成", "status": "completed"}]
+    stable_task_id = request.get("practice_batch_id") or record.get("practice_batch_id") or record.get("history_id")
     return {
-        "task_id": record.get("history_id"),
+        "task_id": stable_task_id,
+        "history_id": record.get("history_id"),
+        "run_id": record.get("generation_run_id") or record.get("history_id"),
         "task_kind": task_kind,
         "practice_batch_id": request.get("practice_batch_id") or "",
         "operation": "generate_from_plan",
@@ -592,8 +598,11 @@ def _practice_job_task_row(record: dict) -> dict:
         deadline_remaining = max(0, int((deadline - datetime.now().astimezone()).total_seconds()))
     except (TypeError, ValueError):
         pass
+    stable_task_id = record.get("task_id") or record.get("practice_batch_id") or record.get("job_id")
     return {
-        "task_id": record.get("job_id"),
+        "task_id": stable_task_id,
+        "job_id": record.get("job_id"),
+        "run_id": record.get("run_id") or record.get("job_id"),
         "task_kind": record.get("task_kind") or "practice",
         "practice_batch_id": record.get("practice_batch_id") or "",
         "is_generation_task": True,
@@ -658,15 +667,59 @@ def _start_practice_job(operation: str, payload: dict) -> dict:
     return enqueue_practice_job(str(record["job_id"]))
 
 
+def _validate_exam_path_for_creation(value: object) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("请选择要解析的真题 DOCX 文件。")
+    path = Path(text).expanduser()
+    if not path.is_file():
+        raise ValueError(f"真题文件不存在或不可读取：{path}")
+    return path
+
+
+class RuntimeEnvironmentUnsupported(RuntimeError):
+    def __init__(self, payload: dict[str, object]):
+        super().__init__(str(payload.get("error") or "运行环境不兼容"))
+        self.payload = payload
+
+
+def _ensure_practice_runtime_ready() -> dict:
+    """Enforce the supported runtime before creating any model task.
+
+    The worker keeps the same defensive check for recovered/CLI tasks, but an
+    HTTP submission must fail before persistence or queue admission so users
+    do not receive a task that can only fail later in ``environment``.
+    """
+
+    env = check_environment()
+    if env.get("python_supported", True):
+        return env
+    current = str(env.get("python") or "未知版本")
+    requirement = str(env.get("python_requirement") or "3.11.x")
+    self_error = {
+        "ok": False,
+        "error": f"平台运行环境不兼容：当前 Python {current}，要求 Python {requirement}。",
+        "error_code": "runtime_environment_unsupported",
+        "suggested_action": "请安装/选择 Python 3.11，完全退出平台后重新启动；本次未创建任务、未调用模型、不会产生费用。",
+        "environment": {
+            "python": current,
+            "python_requirement": requirement,
+            "python_supported": False,
+        },
+    }
+    raise RuntimeEnvironmentUnsupported(self_error)
+
+
 def _validate_main_model_tool_route(
     payload: dict,
     *,
     provider_name: str = "",
     model_name: str = "",
+    required: bool = True,
 ) -> None:
     """Fail before task creation when an explicitly selected agent route is incomplete."""
 
-    if normalize_image_orchestration(payload.get("image_orchestration")) != MAIN_MODEL_TOOL_LOOP:
+    if not required or normalize_image_orchestration(payload.get("image_orchestration")) != MAIN_MODEL_TOOL_LOOP:
         return
     image_provider_name = str(payload.get("image_provider") or "").strip()
     image_model = str(payload.get("image_model") or "").strip()
@@ -1158,6 +1211,23 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        if parsed.path == "/api/practice/jobs":
+            query = parse_qs(parsed.query)
+            raw_limit = (query.get("limit") or ["100"])[0]
+            try:
+                limit = max(1, min(100, int(raw_limit)))
+            except (TypeError, ValueError):
+                limit = 100
+            include_history = (query.get("include_history") or ["0"])[0].lower() in {"1", "true", "yes"}
+            jobs = list_practice_jobs(limit=limit, include_history_completed=include_history)
+            self.send_json({
+                "ok": True,
+                "jobs": [_practice_job_api_payload(item) for item in jobs],
+                "count": len(jobs),
+                "limit": limit,
+                "include_history": include_history,
+            })
+            return
         if len(parts) == 4 and parts[:3] == ["api", "practice", "export-jobs"]:
             self.send_json({"ok": True, "job": load_practice_export_job(parts[3])})
             return
@@ -1623,6 +1693,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(result)
                 return
             if parsed.path == "/api/practice/generate":
+                _ensure_practice_runtime_ready()
                 body = persist_practice_source_files(self.read_json())
                 practice_provider = get_provider(str(body.get("provider") or "").strip() or None)
                 practice_model = resolve_provider_model(practice_provider, body.get("model"))
@@ -1631,6 +1702,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     practice_provider,
                     practice_model,
                     _normalize_thinking_mode(body.get("thinking")),
+                )
+                _validate_main_model_tool_route(
+                    body,
+                    required=practice_plan_requires_image_tools(body.get("plan") or {}),
                 )
                 result = generate_practice_set(body)
                 record = save_practice_record(result, request=body)
@@ -1647,6 +1722,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(result)
                 return
             if parsed.path == "/api/practice/jobs":
+                _ensure_practice_runtime_ready()
                 body = self.read_json()
                 operation = str(body.get("operation") or "")
                 payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
@@ -1658,17 +1734,32 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     practice_model,
                     _normalize_thinking_mode(payload.get("thinking")),
                 )
-                _validate_main_model_tool_route(payload)
+                _validate_main_model_tool_route(
+                    payload,
+                    required=(
+                        operation == "generate_from_plan"
+                        and practice_plan_requires_image_tools(payload.get("plan") or {})
+                    ),
+                )
                 record = _start_practice_job(operation, payload)
                 append_runtime_log(
                     "practice",
                     f"创建后台出题任务 {record['job_id']}",
-                    payload={"task_id": record["job_id"], "operation": operation, "status": "queued"},
+                    payload={
+                        "task_id": record.get("task_id") or record["job_id"],
+                        "run_id": record.get("run_id") or record["job_id"],
+                        "job_id": record["job_id"],
+                        "operation": operation,
+                        "status": "queued",
+                    },
                 )
                 self.send_json(
                     {
+                        "ok": True,
                         "job_id": record["job_id"],
-                        "task_id": record["job_id"],
+                        "task_id": record.get("task_id") or record["job_id"],
+                        "stable_task_id": record.get("task_id") or record["job_id"],
+                        "run_id": record.get("run_id") or record["job_id"],
                         "status": record["status"],
                         "deduplicated": bool(record.get("deduplicated")),
                     },
@@ -1686,14 +1777,23 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     "practice",
                     f"继续未完成题目 {parts[3]}",
                     payload={
-                        "task_id": record["job_id"],
+                        "task_id": record.get("task_id") or record["job_id"],
+                        "run_id": record.get("run_id") or record["job_id"],
+                        "job_id": record["job_id"],
                         "history_id": parts[3],
                         "status": record.get("status"),
                         "deduplicated": bool(record.get("deduplicated")),
                     },
                 )
                 self.send_json(
-                    {"job_id": record["job_id"], "status": record["status"], "deduplicated": bool(record.get("deduplicated"))},
+                    {
+                        "ok": True,
+                        "task_id": record.get("task_id") or record["job_id"],
+                        "run_id": record.get("run_id") or record["job_id"],
+                        "job_id": record["job_id"],
+                        "status": record["status"],
+                        "deduplicated": bool(record.get("deduplicated")),
+                    },
                     status=202,
                 )
                 return
@@ -1711,7 +1811,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {
                         "ok": record.get("status") in {"queued", "running"},
-                        "task_id": parts[3],
+                        "task_id": record.get("task_id") or parts[3],
+                        "run_id": record.get("run_id") or parts[3],
+                        "job_id": record.get("job_id") or parts[3],
                         "status": record.get("status"),
                         "code": record.get("code", ""),
                         "message": record.get("message", ""),
@@ -1731,7 +1833,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(plan_practice_set(body))
                 return
             if parsed.path == "/api/practice/generate-from-plan":
+                _ensure_practice_runtime_ready()
                 body = self.read_json()
+                _validate_main_model_tool_route(
+                    body,
+                    required=practice_plan_requires_image_tools(body.get("plan") or {}),
+                )
                 existing = None if body.get("fresh_generation") else find_completed_by_plan(body)
                 if existing:
                     reused = {**existing.get("data", {})}
@@ -1743,7 +1850,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(record["data"])
                 return
             if parsed.path == "/api/practice/generate-from-contract":
+                _ensure_practice_runtime_ready()
                 body = self.read_json()
+                _validate_main_model_tool_route(body, required=False)
                 existing = None if body.get("fresh_generation") else find_completed_by_plan(body)
                 if existing:
                     reused = {**existing.get("data", {})}
@@ -1755,6 +1864,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(record["data"])
                 return
             if parsed.path == "/api/practice/regenerate":
+                _ensure_practice_runtime_ready()
                 body = self.read_json()
                 _validate_main_model_tool_route(body)
                 result = regenerate_practice_exercise(body)
@@ -1995,6 +2105,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/tasks":
                 body = self.read_json()
+                exam_path = _validate_exam_path_for_creation(body.get("exam_path"))
                 analysis_profile = normalize_analysis_profile(body.get("analysis_profile"))
                 uses_textbook_evidence = analysis_uses_textbook_evidence(analysis_profile)
                 generates_answers = analysis_generates_answers(analysis_profile)
@@ -2090,13 +2201,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 if not isinstance(textbook_display_names, dict):
                     raise ValueError("textbook_display_names must be an object")
                 if uses_textbook_evidence:
-                    require_textbook_index_cache(
+                    textbook_index_status = require_textbook_index_cache(
                         [str(x) for x in selected_textbooks],
                         {str(key): str(value) for key, value in textbook_display_names.items()},
                     )
+                    if not textbook_index_status.get("evidence_retrieval_supported", False):
+                        raise ValueError("所选教材没有可验证页码，不能用于教材证据检索；请改用 PDF、Word 或带页码的教材索引。")
                 textbooks_dir = str(body.get("textbooks_dir", "") or TEXTBOOKS_DIR) if uses_textbook_evidence else ""
                 record = create_task(
-                    exam_path=str(body.get("exam_path", "")),
+                    exam_path=str(exam_path),
                     textbooks_dir=textbooks_dir,
                     provider=provider.name,
                     model=model,
@@ -2503,6 +2616,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
             )
             append_exception_log(exc, path=parsed.path, support_id=payload["support_id"], request_id=self.request_id())
             self.send_json(payload, status=503)
+        except RuntimeEnvironmentUnsupported as exc:
+            append_runtime_log(
+                "environment",
+                f"拒绝创建出题任务：{exc.payload.get('error')}",
+                "warning",
+                {"error_code": exc.payload.get("error_code"), "environment": exc.payload.get("environment")},
+            )
+            self.send_json(exc.payload, status=409)
         except ValueError as exc:
             payload = public_error_payload(exc, status=400, path=parsed.path)
             append_runtime_log(
@@ -2539,7 +2660,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
         # 不依赖前端异步 refresh()（解决“首次进入无版本号”）。
         if full.name == "index.html":
             data = _inject_index_version(data.decode("utf-8", errors="replace")).encode("utf-8")
-        content_type = mimetypes.guess_type(str(full))[0] or "application/octet-stream"
+        content_type = {
+            ".woff": "font/woff",
+            ".woff2": "font/woff2",
+            ".ttf": "font/ttf",
+            ".otf": "font/otf",
+        }.get(full.suffix.lower(), mimetypes.guess_type(str(full))[0] or "application/octet-stream")
         if full.suffix == ".html":
             content_type = "text/html; charset=utf-8"
         elif full.suffix == ".js":

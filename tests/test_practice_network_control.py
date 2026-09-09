@@ -165,7 +165,9 @@ def test_paused_job_cannot_resume_after_parent_deadline(tmp_path, monkeypatch) -
 
     assert result == {
         "ok": False,
-        "task_id": job["job_id"],
+        "task_id": job["task_id"],
+        "run_id": job["run_id"],
+        "job_id": job["job_id"],
         "status": "paused",
         "code": "generation_deadline_expired",
         "message": "本批次生成截止时间已到，请从检查点重试未完成项。",

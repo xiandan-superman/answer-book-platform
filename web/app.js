@@ -603,14 +603,20 @@ function capturePracticeWorkspaceDraft(mode) {
 
 function normalizeSourceFileList(files) {
   const seenIds = new Set();
-  return Array.from(files || []).filter((file) => file && typeof file === "object").map((file) => {
+  return Array.from(files || [])
+    .filter((file) => file && typeof file === "object")
+    .filter((file) => {
+      try { return uploadFileSelectionApi().isAllowedFileType(file); }
+      catch (_error) { return false; }
+    })
+    .map((file) => {
     const normalized = { ...file };
     let itemId = String(normalized.upload_item_id || "").trim();
     if (!itemId || seenIds.has(itemId)) itemId = newUploadItemId();
     normalized.upload_item_id = itemId;
     seenIds.add(itemId);
     return normalized;
-  });
+    });
 }
 
 function restorePracticeWorkspaceDraft(mode) {
@@ -1197,8 +1203,14 @@ function updateStepIndicator(page) {
   const currentIndex = workflowStepPages.indexOf(page);
   document.querySelectorAll(".step-pill").forEach((button) => {
     const index = workflowStepPages.indexOf(button.dataset.page || "");
-    button.classList.toggle("active", index === currentIndex);
+    const active = index === currentIndex;
+    const unavailable = index > currentIndex;
+    button.classList.toggle("active", active);
     button.classList.toggle("done", currentIndex > index && index >= 0);
+    button.disabled = unavailable;
+    button.setAttribute("aria-disabled", String(unavailable));
+    if (active) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
   });
 }
 
@@ -1796,7 +1808,9 @@ function updateEnvironmentSummary(env) {
           ? "当前选用的模型服务网络不可达"
           : routeTestFailed
             ? "当前模型连接测试失败，请修复后继续"
-            : "环境检查通过后即可继续";
+            : !runtimeReady
+              ? `当前 Python ${env?.python || "未知版本"} 不兼容，要求 ${env?.python_requirement || "3.11.x"}；不会创建任务或调用模型`
+              : "环境检查通过后即可继续";
   setEnvNextEnabled(ready, readyHint);
   setCheckState(
     "runtimeCheckIcon",
@@ -1825,7 +1839,7 @@ function updateEnvironmentSummary(env) {
   }
   const visual = $("environmentVisualResult");
   if (visual) {
-    visual.className = `status-result ${ready ? "result-ok" : "result-warn"}`;
+    visual.className = `status-result ${ready ? "result-ok" : (!runtimeReady ? "result-error" : "result-warn")}`;
     visual.innerHTML = ready
       ? allRoutesTested
         ? '<i class="fas fa-check-circle"></i><strong>环境和当前解析模型均已测试通过</strong>'
@@ -2595,6 +2609,13 @@ function practiceErrorExplicitlyNeedsConfiguration(subject = {}) {
     && String(subject?.configuration_reason || "") === "missing_api_key";
 }
 
+function practiceRequestRequiresImageTools(request = {}) {
+  const plan = request.plan && typeof request.plan === "object" ? request.plan : {};
+  const blueprint = plan.blueprint && typeof plan.blueprint === "object" ? plan.blueprint : plan;
+  const items = Array.isArray(blueprint.exercise_plan) ? blueprint.exercise_plan : [];
+  return items.some((item) => item?.stem_figure_required === true || item?.requires_figure === true);
+}
+
 function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模拟出题") {
   const providerName = String(request.provider || "").trim();
   const model = String(request.model || "").trim();
@@ -2618,7 +2639,7 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
       message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 缺少 ${providerLabel} API Key。请前往 API 配置填写并验证后重试；当前材料已保留。`,
     };
   }
-  if (String(request.image_orchestration || "") === "main_model_tool_loop") {
+  if (practiceRequestRequiresImageTools(request) && String(request.image_orchestration || "") === "main_model_tool_loop") {
     const mainConfig = providerConfigs?.[providerName] || {};
     if (!modelSupportsMainToolLoop(model, mainConfig)) {
       return {
@@ -2823,7 +2844,9 @@ async function openPracticeRecoveryNoticeJob() {
     return;
   }
   await openGenerationJob({
-    task_id: job.job_id,
+    task_id: job.task_id || job.job_id,
+    run_id: job.run_id || job.job_id,
+    job_id: job.job_id,
     task_kind: job.task_kind,
     error_presentation: job.error_presentation || {},
   });
@@ -2869,12 +2892,14 @@ function updatePracticeLoadingProgress(job = {}) {
   setText("practiceLoadingElapsed", `${formatPracticeWaitTime(elapsed)} · ${practiceWaitExpectation(job)}`);
 }
 
-function showPracticeLoadingTaskId(jobId) {
-  const value = String(jobId || "").trim();
-  setText("practiceLoadingTaskId", value);
+function showPracticeLoadingTaskId(taskId, runId = "") {
+  const taskValue = String(taskId || "").trim();
+  const runValue = String(runId || "").trim();
+  setText("practiceLoadingTaskId", taskValue);
+  setText("practiceLoadingRunId", runValue);
   const row = $("practiceLoadingTaskIdRow");
-  row?.classList.toggle("hidden", !value);
-  if (row && !value) row.open = false;
+  row?.classList.toggle("hidden", !taskValue && !runValue);
+  if (row && !taskValue && !runValue) row.open = false;
 }
 
 async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
@@ -2883,6 +2908,7 @@ async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
     try {
       const job = await api(`/api/practice/jobs/${encodeURIComponent(jobId)}?detail=1`);
       transientFailures = 0;
+      showPracticeLoadingTaskId(job.task_id || "", job.run_id || job.job_id || jobId);
       if (typeof onUpdate === "function") {
         try { onUpdate(job); } catch (e) {}
       }
@@ -2895,7 +2921,13 @@ async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
       }
       if (job.status === "failed") {
         if (activePracticeJobId === jobId) rememberPracticeJob("");
-        const terminalError = new Error(`${job.error || "后台出题任务失败。"}\n任务 ID：${jobId}`);
+        const stableTaskId = String(job.task_id || "").trim();
+        const executionId = String(job.run_id || job.job_id || jobId).trim();
+        const identifiers = [
+          stableTaskId ? `任务 ID：${stableTaskId}` : "",
+          executionId ? `本次执行 ID：${executionId}` : "",
+        ].filter(Boolean).join("\n");
+        const terminalError = new Error(`${job.error || "后台出题任务失败。"}${identifiers ? `\n${identifiers}` : ""}`);
         terminalError.practiceJob = job;
         throw terminalError;
       }
@@ -2927,7 +2959,7 @@ async function submitPracticeJob(operation, payload) {
     method: "POST",
     body: JSON.stringify({ operation, payload: queuedPayload })
   });
-  showPracticeLoadingTaskId(queued.job_id || queued.task_id);
+  showPracticeLoadingTaskId(queued.task_id || "", queued.run_id || queued.job_id || "");
   rememberPracticeJob(queued.job_id);
   return waitForPracticeJob(queued.job_id);
 }
@@ -5892,7 +5924,14 @@ function syncPracticeBlueprintMultiQuestionControls() {
   setText("practicePlanCountBadge", config.enabled ? `${config.base_item_count} 项蓝图 → ${config.total_count} 题` : `${config.base_item_count} 项待审查`);
   const candidatePending = !$("practicePlanCandidateActions")?.classList.contains("hidden");
   const auditBlocked = latestPracticePlan.blueprint_audit?.status === "blocked";
-  if ($("practicePlanConfirmBtn")) $("practicePlanConfirmBtn").disabled = candidatePending || auditBlocked;
+  const semanticConfirmationRequired = latestPracticePlan.blueprint_audit?.requires_manual_confirmation === true;
+  const semanticWarnings = latestPracticePlan.blueprint_audit?.semantic_scope_warnings || [];
+  const confirmedWarnings = latestPracticePlan.semantic_scope_confirmation?.warnings || [];
+  const semanticConfirmed = latestPracticePlan.semantic_scope_confirmation?.confirmed === true
+    && JSON.stringify(confirmedWarnings) === JSON.stringify(semanticWarnings);
+  if ($("practicePlanConfirmBtn")) {
+    $("practicePlanConfirmBtn").disabled = candidatePending || auditBlocked || (semanticConfirmationRequired && !semanticConfirmed);
+  }
 }
 
 function bindPracticeBlueprintMultiQuestionControls() {
@@ -5955,6 +5994,11 @@ function renderPracticePlan(plan) {
   const analysis = plan.source_analysis || {};
   const modeContract = plan.mode_contract || {};
   const blueprintAudit = plan.blueprint_audit || {};
+  const semanticScopeWarnings = Array.isArray(blueprintAudit.semantic_scope_warnings)
+    ? blueprintAudit.semantic_scope_warnings
+    : [];
+  const semanticScopeConfirmed = plan.semantic_scope_confirmation?.confirmed === true
+    && JSON.stringify(plan.semantic_scope_confirmation?.warnings || []) === JSON.stringify(semanticScopeWarnings);
   const auditReviewPlanItemIds = new Set(blueprintAudit.review_item_ids || []);
   const blueprintAuditMessages = (blueprintAudit.errors || []).length
     ? blueprintAudit.errors
@@ -5968,8 +6012,21 @@ function renderPracticePlan(plan) {
     <div><strong>${escapeHtml([analysis.subject, analysis.question_type, analysis.difficulty].filter(Boolean).join(" · ") || "待确认分析结果")}</strong>
     <p>${escapeHtml([...(analysis.knowledge_points || []), ...(analysis.skills || [])].join("、") || "请逐题核对下方蓝图内容。")}</p>
     <div class="practice-mode-contract ${comprehensiveMode ? "comprehensive" : "single"}"><i class="fas ${comprehensiveMode ? "fa-diagram-project" : "fa-code-branch"}"></i><strong>${comprehensiveMode ? "综合覆盖矩阵" : "单项变式链"}</strong><span>${comprehensiveMode ? `跨来源 ${modeContract.metrics?.multi_source_count || 0}/${modeContract.metrics?.exercise_count || planItems.length} 题` : "每项严格单一来源"}</span></div>
-    <div class="practice-blueprint-audit ${blueprintAudit.status === "blocked" ? "is-blocked" : blueprintAudit.status === "warning" ? "is-warning" : "is-passed"}"><i class="fas ${blueprintAudit.status === "blocked" ? "fa-triangle-exclamation" : blueprintAudit.status === "warning" ? "fa-circle-exclamation" : "fa-circle-check"}"></i><strong>${blueprintAudit.status === "blocked" ? "确认门禁未通过" : blueprintAudit.status === "warning" ? "确认前建议复核" : "确认门禁可通过"}</strong><span>${escapeHtml(blueprintAuditMessages.slice(0, 2).join("；") || "来源、计划项和模式约束已完成程序检查")}</span></div>${refinement.enabled ? `<div class="practice-blueprint-audit ${refinementFailures.length ? "is-warning" : "is-passed"}"><i class="fas ${refinementFailures.length ? "fa-arrows-rotate" : "fa-diagram-project"}"></i><strong>分组设计调度</strong><span>${escapeHtml(`${refinement.unit_count || 0} 个生成单元 · ${refinement.call_count || 0} 次调用${refinementFailures.length ? ` · ${refinementFailures.length} 组已自动重试后保留全局方案，可逐项重新设计或整份重新生成` : " · 全部设计批次已完成"}`)}</span></div>` : ""}</div>
+    <div class="practice-blueprint-audit ${blueprintAudit.status === "blocked" ? "is-blocked" : blueprintAudit.status === "warning" ? "is-warning" : "is-passed"}"><i class="fas ${blueprintAudit.status === "blocked" ? "fa-triangle-exclamation" : blueprintAudit.status === "warning" ? "fa-circle-exclamation" : "fa-circle-check"}"></i><strong>${blueprintAudit.status === "blocked" ? "确认门禁未通过" : blueprintAudit.status === "warning" ? "确认前建议复核" : "确认门禁可通过"}</strong><span>${escapeHtml(blueprintAuditMessages.slice(0, 2).join("；") || "来源、计划项和模式约束已完成程序检查")}</span></div>${semanticScopeWarnings.length ? `<details class="practice-blueprint-audit is-warning"><summary><strong>语义范围需人工确认（${semanticScopeWarnings.length} 项）</strong></summary><ol>${semanticScopeWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ol><label><input id="practicePlanSemanticConfirmation" type="checkbox"${semanticScopeConfirmed ? " checked" : ""}>我已逐项核对，确认这些等价表述或范围取舍符合本次出题意图</label></details>` : ""}${refinement.enabled ? `<div class="practice-blueprint-audit ${refinementFailures.length ? "is-warning" : "is-passed"}"><i class="fas ${refinementFailures.length ? "fa-arrows-rotate" : "fa-diagram-project"}"></i><strong>分组设计调度</strong><span>${escapeHtml(`${refinement.unit_count || 0} 个生成单元 · ${refinement.call_count || 0} 次调用${refinementFailures.length ? ` · ${refinementFailures.length} 组已自动重试后保留全局方案，可逐项重新设计或整份重新生成` : " · 全部设计批次已完成"}`)}</span></div>` : ""}</div>
   `;
+  $("practicePlanSemanticConfirmation")?.addEventListener("change", (event) => {
+    if (event.target.checked) {
+      latestPracticePlan.semantic_scope_confirmation = {
+        confirmed: true,
+        warnings: [...semanticScopeWarnings],
+        confirmed_at: new Date().toISOString(),
+      };
+    } else {
+      delete latestPracticePlan.semantic_scope_confirmation;
+    }
+    syncPracticeBlueprintMultiQuestionControls();
+    schedulePracticeWorkspaceDraftSave(currentPracticeSourceMode);
+  });
   renderPracticePlanCoverage(plan.scope_cover || (plan.selected_source_questions ? {
     per_unit: {},
     counts: { selected_units: (plan.selected_source_questions || []).length, covered_units: 0, uncovered_units: 0, planned_exercises: planItems.length },
@@ -6083,6 +6140,7 @@ function renumberPracticePlanItems(items) {
 
 async function auditAndRenderPracticePlan() {
   if (!latestPracticePlan) return;
+  delete latestPracticePlan.semantic_scope_confirmation;
   try {
     const audit = await api("/api/practice/plan-audit", { method: "POST", body: JSON.stringify({ plan: latestPracticePlan }) });
     Object.assign(latestPracticePlan, audit);
@@ -6335,6 +6393,14 @@ async function generatePracticeFromPlan() {
   });
   if (planErrors.length) {
     showPracticePlanError(`生成被拦截：${planErrors.slice(0, 4).join("；")}${planErrors.length > 4 ? `；另有 ${planErrors.length - 4} 项` : ""}`);
+    return;
+  }
+  const configurationIssue = practiceSubmissionConfigurationIssue(
+    { ...latestPracticeRequest, plan: latestPracticePlan },
+    currentPracticeSourceMode === "knowledge" ? "知识点出题" : "按题出题",
+  );
+  if (configurationIssue) {
+    showPracticeSubmissionConfigurationIssue(currentPracticeSourceMode, configurationIssue);
     return;
   }
   const multiQuestion = practiceBlueprintMultiQuestionConfig(latestPracticePlan);
@@ -8654,6 +8720,9 @@ async function requirePreparedTextbookIndex() {
   if (data.page_map_ok === false) {
     throw new Error("所选教材索引存在页码问题，请先在教材页重建或校准索引。");
   }
+  if (data.evidence_retrieval_supported === false) {
+    throw new Error(data.message || "所选教材没有可验证页码，不能用于教材证据检索。");
+  }
   return data;
 }
 
@@ -8840,7 +8909,7 @@ function setupUploadInput(kind) {
     const files = Array.from(event.dataTransfer?.files || []);
     if (!files.length) return;
     const transfer = new DataTransfer();
-    const allowed = kind === "exam" ? [".docx"] : [".pdf", ".doc", ".docx", ".json", ".md", ".txt", ".zip"];
+    const allowed = kind === "exam" ? [".docx"] : [".pdf", ".docx", ".json", ".zip"];
     for (const file of files) {
       const lower = file.name.toLowerCase();
       if (allowed.some((suffix) => lower.endsWith(suffix))) transfer.items.add(file);
@@ -8934,7 +9003,7 @@ function providerCapabilityRiskMessages({ hasImages = false, hasDrawing = false 
     messages.push(`${visionLabel} 未配置多模态视觉模型；有图题无法可靠读图，请改选支持 vision_model 的多模态服务商/模型，或确认已通过其他方式完成图像结构化。`);
   }
   if (hasDrawing && !providerHasImageModel(imageCfg)) {
-    messages.push(`${imageLabel} 未配置生图模型；作图题会优先走规则绘图，但规则绘图失败时无法使用生图模型兜底。`);
+    messages.push(`${imageLabel} 未配置生图模型；作图题无法通过主模型工具调用链路生成题图。`);
   }
   return messages;
 }
@@ -8968,7 +9037,7 @@ function updateModelCapabilityRisk() {
   } else if (!providerHasVision(visionCfg)) {
     genericRisks.push(`${visionLabel} 当前未配置多模态视觉模型；有图题需要改选支持视觉的模型或服务商。`);
   } else if (!providerHasImageModel(imageCfg)) {
-    genericRisks.push(`${imageLabel} 当前未配置生图模型；作图题规则绘图失败时无法兜底生图。`);
+    genericRisks.push(`${imageLabel} 当前未配置生图模型；作图题无法通过主模型工具调用链路生成题图。`);
   }
   renderModelCapabilityRisk($("modelCapabilityRisk"), genericRisks);
 }
@@ -9068,7 +9137,6 @@ function syncExamProgressiveModelUi() {
   const answerCard = $("answerModelRoleCard");
   const visionCard = $("visionModelRoleCard");
   const imageCard = $("imageModelRoleCard");
-  const imageSwitch = $("imageOrchestrationSwitch");
   if (currentExamAnalysisProfile === "textbook_evidence_only") {
     if (answerCard) answerCard.classList.add("hidden");
     if (visionCard) visionCard.classList.remove("hidden");
@@ -9082,7 +9150,6 @@ function syncExamProgressiveModelUi() {
   }
   if (visionCard) visionCard.classList.toggle("hidden", readsImages);
   if (imageCard) imageCard.classList.toggle("hidden", !supportsImageTools);
-  if (imageSwitch) imageSwitch.checked = supportsImageTools;
   const notice = $("examCapabilityNotice");
   if (!notice) return;
   if (!model) {
@@ -9095,8 +9162,8 @@ function syncExamProgressiveModelUi() {
   notice.innerHTML = supportsImageTools
     ? `<i class="fas fa-circle-check"></i><span><strong>${escapeHtml(label)} 可直接读图并自主生图</strong>无需单独配置识图模型；需要生成新图时才调用下方生图模型。</span>`
     : readsImages
-      ? `<i class="fas fa-eye"></i><span><strong>${escapeHtml(label)} 可直接读取题图</strong>尚未通过自主生图闭环验证；自主生图关闭，如需题图则使用规则绘图。</span>`
-      : `<i class="fas fa-images"></i><span><strong>${escapeHtml(label)} 是文本模型</strong>已自动启用独立识图模型与规则绘图，不会在创建任务时再报能力不匹配。</span>`;
+      ? `<i class="fas fa-eye"></i><span><strong>${escapeHtml(label)} 可直接读取题图</strong>但不支持自主生图闭环；含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`
+      : `<i class="fas fa-images"></i><span><strong>${escapeHtml(label)} 是文本模型</strong>含图材料会先由独立识图模型处理；含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`;
 }
 
 function populateProviderSelect(selectId, kind, preferredName, purpose = "") {
@@ -9361,7 +9428,7 @@ function questionTypeModelCards() {
       icon: "fa-pen-ruler",
       title: "作图题",
       desc: "需要生成专业图形",
-      configHint: "作图题会生成结构化解析，并在规则绘图失败时调用生图模型兜底。",
+      configHint: "作图题通过主模型工具调用链路生成题图，并由主模型回看校验结果。",
       stages: ["reasoning", "answer", "correctness", "image"],
       routes: [reasoning, answer, correctness, image]
     },
@@ -9371,8 +9438,8 @@ function questionTypeModelCards() {
       title: "有图且需作图题",
       desc: "含图片并需要生成图形",
       configHint: answerDirectVision
-        ? "原图直接交给多模态解析模型；生图模型只用于需要生成新图的兜底。"
-        : "该题型同时启用读图、文本解析与生图兜底。",
+        ? "原图直接交给多模态解析模型；需要生成新图时由主模型调用生图工具并回看结果。"
+        : "该题型同时启用独立读图、文本解析与主模型生图工具链路。",
       stages: answerDirectVision ? ["reasoning", "answer", "correctness", "image"] : ["reasoning", "answer", "correctness", "vision", "image"],
       routes: answerDirectVision
         ? [reasoning, visualUnderstandingRoute, correctness, image]
@@ -10392,13 +10459,11 @@ function syncTaskProgressiveModelUi(profile, state = {}) {
   const supportsImageTools = modelSupportsMainToolLoop(textModel, textProvider);
   const fallback = $(`${prefix}VisionFallbackDetails`);
   const imageCard = $(`${prefix}ImageModelCard`);
-  const imageSwitch = $(`${prefix}ImageOrchestrationSwitch`);
   if (fallback) {
     fallback.hidden = readsImages;
     fallback.open = !readsImages;
   }
   if (imageCard) imageCard.hidden = !supportsImageTools;
-  if (imageSwitch) imageSwitch.checked = supportsImageTools;
   const target = $(`${prefix}ModelCompatibility`);
   if (!target) return;
   if (!textModel) {
@@ -10411,8 +10476,8 @@ function syncTaskProgressiveModelUi(profile, state = {}) {
   target.innerHTML = supportsImageTools
     ? `<i class="fas fa-circle-check"></i><span><strong>主模型可直接处理图文并自主生图</strong>${escapeHtml(modelLabel)} 会在确有需要时调用生图模型并回看结果。</span>`
     : readsImages
-      ? `<i class="fas fa-eye"></i><span><strong>主模型可直接读图</strong>${escapeHtml(modelLabel)} 尚未通过自主生图闭环验证；自主生图关闭，如需题图则使用规则绘图。</span>`
-      : `<i class="fas fa-images"></i><span><strong>已启用独立识图模型与规则绘图</strong>${escapeHtml(modelLabel)} 只负责文本生成；含图材料会先识图。</span>`;
+      ? `<i class="fas fa-eye"></i><span><strong>主模型可直接读图</strong>${escapeHtml(modelLabel)} 不支持自主生图闭环；含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`
+      : `<i class="fas fa-images"></i><span><strong>已启用独立识图模型</strong>${escapeHtml(modelLabel)} 只负责文本生成；含图材料会先识图，含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`;
 }
 
 function updatePracticeModelSummary() {
@@ -10444,22 +10509,11 @@ function selectedImageModel() {
   return custom || $("imageModelSelect")?.value || cfg.image_model || "";
 }
 
-const IMAGE_ORCHESTRATION_IDS = {
-  exam: ["imageOrchestrationSwitch", "imageOrchestrationLabel"],
-  practice: ["practiceImageOrchestrationSwitch", "practiceImageOrchestrationLabel"],
-  knowledge: ["knowledgeImageOrchestrationSwitch", "knowledgeImageOrchestrationLabel"]
-};
-
 function imageOrchestrationMode(scope = "exam") {
-  const ids = IMAGE_ORCHESTRATION_IDS[scope] || IMAGE_ORCHESTRATION_IDS.exam;
-  return $(ids[0])?.checked ? "main_model_tool_loop" : "legacy_figure_pipeline";
+  return "main_model_tool_loop";
 }
 
 function syncImageOrchestrationUi(scope = "exam", persist = false) {
-  const ids = IMAGE_ORCHESTRATION_IDS[scope] || IMAGE_ORCHESTRATION_IDS.exam;
-  const input = $(ids[0]);
-  if (!input) return;
-  setText(ids[1], input.checked ? "主模型自主生图" : "独立识图与规则绘图");
   try { localStorage.removeItem(`answerBook.imageOrchestration.${scope}`); } catch (e) {}
 }
 
@@ -11085,6 +11139,12 @@ function taskManagerTitle(task, kindMeta) {
   return `${kindMeta.label} · ${shortTaskMaterialName(materialName, 36)}`;
 }
 
+function taskResourceId(task = {}) {
+  if (task.is_generation_job) return String(task.job_id || task.run_id || "");
+  if (task.is_generation_task) return String(task.history_id || "");
+  return String(task.task_id || "");
+}
+
 function renderTaskManagerPagination(total) {
   const pagination = $("taskManagerPagination");
   if (!pagination) return;
@@ -11237,6 +11297,7 @@ function renderTaskManager(tasks = latestTasks) {
     const taskHealthMeta = healthPresentation(taskHealthState);
     const stageText = progress.label;
     const taskId = task.task_id || "";
+    const resourceId = taskResourceId(task) || taskId;
     const practiceBatchId = String(task.practice_batch_id || "");
     const kind = task.task_kind || "exam";
     const generationTask = Boolean(task.is_generation_task);
@@ -11314,12 +11375,12 @@ function renderTaskManager(tasks = latestTasks) {
     item.className = `task-manager-item task-manager-${normalized}`;
     item.classList.toggle("task-manager-terminal", ["completed", "cancelled"].includes(normalized));
     item.classList.toggle("task-selection-mode", taskBulkMode);
-    item.classList.toggle("task-selected", selectedTaskIds.has(taskId));
+    item.classList.toggle("task-selected", selectedTaskIds.has(resourceId));
     item.dataset.status = normalized;
-    item.dataset.taskId = taskId;
+    item.dataset.taskId = resourceId;
     item.innerHTML = `
       <div class="task-manager-main">
-        ${taskBulkMode ? `<label class="task-select-control" title="选择此任务"><input type="checkbox" data-task-select="${escapeHtml(taskId)}"${selectedTaskIds.has(taskId) ? " checked" : ""}><span aria-hidden="true"><i class="fas fa-check"></i></span></label>` : ""}
+        ${taskBulkMode ? `<label class="task-select-control" title="选择此任务"><input type="checkbox" data-task-select="${escapeHtml(resourceId)}"${selectedTaskIds.has(resourceId) ? " checked" : ""}><span aria-hidden="true"><i class="fas fa-check"></i></span></label>` : ""}
         <div class="task-manager-icon task-color-${index % 6}"><i class="${kindMeta.icon}"></i></div>
         <div class="task-manager-copy">
           <h3><span>${escapeHtml(title)}</span>${generationTask ? `<button class="task-title-edit" type="button" data-action="rename-title" title="修改任务名称" aria-label="修改任务名称"><i class="fas fa-pen"></i></button>` : ""}</h3>
@@ -11335,8 +11396,8 @@ function renderTaskManager(tasks = latestTasks) {
           <details class="task-technical-details">
             <summary><i class="fas fa-circle-info"></i>运行详情</summary>
             <div>
-              <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制阶段任务 ID"><i class="fas fa-hashtag"></i><span>阶段</span><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
-              ${practiceBatchId ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(practiceBatchId)}" title="复制完整流程批次 ID"><i class="fas fa-diagram-project"></i><span>流程</span><strong>${escapeHtml(compactTaskId(practiceBatchId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
+              <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制稳定任务 ID"><i class="fas fa-diagram-project"></i><span>任务</span><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
+              ${resourceId !== taskId ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(resourceId)}" title="复制本次执行 ID"><i class="fas fa-hashtag"></i><span>执行</span><strong>${escapeHtml(compactTaskId(resourceId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
               <span title="包含排队、模型处理和重试"><i class="fas fa-hourglass-half"></i>总耗时 ${escapeHtml(taskDurationText(task))}</span>
               ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
               ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
@@ -11367,13 +11428,13 @@ function renderTaskManager(tasks = latestTasks) {
       }
       const selector = event.target.closest("[data-task-select]");
       if (selector) {
-        selector.checked ? selectedTaskIds.add(taskId) : selectedTaskIds.delete(taskId);
+        selector.checked ? selectedTaskIds.add(resourceId) : selectedTaskIds.delete(resourceId);
         item.classList.toggle("task-selected", selector.checked);
         updateTaskBulkControls();
         return;
       }
       if (taskBulkMode) {
-        selectedTaskIds.has(taskId) ? selectedTaskIds.delete(taskId) : selectedTaskIds.add(taskId);
+        selectedTaskIds.has(resourceId) ? selectedTaskIds.delete(resourceId) : selectedTaskIds.add(resourceId);
         renderTaskManager(tasks);
         updateTaskBulkControls();
         return;
@@ -11393,14 +11454,14 @@ function renderTaskManager(tasks = latestTasks) {
       else openTaskDetail(task);
     });
     list.appendChild(item);
-    const previousStatus = taskManagerMotionStatuses.get(taskId);
+    const previousStatus = taskManagerMotionStatuses.get(resourceId);
     if (currentPage === "tasks" && (animateAllVisible || previousStatus === undefined || previousStatus !== normalized)) {
       animatedItems.push(item);
     }
   }
   const currentTaskIds = new Set();
   tasks.forEach((task) => {
-    const taskId = String(task.task_id || "");
+    const taskId = taskResourceId(task);
     if (!taskId) return;
     currentTaskIds.add(taskId);
     taskManagerMotionStatuses.set(taskId, taskDisplayStatus(task));
@@ -12061,7 +12122,7 @@ async function handleTaskManagerAction(task, action, button = null) {
     else if (task.is_generation_job && action === "job-resume") await controlGenerationJob(task, "resume");
     else if (task.is_generation_job && action === "job-cancel") await cancelGenerationJob(task);
     else if (!task.is_generation_job && action === "history-config") goToPage("keys");
-    else if (!task.is_generation_job && action === "history-continue") await continuePracticeHistory(task.task_id, null, task.task_kind);
+    else if (!task.is_generation_job && action === "history-continue") await continuePracticeHistory(taskResourceId(task), null, task.task_kind);
     else if (action === "result") await openGenerationTaskResult(task);
     else if (action === "reuse") await reuseGenerationTask(task);
     else if (action === "delete") await deleteGenerationTask(task);
@@ -12093,7 +12154,7 @@ async function handleTaskManagerAction(task, action, button = null) {
 }
 
 async function controlGenerationJob(task, action) {
-  const result = await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}/${action}`, {
+  const result = await api(`/api/practice/jobs/${encodeURIComponent(taskResourceId(task))}/${action}`, {
     method: "POST",
     body: JSON.stringify({})
   });
@@ -12124,7 +12185,7 @@ async function renameGenerationTask(task) {
     return;
   }
   try {
-    await api(`/api/practice/tasks/${encodeURIComponent(task.task_id)}/title`, {
+    await api(`/api/practice/tasks/${encodeURIComponent(taskResourceId(task))}/title`, {
       method: "POST",
       body: JSON.stringify({ title: cleanTitle })
     });
@@ -12143,7 +12204,7 @@ async function cancelGenerationJob(task) {
     tone: "danger"
   });
   if (!confirmed) return;
-  await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}/cancel`, {
+  await api(`/api/practice/jobs/${encodeURIComponent(taskResourceId(task))}/cancel`, {
     method: "POST",
     body: JSON.stringify({ reason: "用户取消出题任务" })
   });
@@ -12177,7 +12238,7 @@ async function retryExamTask(task, reopenReview = false) {
 
 async function retryGenerationJob(task) {
   const requestedSessionVersion = practiceSessionVersion;
-  const failed = await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}?detail=1`);
+  const failed = await api(`/api/practice/jobs/${encodeURIComponent(taskResourceId(task))}?detail=1`);
   if (requestedSessionVersion !== practiceSessionVersion) return;
   if (!failed.payload || !failed.operation) throw new Error("原任务参数不完整，无法自动重试。");
   const configurationIssue = practiceSubmissionConfigurationIssue(
@@ -12283,7 +12344,7 @@ async function openGenerationJob(task) {
   practiceSessionVersion = sessionVersion;
   rememberPracticeJob("");
   try {
-    const job = await api(`/api/practice/jobs/${encodeURIComponent(task.task_id)}?detail=1`);
+    const job = await api(`/api/practice/jobs/${encodeURIComponent(taskResourceId(task))}?detail=1`);
     if (sessionVersion !== practiceSessionVersion) return;
     if (job.status === "failed") {
       const presentation = job.error_presentation || task.error_presentation || {};
@@ -12362,12 +12423,13 @@ async function openGenerationTaskResult(task) {
   practiceSessionVersion = sessionVersion;
   rememberPracticeJob("");
   try {
-    const record = await api(`/api/practice/history/${encodeURIComponent(task.task_id)}`);
+    const historyId = taskResourceId(task);
+    const record = await api(`/api/practice/history/${encodeURIComponent(historyId)}`);
     if (sessionVersion !== practiceSessionVersion) return;
     latestPracticeRequest = record.request || {};
     restorePracticePreferenceOrders(latestPracticeRequest);
     syncPracticeSourceContentPreference(latestPracticeRequest.include_source_content_in_generation !== false);
-    currentPracticeHistoryId = String(record.history_id || record.data?.history_id || task.task_id || "");
+    currentPracticeHistoryId = String(record.history_id || record.data?.history_id || historyId || "");
     currentPracticeRevisionCount = Number(record.revision_count || record.revisions?.length || 0);
     latestPracticeSet = record.data || {};
     setPracticeWorkspaceMode(task.task_kind === "knowledge" ? "knowledge" : "exam");
@@ -12387,7 +12449,7 @@ async function openGenerationTaskResult(task) {
 async function reuseGenerationTask(task) {
   const requestedSessionVersion = practiceSessionVersion;
   try {
-    const record = await api(`/api/practice/history/${encodeURIComponent(task.task_id)}`);
+    const record = await api(`/api/practice/history/${encodeURIComponent(taskResourceId(task))}`);
     if (requestedSessionVersion !== practiceSessionVersion) return;
     const request = record.request || {};
     if (task.task_kind === "knowledge") {
@@ -12427,7 +12489,7 @@ async function deleteGenerationTask(task) {
     tone: "danger"
   })) return;
   try {
-    await api(`/api/practice/history/${encodeURIComponent(task.task_id)}/delete`, {
+    await api(`/api/practice/history/${encodeURIComponent(taskResourceId(task))}/delete`, {
       method: "POST",
       body: JSON.stringify({}),
     });
@@ -13655,6 +13717,7 @@ function executionStageProgress(task, current, progress, stages) {
   }
   const total = Number(progress?.total || 0);
   const completed = Number(progress?.completed || 0);
+  const health = task.health || {};
   const progressStage = String(progress?.stage || "");
   const progressMatchesCurrentStage = !progressStage || progressStage === current || visibleStepStage(progressStage) === current;
   if (total > 0 && progressMatchesCurrentStage) {
@@ -13751,8 +13814,13 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     detail.title = "正在检查运行环境";
     detail.text = "检查文档转换、公式写入和渲染工具是否可用。";
   } else if (current === "extract_exam") {
-    detail.title = "正在读取并拆分真题";
-    detail.text = "提取题干、题号、图片、表格和原始排版信息。";
+    if (health.current_operation && health.current_operation !== "extract_exam") {
+      detail.title = health.current_operation;
+      detail.text = health.suggested_action || "正在准备真题解析运行时，请稍候。";
+    } else {
+      detail.title = "正在读取并拆分真题";
+      detail.text = "提取题干、题号、图片、表格和原始排版信息。";
+    }
   } else if (current === "exam_structure_review") {
     detail.title = task.status === "paused" ? "等待确认真题结构" : "正在整理真题结构";
     detail.text = task.status === "paused" ? "请确认题目边界、题型和作图题标记，确认后才会继续解析。" : "正在检查题目边界、题型和附属图片是否对应。";
@@ -13782,7 +13850,6 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     detail.text = "全部阶段已完成，可以查看结果和交付文件。";
   }
 
-  const health = task.health || {};
   if (health.health_status) {
     const healthState = String(health.health_status);
     if (Number(health.total_count || 0) > 0) addMetric(`实际进展 ${Number(health.completed_count || 0)}/${Number(health.total_count || 0)}`);
@@ -15096,6 +15163,15 @@ $("practiceLoadingCopyTaskId")?.addEventListener("click", async (event) => {
   button.textContent = "已复制";
   setTimeout(() => { button.textContent = original; }, 1200);
 });
+$("practiceLoadingCopyRunId")?.addEventListener("click", async (event) => {
+  const value = String($("practiceLoadingRunId")?.textContent || "").trim();
+  if (!value) return;
+  await copyTextToClipboard(value);
+  const button = event.currentTarget;
+  const original = button.textContent;
+  button.textContent = "已复制";
+  setTimeout(() => { button.textContent = original; }, 1200);
+});
 $("practiceWorkspaceDraftClearActive")?.addEventListener("click", (event) => {
   runPracticeWorkspaceDraftAction(event.currentTarget, () => clearAndStartFreshPracticeWorkspace(currentPracticeSourceMode), "无法新建任务");
 });
@@ -15956,7 +16032,7 @@ function initSiteEnhancements() {
   applyIconAccessibility();
   initPracticeActionMenus();
   initTaskCardMenus();
-  Object.keys(IMAGE_ORCHESTRATION_IDS).forEach((scope) => syncImageOrchestrationUi(scope));
+  ["exam", "practice", "knowledge"].forEach((scope) => syncImageOrchestrationUi(scope));
   normalizePracticeInlineLayout();
   initPlatformSelects();
   const initialQuery = new URLSearchParams(window.location.search);

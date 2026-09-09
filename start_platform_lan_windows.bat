@@ -14,4 +14,4 @@ if %errorlevel%==0 (
   start "" pythonw scripts\windows_launcher_bootstrap.py --mode lan --autostart
   exit /b 0
 )
-call "%~dp0start_platform_windows.bat"
+call "%~dp0start_platform_windows.bat" --mode lan --autostart

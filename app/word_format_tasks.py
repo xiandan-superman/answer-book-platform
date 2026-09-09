@@ -390,6 +390,7 @@ def word_format_task_payload(task_id: str) -> dict:
     output_exists = (directory / "modified.docx").exists()
     filename = str(record.get("filename") or "document.docx")
     return {
+        "ok": True,
         "job_id": task_id,
         "task_id": task_id,
         "mode": record.get("mode"),

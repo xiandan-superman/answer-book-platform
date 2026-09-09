@@ -34,6 +34,8 @@ def test_practice_job_is_visible_while_running_and_persists_result(tmp_path, mon
 
     listed = practice_jobs.list_practice_jobs()
     assert listed[0]["job_id"] == created["job_id"]
+    assert listed[0]["task_id"] == created["task_id"]
+    assert listed[0]["run_id"] == created["run_id"]
     assert listed[0]["status"] == "queued"
     assert "payload" not in listed[0]
 

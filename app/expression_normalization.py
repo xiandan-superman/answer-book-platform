@@ -48,6 +48,33 @@ _ESCAPED_CONTROL_BEFORE_TEX_RE = re.compile(
 )
 _DAMAGED_FOUR_WRAPPER_RE = re.compile(r"^4(?P<body>\\[A-Za-z]+\b.+)4$", re.DOTALL)
 
+_UNICODE_GREEK_TO_TEX = {
+    "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",
+    "ε": r"\epsilon", "θ": r"\theta", "λ": r"\lambda", "μ": r"\mu",
+    "π": r"\pi", "σ": r"\sigma", "φ": r"\phi", "ω": r"\omega",
+    "Α": r"\Alpha", "Β": r"\Beta", "Γ": r"\Gamma", "Δ": r"\Delta",
+    "Θ": r"\Theta", "Λ": r"\Lambda", "Π": r"\Pi", "Σ": r"\Sigma",
+    "Φ": r"\Phi", "Ω": r"\Omega",
+}
+_UNICODE_SUBSCRIPT_MAP = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜₓ", "0123456789+-=()ae hij klmnop rstx".replace(" ", ""))
+_UNICODE_SUBSCRIPT_RE = re.compile(r"(?P<base>[A-Za-z0-9}])(?P<sub>[₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜₓ]+)")
+
+
+def normalize_unicode_formula_tokens(value: str) -> str:
+    """Convert Unicode Greek/subscript notation to converter-safe LaTeX."""
+
+    source = str(value or "")
+    for char, latex in _UNICODE_GREEK_TO_TEX.items():
+        source = source.replace(char, latex)
+    source = _UNICODE_SUBSCRIPT_RE.sub(
+        lambda match: f"{match.group('base')}_{{{match.group('sub').translate(_UNICODE_SUBSCRIPT_MAP)}}}",
+        source,
+    )
+    # A control word immediately followed by a Greek token is lexically valid
+    # to a human but ambiguous to Pandoc/texmath (for example ``\\toα``).
+    source = re.sub(r"(\\[A-Za-z]+)(?=\\(?:alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b)", r"\1 ", source)
+    return source
+
 
 def repair_json_escaped_latex(value: str) -> str:
     """Recover common LaTeX commands damaged by one JSON escape pass."""
@@ -202,7 +229,7 @@ def normalize_thermodynamic_latex(value: str) -> str:
 def normalize_expression_latex(value: str) -> str:
     """Apply the shared semantic and lexical normalization pipeline."""
 
-    source = strip_outer_math_delimiters(value)
+    source = normalize_unicode_formula_tokens(strip_outer_math_delimiters(value))
     # Providers and OCR frequently emit calculator-style exponents such as
     # ``V^(gamma-1)``.  The parenthesized payload is unambiguous when it has no
     # nested parentheses, but it is not valid TeX superscript syntax for the

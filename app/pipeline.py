@@ -116,7 +116,7 @@ from .review_notes import build_answer_review_notes
 from .runtime_monitor import configure_model_call_task_shape, model_call_context
 from .settings import get_provider, provider_model_supports_vision, provider_supports_image_generation
 from .task_control import TaskCancelled, checkpoint
-from .task_store import load_task, task_dir, update_task
+from .task_store import load_task, task_dir, update_task, update_task_health
 from .textbook_evidence_service import publish_concise_evidence_artifacts
 from .textbook_index_cache import install_textbook_index_cache, textbook_index_key
 from .v4_schema import validate_v4_answer_fragment
@@ -1336,6 +1336,14 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         checkpoint_contract_fingerprint = _upstream_checkpoint_contract_fingerprint(checkpoint_contract)
         checkpoint(task_id)
         update_task(task_id, current_stage="extract_exam")
+        update_task_health(
+            task_id,
+            current_operation="正在准备文档解析运行时",
+            health_status="running",
+            warning_reason="",
+            suggested_action="首次使用可能需要下载并安装 MinerU 解析组件。",
+            progress=True,
+        )
         if reusable_early_upstream:
             structured_exam = json.loads((sdir / "structured_exam.json").read_text(encoding="utf-8"))
             # Reuse the expensive extraction result, but always rerun the

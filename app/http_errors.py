@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -18,7 +17,21 @@ _INTERNAL_MARKERS = (
 
 def _looks_user_safe(message: str) -> bool:
     lowered = message.lower()
-    return bool(re.search(r"[\u4e00-\u9fff]", message)) and not any(marker in lowered for marker in _INTERNAL_MARKERS)
+    # User-facing validation messages may be English (for example provider or
+    # upload contracts). Requiring Chinese characters caused ordinary
+    # ValueError messages to be mislabeled as internal failures.
+    return bool(message.strip()) and not any(marker in lowered for marker in _INTERNAL_MARKERS)
+
+
+def _looks_like_model_output_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    # Do not classify any message containing the substring ``json`` as a model
+    # failure: upload allow-lists and file names legitimately contain ``.json``.
+    markers = (
+        "model output", "模型返回", "structured output", "结构化输出",
+        "invalid json", "json content", "json decode", "json 格式",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def public_error_payload(exc: Exception, *, status: int, path: str) -> dict[str, Any]:
@@ -33,15 +46,11 @@ def public_error_payload(exc: Exception, *, status: int, path: str) -> dict[str,
         code = public_code
         user_message = public_message
         suggested_action = public_action or "请稍后重试。"
-    elif status == 400 and _looks_user_safe(message):
-        code = "invalid_request"
-        user_message = message
-        suggested_action = "检查当前页面填写或选择的内容后重试。"
     elif "timeout" in lowered or "超时" in message or "524" in lowered:
         code = "provider_timeout"
         user_message = "模型服务响应超时，本次操作没有完整完成。"
         suggested_action = "返回任务中心，从已保存检查点重试。"
-    elif "json" in lowered:
+    elif _looks_like_model_output_error(message):
         code = "invalid_model_output"
         user_message = "模型返回格式未通过校验，本次结果没有写入正式产物。"
         suggested_action = "从当前模型步骤重试；已确认的范围和蓝图会继续保留。"
@@ -49,6 +58,10 @@ def public_error_payload(exc: Exception, *, status: int, path: str) -> dict[str,
         code = "resource_not_found"
         user_message = "需要的任务或文件不存在，可能已经被移动或清理。"
         suggested_action = "刷新任务列表；如果问题仍存在，请在运行监控中查看技术日志。"
+    elif status == 400 and _looks_user_safe(message):
+        code = "invalid_request"
+        user_message = message
+        suggested_action = "检查当前页面填写或选择的内容后重试。"
     else:
         code = "internal_error"
         user_message = "程序处理这次请求时遇到内部错误，已记录诊断编号。"

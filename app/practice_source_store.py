@@ -15,6 +15,14 @@ SOURCE_ROOT = DATA_ROOT / "practice_sources"
 OBJECT_ROOT = SOURCE_ROOT / "objects"
 CACHE_ROOT = SOURCE_ROOT / "extracted"
 _RESOURCE_PATTERN = re.compile(r"^psrc_([0-9a-f]{64})$")
+_ALLOWED_SOURCE_MIME_BY_SUFFIX = {
+    ".png": {"image/png"},
+    ".jpg": {"image/jpeg"},
+    ".jpeg": {"image/jpeg"},
+    ".webp": {"image/webp"},
+    ".pdf": {"application/pdf"},
+    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+}
 
 
 def _now() -> str:
@@ -36,6 +44,17 @@ def _object_dir(digest: str) -> Path:
     return OBJECT_ROOT / digest[:2] / digest
 
 
+def validate_practice_source_file_type(item: dict[str, Any]) -> None:
+    name = Path(str(item.get("name") or "未命名文件")).name
+    suffix = Path(name).suffix.lower()
+    allowed_mimes = _ALLOWED_SOURCE_MIME_BY_SUFFIX.get(suffix)
+    mime = str(item.get("type") or mimetypes.guess_type(name)[0] or "application/octet-stream").lower()
+    if allowed_mimes is None or (mime not in allowed_mimes and mime != "application/octet-stream"):
+        raise ValueError(
+            f"暂不支持文件类型：{name}。仅支持 PNG/JPG/WEBP/PDF/DOCX；纯文字请直接粘贴。"
+        )
+
+
 def persist_practice_source_files(payload: dict[str, Any]) -> dict[str, Any]:
     """Replace inline uploads with durable, content-addressed references."""
 
@@ -44,6 +63,7 @@ def persist_practice_source_files(payload: dict[str, Any]) -> dict[str, Any]:
     for raw in payload.get("source_files") or []:
         if not isinstance(raw, dict):
             continue
+        validate_practice_source_file_type(raw)
         existing = str(raw.get("resource_id") or "").strip()
         if existing:
             load_practice_source_file(raw)

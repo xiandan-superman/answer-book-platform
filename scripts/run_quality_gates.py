@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -26,7 +27,17 @@ FULL_COVERAGE_MIN_PERCENT = 60
 
 def run_step(name: str, cmd: list[str]) -> dict:
     started = time.time()
-    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    environment = dict(os.environ)
+    environment.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    proc = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
     return {
         "name": name,
         "ok": proc.returncode == 0,

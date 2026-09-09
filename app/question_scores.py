@@ -93,10 +93,34 @@ def _per_question_score_from_text(text: str, question: dict[str, Any]) -> float 
     tokens = set(_question_number_tokens(question))
     if not tokens:
         return None
-    for match in re.finditer(r"第\s*([一二三四五六七八九十\d、,，和及\-至到]+)\s*(?:小题|题)\s*(?:各)?\s*(\d+(?:\.\d+)?)\s*分", text):
+    for match in re.finditer(
+        r"第\s*([一二三四五六七八九十\d、,，和及\-至到]+)\s*(?:小题|题)\s*(?:各)?\s*(\d+(?:\.\d+)?)\s*分",
+        text,
+    ):
         numbers = set(_split_question_number_list(match.group(1)))
         if tokens & numbers:
             return float(match.group(2))
+    # The same contract is commonly written without an explicit question
+    # number, e.g. ``名词解释（20分，每个2.5分）`` or ``每空1分``.  A
+    # section/child question must be distinguished from a grouped parent so
+    # that the per-item value is not incorrectly assigned to the parent total.
+    if question.get("subquestions") and str(question.get("number") or "").strip() == str(question.get("major_number") or "").strip():
+        return None
+    for pattern in (
+        r"每\s*(?:个|项|题)\s*(\d+(?:\.\d+)?)\s*分",
+        r"各\s*(\d+(?:\.\d+)?)\s*分",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1))
+    # ``每空`` is a score for each blank, not automatically the score of the
+    # numbered fill-in question. Only infer it when extraction explicitly says
+    # this row represents one blank.
+    if bool(question.get("is_blank_item")) or int(question.get("blank_count") or 0) == 1:
+        match = re.search(r"每\s*空\s*(\d+(?:\.\d+)?)\s*分", text)
+        if match:
+            return float(match.group(1))
+    return None
     return None
 
 
@@ -128,7 +152,10 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
         return float(section_total.group(1))
     if bare_parenthesized_total and represents_whole_section:
         return float(bare_parenthesized_total.group(1))
-    section_match = re.search(r"每小题\s*(\d+(?:\.\d+)?)\s*分", section_text)
+    section_match = re.search(
+        r"(?:每\s*(?:小题|个|项|题)|各)\s*(\d+(?:\.\d+)?)\s*分",
+        section_text,
+    )
     if section_match:
         return float(section_match.group(1))
     text = _score_text(question, ("stem", "title", "raw_title"))
@@ -146,16 +173,16 @@ def infer_suggested_score(question: dict[str, Any]) -> float | None:
         )
         if has_real_subquestions
         else (
-            r"每小题\s*(\d+(?:\.\d+)?)\s*分",
+            r"(?:每\s*(?:小题|个|项|题)|各)\s*(\d+(?:\.\d+)?)\s*分",
             r"[（(]\s*(?:本题)?\s*(?:满分|共)?\s*(\d+(?:\.\d+)?)\s*分\s*[）)]",
             r"(?:本题)?\s*(?:满分|共)\s*(\d+(?:\.\d+)?)\s*分",
             r"(\d+(?:\.\d+)?)\s*分",
         )
     )
     for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return float(match.group(1))
+        score_match = re.search(pattern, text)
+        if score_match:
+            return float(score_match.group(1))
     # A major-section total such as ``共6题，共15分`` belongs to the
     # section, not to every numbered item. Production extraction records the
     # number of items, so only retain this fallback for a single/unknown item.

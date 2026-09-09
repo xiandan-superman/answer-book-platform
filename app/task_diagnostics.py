@@ -232,6 +232,9 @@ def _recommendations(stage: str, error: str, issues: list[dict[str, Any]]) -> li
         else:
             recs.append("检查混合云地址、访问令牌和网络连通性，然后从检查点重跑。")
     elif stage == "extract_exam":
+        if "长路径" in error or "MinerU" in error:
+            recs.append("MinerU 首次安装可能受 Windows 长路径限制；请启用 Windows 长路径或将解析运行时放到短路径。")
+            recs.append("确认磁盘至少有约 2 GB 可用空间，再点击重试；无需重新上传试题。")
         recs.append("检查真题 DOCX 是否包含异常标题、分栏、题号缺失或扫描图片题。")
         recs.append("打开 structured_exam.json 和 exam_structure_audit.json，确认题目切分数量与原卷一致。")
     elif stage == "textbook_index":

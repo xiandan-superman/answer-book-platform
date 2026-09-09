@@ -57,8 +57,35 @@ def _sha256_file(path: Path) -> str:
 
 
 def _managed_python() -> Path:
-    root = DATA_ROOT / "runtime" / f"mineru-{MINERU_VERSION}-{MINERU_PROFILE}-py311"
+    if os.name == "nt":
+        configured = str(os.environ.get("ANSWER_BOOK_MINERU_RUNTIME_ROOT") or "").strip()
+        if configured:
+            root = Path(configured).expanduser()
+        else:
+            local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
+            base = Path(local_app_data) / "ABP" if local_app_data else DATA_ROOT / "runtime"
+            root = base / f"mineru-{MINERU_VERSION}-p311"
+    else:
+        root = DATA_ROOT / "runtime" / f"mineru-{MINERU_VERSION}-{MINERU_PROFILE}-py311"
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _windows_long_path_enabled() -> bool | None:
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            return bool(winreg.QueryValueEx(key, "LongPathsEnabled")[0])
+    except (OSError, ImportError):
+        return False
+
+
+def _managed_runtime_path_is_short(python: Path) -> bool:
+    """Whether the managed root leaves enough headroom for legacy Win32 APIs."""
+
+    return len(str(python.parent.parent)) <= 120
 
 
 def _managed_cli(python: Path) -> Path:
@@ -122,6 +149,17 @@ def _install_runtime(python: Path) -> None:
             return
         if os.environ.get("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1").strip().lower() in {"0", "false", "no"}:
             raise MinerURuntimeError("MinerU 运行时尚未安装，且 ANSWER_BOOK_MINERU_AUTO_INSTALL 已关闭")
+        if os.name == "nt" and _windows_long_path_enabled() is False and not _managed_runtime_path_is_short(python):
+            raise MinerURuntimeError(
+                "Windows 尚未启用长路径支持，MinerU 依赖可能因路径超过 260 个字符而无法安装。"
+                "请启用 Windows 长路径，或将 ANSWER_BOOK_MINERU_RUNTIME_ROOT 设置为短路径后重试。"
+            )
+        try:
+            usage = shutil.disk_usage(python.parent.parent.anchor or python.parent.parent)
+            if usage.free < 2 * 1024 * 1024 * 1024:
+                raise MinerURuntimeError("MinerU 安装至少需要约 2 GB 可用磁盘空间，请清理磁盘后重试。")
+        except OSError:
+            pass
         python.parent.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, "-m", "venv", str(python.parent.parent)], check=True, timeout=180)
         requirements = PROJECT_ROOT / "requirements-mineru.txt"
@@ -163,6 +201,15 @@ def mineru_command() -> list[str]:
     return [str(cli)]
 
 
+def prepare_runtime() -> dict[str, object]:
+    """Prepare and verify the managed MinerU runtime before document parsing."""
+
+    # Route through the public command resolver so explicit test/development
+    # overrides remain install-free while the managed runtime is prepared.
+    mineru_command()
+    return runtime_status()
+
+
 def runtime_status() -> dict[str, object]:
     override = os.environ.get("ANSWER_BOOK_MINERU_COMMAND", "").strip()
     command = Path(override).expanduser() if override else _managed_cli(_managed_python())
@@ -175,6 +222,13 @@ def runtime_status() -> dict[str, object]:
         "python_requirement": "3.11.x",
         "python_compatible": runtime_python_supported(),
         "command": str(command),
+        "runtime_root": str(command.parent.parent if not override else command.parent),
+        "windows_long_path_enabled": _windows_long_path_enabled(),
+        "recommended_action": (
+            "请启用 Windows 长路径或将 ANSWER_BOOK_MINERU_RUNTIME_ROOT 设置为短路径"
+            if os.name == "nt" and _windows_long_path_enabled() is False and not installed
+            else ""
+        ),
         "auto_install": os.environ.get("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no"},
         "fallback": False,
     }

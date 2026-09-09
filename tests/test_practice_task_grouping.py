@@ -1,7 +1,7 @@
 import json
 
-from app.server import _practice_job_task_row, _practice_task_row
 from app import practice_store
+from app.server import _practice_job_task_row, _practice_task_row
 
 
 def test_practice_task_rows_carry_batch_id_without_name_error():
@@ -31,6 +31,11 @@ def test_practice_task_rows_carry_batch_id_without_name_error():
     )
     assert history["practice_batch_id"] == "batch-demo"
     assert job["practice_batch_id"] == "batch-demo"
+    assert history["task_id"] == "batch-demo"
+    assert history["history_id"] == "practice_20260801230000_abcdefgh"
+    assert job["task_id"] == "batch-demo"
+    assert job["job_id"] == "generation_20260801230000_abcdefgh"
+    assert job["run_id"] == "generation_20260801230000_abcdefgh"
     assert history["operation"] == "generate_from_plan"
     assert [phase["label"] for phase in history["generation_phases"]] == ["范围解析", "蓝图设计", "题目生成"]
 

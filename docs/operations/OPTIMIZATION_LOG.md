@@ -32,6 +32,36 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260909-04｜P1/P2 用户流程收口与 0.9.50 发布候选
+
+- status: verified
+- scope: 按题/知识点材料上传、蓝图确认与生成、生图能力准入、任务等待页、真题步骤导航及正式源码版本元数据。
+- changed: 两类出题上传统一只接收图片/PDF/DOCX并在前后端拒绝 TXT/Markdown；语义范围提醒完整展示、逐项人工确认且服务端按当前提醒复核留痕；只有确认蓝图显式要求新题干图时才初始化主模型生图工具，分析、规划和纯文字生成不受生图配置阻断；等待页分开显示稳定任务 ID 与执行 ID，真题步骤条禁止跳到未来步骤并补无障碍状态；版本候选升级至 0.9.50。
+- trigger: 用户体验复核发现文件类型决策只覆盖教材库、默认生图门使纯文字流程在开始前失败、语义审计结果未进入网页确认、任务 ID 文案仍指向执行记录，以及步骤条允许跳过前置流程。
+- invariants: 不恢复程序按关键词/题型决定生图；语义判断不冒充确定性真值，确认必须与当前服务端重算提醒完全一致；结构错误和正式整套 Word 门禁不放宽；历史结果不改写，旧上传草稿中的禁用文件不继续进入新任务；不新增模型调用预算。
+- do_not_regress: TXT/Markdown 不得从任一出题文件入口重新进入；分析/规划/纯文字生成不得要求生图 Key 或工具模型；需要新图的蓝图不得绕过能力门；任务 ID 与 run/job ID 不得混称；未来步骤不得提前可点击。
+- verification: 定向回归 338 passed。Python 3.11 完整质量门禁通过：2258 passed、17 deselected、12 warnings，覆盖率、PyCompile、版本一致性、公式、许可、完整性、受控 Ruff 和 Mypy 均通过。`node --check web/app.js` 与 `git diff --check` 通过。隔离数据目录服务上的 Playwright 回归 16 passed；未发起付费模型请求。66 个暂存文件的高风险凭据、私钥和新增本机路径扫描 0 命中；Git 索引源码包包含 407 个白名单文件，反向验证 0 问题；解压后使用隔离数据目录启动，`/api/version` 返回 0.9.50 且首页 HTTP 200。公开发布状态待推送后核验。
+
+### OPT-20260909-03｜审查修复决策收口与外部前置规则移除
+
+- status: verified
+- scope: 项目协作规则、出题任务身份、教材上传、知识点蓝图确认、生图编排、部分交付、公共错误与跨平台文件名。
+- changed: 删除修改前强制动态核对 Codex/DeepSeek Harness 的项目规则；公共 `task_id` 固定为流程批次，执行与结果分别使用 `run_id/job_id/history_id`；教材库禁止 Markdown/TXT；知识点语义范围匹配降为人工确认警告而结构/身份门禁保持阻断；legacy 程序生图退出合法请求和用户界面；无候选 DOCX 不再标记 `completed_with_issues`；同时修正 400 错误分类优先级、MinerU 缓存前置安装和 Windows 设备保留名。
+- trigger: 两份外部审查与本地二次复核确认了接口语义漂移、产品格式歧义、字符相似度误判、退役链路仍可达及完成状态与实际交付不一致；用户逐项确认处理方向。
+- invariants: 正式整套 Word 继续执行严格质量门；语义警告必须可见并由用户确认；稳定任务 ID 不替代可操作的执行/历史资源 ID；不得回退到程序生图；不改写用户历史结果或提高模型调用预算。
+- do_not_regress: `task_id` 不得再次等于单次 `job_id`；教材入口不得重新接受 Markdown/TXT；模糊知识点匹配不得硬阻断；没有实际候选 Word 时不得显示带问题完成；公开请求不得接受 `legacy_figure_pipeline`。
+- verification: `.venv/bin/python scripts/run_quality_gates.py --full` 全部通过：PyCompile、版本一致性、公式、第三方许可、项目完整性、Ruff、Mypy、覆盖率门禁均通过；整库 pytest 2253 passed、17 deselected、12 warnings。`node --check web/app.js` 与 `git diff --check` 通过。隔离数据目录启动本地服务，Playwright 使用系统 Chrome 打开首页并等待 `#page-home` 成功，页面静态/API 请求均返回 200；未发起模型请求。实体 Windows、真实模型和 Word COM 未执行。
+
+### OPT-20260909-02｜Windows 运行时、检查点与跨平台可观测性修复
+
+- status: verified
+- scope: MinerU 首次安装、真题/生题检查点恢复、连续读取、支持报告接收器、静态字体服务、进程锁诊断、质量门禁和任务状态展示。
+- changed: Windows MinerU 默认运行时改用较短路径，安装前检查长路径和磁盘空间；检查点读写统一使用长路径适配；读取快照改用逻辑代数；SQLite 连接显式关闭；WOFF/WOFF2 显式返回字体 MIME；锁信息增加旁路元数据；质量门禁子进程固定 UTF-8；任务诊断和前端区分运行时准备与真题读取，并补充处理建议；`--no-model` 文档明确其边界。
+- trigger: 0.9.49 Windows 实测发现默认 MinerU 安装路径过长、检查点写后无法恢复、SQLite 文件占用、旧快照复用、字体 MIME 不确定、锁占用者不可见、GBK 门禁中断以及安装过程被错误显示为读取原题。
+- invariants: 不降低教材依据、答案、复核、图片、Word/PDF 质量门；不改变模型、协议、思考强度、调用预算或历史任务内容；用户数据和 API Key 仍只保存在用户数据目录；符号链接权限测试仍按环境能力区分，不把测试限制伪装成产品缺陷。
+- do_not_regress: Windows 深路径检查点必须写入后可恢复；MinerU 安装失败必须在模型调用前明确分类；所有 SQLite 连接必须确定关闭；连续非并发读取不得复用旧快照；GPT Responses、Gemini/Grok 精确协议路由和任务级思考强度不得被修改。
+- verification: 定向回归 202 passed，后续补充长路径、MIME 和 UTF-8 回归后 75 passed；受影响文件 Ruff、`node --check web/app.js` 和 `git diff --check` 通过。Python 3.11.15 锁定环境 `python scripts/run_quality_gates.py --full` 通过；随后全量 pytest 覆盖执行通过，总体 2235 passed、17 deselected、12 warnings，覆盖率保持 72%。Windows 真实默认数据目录与 v0.9.50 发布仍 pending。
+
 ### OPT-20260909-01｜v0.9.49 正式源码版本收口
 
 - status: verified

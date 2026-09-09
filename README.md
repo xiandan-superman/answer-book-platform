@@ -117,7 +117,7 @@ python3 scripts/start_platform.py
 
 蓝图审查页可选“每个蓝图生成多道题”。关闭时保持一项蓝图对应一题；开启时每项生成 2～3 道变式，可选择基础到挑战的递进训练或保持同难度。平台为每道变式分配独立身份，并按父蓝图分组显示，因此单题编辑、重新生成、勾选和 Word 导出互不覆盖。最终题量只做耗时、费用和配图处理量提示，不设置强制总数上限。
 
-“知识点出题”是独立于真题专项练习的入口。可以只填写知识点名称，也可以粘贴教材原文或混合上传图片、PDF、Word、TXT、Markdown；生成前可选择题目数量、题型、难度方向和补充要求。平台会先生成可审查的出题蓝图，确认后再生成具体模拟题，并复用现有编辑、重新生成、复制和 Word 导出能力。
+“知识点出题”是独立于真题专项练习的入口。可以只填写知识点名称，也可以粘贴教材原文或混合上传图片、PDF、Word；TXT/Markdown 不作为上传文件接收，纯文字请直接粘贴。生成前可选择题目数量、题型、难度方向和补充要求。平台会先生成可审查的出题蓝图，确认后再生成具体模拟题，并复用现有编辑、重新生成、复制和 Word 导出能力。
 
 - macOS：`~/Library/Application Support/Answer Book Platform/config/api_keys.json`
 - Windows：`%LOCALAPPDATA%\Answer Book Platform\config\api_keys.json`
@@ -204,7 +204,7 @@ Word 生成统一使用 **C 引擎（Pandoc 3.11/texmath + python-docx）**，A/
 
 平台在环境检查时准备固定版本的官方便携运行时，校验压缩包和二进制 SHA-256，保留完整上游压缩包及许可证，不修改 PATH。支持 Windows x64、macOS arm64/x64；Linux x64 用于自动化验证。也可用 `ANSWER_BOOK_PANDOC_BINARY` 或用户配置 `config/pandoc_runtime.json` 的 `binary` 指向已校验版本。缺失、损坏或不支持的公式会明确失败，不回退旧转换器。完整验证边界见 [`docs/operations/WORD_ENGINE_EVALUATION.md`](docs/operations/WORD_ENGINE_EVALUATION.md)。
 
-如果只验证程序主控流程，不调用模型：
+如果只验证程序主控流程，不调用模型（只跳过实际模型请求，不代表跳过任务配置或能力检查）：
 
 ```bash
 python3 scripts/run_task.py "<task_id>" --no-model
@@ -314,7 +314,7 @@ python3 scripts/data_inventory.py
 - 环境检查。
 - Provider 配置自检。
 - DOCX 真题结构抽取。
-- MinerU JSON / Markdown / TXT 教材索引。
+- PDF / DOCX / MinerU JSON 或 ZIP 教材索引；教材库不接受 Markdown/TXT。
 - 教材候选检索。
 - 逐题 API 结构化生成。
 - v4 公式对象校验。

@@ -12,20 +12,16 @@
     "image/jpeg",
     "image/webp",
     "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "text/plain",
-    "text/markdown"
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ]);
-  const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".pdf", ".docx", ".txt", ".md"]);
+  const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".pdf", ".docx"]);
   const MIME_TYPES_BY_EXTENSION = Object.freeze({
     ".png": ["image/png"],
     ".jpg": ["image/jpeg"],
     ".jpeg": ["image/jpeg"],
     ".webp": ["image/webp"],
     ".pdf": ["application/pdf"],
-    ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-    ".txt": ["text/plain"],
-    ".md": ["text/plain", "text/markdown"]
+    ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
   });
 
   function fileExtension(name) {
@@ -58,7 +54,7 @@
 
     incoming.forEach((file, index) => {
       if (!isAllowedFileType(file)) {
-        appendReason(reasonsByIndex, index, "不支持此文件类型（支持 PNG/JPG/WEBP/PDF/DOCX/TXT/MD）");
+        appendReason(reasonsByIndex, index, "不支持此文件类型（仅支持 PNG/JPG/WEBP/PDF/DOCX；文字请直接粘贴）");
       }
       if (Number(file?.size || 0) <= 0) {
         appendReason(reasonsByIndex, index, "文件内容为空");

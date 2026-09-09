@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .artifact_store import atomic_write_json, sha256_file
+from .artifact_store import atomic_write_json, path_exists, read_text, sha256_file
 
 
 def file_dependencies(value: Any) -> dict[str, str | None]:
@@ -81,8 +81,8 @@ def save_output_checkpoint(
     digest = content_sha256(payload)
     directory = stage_dir / "output_checkpoints" / content_sha256([stage, object_id])
     snapshot = directory / f"{digest}.json"
-    if snapshot.exists():
-        if json.loads(snapshot.read_text(encoding="utf-8")) != payload:
+    if path_exists(snapshot):
+        if json.loads(read_text(snapshot)) != payload:
             raise ValueError("Output checkpoint integrity mismatch")
     else:
         atomic_write_json(snapshot, payload)
@@ -98,13 +98,13 @@ def load_output_checkpoint(stage_dir: Path, *, stage: str, object_id: str, depen
     """
     directory = stage_dir / "output_checkpoints" / content_sha256([stage, object_id])
     try:
-        pointer = json.loads((directory / "latest.json").read_text(encoding="utf-8"))
+        pointer = json.loads(read_text(directory / "latest.json"))
         digest = str(pointer["sha256"])
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             return None
         if pointer["snapshot"] != f"{digest}.json":
             return None
-        payload = json.loads((directory / pointer["snapshot"]).read_text(encoding="utf-8"))
+        payload = json.loads(read_text(directory / pointer["snapshot"]))
         if (
             content_sha256(payload) != digest
             or payload.get("schema_version") != "answer_book.output_checkpoint.v1"

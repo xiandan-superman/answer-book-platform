@@ -195,6 +195,8 @@ class TextbookEvidenceService:
         )
         if not index_detail.get("page_map_ok", True):
             raise RuntimeError("教材页码读取失败，不能生成未验证的教材引用。")
+        if not index_detail.get("evidence_retrieval_supported", False):
+            raise RuntimeError("所选教材没有可验证页码，不能生成带教材页码的证据引用。")
         report("textbook_index", {"status": "passed", **index_detail})
 
         plans_path = stage_dir / "knowledge_plans.json"

@@ -83,6 +83,13 @@ def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> 
     assert "tests/test_local_config.py tests/test_api_key_config_concurrency.py" in QUALITY
 
 
+def test_quality_gate_forces_utf8_child_processes() -> None:
+    quality_script = (ROOT / "scripts" / "run_quality_gates.py").read_text(encoding="utf-8")
+    assert '"PYTHONUTF8": "1"' in quality_script
+    assert '"PYTHONIOENCODING": "utf-8"' in quality_script
+    assert 'encoding="utf-8"' in quality_script
+
+
 def test_manifest_builder_runs_outside_repository_working_directory(tmp_path: Path) -> None:
     asset = tmp_path / "source.zip"
     asset.write_bytes(b"source")

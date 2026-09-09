@@ -135,6 +135,45 @@ def test_mineru_managed_runtime_path_is_python_311_specific(tmp_path: Path, monk
     assert "mineru-3.4.5-pipeline-py311" in str(mineru_runtime._managed_python())
 
 
+def test_mineru_windows_runtime_uses_short_local_app_data_root(tmp_path: Path, monkeypatch) -> None:
+    from pathlib import PosixPath
+
+    from app.adapters import mineru_runtime
+
+    monkeypatch.setattr(mineru_runtime.os, "name", "nt")
+    monkeypatch.setattr(mineru_runtime, "Path", PosixPath)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.delenv("ANSWER_BOOK_MINERU_RUNTIME_ROOT", raising=False)
+    path = mineru_runtime._managed_python()
+    assert str(path).endswith("mineru-3.4.5-p311/Scripts/python.exe")
+
+
+def test_mineru_windows_install_rejects_disabled_long_paths(tmp_path: Path, monkeypatch) -> None:
+    from app.adapters import mineru_runtime
+
+    monkeypatch.setattr(mineru_runtime.os, "name", "nt")
+    monkeypatch.setattr(mineru_runtime, "runtime_python_supported", lambda: True)
+    monkeypatch.setattr(mineru_runtime, "_runtime_ready", lambda _python: False)
+    monkeypatch.setattr(mineru_runtime, "_windows_long_path_enabled", lambda: False)
+    monkeypatch.setenv("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1")
+    deep_root = tmp_path
+    while len(str(deep_root)) < 140:
+        deep_root /= "very-long-user-data-directory"
+    with pytest.raises(mineru_runtime.MinerURuntimeError, match="长路径"):
+        mineru_runtime._install_runtime(deep_root / "Scripts" / "python.exe")
+
+
+def test_mineru_short_windows_root_can_install_without_long_path_policy(tmp_path: Path, monkeypatch) -> None:
+    from app.adapters import mineru_runtime
+
+    monkeypatch.setattr(mineru_runtime.os, "name", "nt")
+    monkeypatch.setattr(mineru_runtime, "runtime_python_supported", lambda: True)
+    monkeypatch.setattr(mineru_runtime, "_runtime_ready", lambda _python: True)
+    monkeypatch.setattr(mineru_runtime, "_windows_long_path_enabled", lambda: False)
+    short_root = tmp_path / "ABP"
+    assert mineru_runtime._managed_runtime_path_is_short(short_root / "Scripts" / "python.exe")
+
+
 def test_mineru_requirement_installs_pipeline_extra() -> None:
     from app.adapters import mineru_runtime
 

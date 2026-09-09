@@ -2,11 +2,42 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import app.capabilities as capabilities
-from app.exercise_generation import ensure_practice_blueprint_defaults, scope_cover_summary
+from app.exercise_generation import (
+    audit_practice_blueprint,
+    ensure_practice_blueprint_defaults,
+    scope_cover_summary,
+    validate_blueprint_semantic_confirmation,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 assert capabilities is not None  # Load the registry before the package's legacy circular import path.
+
+
+def test_semantic_scope_warning_requires_exact_persisted_confirmation() -> None:
+    audit = {
+        "requires_manual_confirmation": True,
+        "semantic_scope_warnings": ["范围表述可能等价，请人工确认。"],
+    }
+    with pytest.raises(ValueError, match="人工判断"):
+        validate_blueprint_semantic_confirmation({}, audit)
+    with pytest.raises(ValueError, match="人工判断"):
+        validate_blueprint_semantic_confirmation(
+            {"semantic_scope_confirmation": {"confirmed": True, "warnings": ["旧提醒"]}},
+            audit,
+        )
+    validate_blueprint_semantic_confirmation(
+        {
+            "semantic_scope_confirmation": {
+                "confirmed": True,
+                "warnings": ["范围表述可能等价，请人工确认。"],
+                "confirmed_at": "2026-09-09T12:00:00+08:00",
+            }
+        },
+        audit,
+    )
 
 
 def _source(source_id: str, points: list[str]) -> dict:
@@ -156,3 +187,33 @@ def test_frontend_labels_dual_coverage_without_claiming_partial_is_complete() ->
     assert "另 ${points.length - limit} 项" in app_js
     assert '["targeted_set", "knowledge_overall"].includes(strategy)' in app_js
     assert "本套题将只覆盖部分来源" in app_js
+
+
+def test_knowledge_semantic_scope_mismatch_requires_confirmation_without_blocking() -> None:
+    plan = {
+        "source_mode": "knowledge",
+        "source_analysis": {"knowledge_points": ["相图的线、点、相区判读"]},
+        "blueprint": {
+            "generation_strategy": "knowledge_targeted",
+            "exercise_plan": [{
+                "plan_item_id": "plan_item_01",
+                "number": 1,
+                "question_type": "简答题",
+                "difficulty": "进阶",
+                "target_skill": "判断液相线与固相线",
+                "variation_type": "改变合金成分",
+                "design_intent": "分析液相线、固相线和共晶点位置",
+                "difficulty_levers": ["信息整合"],
+                "difficulty_rationale": "需要综合判读多个相图要素。",
+                "required_knowledge_points": ["液相线、固相线、共晶点位置"],
+            }],
+        },
+    }
+
+    audit = audit_practice_blueprint(plan)
+
+    assert audit["status"] == "warning"
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is True
+    assert audit["semantic_scope_warnings"]
+    assert audit["local_blocking_item_ids"] == []

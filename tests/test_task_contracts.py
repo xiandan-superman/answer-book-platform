@@ -143,6 +143,7 @@ def test_exam_visual_semantic_risk_is_downloadable_but_not_formally_accepted() -
                 "formal_acceptance_passed": False,
                 "delivery_tier": "review_candidate",
                 "status": "completed_with_issues",
+                "candidate_docx_exists": True,
                 "issue_count": 0,
                 "warning_count": 1,
             }
@@ -164,6 +165,7 @@ def test_legacy_completed_exam_with_review_candidate_tier_stays_in_review_queue(
                 "formal_acceptance_passed": False,
                 "delivery_tier": "review_candidate",
                 "status": "passed",
+                "candidate_docx_exists": True,
                 "issue_count": 0,
                 "warning_count": 0,
             }
@@ -189,6 +191,7 @@ def test_task_quality_summary_preserves_final_acceptance_semantics() -> None:
                     "formal_acceptance_passed": False,
                     "delivery_tier": "review_candidate",
                     "status": "completed_with_issues",
+                    "outputs": {"docx_exists": True},
                     "issues": [],
                     "warnings": ["图片科学性错误"],
                 },
@@ -204,6 +207,7 @@ def test_task_quality_summary_preserves_final_acceptance_semantics() -> None:
     assert final["delivery_tier"] == "review_candidate"
     assert final["delivery_ready"] is True
     assert final["formal_acceptance_passed"] is False
+    assert final["candidate_docx_exists"] is True
     assert final["warnings"] == ["图片科学性错误"]
 
 
@@ -443,7 +447,9 @@ def test_practice_batch_is_one_run_with_multiple_steps() -> None:
     runs = build_practice_runs(jobs, [])
 
     assert len(runs) == 1
-    assert runs[0]["task_id"] == "generation_plan"
+    assert runs[0]["task_id"] == "batch-one"
+    assert runs[0]["job_id"] == "generation_plan"
+    assert runs[0]["run_id"] == "generation_plan"
     assert runs[0]["status"] == "failed"
     assert [step["operation"] for step in runs[0]["steps"]] == ["analyze", "plan"]
 

@@ -26,6 +26,10 @@ def test_structured_formula_normalization_is_idempotent_after_unwrapping() -> No
     assert normalize_expression_latex(normalized) == normalized
 
 
+def test_unicode_greek_and_subscript_are_normalized_for_pandoc() -> None:
+    assert normalize_expression_latex("C\\toα₀") == r"C\to\alpha_{0}"
+
+
 def test_calculator_style_parenthesized_exponent_is_normalized_for_word_math() -> None:
     normalized = normalize_expression_latex(
         r"T_{1}V_{1}^(\gamma-1)=T_{2}V_{2}^(\gamma-1)"

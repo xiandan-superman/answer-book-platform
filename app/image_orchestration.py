@@ -6,7 +6,16 @@ from typing import Any, Mapping
 
 MAIN_MODEL_TOOL_LOOP = "main_model_tool_loop"
 LEGACY_FIGURE_PIPELINE = "legacy_figure_pipeline"
-IMAGE_ORCHESTRATION_MODES = frozenset({MAIN_MODEL_TOOL_LOOP, LEGACY_FIGURE_PIPELINE})
+# The program-driven figure route is retired.  Keep its token only so old
+# records can be recognized and migrated; it is no longer a legal request.
+IMAGE_ORCHESTRATION_MODES = frozenset({MAIN_MODEL_TOOL_LOOP})
+
+
+class InvalidImageOrchestrationError(ValueError):
+    """A user-facing contract error for an unsupported image route."""
+
+    public_error_code = "invalid_image_orchestration"
+    suggested_action = "请选择页面显示的生图模式后重试。"
 
 # This is a presentation default, never an image-necessity classifier.  Keep it
 # model-visible so the main model can carry the same visual policy into every
@@ -100,20 +109,26 @@ def ensure_generation_image_label_language_requirement(
     return result
 
 
-def normalize_image_orchestration(value: Any, *, default: str = LEGACY_FIGURE_PIPELINE) -> str:
+def normalize_image_orchestration(value: Any, *, default: str = MAIN_MODEL_TOOL_LOOP) -> str:
     """Return one explicit image route; never silently blend the two pipelines."""
 
     mode = str(value or "").strip()
     if not mode:
         mode = default
     if mode not in IMAGE_ORCHESTRATION_MODES:
-        raise ValueError(f"Unsupported image_orchestration: {mode}")
+        error = InvalidImageOrchestrationError(
+            f"Unsupported image_orchestration: {mode}; legal values: {', '.join(sorted(IMAGE_ORCHESTRATION_MODES))}"
+        )
+        error.public_message = (
+            f"不支持的 image_orchestration：{mode}。合法值为：{', '.join(sorted(IMAGE_ORCHESTRATION_MODES))}。"
+        )
+        raise error
     return mode
 
 
 def image_orchestration_from_payload(
     payload: Mapping[str, Any],
     *,
-    default: str = LEGACY_FIGURE_PIPELINE,
+    default: str = MAIN_MODEL_TOOL_LOOP,
 ) -> str:
     return normalize_image_orchestration(payload.get("image_orchestration"), default=default)

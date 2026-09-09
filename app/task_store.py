@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .analysis_profiles import EVIDENCE_BACKED_ANALYSIS, normalize_analysis_profile
-from .image_orchestration import LEGACY_FIGURE_PIPELINE, MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
+from .image_orchestration import MAIN_MODEL_TOOL_LOOP, normalize_image_orchestration
 from .paths import TASKS_DIR, ensure_project_dirs
 from .resource_ids import bounded_resource_path
 
@@ -46,7 +46,7 @@ class TaskRecord:
     vision_model: str = ""
     image_provider: str = ""
     image_model: str = ""
-    image_orchestration: str = LEGACY_FIGURE_PIPELINE
+    image_orchestration: str = MAIN_MODEL_TOOL_LOOP
     health_status: str = "unknown"
     current_operation: str = ""
     completed_count: int = 0
@@ -195,7 +195,10 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("vision_model", "")
     data.setdefault("image_provider", "")
     data.setdefault("image_model", "")
-    data.setdefault("image_orchestration", LEGACY_FIGURE_PIPELINE)
+    # Legacy program-driven image jobs cannot be resumed onto the retired
+    # route.  Migrate the persisted preference to the only supported route;
+    # normal capability validation will request missing image configuration.
+    data["image_orchestration"] = MAIN_MODEL_TOOL_LOOP
     data.setdefault("health_status", "unknown")
     data.setdefault("current_operation", "")
     data.setdefault("completed_count", 0)

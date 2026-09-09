@@ -9,7 +9,7 @@ from app.task_read_model import build_exam_run, build_practice_runs
 @pytest.mark.parametrize("status", ["queued", "running", "paused", "needs_input", "failed", "cancelled"])
 def test_saved_exam_candidate_preserves_current_lifecycle(profile, status):
     row = {"task_id": "exam-demo", "status": status, "current_stage": "answer_generation", "analysis_profile": profile}
-    report = {"final_acceptance": {"status": "completed_with_issues", "delivery_tier": "review_candidate", "delivery_ready": True, "formal_acceptance_passed": False}}
+    report = {"final_acceptance": {"status": "completed_with_issues", "delivery_tier": "review_candidate", "delivery_ready": True, "formal_acceptance_passed": False, "candidate_docx_exists": True}}
     before = deepcopy(report)
     baseline = build_exam_run(row)
     result = build_exam_run(row, report)
@@ -22,7 +22,7 @@ def test_saved_exam_candidate_preserves_current_lifecycle(profile, status):
 
 
 def test_completed_exam_candidate_still_downloadable():
-    result = build_exam_run({"status": "completed"}, {"final_acceptance": {"status": "completed_with_issues", "delivery_tier": "review_candidate", "delivery_ready": True}})
+    result = build_exam_run({"status": "completed"}, {"final_acceptance": {"status": "completed_with_issues", "delivery_tier": "review_candidate", "delivery_ready": True, "candidate_docx_exists": True}})
     assert result["status"] == "completed_with_issues"
     assert result["capabilities"]["download"] is True
 
@@ -40,17 +40,30 @@ def job(kind, status, updated="2026-09-06T11:00:00+08:00"):
 def test_continuation_controls_coexist_with_saved_history(kind, status):
     saved, current = history(kind), job(kind, status)
     before = deepcopy((saved, current))
-    result = {row["task_id"]: row for row in build_practice_runs([current], [saved])}
-    assert set(result) == {"practice-old", "generation-new"}
-    assert result["generation-new"]["status"] == status
-    assert result["generation-new"]["capabilities"] == build_practice_runs([current], [])[0]["capabilities"]
-    assert result["practice-old"]["capabilities"]["view_result"] is True
+    result = build_practice_runs([current], [saved])
+    assert {row["task_id"] for row in result} == {"batch"}
+    current_row = next(row for row in result if row.get("job_id") == "generation-new")
+    saved_row = next(row for row in result if row.get("history_id") == "practice-old")
+    assert current_row["status"] == status
+    assert current_row["capabilities"] == build_practice_runs([current], [])[0]["capabilities"]
+    assert saved_row["capabilities"]["view_result"] is True
     assert (saved, current) == before
 
 
 @pytest.mark.parametrize("kind", ["practice", "knowledge"])
 def test_completed_continuation_has_no_duplicate_job(kind):
-    assert [row["task_id"] for row in build_practice_runs([job(kind, "completed")], [history(kind)])] == ["practice-old"]
+    rows = build_practice_runs([job(kind, "completed")], [history(kind)])
+    assert [row["task_id"] for row in rows] == ["batch"]
+    assert rows[0]["history_id"] == "practice-old"
+
+
+def test_completed_with_issues_without_candidate_docx_is_failed() -> None:
+    result = build_exam_run(
+        {"status": "completed_with_issues", "current_stage": "completed"},
+        {"final_acceptance": {"status": "completed_with_issues", "delivery_tier": "review_candidate", "delivery_ready": True, "candidate_docx_exists": False}},
+    )
+    assert result["status"] == "failed"
+    assert result["capabilities"]["view_result"] is False
 
 
 @pytest.mark.parametrize("kind", ["practice", "knowledge"])

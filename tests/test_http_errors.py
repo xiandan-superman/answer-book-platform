@@ -35,3 +35,36 @@ def test_safe_chinese_validation_message_remains_actionable() -> None:
 
     assert payload["error_code"] == "invalid_request"
     assert payload["error"] == "请至少选择一本教材。"
+
+
+def test_english_validation_message_is_not_mislabeled_as_internal() -> None:
+    payload = public_error_payload(ValueError("Upload kind must be exam or textbook"), status=400, path="/api/library-upload")
+    assert payload["error_code"] == "invalid_request"
+    assert payload["error"] == "Upload kind must be exam or textbook"
+
+
+def test_json_extension_in_upload_error_is_not_model_output_failure() -> None:
+    payload = public_error_payload(
+        ValueError("Unsupported file type for textbook: .exe. Allowed: .json, .pdf"),
+        status=400,
+        path="/api/library-upload",
+    )
+    assert payload["error_code"] == "invalid_request"
+
+
+def test_model_output_and_timeout_classification_win_over_generic_400() -> None:
+    invalid_output = public_error_payload(
+        ValueError("Model output contained invalid JSON content"),
+        status=400,
+        path="/api/practice/jobs",
+    )
+    timeout = public_error_payload(
+        ValueError("Provider timeout after 120 seconds"),
+        status=400,
+        path="/api/practice/jobs",
+    )
+
+    assert invalid_output["error_code"] == "invalid_model_output"
+    assert "invalid JSON" not in invalid_output["error"]
+    assert timeout["error_code"] == "provider_timeout"
+    assert "120" not in timeout["error"]

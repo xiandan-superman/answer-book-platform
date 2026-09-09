@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.artifact_store import atomic_write_json, build_artifact_integrity_report, long_path
+from app.artifact_store import atomic_write_json, build_artifact_integrity_report, long_path, path_exists, read_text
 from app.image_artifacts import ImageArtifactStore, mark_final_adopted_assets
 
 
@@ -34,6 +34,14 @@ def test_windows_long_path_prefix_is_added_only_when_needed() -> None:
     with patch("app.artifact_store.os.name", "nt"):
         assert long_path(short) == absolute_short
         assert long_path(deep) == "\\\\?\\" + absolute_deep
+
+
+def test_long_path_read_helpers_use_normal_paths_on_posix(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "value.json"
+    target.parent.mkdir()
+    target.write_text("{\"ok\": true}", encoding="utf-8")
+    assert path_exists(target)
+    assert read_text(target) == '{"ok": true}'
 
 
 def test_atomic_json_write_uses_short_temp_leaf_and_adapts_low_level_paths(

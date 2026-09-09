@@ -18,7 +18,7 @@ from .textbook_index_cache import (
 )
 
 EXAM_EXTENSIONS = {".docx"}
-TEXTBOOK_EXTENSIONS = {".pdf", ".docx", ".json", ".md", ".txt", ".zip"}
+TEXTBOOK_EXTENSIONS = {".pdf", ".docx", ".json", ".zip"}
 EXAM_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 TEXTBOOK_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 _UPLOAD_LOCK = threading.RLock()
@@ -33,8 +33,14 @@ TRAILING_PART_RE = re.compile(r"^(?P<title>.*[^\d])(?P<part>[1-9]\d*)$")
 def _safe_filename(filename: str) -> str:
     name = Path(filename).name.strip()
     name = re.sub(r"[\x00-\x1f]", "", name)
+    # Keep one shared cross-platform contract. Windows rejects these names
+    # even when the same upload succeeds on macOS/Linux.
+    name = re.sub(r'[<>:"/\\|?*]', "_", name).rstrip(" .")
     if not name or name in {".", ".."}:
-        raise ValueError("Invalid filename")
+        raise ValueError("Invalid filename after removing unsupported characters")
+    reserved_stem = name.split(".", 1)[0].upper()
+    if reserved_stem in {"CON", "PRN", "AUX", "NUL"} or re.fullmatch(r"(?:COM|LPT)[1-9]", reserved_stem):
+        name = f"_{name}"
     return name
 
 

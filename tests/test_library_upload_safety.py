@@ -69,3 +69,22 @@ def test_upload_filename_cannot_escape_library(library_roots) -> None:
     result = library_files.save_library_upload("exam", "../../真题.docx", b"content")
 
     assert result["path"] == str((exams / "真题.docx").resolve())
+
+
+def test_windows_reserved_filename_characters_are_sanitized(library_roots) -> None:
+    result = library_files.save_library_upload("exam", "题目:解答?.docx", b"content")
+    assert ":" not in result["name"]
+    assert "?" not in result["name"]
+    assert result["path"].endswith(".docx")
+
+
+@pytest.mark.parametrize("filename", ["CON.docx", "nul.any.docx", "COM1.docx", "lpt9.docx"])
+def test_windows_reserved_device_names_are_sanitized(library_roots, filename: str) -> None:
+    result = library_files.save_library_upload("exam", filename, b"content")
+    assert result["name"].startswith("_")
+
+
+@pytest.mark.parametrize("filename", ["notes.md", "notes.txt"])
+def test_textbook_upload_rejects_plain_text_formats(library_roots, filename: str) -> None:
+    with pytest.raises(ValueError, match="Unsupported file type"):
+        library_files.save_library_upload("textbook", filename, b"content")
