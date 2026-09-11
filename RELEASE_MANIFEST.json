@@ -7,7 +7,7 @@
   "build_kind": "stable-source-release",
   "created_at": "2026-09-11T23:06:52+08:00",
   "validation": {
-    "release_readiness": "Locked Python 3.11 full quality gate passed: 2332 passed, 17 deselected, 12 warnings; coverage 72%, PyCompile, version consistency, formula, license, completeness, Ruff and Mypy checks passed. GitHub independently re-runs the locked Python 3.11 and cross-platform release matrix.",
+    "release_readiness": "Locked Python 3.11 full quality gate passed after fixing the download-ledger ordering race found by the first GitHub release-candidate run: 2332 passed, 17 deselected, 12 warnings; coverage 72%, PyCompile, version consistency, formula, license, completeness, Ruff and Mypy checks passed. GitHub independently re-runs the locked Python 3.11 and cross-platform release matrix.",
     "real_task_scope": "A lightweight one-question exam-analysis task and one-question practice-generation task completed end to end with passed quality status. A separate two-question exam-analysis task completed without pipeline blockage and was correctly downgraded because the model omitted a calculation substitution step.",
     "paid_model_regression": "Real Gemini 3.6 Flash calls were made through the configured Lingsuan route for the lightweight exam-analysis and practice-generation acceptance tasks; final release gates themselves do not call paid models.",
     "staged_secret_scan": "All staged release candidates were scanned for high-risk credentials and private keys. Two controlled fake Ark-like tokens in redaction tests were reviewed; no user API Key, private key or new credential is included, and no task, textbook, log, output or cache path is staged.",

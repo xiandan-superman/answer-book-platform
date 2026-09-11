@@ -1643,8 +1643,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
             if not revision:
                 raise ValueError("请指定已显示的成果版本，避免下载期间切换内容。")
             target = build_unit_package(stage_dir(task_id) / "unit_delivery", revision)
-            self.send_download(target)
             mark_task_downloaded(task_id)
+            self.send_download(target)
             return
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "answer-fragments":
             task_id = parts[2]
