@@ -6,11 +6,13 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .artifact_store import atomic_write_json
 from .calculation_consistency import (
     calculation_contract_issues,
     calculation_draft_consistency_issues,
@@ -35,7 +37,7 @@ from .omml_input import strip_structured_math_metadata
 from .output_checkpoints import file_dependencies, load_output_checkpoint, save_output_checkpoint
 from .prompt_registry import prompt_contract
 from .prompts import build_answer_depth_profile, build_answer_draft_prompt
-from .provider_errors import classify_provider_error, is_terminal_provider_route_error
+from .provider_errors import RequiredImageGenerationError, classify_provider_error, is_terminal_provider_route_error
 from .question_requirements import answer_figure_required
 from .question_types import (
     infer_question_type,
@@ -45,7 +47,7 @@ from .question_types import (
     question_has_type,
     question_kind,
 )
-from .question_understanding import attach_question_visuals, is_drawing_question, needs_vision_model
+from .question_understanding import attach_question_visuals, has_question_snapshot, is_drawing_question, needs_vision_model
 from .retrieval import EvidenceCandidate, candidates_for_question
 from .runtime_monitor import model_call_context
 from .settings import (
@@ -2156,6 +2158,8 @@ def semantic_generation_issues(
     question: dict[str, Any],
     fragment: dict[str, Any],
     allow_formula_absence_after_retry: bool = False,
+    *,
+    enforce_figure_suggestion: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     figure_containers = [fragment]
@@ -2174,7 +2178,7 @@ def semantic_generation_issues(
         for container in figure_containers
         for key in ("generated_images", "figure_specs", "drawing_code_specs")
     )
-    if answer_figure_required(question) and not has_required_figure_output:
+    if enforce_figure_suggestion and answer_figure_required(question) and not has_required_figure_output:
         issues.append("missing_required_answer_figure")
     expected_units = _question_subquestion_rows(question)
     if len(expected_units) >= 2:
@@ -2851,6 +2855,12 @@ def _with_main_model_image_tool_contract(messages: list[dict[str, Any]]) -> list
             and not any(marker in str(rule) for marker in _PROGRAM_FIGURE_RULE_MARKERS)
         ]
         payload = _without_program_figure_outputs(payload)
+        question_payload = payload.get("question")
+        if isinstance(question_payload, dict):
+            # Program hints may request one reconsideration, but the main model
+            # remains the sole authority on whether an answer image is needed.
+            for key in ("needs_figure", "drawing_generation_mode", "figure_schema_plan"):
+                question_payload.pop(key, None)
         payload["hard_rules"] = [*hard_rules, *_MAIN_MODEL_IMAGE_TOOL_RULES]
         payload["image_tool_orchestration"] = "main_model_tool_loop"
         routed_text = json.dumps(payload, ensure_ascii=False)
@@ -2892,11 +2902,9 @@ def generate_one_fragment(
     )
     if tool_loop is not None:
         messages = _with_main_model_image_tool_contract(messages)
-    understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
     direct_visual_input = bool(
-        needs_vision_model(question)
-        and not understanding.get("vision_used")
-        and provider_model_supports_vision(provider, model)
+        provider_model_supports_vision(provider, model)
+        and has_question_snapshot(question)
     )
     if direct_visual_input:
         messages = attach_question_visuals(messages, question)
@@ -2926,12 +2934,24 @@ def generate_one_fragment(
                         timeout=timeout_seconds,
                     )
                     data = agent_result.value
-                    if answer_figure_required(question) and agent_result.terminal_route_error is not None:
+                    if agent_result.terminal_route_error is not None:
                         # The model has seen the structured tool failure and had
                         # one chance to respond honestly.  A required figure
                         # still cannot be delivered, so stop before correctness
                         # and content-repair stages repeat the same dead route.
                         raise agent_result.terminal_route_error
+                    if agent_result.tool_calls and not agent_result.selected_asset_ids:
+                        failure = agent_result.tool_failures[-1] if agent_result.tool_failures else {}
+                        detail = str(failure.get("message") or "主模型未采用任何已检查图片").strip()
+                        image_tool = tool_loop.tools.get("generate_image")
+                        image_provider = getattr(image_tool, "provider", None)
+                        image_model = str(getattr(image_tool, "model", "") or "")
+                        raise RequiredImageGenerationError(
+                            getattr(image_provider, "name", ""),
+                            image_model,
+                            max(1, len(agent_result.tool_failures)),
+                            detail,
+                        )
                 else:
                     data = client.chat_json_object(
                         messages,
@@ -3002,14 +3022,23 @@ def generate_one_fragment(
         if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
             data["answer"] = "见解析"
         syntax_issues = validate_v4_answer_fragment(data)
-        semantic_issues = semantic_generation_issues(question, data)
+        semantic_issues = semantic_generation_issues(
+            question,
+            data,
+            enforce_figure_suggestion=(attempt == 0),
+        )
         if semantic_issues == ["calculation_missing_formula"] and formula_repair_requested:
             data = add_review_flag(
                 data,
                 "formula_absence_after_retry",
                 "按题型应有公式，模型二次生成仍未给出公式，已特殊放行并进入存疑题目审查文档。",
             )
-            semantic_issues = semantic_generation_issues(question, data, allow_formula_absence_after_retry=True)
+            semantic_issues = semantic_generation_issues(
+                question,
+                data,
+                allow_formula_absence_after_retry=True,
+                enforce_figure_suggestion=False,
+            )
         issues = syntax_issues + semantic_issues
         if not issues and (has_bound_evidence(data) or not evidence):
             retry_report = getattr(client, "last_json_retry_report", {})
@@ -3250,11 +3279,20 @@ def generate_batch_fragments(
                 timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
             )
             raw = agent_result.value
-            if (
-                any(answer_figure_required(item["question"]) for item in batch_items)
-                and agent_result.terminal_route_error is not None
-            ):
+            if agent_result.terminal_route_error is not None:
                 raise agent_result.terminal_route_error
+            if agent_result.tool_calls and not agent_result.selected_asset_ids:
+                failure = agent_result.tool_failures[-1] if agent_result.tool_failures else {}
+                detail = str(failure.get("message") or "主模型未采用任何已检查图片").strip()
+                image_tool = tool_loop.tools.get("generate_image")
+                image_provider = getattr(image_tool, "provider", None)
+                image_model = str(getattr(image_tool, "model", "") or "")
+                raise RequiredImageGenerationError(
+                    getattr(image_provider, "name", ""),
+                    image_model,
+                    max(1, len(agent_result.tool_failures)),
+                    detail,
+                )
         else:
             raw = client.chat_json_object(
                 messages,
@@ -3400,7 +3438,10 @@ def generate_answer_fragments(
             "main-model image tool route was requested but could not be initialized; "
             "the answer generator will not fall back to the legacy figure pipeline"
         )
-    batch_enabled = answer_generation_batch_enabled()
+    # A multimodal main model receives one complete question snapshot per
+    # request.  Micro-batching would mix several question images into one
+    # request and weaken their one-to-one evidence binding.
+    batch_enabled = answer_generation_batch_enabled() and not provider_model_supports_vision(provider, model)
     batch_size = answer_generation_batch_size()
     batch_token_budget = answer_generation_batch_token_budget()
     evidence_target_count = answer_generation_evidence_target_count()
@@ -3409,35 +3450,36 @@ def generate_answer_fragments(
     preflight_counts = {"checked": 0, "passed": 0, "blocked": 0}
     active_progress: dict[str, Any] = {}
     progress_events: list[dict[str, Any]] = []
+    progress_lock = threading.RLock()
 
     def write_progress(status: str, completed: int, question: dict[str, Any] | None = None) -> None:
         if progress_json is None:
             return
-        elapsed_seconds = max(0, int(time.time() - started_at))
-        payload = {
-            "stage": "answer_generation",
-            "status": status,
-            "total": len(questions),
-            "completed": completed,
-            "current_question_id": str(question.get("question_id", "")) if question else "",
-            "current_number": str(question.get("number", "")) if question else "",
-            "fragment_count": completed,
-            "issue_count": sum(len(x.get("issues", [])) for x in all_issues),
-            "max_workers": max_workers,
-            "parallel_enabled": parallel_enabled,
-            "batch_enabled": batch_enabled,
-            "batch_size": batch_size,
-            "batch_token_budget": batch_token_budget,
-            "evidence_target_count": evidence_target_count,
-            "reused_fragment_count": reused_fragment_count,
-            "elapsed_seconds": elapsed_seconds,
-            "elapsed_text": _format_elapsed(elapsed_seconds),
-            "active": dict(active_progress),
-            "unit_preflight": dict(preflight_counts),
-            "recent_events": progress_events[-12:],
-        }
-        progress_json.parent.mkdir(parents=True, exist_ok=True)
-        progress_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        with progress_lock:
+            elapsed_seconds = max(0, int(time.time() - started_at))
+            payload = {
+                "stage": "answer_generation",
+                "status": status,
+                "total": len(questions),
+                "completed": completed,
+                "current_question_id": str(question.get("question_id", "")) if question else "",
+                "current_number": str(question.get("number", "")) if question else "",
+                "fragment_count": completed,
+                "issue_count": sum(len(x.get("issues", [])) for x in all_issues),
+                "max_workers": max_workers,
+                "parallel_enabled": parallel_enabled,
+                "batch_enabled": batch_enabled,
+                "batch_size": batch_size,
+                "batch_token_budget": batch_token_budget,
+                "evidence_target_count": evidence_target_count,
+                "reused_fragment_count": reused_fragment_count,
+                "elapsed_seconds": elapsed_seconds,
+                "elapsed_text": _format_elapsed(elapsed_seconds),
+                "active": dict(active_progress),
+                "unit_preflight": dict(preflight_counts),
+                "recent_events": progress_events[-12:],
+            }
+            atomic_write_json(progress_json, payload)
 
     def record_progress_event(question: dict[str, Any], status: str, detail: dict[str, Any]) -> None:
         event = {
@@ -3451,12 +3493,13 @@ def generate_answer_fragments(
             "max_tokens": detail.get("max_tokens"),
             "error": str(detail.get("error") or "")[:240],
         }
-        progress_events.append(event)
-        active_progress.clear()
-        active_progress.update({key: value for key, value in event.items() if value not in {None, ""}})
-        active_progress["elapsed_seconds"] = max(0, int(time.time() - started_at))
-        active_progress["elapsed_text"] = _format_elapsed(active_progress["elapsed_seconds"])
-        write_progress("running", completed_counter["value"], question)
+        with progress_lock:
+            progress_events.append(event)
+            active_progress.clear()
+            active_progress.update({key: value for key, value in event.items() if value not in {None, ""}})
+            active_progress["elapsed_seconds"] = max(0, int(time.time() - started_at))
+            active_progress["elapsed_text"] = _format_elapsed(active_progress["elapsed_seconds"])
+            write_progress("running", completed_counter["value"], question)
 
     def generate_question_inner(
         item: tuple[int, dict[str, Any]],

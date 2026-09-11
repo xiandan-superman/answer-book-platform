@@ -13,24 +13,24 @@ sys.path.insert(0, str(ROOT))
 
 
 class TextbookGroupingTests(unittest.TestCase):
-    def test_textbook_discovery_ignores_hidden_shared_library_manifest(self) -> None:
+    def test_textbook_discovery_ignores_hidden_management_file(self) -> None:
         from app.textbook_index import discover_textbooks
 
         with tempfile.TemporaryDirectory() as raw_tmp:
             root = Path(raw_tmp)
-            (root / ".shared_library_manifest.json").write_text("{}", encoding="utf-8")
+            (root / ".catalog.json").write_text("{}", encoding="utf-8")
             (root / "材料现代分析测试方法1.zip").write_bytes(b"textbook")
 
             files = discover_textbooks(root)
 
         self.assertEqual(["材料现代分析测试方法1.zip"], [item.name for item in files])
 
-    def test_scan_ignores_hidden_shared_library_manifest(self) -> None:
+    def test_scan_ignores_hidden_management_file(self) -> None:
         from app.library_files import _scan_dir
 
         with tempfile.TemporaryDirectory() as raw_tmp:
             root = Path(raw_tmp)
-            (root / ".shared_library_manifest.json").write_text("{}", encoding="utf-8")
+            (root / ".catalog.json").write_text("{}", encoding="utf-8")
             (root / "材料现代分析测试方法1.zip").write_bytes(b"textbook")
             files = _scan_dir(root, {".json", ".zip"})
 
@@ -115,7 +115,7 @@ class TextbookGroupingTests(unittest.TestCase):
         self.assertEqual("high", groups[0]["confidence"])
         self.assertEqual("文件名包含连续页码范围分段", groups[0]["reason"])
 
-    def test_shared_library_citation_name_overrides_filename_heuristics(self) -> None:
+    def test_citation_name_overrides_filename_heuristics(self) -> None:
         from app.library_files import textbook_group_suggestions
 
         groups = textbook_group_suggestions(
@@ -127,7 +127,7 @@ class TextbookGroupingTests(unittest.TestCase):
 
         self.assertEqual(1, len(groups))
         self.assertEqual("材料现代分析测试方法", groups[0]["name"])
-        self.assertEqual("共享教材包声明了相同的教材引用名称", groups[0]["reason"])
+        self.assertEqual("教材元数据声明了相同的教材引用名称", groups[0]["reason"])
 
     def test_does_not_group_unrelated_title_numbers(self) -> None:
         from app.library_files import textbook_group_suggestions

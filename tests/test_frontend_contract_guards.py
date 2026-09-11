@@ -5,6 +5,7 @@ APP_JS = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
 MOTION_JS = (ROOT / "web" / "motion.js").read_text(encoding="utf-8")
 PLATFORM_THEME_CSS = (ROOT / "web" / "platform-theme.css").read_text(encoding="utf-8")
+FOUNDATION_CSS = (ROOT / "web" / "styles" / "foundation.css").read_text(encoding="utf-8")
 WORD_FORMAT_HTML = (ROOT / "standalone_word_format_reviewer" / "web" / "index.html").read_text(encoding="utf-8")
 
 
@@ -16,7 +17,8 @@ def test_practice_formula_renderer_strips_provider_delimiters_before_wrapping() 
 
 def test_practice_result_renderer_recovers_bare_boldsymbol_commands() -> None:
     assert "function normalizeBarePracticeLatexCommands" in APP_JS
-    assert "normalizeStandaloneMathLines(normalizeBarePracticeLatexCommands(value))" in APP_JS
+    assert "normalizeStandaloneMathLines(normalizeBarePracticeLatexCommands(normalizeLegacyMathMl(value)))" in APP_JS
+    assert "function normalizeLegacyMathMl" in APP_JS
     assert 'load: ["[tex]/boldsymbol"]' in APP_JS
     assert 'packages: { "[+]": ["boldsymbol"] }' in APP_JS
 
@@ -34,6 +36,14 @@ def test_choice_options_use_three_character_first_line_indent_across_web_outputs
     assert "#page-practice .practice-options p," in PLATFORM_THEME_CSS
     assert "#page-practice .practice-plan-draft__options p" in PLATFORM_THEME_CSS
     assert "text-indent: 3em;" in PLATFORM_THEME_CSS
+
+
+def test_objective_answer_slot_spaces_remain_visible_in_web_results() -> None:
+    practice_stem_rule = PLATFORM_THEME_CSS.split("#page-practice .practice-stem {", 1)[1].split("}", 1)[0]
+    assert "white-space: pre-wrap;" in practice_stem_rule
+    assert 'const OBJECTIVE_ANSWER_SLOT = "（      ）";' in APP_JS
+    assert 'new Set(["选择题", "单选题", "多选题", "判断题"])' in APP_JS
+    assert "ensureObjectiveAnswerSlot(normalizePracticeQuestionText(extracted.stem), item.question_type)" in APP_JS
 
 
 def test_storage_preview_is_compact_without_narrowing_full_cleanup_scope() -> None:
@@ -129,6 +139,34 @@ def test_task_manager_waiting_cards_and_toolbar_avoid_redundant_visual_rows() ->
     assert filter_row.index('id="taskSortSelect"') < filter_row.index('id="taskBulkModeBtn"')
 
 
+def test_empty_task_manager_has_one_direct_creation_area() -> None:
+    assert 'id="taskManagerEmptyCreateActions"' in INDEX_HTML
+    assert 'querySelector(".task-create-actions")?.classList.toggle("hidden", hasNoTasks)' in APP_JS
+    assert '$("taskManagerEmptyCreateActions")?.classList.toggle("hidden", !hasNoTasks)' in APP_JS
+    assert "选择一种任务开始，后续进度和结果都会集中显示在这里。" in APP_JS
+    assert 'action?.classList.toggle("hidden", showTaskLoading || hasNoTasks)' in APP_JS
+
+
+def test_textbook_index_controls_are_not_permanently_hidden() -> None:
+    action_row = INDEX_HTML.split('id="textbookIndexActionRow"', 1)[1].split(">", 1)[0]
+    status_box = INDEX_HTML.split('id="textbookIndexBox"', 1)[1].split(">", 1)[0]
+
+    assert "reference-extra" not in action_row
+    assert "reference-extra" not in status_box
+    styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+    assert ".reference-extra {" in styles
+    assert "display: none !important;" in styles
+
+
+def test_zero_system_issues_is_presented_as_healthy() -> None:
+    assert 'id="systemIssueCount" class="is-clear">0</strong>' in INDEX_HTML
+    assert 'issueValue?.classList.toggle("is-clear", issueCount === 0)' in APP_JS
+    assert 'issueValue?.classList.toggle("is-alert", issueCount > 0)' in APP_JS
+    styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+    assert ".system-monitor-grid strong.is-clear { color: #15803d; }" in styles
+    assert ".system-monitor-grid strong.is-alert { color: #dc2626; }" in styles
+
+
 def test_terminal_cards_and_result_pages_do_not_repeat_the_same_status() -> None:
     assert "const showCurrentStage" in APP_JS
     assert "${showCurrentStage ?" in APP_JS
@@ -141,9 +179,9 @@ def test_terminal_cards_and_result_pages_do_not_repeat_the_same_status() -> None
 
 
 def test_visible_task_and_review_controls_have_effective_feedback() -> None:
-    assert 'id="taskStatPaused"' in INDEX_HTML
-    assert 'data-filter="paused"' in INDEX_HTML
-    assert 'paused: scopedTasks.filter' in APP_JS
+    assert 'id="taskStatAttention"' in INDEX_HTML
+    assert 'data-filter="attention"' in INDEX_HTML
+    assert '["needs_input", "completed_with_issues", "paused"]' in APP_JS
     assert 'paused: "已暂停"' in APP_JS
     assert 'item.open = rowIndex === 0' in APP_JS
     assert 'button.textContent = "正在读取…"' in APP_JS
@@ -281,6 +319,13 @@ def test_api_key_configuration_failure_is_local_retryable_and_partial() -> None:
     assert "error.recoveryAction = data.recovery_action" in platform_api
 
 
+def test_local_privilege_token_is_server_injected_and_sent_by_shared_api_client() -> None:
+    assert '<meta name="answer-book-local-privilege-token" content="">' in INDEX_HTML
+    platform_api = (ROOT / "web" / "platform-api.js").read_text(encoding="utf-8")
+    assert 'meta[name="answer-book-local-privilege-token"]' in platform_api
+    assert '"X-Answer-Book-Local-Token": localPrivilegeToken' in platform_api
+
+
 def test_practice_status_banner_tracks_blueprint_confirmation_stage() -> None:
     assert 'setPracticeStatusBanner("等待确认训练蓝图", "loading");' in APP_JS
 
@@ -316,7 +361,8 @@ def test_practice_completion_contract_drives_all_public_surfaces() -> None:
     assert "completion.display_label" in APP_JS
     assert "completion.action_label" in APP_JS
     assert "completion.primary.icon" in APP_JS
-    assert "结果需复核" in (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    assert "待你处理" in (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    assert "结果需复核" in APP_JS
 
 
 def test_review_candidate_download_prefers_explicit_candidate_filename() -> None:
@@ -823,7 +869,24 @@ def test_monitor_prioritizes_health_and_collapses_infrequent_settings() -> None:
     assert '<h3><i class="fas fa-gauge-high"></i>服务概况</h3>' in INDEX_HTML
     assert 'id="systemAccessHost"' in INDEX_HTML
     assert 'setText("systemAccessHost", host.access_host || "本机服务");' in APP_JS
-    assert 'setText("systemMonitorSubtitle", "展示当前服务电脑的实时运行记录");' in APP_JS
+    assert 'setText("systemMonitorSubtitle", "展示任务、模型与服务的可理解运行状态");' in APP_JS
+    assert "systemRecentLogs" not in INDEX_HTML
+    assert "systemRecentEvents" not in INDEX_HTML
+    assert "data?.runtime_logs" not in APP_JS
+    assert "data?.task_events" not in APP_JS
+
+
+def test_confirmed_frontend_audit_fixes_have_durable_contracts() -> None:
+    assert 'id="prepareTextbookIndexBtn" class="primary-button"' in INDEX_HTML
+    assert 'id="page-task" class="page" data-task-state="empty"' in INDEX_HTML
+    assert 'setText("taskPageTitle", "请选择任务")' in APP_JS
+    assert 'switchExamTab((libraryFiles.exams || []).length ? "existing" : "upload")' in APP_JS
+    assert 'switchTextbookTab((libraryFiles.textbooks || []).length ? "existing" : "upload")' in APP_JS
+    assert 'class="active" aria-current="location"' in APP_JS
+    assert 'document.documentElement.classList.add("reveal-enabled")' in APP_JS
+    assert ".reveal-enabled .reveal:not(.visible)" in (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+    assert "未选择文件，也可以直接粘贴截图" not in INDEX_HTML
+    assert "技术日志与内部事件" not in INDEX_HTML
 
 
 def test_desktop_operational_pages_preserve_balanced_layouts() -> None:
@@ -918,6 +981,10 @@ def test_task_statistics_are_the_only_status_filter_and_secondary_actions_collap
     tasks = INDEX_HTML[tasks_start:tasks_end]
 
     assert 'class="task-stat-card active" data-filter="all"' in tasks
+    assert 'data-filter="active"' in tasks
+    assert 'data-filter="attention"' in tasks
+    assert 'data-filter="unsuccessful"' in tasks
+    assert 'function taskMatchesManagerFilter' in APP_JS
     assert 'class="task-filter-tabs"' not in tasks
     assert 'id="taskActiveFilterSummary"' in tasks
     assert 'class="task-card-more"' in APP_JS
@@ -933,6 +1000,21 @@ def test_task_statistics_are_the_only_status_filter_and_secondary_actions_collap
     assert '当前显示：${kindLabels[activeTaskKind]' in APP_JS
 
 
+def test_ux_audit_followups_keep_task_language_and_navigation_user_facing() -> None:
+    assert 'id="examWorkflowPreviewTitle"' in INDEX_HTML
+    assert "模型或供应商持续异常时会停止" in INDEX_HTML
+    assert "确认范围、题量与难度后进入下一任务" not in APP_JS
+    assert "确认后进入蓝图设计" in APP_JS
+    assert 'placeholder="搜索平台、模型或能力"' in INDEX_HTML
+    assert 'data-key-models=' in APP_JS
+    assert "0/1 已配置" not in INDEX_HTML  # counts are generated from real provider groups
+    assert "预览文件（非正式交付包）" not in APP_JS
+    assert "复核与排查材料" in INDEX_HTML
+    assert "当前模型 当前" not in APP_JS
+    assert 'responses: "Responses API"' in APP_JS
+    assert 'return "使用模型默认思考强度"' in APP_JS
+
+
 def test_terminal_task_page_uses_static_state_copy_and_loading_ids_are_disclosed() -> None:
     assert 'id="taskPageDescription"' in INDEX_HTML
     assert 'id="totalProgressLabel"' in INDEX_HTML
@@ -941,7 +1023,7 @@ def test_terminal_task_page_uses_static_state_copy_and_loading_ids_are_disclosed
     assert 'executionHeading: "停止阶段"' in APP_JS
     assert 'title: "任务已暂停"' in APP_JS
     assert 'executionHeading: "暂停位置"' in APP_JS
-    assert 'activeTaskFilter !== "failed"' in APP_JS
+    assert 'activeTaskFilter !== "unsuccessful"' in APP_JS
     assert '<summary>查看任务标识</summary>' in INDEX_HTML
     assert 'row?.classList.toggle("flex"' not in APP_JS
     assert '#page-task[data-task-state="failed"] .progress-card' in PLATFORM_THEME_CSS
@@ -1265,3 +1347,65 @@ def test_provider_control_center_exposes_status_responsibility_and_exact_probes(
     assert "provider-history-track" in APP_JS
     assert 'not_configured: ["未接入"' in APP_JS
     assert ".provider-matrix-group.status-not-configured" in PLATFORM_THEME_CSS
+
+
+def test_audited_modals_share_keyboard_focus_and_restore_behavior() -> None:
+    assert "function activateAccessibleModal(modal, options = {})" in APP_JS
+    assert "function deactivateAccessibleModal(modal, options = {})" in APP_JS
+    assert "visibleModalElements(modal)" in APP_JS
+    assert 'event.key === "Escape"' in APP_JS
+    assert 'event.key !== "Tab"' in APP_JS
+    assert 'state.previousFocus.focus({ preventScroll: true })' in APP_JS
+    assert "activateAccessibleModal(modal" in APP_JS
+    assert "initialFocus: allowBtn" in APP_JS
+    assert 'onEscape: cancelActiveExamStructureReviewModal' in APP_JS
+    assert 'onEscape: closeTaskCleanupModal' in APP_JS
+    assert 'onEscape: closePlatformUpdateProgress' in APP_JS
+    assert 'overlay.setAttribute("aria-modal", "true")' in APP_JS
+    assert 'class="review-decision-card" tabindex="-1"' in INDEX_HTML
+    assert 'class="review-decision-card exam-structure-review-card" tabindex="-1"' in INDEX_HTML
+
+
+def test_ultrawide_layout_uses_page_specific_canvases() -> None:
+    assert "--layout-reading: 1440px;" in FOUNDATION_CSS
+    assert "--layout-workspace: 1760px;" in FOUNDATION_CSS
+    assert "--layout-task-manager: 1680px;" in FOUNDATION_CSS
+    assert "--layout-monitor: 2160px;" in FOUNDATION_CSS
+    assert "max-width: var(--layout-reading);" in PLATFORM_THEME_CSS
+    assert "max-width: var(--layout-task-manager);" in PLATFORM_THEME_CSS
+    assert "max-width: var(--layout-monitor);" in PLATFORM_THEME_CSS
+    assert ".task-manager-item:not(.task-manager-terminal)" in PLATFORM_THEME_CSS
+    assert "grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);" in PLATFORM_THEME_CSS
+
+
+def test_core_pages_have_readable_caption_and_numeric_primitives() -> None:
+    assert "--type-caption: 12px;" in FOUNDATION_CSS
+    assert "font-variant-numeric: tabular-nums;" in PLATFORM_THEME_CSS
+    assert 'font-feature-settings: "tnum" 1;' in PLATFORM_THEME_CSS
+    assert 'font-family: "PingFang SC", "Microsoft YaHei", Inter' in PLATFORM_THEME_CSS
+    assert 'id="taskManagerEmpty" class="task-empty-state hidden" role="status" aria-live="polite"' in INDEX_HTML
+    assert 'shell?.setAttribute("aria-busy", showTaskLoading ? "true" : "false")' in APP_JS
+    assert 'class="task-loading-row" aria-hidden="true"' in APP_JS
+    assert ".task-manager-list.is-loading" in PLATFORM_THEME_CSS
+    assert "@keyframes platform-skeleton-shimmer" in PLATFORM_THEME_CSS
+    assert "@media (prefers-reduced-motion: reduce)" in PLATFORM_THEME_CSS
+
+
+def test_model_key_status_uses_refreshed_provider_configuration() -> None:
+    assert 'providerConfigs?.[providerName]?.api_key_set !== true' in APP_JS
+    assert 'const textKeyState = textProvider.api_key_set ? "" : " · 缺少 Key";' in APP_JS
+    save_handler = APP_JS.split("async function saveKeyProvider", 1)[1].split("async function deleteKeyProvider", 1)[0]
+    delete_handler = APP_JS.split("async function deleteKeyProvider", 1)[1].split("const TASK_MODEL_STORAGE_KEY", 1)[0]
+    assert "await refresh();" in save_handler
+    assert "await refresh();" in delete_handler
+
+
+def test_removed_shared_textbook_library_has_no_frontend_contract() -> None:
+    combined = "\n".join([INDEX_HTML, APP_JS, PLATFORM_THEME_CSS])
+    for legacy_marker in (
+        "sharedTextbookLibrary",
+        "shared-textbook-library",
+        "shared_library",
+        "共享教材库",
+    ):
+        assert legacy_marker not in combined

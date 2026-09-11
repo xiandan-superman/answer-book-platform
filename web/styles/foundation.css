@@ -1,4 +1,21 @@
 /* Shared platform primitives kept separate from page-specific legacy styles. */
+:root {
+  /* A compact, named type scale for new and consolidated interface work. */
+  --type-caption: 12px;
+  --type-label: 13px;
+  --type-body: 14px;
+  --type-body-large: 16px;
+  --type-title-small: 18px;
+  --type-title: 24px;
+  --type-display: 32px;
+
+  /* Layout widths reflect the job of a page instead of one global max-width. */
+  --layout-reading: 1440px;
+  --layout-workspace: 1760px;
+  --layout-task-manager: 1680px;
+  --layout-monitor: 2160px;
+}
+
 .lucide,
 .font-icon-compat {
   width: 1em;

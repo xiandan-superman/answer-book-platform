@@ -20,6 +20,7 @@ const keyConfigTests = {};
 let libraryFiles = { exams: [], textbooks: [], exams_root: "", textbooks_root: "" };
 let examLibrarySearchQuery = "";
 let examLibraryExpanded = false;
+let libraryTabsInitialized = false;
 const EXAM_LIBRARY_PREVIEW_LIMIT = 8;
 let latestEnvironmentStatus = null;
 let activeTaskId = "";
@@ -113,6 +114,84 @@ let practiceRequirementPresetsLoading = null;
 const pendingReviewTaskIds = new Set();
 const handledReviewDecisionRequests = new Set();
 let examStructureReviewModalOpen = false;
+
+const accessibleModalStack = [];
+const accessibleModalState = new WeakMap();
+
+function visibleModalElements(modal) {
+  return Array.from(modal?.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  ) || []).filter((element) => (
+    !element.closest(".hidden")
+    && element.getAttribute("aria-hidden") !== "true"
+    && element.getClientRects().length > 0
+  ));
+}
+
+function syncModalBodyState() {
+  const hasOpenModal = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+    .some((modal) => !modal.classList.contains("hidden") && modal.isConnected);
+  document.body.classList.toggle("platform-dialog-open", hasOpenModal);
+}
+
+function activateAccessibleModal(modal, options = {}) {
+  if (!modal) return;
+  const previous = accessibleModalState.get(modal)?.previousFocus || document.activeElement;
+  accessibleModalState.set(modal, { previousFocus: previous, onEscape: options.onEscape });
+  const priorIndex = accessibleModalStack.indexOf(modal);
+  if (priorIndex >= 0) accessibleModalStack.splice(priorIndex, 1);
+  accessibleModalStack.push(modal);
+  modal.classList.remove("hidden");
+  syncModalBodyState();
+  requestAnimationFrame(() => {
+    const target = options.initialFocus || visibleModalElements(modal)[0] || modal.querySelector("[tabindex='-1']");
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function deactivateAccessibleModal(modal, options = {}) {
+  if (!modal) return;
+  const state = accessibleModalState.get(modal);
+  const index = accessibleModalStack.lastIndexOf(modal);
+  if (index >= 0) accessibleModalStack.splice(index, 1);
+  accessibleModalState.delete(modal);
+  modal.classList.add("hidden");
+  syncModalBodyState();
+  if (options.restoreFocus !== false && state?.previousFocus?.isConnected) {
+    state.previousFocus.focus({ preventScroll: true });
+  }
+}
+
+document.addEventListener("keydown", (event) => {
+  if (platformDialogActive) return;
+  const modal = [...accessibleModalStack].reverse().find((item) => item?.isConnected && !item.classList.contains("hidden"));
+  if (!modal) return;
+  const state = accessibleModalState.get(modal) || {};
+  if (event.key === "Escape") {
+    event.preventDefault();
+    state.onEscape?.();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = visibleModalElements(modal);
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.querySelector("[tabindex='-1']")?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!modal.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}, true);
 
 // These integrations remain available to existing tasks and backend callers, but
 // are intentionally omitted from every user-facing provider/model entry point.
@@ -374,9 +453,6 @@ function goToPage(page) {
       setEnvironmentChecking("环境检查失败，请查看技术详情。", "error");
     });
   }
-  if (page === "textbook") {
-    loadSharedLibrarySettings().catch(() => {});
-  }
   if (page === "task") {
     renderTaskStepList();
     loadTasks().catch(() => {});
@@ -458,8 +534,8 @@ function setPracticeWorkspaceMode(mode = "exam") {
   setText("practiceAnalysisSummaryLabel", knowledgeMode ? "知识材料分析" : "原题诊断");
   const textarea = $("practiceQuestionText");
   if (textarea) textarea.placeholder = knowledgeMode
-    ? "粘贴知识点、教材章节或教学要求；也可按 Command/Ctrl + V 直接粘贴截图。公式可以使用 LaTeX。"
-    : "粘贴题目文字，或在这里按 Command/Ctrl + V 直接粘贴截图。公式可以使用 LaTeX。";
+    ? "粘贴知识点、教材章节或教学要求；公式可以使用 LaTeX。"
+    : "粘贴题目文字；公式可以使用 LaTeX。";
   const focus = $("practiceFocus");
   if (focus) focus.placeholder = knowledgeMode ? "例如：覆盖核心概念、计算与综合应用，避免超纲" : "例如：重点练习受力分析，不增加超纲知识";
   $("practiceRailInput")?.setAttribute("title", knowledgeMode ? "知识材料输入" : "原题输入");
@@ -1226,7 +1302,6 @@ function switchTextbookTab(tab) {
   $("selectedTextbookBar")?.classList.toggle("hidden", isUpload || !selectedTextbooks().length);
   $("textbookIndexActionRow")?.classList.toggle("hidden", isUpload);
   $("textbookIndexBox")?.classList.toggle("hidden", isUpload);
-  $("sharedTextbookLibraryPanel")?.classList.toggle("hidden", isUpload);
   const primary = $("textbookPrimaryActionBtn");
   if (primary) {
     primary.classList.toggle("hidden", isUpload);
@@ -2015,6 +2090,16 @@ function updateProviderSummary(providers) {
 function updateTaskSummary(task) {
   if (!task) {
     setText("taskSummary", "未选择");
+    setText("taskPageEyebrow", "任务详情");
+    setText("taskPageTitle", "请选择任务");
+    setText("taskPageDescription", "从任务管理选择一个任务后，这里会显示进度、结果和可执行操作。");
+    setText("totalProgressLabel", "任务总体进度");
+    setText("totalProgressText", "--");
+    setText("currentStepText", "当前没有选中的任务。");
+    const progressBar = $("totalProgressBar");
+    if (progressBar) progressBar.style.width = "0%";
+    const page = $("page-task");
+    if (page) page.dataset.taskState = "empty";
     return;
   }
   activeTaskAnalysisProfile = task.analysis_profile || "evidence_backed";
@@ -3328,8 +3413,14 @@ function renderPlatformUpdateProgress(progress = {}) {
 function openPlatformUpdateProgress(progress = {}) {
   renderPlatformUpdateProgress(progress);
   const overlay = $("platformUpdateProgress");
-  overlay?.classList.remove("hidden");
-  overlay?.querySelector(".platform-update-progress-card")?.focus();
+  activateAccessibleModal(overlay, {
+    initialFocus: $("platformUpdateProgressClose"),
+    onEscape: closePlatformUpdateProgress
+  });
+}
+
+function closePlatformUpdateProgress() {
+  deactivateAccessibleModal($("platformUpdateProgress"));
 }
 
 function finishPlatformUpdatePolling(progress = {}) {
@@ -3525,7 +3616,7 @@ function renderPracticeFilePreview() {
   const preview = $("practiceFilePreview");
   if (!preview) return;
   if (!practiceSourceFiles.length) {
-    preview.innerHTML = `<i class="fas fa-file-circle-plus"></i><span>${currentPracticeSourceMode === "knowledge" ? "未选择知识点文件，也可以直接粘贴材料截图" : "未选择文件，也可以直接粘贴截图"}</span>`;
+    preview.innerHTML = `<i class="fas fa-file-circle-plus"></i><span>${currentPracticeSourceMode === "knowledge" ? "未选择知识点文件" : "未选择题目文件"}</span>`;
     syncPracticeSubmitAvailability();
     return;
   }
@@ -4106,9 +4197,29 @@ function normalizeBarePracticeLatexCommands(value) {
   return source.replace(/@@PRESERVED_MATH_(\d+)@@/g, (_, index) => preserved[Number(index)] || "");
 }
 
+function normalizeLegacyMathMl(value) {
+  let source = String(value || "");
+  const readableMath = (fragment) => {
+    const markup = String(fragment || "");
+    try {
+      const parsed = new DOMParser().parseFromString(markup, "application/xml");
+      if (!parsed.querySelector("parsererror")) {
+        return String(parsed.documentElement?.textContent || "").replace(/\s+/g, " ").trim();
+      }
+    } catch (_) {
+      // Malformed legacy MathML is presented as readable text, never as raw markup.
+    }
+    return markup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  };
+  source = source.replace(/⟦MATHML:\s*(<math\b[\s\S]*?<\/math>)\s*⟧/gi, (_, math) => readableMath(math));
+  source = source.replace(/<:\s*\[?MATHML:\s*(<math\b[\s\S]*?<\/math>)\s*\]?/gi, (_, math) => readableMath(math));
+  source = source.replace(/<math\b[\s\S]*?<\/math>/gi, (math) => readableMath(math));
+  return source.replace(/(?:<:\s*\[?MATHML:|⟦MATHML:|\s*⟧)/gi, "").trim();
+}
+
 function mathAwareHtml(value) {
   const preserved = [];
-  let html = escapeHtml(normalizeStandaloneMathLines(normalizeBarePracticeLatexCommands(value))).replace(/(\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g, (match) => {
+  let html = escapeHtml(normalizeStandaloneMathLines(normalizeBarePracticeLatexCommands(normalizeLegacyMathMl(value)))).replace(/(\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g, (match) => {
     preserved.push(match);
     return `@@MATH${preserved.length - 1}@@`;
   });
@@ -4211,6 +4322,19 @@ function normalizePracticeQuestionText(value) {
   return blocks.join("\n\n");
 }
 
+const OBJECTIVE_ANSWER_SLOT = "（      ）";
+const OBJECTIVE_QUESTION_TYPES = new Set(["选择题", "单选题", "多选题", "判断题"]);
+
+function ensureObjectiveAnswerSlot(stem, questionType) {
+  const text = String(stem ?? "");
+  if (!OBJECTIVE_QUESTION_TYPES.has(String(questionType ?? "").trim()) || !text.trim()) return text;
+  const normalized = text.trimEnd();
+  if (/(?:（[ \t\u3000]*）|\([ \t\u3000]*\))\s*$/.test(normalized)) {
+    return normalized.replace(/(?:（[ \t\u3000]*）|\([ \t\u3000]*\))\s*$/, OBJECTIVE_ANSWER_SLOT);
+  }
+  return normalized + OBJECTIVE_ANSWER_SLOT;
+}
+
 function normalizePracticeMarkdownTables(item) {
   if (!item || typeof item !== "object") return item;
   // Literal source spans bypass editorial normalization, not the downstream
@@ -4219,7 +4343,7 @@ function normalizePracticeMarkdownTables(item) {
   // Preserve pipe-table row boundaries until the table extractor has lifted
   // them; the question-text normalizer may then safely join ordinary wraps.
   const extracted = extractPracticeMarkdownTables(item.stem);
-  const stem = normalizePracticeQuestionText(extracted.stem);
+  const stem = ensureObjectiveAnswerSlot(normalizePracticeQuestionText(extracted.stem), item.question_type);
   if (!extracted.tables.length) return { ...item, stem };
   const tables = Array.isArray(item.tables) ? item.tables.map((table) => ({ ...table })) : [];
   const seen = new Set(tables.map((table) => JSON.stringify([table.headers || [], table.rows || []])));
@@ -4699,7 +4823,7 @@ function syncPracticeWorkflowActions(stage) {
     const confirm = $("practiceSourceConfirmBtn");
     setPrimary({
       stepText: "第 3 步 · 确认范围",
-      hintText: scopeOpen ? "确认范围、题量与难度后进入下一任务" : "解析结果已保存，可继续确认出题范围",
+      hintText: scopeOpen ? (blueprintReviewEnabled() ? "确认后进入蓝图设计" : "确认后开始生成题目") : "解析结果已保存，可继续确认出题范围",
       backText: "返回修改材料",
       primaryText: scopeOpen
         ? (blueprintReviewEnabled() ? "按确认范围设计蓝图" : "按确认范围直接生题")
@@ -7143,8 +7267,11 @@ function requestPlanRevisionSpec(item) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "practice-revision-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "practiceRevisionTitle");
     overlay.innerHTML = `
-      <section class="practice-revision-card" role="dialog" aria-modal="true" aria-labelledby="practiceRevisionTitle">
+      <section class="practice-revision-card" tabindex="-1">
         <header><div><small>单项蓝图重设计</small><h2 id="practiceRevisionTitle">明确这次必须怎么改</h2></div><button type="button" data-revision-close aria-label="关闭"><i class="fas fa-xmark"></i></button></header>
         <p class="practice-revision-current">当前：${escapeHtml(item.question_type || "综合题")} · ${escapeHtml(item.difficulty || "进阶")} · ${escapeHtml(item.target_skill || "核心能力")}</p>
         <fieldset><legend>必须改变（可多选）</legend><div class="practice-revision-options">
@@ -7157,15 +7284,11 @@ function requestPlanRevisionSpec(item) {
         <footer><button type="button" class="secondary-button" data-revision-cancel>取消</button><button type="button" class="primary-button" data-revision-confirm>按约束重新设计</button></footer>
       </section>`;
     document.body.appendChild(overlay);
-    document.body.classList.add("platform-dialog-open");
     const finish = (value) => {
-      document.removeEventListener("keydown", onKeydown);
+      deactivateAccessibleModal(overlay, { hide: false });
       overlay.remove();
-      document.body.classList.remove("platform-dialog-open");
       resolve(value);
     };
-    const onKeydown = (event) => { if (event.key === "Escape") finish(null); };
-    document.addEventListener("keydown", onKeydown);
     overlay.querySelector("[data-revision-close]").addEventListener("click", () => finish(null));
     overlay.querySelector("[data-revision-cancel]").addEventListener("click", () => finish(null));
     overlay.querySelector("[data-revision-confirm]").addEventListener("click", () => {
@@ -7180,7 +7303,10 @@ function requestPlanRevisionSpec(item) {
       const forbid = overlay.querySelector("[data-revision-forbid]").value.split(/[，,、\n]+/).map((value) => value.trim()).filter(Boolean).slice(0, 8);
       finish({ must_change: mustChange, must_preserve: ["source_binding", "graduate_level"], forbid, note });
     });
-    overlay.querySelector("[data-revision-change]")?.focus();
+    activateAccessibleModal(overlay, {
+      initialFocus: overlay.querySelector("[data-revision-change]"),
+      onEscape: () => finish(null)
+    });
   });
 }
 
@@ -8101,141 +8227,10 @@ async function loadEnvironmentStatus() {
 async function loadLibraryFiles() {
   libraryFiles = await api("/api/library-files");
   renderLibraryFiles();
-}
-
-function sharedLibraryUrl() {
-  return String($("sharedLibraryUrl")?.value || "").trim().replace(/\/$/, "");
-}
-
-function sharedLibraryVersionLabel(item) {
-  const pieces = [
-    item.version || "未命名版本",
-    `${Number(item.textbook_count || 0)} 本教材`,
-    `${Number(item.block_count || 0)} 个片段`
-  ];
-  if (item.package_size) pieces.push(formatBytes(item.package_size));
-  return pieces.join(" · ");
-}
-
-function renderSharedLibraryCatalog(data) {
-  const container = $("sharedLibraryCatalog");
-  if (!container) return;
-  const libraries = Array.isArray(data?.libraries) ? data.libraries : [];
-  if (!libraries.length) {
-    container.innerHTML = '<p class="empty-hint">教材库当前没有已发布的教材版本。</p>';
-    return;
-  }
-  container.innerHTML = "";
-  for (const library of libraries) {
-    const versions = Array.isArray(library.versions) ? library.versions : [];
-    for (const release of versions) {
-      const item = document.createElement("div");
-      item.className = "shared-library-item";
-      item.innerHTML = `
-        <span>
-          <strong>${escapeHtml(library.title || library.library_id || "未命名教材")}</strong>
-          <small>${escapeHtml(sharedLibraryVersionLabel(release))}</small>
-        </span>
-        <button class="secondary-button" type="button"><i class="fas fa-download"></i>下载到本机</button>
-      `;
-      const button = item.querySelector("button");
-      button?.addEventListener("click", () => syncSharedLibraryVersion(library.library_id, release.version, button));
-      container.appendChild(item);
-    }
-  }
-}
-
-async function loadSharedLibrarySettings() {
-  const data = await api("/api/shared-textbook-library/settings");
-  if ($("sharedLibraryUrl") && document.activeElement !== $("sharedLibraryUrl")) {
-    $("sharedLibraryUrl").value = data.remote_url || "";
-  }
-  if (data.remote_url) await refreshSharedLibraryCatalog(data.remote_url);
-  return data;
-}
-
-async function saveSharedLibrarySettings() {
-  const remoteUrl = sharedLibraryUrl();
-  const data = await api("/api/shared-textbook-library/settings", {
-    method: "POST",
-    body: JSON.stringify({ remote_url: remoteUrl })
-  });
-  $("sharedLibraryUrl").value = data.remote_url || "";
-  setVisual("libraryVisualResult", "教材库已连接", data.remote_url || "已清除教材库地址。", "ok");
-  if (data.remote_url) await refreshSharedLibraryCatalog(data.remote_url);
-}
-
-async function refreshSharedLibraryCatalog(remoteUrl = sharedLibraryUrl()) {
-  const container = $("sharedLibraryCatalog");
-  if (!remoteUrl) {
-    if (container) container.innerHTML = '<p class="empty-hint">填写并连接教材库地址后，可查看已发布教材。</p>';
-    return;
-  }
-  if (container) container.innerHTML = '<p class="empty-hint">正在读取共享教材库目录...</p>';
-  try {
-    const data = await api("/api/shared-textbook-library/remote-catalog", {
-      method: "POST",
-      body: JSON.stringify({ remote_url: remoteUrl })
-    });
-    renderSharedLibraryCatalog(data);
-  } catch (err) {
-    if (container) container.innerHTML = `<p class="empty-hint">无法连接教材库：${escapeHtml(String(err).replace(/^Error:\s*/, ""))}</p>`;
-  }
-}
-
-async function syncSharedLibraryVersion(libraryId, version, button) {
-  const previous = button?.innerHTML || "";
-  try {
-    if (button) {
-      button.disabled = true;
-      button.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>下载中';
-    }
-    const data = await api("/api/shared-textbook-library/sync", {
-      method: "POST",
-      body: JSON.stringify({ library_id: libraryId, version, remote_url: sharedLibraryUrl() })
-    });
-    selectedTextbookPaths = new Set(data.selected_textbooks || []);
-    await loadLibraryFiles();
-    setVisual("libraryVisualResult", "共享教材已安装", `${data.title || libraryId} ${version} 已下载到本机并可用于新任务。`, "ok");
-    $("libraryResult").textContent = pretty(data);
-  } catch (err) {
-    setVisual("libraryVisualResult", "共享教材下载失败", String(err).replace(/^Error:\s*/, ""), "error");
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.innerHTML = previous;
-    }
-  }
-}
-
-async function publishSharedLibrary() {
-  const selected = selectedTextbooks();
-  if (!selected.length) throw new Error("请先选择需要发布且已建立索引的教材。");
-  const button = $("publishSharedLibraryBtn");
-  const previous = button?.innerHTML || "";
-  try {
-    if (button) {
-      button.disabled = true;
-      button.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>正在发布';
-    }
-    const data = await api("/api/shared-textbook-library/publish", {
-      method: "POST",
-      body: JSON.stringify({
-        selected_textbooks: selected,
-        textbook_display_names: selectedTextbookDisplayNames(),
-        library_id: $("sharedLibraryId")?.value.trim() || "",
-        title: $("sharedLibraryTitle")?.value.trim() || "",
-        version: $("sharedLibraryVersion")?.value.trim() || ""
-      })
-    });
-    setVisual("libraryVisualResult", "共享教材已发布", `${data.title} ${data.version} 已打包发布。`, "ok");
-    $("libraryResult").textContent = pretty(data);
-    if (sharedLibraryUrl()) await refreshSharedLibraryCatalog();
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.innerHTML = previous;
-    }
+  if (!libraryTabsInitialized) {
+    libraryTabsInitialized = true;
+    switchExamTab((libraryFiles.exams || []).length ? "existing" : "upload");
+    switchTextbookTab((libraryFiles.textbooks || []).length ? "existing" : "upload");
   }
 }
 
@@ -8591,9 +8586,9 @@ function renderTextbookCard(item, index, options = {}) {
   text.innerHTML = `
     <strong>${escapeHtml(item.name)}</strong>
     <small>${escapeHtml(partText)} · ${escapeHtml(formatBytes(item.size || 0))}</small>
-    <small class="textbook-format-status">
+    <small class="textbook-format-status" title="${escapeHtml(formatStatus.detail)}">
       <em class="textbook-format-badge ${escapeHtml(formatStatus.className)}">${escapeHtml(formatStatus.label)}</em>
-      ${escapeHtml(formatStatus.detail)}
+      <span>格式说明见上方</span>
     </small>
     <small class="textbook-index-status">
       <em class="textbook-index-badge ${escapeHtml(indexStatus.className)}">${escapeHtml(indexStatus.label)}</em>
@@ -9138,7 +9133,7 @@ function updateModelCapabilityRisk() {
     return;
   }
   if (!providerHasVision(visionCfg) && !providerHasImageModel(imageCfg)) {
-    genericRisks.push(`${providerLabel} 当前按纯文本能力配置；遇到有图题需另选多模态模型，遇到作图题需另选或配置生图模型，否则后续会标记风险。`);
+    genericRisks.push("所选主模型仅支持文字输入；含图题需要配置读图模型，作图题还需要配置生图模型。");
   } else if (!providerHasVision(visionCfg)) {
     genericRisks.push(`${visionLabel} 当前未配置多模态视觉模型；有图题需要改选支持视觉的模型或服务商。`);
   } else if (!providerHasImageModel(imageCfg)) {
@@ -9947,6 +9942,17 @@ function keyProviderCapabilityText(cfg) {
   return items.join(" · ");
 }
 
+function keyProviderSearchText(name, cfg = {}) {
+  return [
+    displayProviderName(name),
+    keyProviderCapabilityText(cfg),
+    ...(cfg.model_options || []),
+    ...(cfg.image_model_options || []),
+    cfg.default_model,
+    cfg.image_model,
+  ].filter(Boolean).join(" ").toLocaleLowerCase("zh-CN");
+}
+
 function keyProviderModelCatalog(cfg) {
   const textModels = Array.isArray(cfg.model_options) ? cfg.model_options.filter(Boolean) : [];
   const imageModels = [
@@ -9985,7 +9991,7 @@ function applyKeyProviderFilters() {
     const statusMatch = activeKeyProviderFilter === "all"
       || (activeKeyProviderFilter === "saved" && saved)
       || (activeKeyProviderFilter === "unsaved" && !saved);
-    const haystack = `${card.dataset.keyLabel || ""} ${card.dataset.keyCapabilities || ""}`.toLocaleLowerCase("zh-CN");
+    const haystack = `${card.dataset.keyLabel || ""} ${card.dataset.keyCapabilities || ""} ${card.dataset.keyModels || ""}`.toLocaleLowerCase("zh-CN");
     const matches = statusMatch && (!query || haystack.includes(query));
     card.classList.toggle("hidden", !matches);
     if (matches) visibleCount += 1;
@@ -10006,6 +10012,18 @@ function filterKeyProviders(filter) {
 
 function searchKeyProviders(value) {
   keyProviderSearchQuery = String(value || "");
+  const query = keyProviderSearchQuery.trim().toLocaleLowerCase("zh-CN");
+  if (query) {
+    const entries = Object.entries(providerConfigs || {})
+      .filter(([name]) => !HIDDEN_API_CONFIG_PROVIDER_NAMES.has(name));
+    const navigation = buildApiProviderNavigation(entries);
+    const match = navigation.find((entry) => entry.entries.some(([name, cfg]) => keyProviderSearchText(name, cfg).includes(query)));
+    if (match && match.id !== expandedKeyProviderName) {
+      expandedKeyProviderName = match.id;
+      renderKeyProviderCards();
+      return;
+    }
+  }
   applyKeyProviderFilters();
 }
 
@@ -10084,7 +10102,10 @@ function renderKeyProviderCards() {
   const nav = sections.map((section) => {
     const sectionItems = navigation.filter((entry) => entry.section === section);
     if (!sectionItems.length) return "";
-    return `<div class="key-pane-nav-section"><div class="key-pane-nav-heading">${section === "已配置" ? "已配置" : section}</div>${sectionItems.map((entry) => `<button type="button" class="key-pane-nav-item ${entry.id === selectedItem.id ? "active" : ""}" data-key-group="${escapeHtml(entry.id)}"><span><i class="fas ${entry.icon}"></i>${escapeHtml(entry.label)}</span><small>${entry.entries.filter(([, cfg]) => cfg.api_key_set).length}/${entry.entries.length}</small></button>`).join("")}</div>`;
+    return `<div class="key-pane-nav-section"><div class="key-pane-nav-heading">${section === "已配置" ? "已配置" : section}</div>${sectionItems.map((entry) => {
+      const configured = entry.entries.filter(([, cfg]) => cfg.api_key_set).length;
+      return `<button type="button" class="key-pane-nav-item ${entry.id === selectedItem.id ? "active" : ""}" data-key-group="${escapeHtml(entry.id)}"><span><i class="fas ${entry.icon}"></i>${escapeHtml(entry.label)}</span><small title="已配置 ${configured} 条通道，共 ${entry.entries.length} 条">${configured}/${entry.entries.length} 已配置</small></button>`;
+    }).join("")}</div>`;
   }).join("");
   const detailHint = selectedItem.section === "聚合网关"
     ? "该网关的模型家族集中在这里配置；任务中只会出现已配置且能力匹配的模型。"
@@ -10094,7 +10115,7 @@ function renderKeyProviderCards() {
   grid.innerHTML = keyFileWarning + `<div class="key-split-layout"><aside class="key-pane-nav">${nav}</aside><section class="key-pane-detail"><div class="key-pane-detail-head"><span class="eyebrow">${escapeHtml(selectedItem.section)}</span><h3>${escapeHtml(selectedItem.label)}</h3><p>${escapeHtml(detailHint)}</p></div><div class="key-provider-detail-list">` + selectedEntries.map(([name, cfg]) => {
     const expanded = true;
     return `
-    <form class="key-provider-card${expanded ? " expanded" : ""}" data-key-provider="${escapeHtml(name)}" data-key-label="${escapeHtml(displayProviderName(name))}" data-key-capabilities="${escapeHtml(keyProviderCapabilityText(cfg))}" data-key-saved="${cfg.api_key_set ? "true" : "false"}" autocomplete="off">
+    <form class="key-provider-card${expanded ? " expanded" : ""}" data-key-provider="${escapeHtml(name)}" data-key-label="${escapeHtml(displayProviderName(name))}" data-key-capabilities="${escapeHtml(keyProviderCapabilityText(cfg))}" data-key-models="${escapeHtml([...(cfg.model_options || []), ...(cfg.image_model_options || []), cfg.default_model, cfg.image_model].filter(Boolean).join(" "))}" data-key-saved="${cfg.api_key_set ? "true" : "false"}" autocomplete="off">
       <header>
         <button type="button" class="key-provider-summary" data-key-card-toggle="${escapeHtml(name)}" aria-expanded="${expanded ? "true" : "false"}" aria-controls="key-details-${escapeHtml(name)}">
           <span class="key-provider-mark"><i class="fas fa-cloud"></i></span>
@@ -10699,7 +10720,7 @@ function selectedProtocolChoice(selectId, cfg, model) {
 }
 
 function protocolDisplayName(protocol) {
-  return ({ responses: "Responses", chat_completions: "Chat Completions", anthropic_messages: "Anthropic Messages" })[protocol]
+  return ({ responses: "Responses API", chat_completions: "Chat Completions API", anthropic_messages: "Anthropic Messages API" })[protocol]
     || protocol || "未登记";
 }
 
@@ -10785,10 +10806,10 @@ function selectedThinkingMode(selectId = "thinkingModeSelect") {
 }
 
 function displayThinkingMode(value) {
-  if (value === "enabled") return "开启 thinking";
-  if (value === "disabled") return "关闭 thinking";
-  if (Object.hasOwn(THINKING_MODE_LABELS, value) && value !== "auto") return `${value} 推理强度`;
-  return "自动 thinking";
+  if (value === "enabled") return "开启思考";
+  if (value === "disabled") return "关闭思考";
+  if (Object.hasOwn(THINKING_MODE_LABELS, value) && value !== "auto") return `${THINKING_MODE_LABELS[value]}思考强度`;
+  return "使用模型默认思考强度";
 }
 
 function formatDuration(seconds) {
@@ -11248,22 +11269,16 @@ function updateTaskManagerStats(tasks) {
   const failedTasks = scopedTasks.filter((task) => taskDisplayStatus(task) === "failed");
   const counts = {
     total: scopedTasks.length,
-    running: scopedTasks.filter((task) => taskDisplayStatus(task) === "running").length,
-    queued: scopedTasks.filter((task) => taskDisplayStatus(task) === "queued").length,
-    needsInput: scopedTasks.filter((task) => taskDisplayStatus(task) === "needs_input").length,
-    issues: scopedTasks.filter((task) => taskDisplayStatus(task) === "completed_with_issues").length,
+    active: scopedTasks.filter((task) => ["running", "queued"].includes(taskDisplayStatus(task))).length,
+    attention: scopedTasks.filter((task) => ["needs_input", "completed_with_issues", "paused"].includes(taskDisplayStatus(task))).length,
     failed: failedTasks.length,
-    paused: scopedTasks.filter((task) => taskDisplayStatus(task) === "paused").length,
     cancelled: scopedTasks.filter((task) => taskDisplayStatus(task) === "cancelled").length,
     completed: scopedTasks.filter((task) => taskDisplayStatus(task) === "completed").length
   };
   setText("taskStatTotal", counts.total);
-  setText("taskStatRunning", counts.running);
-  setText("taskStatQueued", counts.queued);
-  setText("taskStatNeedsInput", counts.needsInput);
-  setText("taskStatIssues", counts.issues);
-  setText("taskStatFailed", counts.failed);
-  setText("taskStatPaused", counts.paused);
+  setText("taskStatActive", counts.active);
+  setText("taskStatAttention", counts.attention);
+  setText("taskStatUnsuccessful", counts.failed);
   setText("taskStatCancelled", counts.cancelled);
   setText("taskStatCompleted", counts.completed);
   let dismissedSignature = "";
@@ -11271,7 +11286,7 @@ function updateTaskManagerStats(tasks) {
     dismissedSignature = localStorage.getItem(FAILED_TASK_FEEDBACK_DISMISS_KEY) || "";
   } catch (_error) {}
   const dismissed = Boolean(failedTasks.length && dismissedSignature === failedTaskSetSignature(failedTasks));
-  $("taskFailedFeedbackBar")?.classList.toggle("hidden", failedTasks.length === 0 || dismissed || activeTaskFilter !== "failed");
+  $("taskFailedFeedbackBar")?.classList.toggle("hidden", failedTasks.length === 0 || dismissed || activeTaskFilter !== "unsuccessful");
   setText("taskFailedFeedbackTitle", `${failedTasks.length} 个失败任务的诊断已自动处理`);
 }
 
@@ -11419,7 +11434,7 @@ function renderTaskManager(tasks = latestTasks) {
   if (!list) return;
   updateTaskManagerStats(tasks);
   const filteredVisible = sortedTasks(tasks.filter((task) => {
-    const statusMatch = activeTaskFilter === "all" || taskDisplayStatus(task) === activeTaskFilter;
+    const statusMatch = taskMatchesManagerFilter(task, activeTaskFilter);
     const kind = task.task_kind || "exam";
     const query = activeTaskQuery.trim().toLocaleLowerCase();
     const queryMatch = !query || taskSearchText(task).includes(query);
@@ -11442,21 +11457,41 @@ function renderTaskManager(tasks = latestTasks) {
       ? activeTaskKind
       : "";
   shell?.classList.toggle("task-manager-empty-view", hasNoTasks);
+  shell?.setAttribute("aria-busy", showTaskLoading ? "true" : "false");
+  shell?.querySelector(".task-create-actions")?.classList.toggle("hidden", hasNoTasks);
   list.innerHTML = "";
+  list.classList.toggle("is-loading", showTaskLoading);
+  if (showTaskLoading) {
+    list.innerHTML = Array.from({ length: 3 }, (_, index) => `
+      <article class="task-loading-row" aria-hidden="true">
+        <span class="task-loading-icon"></span>
+        <span class="task-loading-copy">
+          <i style="--skeleton-width:${index === 1 ? "72%" : "58%"}"></i>
+          <i style="--skeleton-width:${index === 2 ? "46%" : "64%"}"></i>
+          <i style="--skeleton-width:38%"></i>
+        </span>
+        <span class="task-loading-actions"><i></i><i></i></span>
+      </article>
+    `).join("");
+  }
   if (empty) {
+    const emptyIcon = empty.querySelector(":scope > div:first-child i");
     const title = empty.querySelector("h3");
     const detail = empty.querySelector("p");
-    const action = empty.querySelector("button");
+    const action = $("taskManagerEmptyAction");
     if (title) title.textContent = showTaskLoading ? "正在读取任务" : "暂无任务";
+    if (emptyIcon) emptyIcon.className = showTaskLoading ? "fas fa-circle-notch fa-spin" : "fas fa-inbox";
+    empty.classList.toggle("is-loading", showTaskLoading);
     const emptyKindLabels = { exam: "真题解析", practice: "按题出题", knowledge: "知识点出题", format: "格式审查" };
     if (detail) detail.textContent = showTaskLoading
       ? "正在同步任务状态，请稍候…"
       : hasNoTasks
-        ? "还没有创建过任务，请从上方选择一种任务类型开始。"
+        ? "选择一种任务开始，后续进度和结果都会集中显示在这里。"
         : emptyKindCreation
           ? `当前还没有${emptyKindLabels[emptyKindCreation]}任务，可以直接新建。`
           : "当前筛选条件下没有找到任务";
-    action?.classList.toggle("hidden", showTaskLoading);
+    $("taskManagerEmptyCreateActions")?.classList.toggle("hidden", !hasNoTasks);
+    action?.classList.toggle("hidden", showTaskLoading || hasNoTasks);
     if (action && !showTaskLoading) {
       const creationLabels = { exam: "新建真题解析", practice: "新建按题出题", knowledge: "新建知识点出题", format: "新建格式审查" };
       action.dataset.emptyAction = emptyKindCreation ? "create" : hasNoTasks ? "home" : "clear";
@@ -11465,7 +11500,7 @@ function renderTaskManager(tasks = latestTasks) {
       const actionIcon = emptyKindCreation || hasNoTasks ? "fas fa-plus" : "fas fa-filter";
       action.innerHTML = `<i class="${actionIcon}"></i><span>${actionLabel}</span>`;
     }
-    empty.classList.toggle("hidden", visible.length > 0);
+    empty.classList.toggle("hidden", showTaskLoading || visible.length > 0);
   }
   if (currentPage === "tasks" && showTaskLoading && visible.length === 0) {
     // A loading placeholder is already the page entrance. Do not hide the
@@ -11749,8 +11784,6 @@ function renderSystemStatus(data) {
   const service = data?.service || {};
   const models = data?.models || {};
   const runningTasks = data?.tasks?.running || [];
-  const logs = data?.runtime_logs || [];
-  const events = data?.task_events || [];
   const issueCount = Number(counts.error || 0);
   const healthState = String(health.status || "unknown");
   const healthMeta = healthPresentation(healthState);
@@ -11762,7 +11795,10 @@ function renderSystemStatus(data) {
   setText("systemActiveCount", counts.active ?? counts.running ?? 0);
   setText("systemWaitingCount", `${counts.waiting || counts.queued || 0} / ${counts.warning || 0}`);
   setText("systemIssueCount", issueCount);
-  setText("systemMonitorSubtitle", "展示当前服务电脑的实时运行记录");
+  const issueValue = $("systemIssueCount");
+  issueValue?.classList.toggle("is-clear", issueCount === 0);
+  issueValue?.classList.toggle("is-alert", issueCount > 0);
+  setText("systemMonitorSubtitle", "展示任务、模型与服务的可理解运行状态");
   setText("systemHealthHeadline", health.headline || healthMeta.label);
   setText("systemHealthDescription", health.errors?.length ? health.errors.join("；") : (healthState === "warning" ? "服务仍在运行，请留意等待时间较长的任务。" : "根据服务、任务和模型的真实运行记录持续更新。"));
   const overview = $("systemHealthOverview");
@@ -11840,51 +11876,6 @@ function renderSystemStatus(data) {
     });
   }
 
-  const logBox = $("systemRecentLogs");
-  if (logBox) {
-    const rows = logs.slice(-8).reverse();
-    logBox.innerHTML = rows.length
-      ? rows
-          .map(
-            (row) => `
-              <div class="system-log-row log-${escapeHtml(row.level || "info")}">
-                <span>${escapeHtml(formatLogTime(row.time))}</span>
-                <strong>${escapeHtml(row.source || "system")}</strong>
-                <p>${escapeHtml(row.message || "")}</p>
-              </div>
-            `
-          )
-          .join("")
-      : `<div class="system-empty-line">暂无服务日志</div>`;
-  }
-
-  const eventBox = $("systemRecentEvents");
-  if (eventBox) {
-    const rows = events.slice(0, 8);
-    eventBox.innerHTML = rows.length
-      ? rows
-          .map((row) => {
-            const payload = row.payload || {};
-            const statusText = payload.status ? ` · ${statusLabel(payload.status)}` : "";
-            const stageText = payload.current_stage ? ` · ${stageLabel(payload.current_stage)}` : "";
-            return `
-              <button class="system-log-row system-event-row" type="button" data-task-id="${escapeHtml(row.task_id || "")}">
-                <span>${escapeHtml(formatLogTime(row.time))}</span>
-                <strong>${escapeHtml(shortName(row.task_id || "任务"))}</strong>
-                <p>${escapeHtml((row.event || "事件") + statusText + stageText)}</p>
-              </button>
-            `;
-          })
-          .join("")
-      : `<div class="system-empty-line">暂无任务事件</div>`;
-    eventBox.querySelectorAll("[data-task-id]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const taskId = button.dataset.taskId;
-        const task = latestTasks.find((item) => item.task_id === taskId);
-        if (task) await openTaskDetail(task, true);
-      });
-    });
-  }
 }
 
 const PROVIDER_ROUTE_STATUS = {
@@ -12944,21 +12935,30 @@ async function deleteTaskFromManager(task) {
 }
 
 function filterTasks(filter) {
-  activeTaskFilter = filter;
+  activeTaskFilter = ["all", "active", "attention", "unsuccessful", "completed", "cancelled"].includes(filter) ? filter : "all";
   taskManagerPage = 1;
   document.querySelectorAll(".task-stat-card").forEach((button) => {
-    button.classList.toggle("active", button.dataset.filter === filter);
-    button.setAttribute("aria-pressed", button.dataset.filter === filter ? "true" : "false");
+    button.classList.toggle("active", button.dataset.filter === activeTaskFilter);
+    button.setAttribute("aria-pressed", button.dataset.filter === activeTaskFilter ? "true" : "false");
   });
   updateTaskActiveFilterSummary();
   renderTaskManager();
 }
 
 function updateTaskActiveFilterSummary() {
-  const statusLabels = { all: "全部状态", running: "进行中", queued: "排队中", needs_input: "等待我确认", completed_with_issues: "结果需复核", completed: "已完成", failed: "未完成", paused: "已暂停", cancelled: "已取消" };
+  const statusLabels = { all: "全部状态", active: "进行中", attention: "待你处理", unsuccessful: "未成功", completed: "已完成", cancelled: "已取消" };
   const kindLabels = { all: "全部业务", exam: "真题解析", practice: "按题出题", knowledge: "知识点出题", format: "格式审查" };
   const querySummary = activeTaskQuery.trim() ? ` · 搜索“${activeTaskQuery.trim()}”` : "";
   setText("taskActiveFilterSummary", `当前显示：${kindLabels[activeTaskKind] || "全部业务"} · ${statusLabels[activeTaskFilter] || "全部状态"}${querySummary}`);
+}
+
+function taskMatchesManagerFilter(task, filter = activeTaskFilter) {
+  const status = taskDisplayStatus(task);
+  if (filter === "all") return true;
+  if (filter === "active") return ["running", "queued"].includes(status);
+  if (filter === "attention") return ["needs_input", "completed_with_issues", "paused"].includes(status);
+  if (filter === "unsuccessful") return status === "failed";
+  return status === filter;
 }
 
 function clearTaskManagerFilters() {
@@ -13591,7 +13591,6 @@ function showExamStructureReviewModal(request) {
         })
         .join("")
     : `<div class="system-empty-line">没有待确认的题目结构。</div>`;
-  modal.classList.remove("hidden");
   requestAnimationFrame(() => typesetMath($("examStructureReviewBody")));
   return new Promise((resolve) => {
     const confirmBtn = $("examStructureConfirmBtn");
@@ -13741,7 +13740,7 @@ function showExamStructureReviewModal(request) {
           }))
         };
       });
-      modal.classList.add("hidden");
+      deactivateAccessibleModal(modal);
       examStructureReviewModalOpen = false;
       confirmBtn.removeEventListener("click", onConfirm);
       rejectBtn.removeEventListener("click", onReject);
@@ -13760,7 +13759,7 @@ function showExamStructureReviewModal(request) {
     body?.addEventListener("input", onBodyChange);
     cancelActiveExamStructureReviewModal = () => {
       if (finished) return;
-      modal.classList.add("hidden");
+      deactivateAccessibleModal(modal);
       examStructureReviewModalOpen = false;
       confirmBtn.removeEventListener("click", onConfirm);
       rejectBtn.removeEventListener("click", onReject);
@@ -13773,18 +13772,27 @@ function showExamStructureReviewModal(request) {
     };
     updateExamStructureDrawingRisks(body);
     updateExamStructureCapabilityRisk(body, items);
-    confirmBtn.focus();
+    activateAccessibleModal(modal, {
+      initialFocus: confirmBtn,
+      onEscape: cancelActiveExamStructureReviewModal
+    });
   });
 }
 
 function showExamStructureImageZoom(url, title = "原题截图") {
   if (!url) return;
   const existing = document.querySelector(".exam-structure-image-zoom");
-  existing?.remove();
+  if (existing) {
+    deactivateAccessibleModal(existing, { hide: false, restoreFocus: false });
+    existing.remove();
+  }
   const overlay = document.createElement("div");
   overlay.className = "exam-structure-image-zoom";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", title);
   overlay.innerHTML = `
-    <div class="exam-structure-image-zoom-card">
+    <div class="exam-structure-image-zoom-card" tabindex="-1">
       <header>
         <strong>${escapeHtml(title)}</strong>
         <button type="button" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>
@@ -13792,11 +13800,18 @@ function showExamStructureImageZoom(url, title = "原题截图") {
       <img src="${escapeHtml(url)}" alt="${escapeHtml(title)}">
     </div>
   `;
-  const close = () => overlay.remove();
+  const close = () => {
+    deactivateAccessibleModal(overlay, { hide: false });
+    overlay.remove();
+  };
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay || event.target.closest("button")) close();
   });
   document.body.appendChild(overlay);
+  activateAccessibleModal(overlay, {
+    initialFocus: overlay.querySelector("button"),
+    onEscape: close
+  });
 }
 
 function showReviewDecisionModal(request) {
@@ -13836,7 +13851,6 @@ function showReviewDecisionModal(request) {
       `;
     })
     .join("");
-  modal.classList.remove("hidden");
   return new Promise((resolve) => {
     const allowBtn = $("reviewDecisionAllowBtn");
     const rejectBtn = $("reviewDecisionRejectBtn");
@@ -13844,7 +13858,7 @@ function showReviewDecisionModal(request) {
     const finish = (allowed) => {
       if (finished) return;
       finished = true;
-      modal.classList.add("hidden");
+      deactivateAccessibleModal(modal);
       allowBtn.removeEventListener("click", onAllow);
       rejectBtn.removeEventListener("click", onReject);
       cancelActiveReviewDecisionModal = null;
@@ -13855,7 +13869,10 @@ function showReviewDecisionModal(request) {
     allowBtn.addEventListener("click", onAllow);
     rejectBtn.addEventListener("click", onReject);
     cancelActiveReviewDecisionModal = () => finish(null);
-    allowBtn.focus();
+    activateAccessibleModal(modal, {
+      initialFocus: allowBtn,
+      onEscape: cancelActiveReviewDecisionModal
+    });
   });
 }
 
@@ -13969,6 +13986,8 @@ async function loadTasks(options = {}) {
       if (activeTaskId) $("taskIdInput").value = activeTaskId;
       updateTaskSummary(latestTasks[0]);
       renderTasks(latestTasks);
+    } else if (currentPage === "task" && !activeTask) {
+      updateTaskSummary(null);
     }
     if (!silent && currentPage !== "task") {
       $("runResult").textContent = pretty({ task_count: latestTasks.length });
@@ -14002,7 +14021,7 @@ async function runStartupTaskCleanup(mode) {
       method: "POST",
       body: JSON.stringify({ mode })
     });
-    modal.classList.add("hidden");
+    closeTaskCleanupModal();
     await loadTasks({ silent: true, includeLiveDetails: true });
     await platformAlert(
       result.failed
@@ -14011,6 +14030,7 @@ async function runStartupTaskCleanup(mode) {
       { title: result.failed ? "清理部分完成" : "清理完成", tone: result.failed ? "warning" : "success" }
     );
   } catch (err) {
+    closeTaskCleanupModal();
     await platformAlert(String(err).replace(/^Error:\s*/, ""), { title: "清理失败", tone: "danger" });
   } finally {
     recommended.disabled = false;
@@ -14043,11 +14063,17 @@ async function checkStartupTaskCleanup() {
   }
   $("taskCleanupRecommended").textContent = `按照推荐清理（${data.recommended_count || 0} 个）`;
   $("taskCleanupAllOverflow").textContent = `清理排序 40+ 的全部任务（${data.safe_overflow_count || 0} 个）`;
-  modal.classList.remove("hidden");
-  $("taskCleanupRecommended").focus();
+  activateAccessibleModal(modal, {
+    initialFocus: $("taskCleanupRecommended"),
+    onEscape: closeTaskCleanupModal
+  });
 }
 
-$("taskCleanupClose")?.addEventListener("click", () => $("taskCleanupModal")?.classList.add("hidden"));
+function closeTaskCleanupModal() {
+  deactivateAccessibleModal($("taskCleanupModal"));
+}
+
+$("taskCleanupClose")?.addEventListener("click", closeTaskCleanupModal);
 $("taskCleanupRecommended")?.addEventListener("click", () => runStartupTaskCleanup("recommended"));
 $("taskCleanupAllOverflow")?.addEventListener("click", () => runStartupTaskCleanup("overflow_all"));
 
@@ -14545,13 +14571,13 @@ function createFinalFileRow(entry) {
   row.className = "file-row final-file-row";
   row.dataset.fileGroup = entry.group || "primary";
   row.href = entry.file.download_url;
-  row.title = entry.file.path || "";
+  row.title = entry.file.name || "";
   row.download = entry.file.name || entry.label;
   row.innerHTML = `
     <span class="final-file-icon"><i class="fas ${entry.icon}"></i></span>
     <span class="final-file-meta">
       <strong>${escapeHtml(entry.label)}</strong>
-      <small>预览文件（非正式交付包） · ${escapeHtml(entry.description)} · ${formatBytes(entry.file.size || 0)}</small>
+      <small>${escapeHtml(entry.description)} · ${formatBytes(entry.file.size || 0)}</small>
     </span>
   `;
   return row;
@@ -14755,7 +14781,7 @@ function renderQuestionDetail(question) {
     </div>
     <nav class="result-question-outline" aria-label="本题内容导航">
       <strong>本题内容</strong>
-      <div>${outlineItems.map(([target, label]) => `<button type="button" data-result-anchor="${target}">${label}</button>`).join("")}</div>
+      <div>${outlineItems.map(([target, label], index) => `<button type="button" data-result-anchor="${target}"${index === 0 ? ' class="active" aria-current="location"' : ""}>${label}</button>`).join("")}</div>
     </nav>
     <section id="result-question-original" class="original-question-block">
       <h4>题目</h4>
@@ -14787,6 +14813,12 @@ function renderQuestionDetail(question) {
     button.addEventListener("click", () => {
       const target = detail.querySelector(`#${button.dataset.resultAnchor}`);
       if (!target) return;
+      detail.querySelectorAll("[data-result-anchor]").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        if (active) item.setAttribute("aria-current", "location");
+        else item.removeAttribute("aria-current");
+      });
       const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
       target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
     });
@@ -15224,13 +15256,6 @@ $("practiceRecoveryStayBtn")?.addEventListener("click", () => {
   hidePracticeRecoveryNotice({ dismiss: true });
 });
 $("prepareTextbookIndexBtn").addEventListener("click", prepareTextbookIndex);
-$("saveSharedLibraryBtn")?.addEventListener("click", () => {
-  saveSharedLibrarySettings().catch((err) => setVisual("libraryVisualResult", "教材库连接失败", String(err).replace(/^Error:\s*/, ""), "error"));
-});
-$("refreshSharedLibraryBtn")?.addEventListener("click", () => refreshSharedLibraryCatalog());
-$("publishSharedLibraryBtn")?.addEventListener("click", () => {
-  publishSharedLibrary().catch((err) => setVisual("libraryVisualResult", "共享教材发布失败", String(err).replace(/^Error:\s*/, ""), "error"));
-});
 $("createTaskBtn").addEventListener("click", createTask);
 $("examLibrarySearch")?.addEventListener("input", (event) => searchExamLibrary(event.target.value));
 $("examLibraryToggle")?.addEventListener("click", toggleExamLibrary);
@@ -15918,9 +15943,7 @@ $("platformUpdateNoticeLater")?.addEventListener("click", () => {
   sessionStorage.setItem("answerBook.dismissedUpdateVersion", version);
   $("platformUpdateNotice")?.classList.add("hidden");
 });
-$("platformUpdateProgressClose")?.addEventListener("click", () => {
-  $("platformUpdateProgress")?.classList.add("hidden");
-});
+$("platformUpdateProgressClose")?.addEventListener("click", closePlatformUpdateProgress);
 $("practiceShowAllHistory")?.addEventListener("click", async () => {
   $("practiceHistoryList")?.classList.remove("hidden");
   await loadPracticeHistory().catch((error) => {
@@ -15997,8 +16020,7 @@ function autoMarkReveals(root = document) {
     ".tab-row",
     // 固定在视口底部的操作栏不能参与滚动揭示，否则在部分缩放比例下会停在 opacity: 0。
     ".page-actions:not(.sticky-page-actions)",
-    ".task-filter-row",
-    ".shared-library-panel"
+    ".task-filter-row"
   ];
   selectors.forEach((sel) => {
     root.querySelectorAll(sel).forEach((el, index) => {
@@ -16150,7 +16172,7 @@ function renderNextPlatformDialog() {
     elements.input.value = item.options.defaultValue || "";
   }
   elements.overlay.classList.remove("hidden");
-  document.body.classList.add("platform-dialog-open");
+  syncModalBodyState();
   const focusDialog = () => {
     if (item.kind === "prompt") elements.input.focus();
     else elements.confirm.focus();
@@ -16174,7 +16196,7 @@ function finishPlatformDialog(confirmed) {
   platformDialogClosing = true;
   const finalize = () => {
     elements.overlay?.classList.add("hidden");
-    document.body.classList.remove("platform-dialog-open");
+    syncModalBodyState();
     platformDialogActive = null;
     platformDialogClosing = false;
     current.resolve(result);
@@ -16479,6 +16501,7 @@ function initSiteEnhancements() {
   autoMarkReveals();
   assignStaggerIndices();
   initRevealObserver();
+  document.documentElement.classList.add("reveal-enabled");
   initNavScrollBlur();
   initLiquidGlassLight();
   // Restore a durable practice job after refresh. The browser only observes

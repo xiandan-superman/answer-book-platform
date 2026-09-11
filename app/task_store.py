@@ -5,7 +5,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from .paths import TASKS_DIR, ensure_project_dirs
 from .resource_ids import bounded_resource_path
 
 _STORE_LOCK = threading.RLock()
+_EVENT_LOCK = threading.Lock()
 
 
 @dataclass
@@ -118,8 +119,11 @@ def create_task(
 ) -> TaskRecord:
     ensure_project_dirs()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _STORE_LOCK:
+        task_id = new_task_id(exam_path)
+        task_dir(task_id).mkdir(parents=True, exist_ok=False)
     record = TaskRecord(
-        task_id=new_task_id(exam_path),
+        task_id=task_id,
         word_tool_variant="C",
         exam_path=exam_path,
         textbooks_dir=textbooks_dir,
@@ -147,7 +151,6 @@ def create_task(
         created_at=now,
         updated_at=now,
     )
-    task_dir(record.task_id).mkdir(parents=True, exist_ok=False)
     save_task(record)
     append_event(record.task_id, "created", asdict(record))
     return record
@@ -220,18 +223,10 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("interrupted_stage", "")
     data.setdefault("run_started_at", "")
     data.setdefault("last_run_duration_seconds", 0)
-    for retired_key in (
-        "execution_mode",
-        "hybrid_phase",
-        "cloud_job_id",
-        "cloud_status",
-        "cloud_last_sync_at",
-        "cloud_error",
-    ):
-        data.pop(retired_key, None)
     data.setdefault("analysis_profile", EVIDENCE_BACKED_ANALYSIS)
     data["analysis_profile"] = normalize_analysis_profile(data["analysis_profile"])
-    return TaskRecord(**data)
+    known_fields = {field.name for field in fields(TaskRecord)}
+    return TaskRecord(**{key: value for key, value in data.items() if key in known_fields})
 
 
 def update_task(task_id: str, *, status: str | None = None, current_stage: str | None = None, error: str | None = None) -> TaskRecord:
@@ -413,7 +408,7 @@ def recover_interrupted_tasks(reason: str = "server_startup") -> list[dict[str, 
 def append_event(task_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
     path = task_dir(task_id) / "events.jsonl"
     row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "event": event, "payload": payload or {}}
-    with _STORE_LOCK:
+    with _EVENT_LOCK:
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()

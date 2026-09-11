@@ -8,7 +8,7 @@ from typing import Any
 
 from .analysis_profiles import sanitize_question_only_fragments
 from .figure_artifact_audit import audit_figure_artifacts
-from .question_requirements import answer_figure_required, source_image_required
+from .question_requirements import main_model_answer_figure_required, source_image_required
 
 AUDIT_FILES = {
     "environment": "environment_check.json",
@@ -423,7 +423,7 @@ def figure_delivery_findings(stage_dir: Path) -> tuple[dict[str, Any], list[str]
             continue
         qid = str(question.get("question_id") or "").strip()
         source_required = source_image_required(question)
-        answer_required = answer_figure_required(question)
+        answer_required = main_model_answer_figure_required(fragments.get(qid, {}))
         if not source_required and not answer_required:
             continue
         source_paths = {str(Path(str(raw))) for raw in question.get("image_refs", []) or [] if str(raw).strip()}

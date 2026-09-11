@@ -78,6 +78,17 @@ def test_windows_reserved_filename_characters_are_sanitized(library_roots) -> No
     assert result["path"].endswith(".docx")
 
 
+def test_packaged_development_exams_are_not_shown_in_user_library(library_roots) -> None:
+    exams, _ = library_roots
+    exams.mkdir(parents=True, exist_ok=True)
+    (exams / "demo_物理化学真题.docx").write_bytes(b"fixture")
+    (exams / "用户真题.docx").write_bytes(b"user")
+
+    listed = library_files.scan_library_files()["exams"]
+
+    assert [item["name"] for item in listed] == ["用户真题.docx"]
+
+
 @pytest.mark.parametrize("filename", ["CON.docx", "nul.any.docx", "COM1.docx", "lpt9.docx"])
 def test_windows_reserved_device_names_are_sanitized(library_roots, filename: str) -> None:
     result = library_files.save_library_upload("exam", filename, b"content")

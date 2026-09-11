@@ -16,6 +16,7 @@ class PracticeRedesignTests(unittest.TestCase):
         cls.platform_api = (ROOT / "web" / "platform-api.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
         cls.platform_theme = (ROOT / "web" / "platform-theme.css").read_text(encoding="utf-8")
+        cls.foundation = (ROOT / "web" / "styles" / "foundation.css").read_text(encoding="utf-8")
         cls.server = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
 
     def test_runtime_assets_are_local(self) -> None:
@@ -358,7 +359,10 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn("#page-practice-models .reference-medium", self.platform_theme)
         self.assertIn("#page-knowledge-models .reference-medium", self.platform_theme)
         self.assertIn("max-width: 2320px;", self.platform_theme)
-        self.assertIn("max-width: 2080px;", self.platform_theme)
+        self.assertIn("--layout-reading: 1440px;", self.foundation)
+        self.assertIn("--layout-workspace: 1760px;", self.foundation)
+        self.assertIn("--layout-monitor: 2160px;", self.foundation)
+        self.assertIn("max-width: var(--layout-workspace);", self.platform_theme)
 
     def test_homepage_uses_fluid_width_and_stable_type_scale(self) -> None:
         self.assertIn("width: min(100%, 1360px);", self.platform_theme)

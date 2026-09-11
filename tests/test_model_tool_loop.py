@@ -651,7 +651,14 @@ class ModelToolLoopTests(unittest.TestCase):
             "blocks": [],
         }
 
-        self.assertIn("missing_required_answer_figure", semantic_generation_issues(question, fragment))
+        self.assertIn(
+            "missing_required_answer_figure",
+            semantic_generation_issues(question, fragment, enforce_figure_suggestion=True),
+        )
+        self.assertNotIn(
+            "missing_required_answer_figure",
+            semantic_generation_issues(question, fragment, enforce_figure_suggestion=False),
+        )
 
     def test_image_tool_exposes_monochrome_default_without_forbidding_required_color(self):
         from app.image_artifacts import ImageArtifactStore

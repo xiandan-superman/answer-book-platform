@@ -72,6 +72,8 @@ class ToolLoopResult:
     generated_artifacts: list[dict[str, Any]] = field(default_factory=list)
     raw_responses: list[dict[str, Any]] = field(default_factory=list)
     tool_event_log: str = ""
+    selected_asset_ids: list[str] = field(default_factory=list)
+    tool_failures: list[dict[str, Any]] = field(default_factory=list)
     terminal_route_error: Exception | None = field(default=None, repr=False)
 
 
@@ -819,6 +821,7 @@ class ModelToolLoop:
         raw_responses: list[dict[str, Any]] = []
         delivered_assets: set[str] = set()
         generated_assets: dict[str, ImageArtifact] = {}
+        tool_failures: list[dict[str, Any]] = []
         tool_call_count = 0
 
         if self._session_artifacts:
@@ -968,6 +971,8 @@ class ModelToolLoop:
                     generated_artifacts=[item.to_dict() for item in generated_assets.values()],
                     raw_responses=raw_responses,
                     tool_event_log=str(self.tool_event_log_path.resolve()),
+                    selected_asset_ids=sorted(selected_asset_ids),
+                    tool_failures=tool_failures,
                     terminal_route_error=self._terminal_route_error,
                 )
 
@@ -995,6 +1000,17 @@ class ModelToolLoop:
                     call_index=call_index,
                     budget_exhausted=tool_call_count > self.max_tool_calls,
                 )
+                if isinstance(result, dict) and result.get("ok") is False:
+                    failure = result.get("error") if isinstance(result.get("error"), dict) else {}
+                    info = failure.get("info") if isinstance(failure.get("info"), dict) else {}
+                    tool_failures.append(
+                        {
+                            "tool": str(call.get("name") or ""),
+                            "code": str(info.get("code") or "TOOL_ERROR"),
+                            "name": str(info.get("name") or "ToolError"),
+                            "message": str(failure.get("message") or result.get("content") or "")[:700],
+                        }
+                    )
                 if repeat_reminder:
                     repeat_reminders.append(repeat_reminder)
 

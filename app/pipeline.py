@@ -56,7 +56,7 @@ from .environment import check_environment
 from .evidence_audit import audit_retrieval_candidates
 from .evidence_selection import confirm_evidence_selection, filter_candidates_by_selection, load_confirmed_candidates
 from .exam_audit import audit_exam_structure
-from .exam_extract import extract_exam_structure
+from .exam_extract import ensure_question_snapshots, extract_exam_structure
 from .exam_structure_review import wait_for_exam_structure_review
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
 from .figure_artifact_audit import audit_figure_artifacts
@@ -1409,6 +1409,13 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 sdir,
                 sdir / "structured_exam.json",
             )
+        # The answer model must see the confirmed, complete question view.
+        # Re-render after manual review so edited structure and image assignment
+        # cannot leave a stale extraction-time snapshot behind.
+        ensure_question_snapshots(
+            [item for item in structured_exam.get("items", []) or [] if isinstance(item, dict)],
+            sdir / "structured_exam.json",
+        )
         mark(
             "exam_structure_review",
             "passed",
@@ -2818,6 +2825,33 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             "status": "passed" if figure_artifact_report["ok"] else "failed",
         })
         build_shadow_quality_report(sdir)
+        if not figure_artifact_report["ok"]:
+            # No later content or Word pass can recreate a missing/corrupt
+            # main-model image.  Stop here, retain finished question units, and
+            # preserve the image-stage cause instead of spending more calls.
+            from .exam_unit_delivery import preserve_exam_units
+
+            try:
+                preserved = preserve_exam_units(
+                    sdir,
+                    structured_exam=structured_exam,
+                    fragments_json=fragments_json,
+                    selection_data=selection_data,
+                    checkpoint=lambda: checkpoint(task_id),
+                )
+                mark(
+                    "unit_delivery",
+                    "passed",
+                    {
+                        "available_count": preserved["available_count"],
+                        "missing_count": len(preserved["missing"]),
+                    },
+                )
+            except TaskCancelled:
+                raise
+            except Exception as exc:
+                mark("unit_delivery", "advisory", {"error": str(exc)})
+            raise RuntimeError("Figure artifact validation failed: missing or unreadable image")
 
         checkpoint(task_id)
         update_task(task_id, current_stage="content_quality")

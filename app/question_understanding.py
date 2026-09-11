@@ -5,10 +5,12 @@ import json
 import mimetypes
 import os
 import re
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .artifact_store import atomic_write_json
 from .capabilities.catalog import apply_capability_policy_transforms, capability_policy_contributions
 from .concurrency import model_request_slot, run_limited_concurrent
 from .llm_client import OpenAICompatibleClient
@@ -21,7 +23,7 @@ from .text_utils import clean_text
 
 COMPLEX_TABLE_MAX_SIMPLE_CELLS = 12
 COMPLEX_TABLE_MAX_SIMPLE_COLS = 5
-QUESTION_UNDERSTANDING_POLICY_VERSION = "answer_book.question_understanding_policy.v5"
+QUESTION_UNDERSTANDING_POLICY_VERSION = "answer_book.question_understanding_policy.v6"
 
 
 def question_understanding_worker_count() -> int:
@@ -157,6 +159,14 @@ def needs_vision_model(question: dict[str, Any]) -> bool:
     return any(is_complex_table(table) for table in question_tables(question))
 
 
+def has_question_snapshot(question: dict[str, Any]) -> bool:
+    return any(
+        Path(str(raw)).is_file()
+        for raw in question.get("question_snapshot_refs") or []
+        if str(raw).strip()
+    )
+
+
 def _local_understanding(question: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     qid = str(question.get("question_id") or "").strip()
     tables: list[dict[str, Any]] = []
@@ -246,10 +256,11 @@ def _vision_parts(understanding: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def question_visual_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return each source visual once for direct multimodal delivery."""
+    """Return the whole-question snapshot, then each independent source visual."""
 
     understanding = question.get("question_understanding") if isinstance(question.get("question_understanding"), dict) else {}
     paths: list[Path] = []
+    paths.extend(Path(str(raw)) for raw in question.get("question_snapshot_refs") or [] if str(raw).strip())
     paths.extend(Path(str(raw)) for raw in question.get("image_refs") or [] if str(raw).strip())
     paths.extend(Path(str(raw)) for raw in question.get("page_visual_refs") or [] if str(raw).strip())
     paths.extend(
@@ -276,7 +287,7 @@ def question_visual_parts(question: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def attach_question_visuals(messages: list[dict[str, Any]], question: dict[str, Any]) -> list[dict[str, Any]]:
-    """Attach original question visuals to the last user message."""
+    """Attach the reviewed question snapshot and independent originals."""
 
     visual_parts = question_visual_parts(question)
     if not visual_parts:
@@ -385,8 +396,6 @@ def build_question_understanding(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     base = _local_understanding(question, output_dir)
-    if not base["needs_vision_model"]:
-        return base
     if direct_multimodal:
         direct_provider, direct_model = direct_multimodal
         base["direct_multimodal"] = True
@@ -399,6 +408,8 @@ def build_question_understanding(
                     item for item in image.get("uncertainties", [])
                     if "未调用视觉模型" not in str(item)
                 ]
+        return base
+    if not base["needs_vision_model"]:
         return base
     if provider is None or not getattr(provider, "api_key", ""):
         base["uncertainties"].append("题目需要视觉模型，但当前未配置 provider 或 API key，使用本地题面结构化兜底。")
@@ -487,20 +498,21 @@ def build_question_understandings(
         "active": {},
         "recent_events": [],
     }
+    progress_lock = threading.RLock()
 
     def save_progress(event: str, question: dict[str, Any], **detail: Any) -> None:
         if progress_json is None:
             return
-        progress["active"] = {
-            "question_id": str(question.get("question_id") or ""),
-            "number": str(question.get("number") or ""),
-            **detail,
-        }
-        events = list(progress.get("recent_events") or [])
-        events.append({"event": event, "question_id": progress["active"]["question_id"], **detail})
-        progress["recent_events"] = events[-8:]
-        progress_json.parent.mkdir(parents=True, exist_ok=True)
-        progress_json.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
+        with progress_lock:
+            progress["active"] = {
+                "question_id": str(question.get("question_id") or ""),
+                "number": str(question.get("number") or ""),
+                **detail,
+            }
+            events = list(progress.get("recent_events") or [])
+            events.append({"event": event, "question_id": progress["active"]["question_id"], **detail})
+            progress["recent_events"] = events[-8:]
+            atomic_write_json(progress_json, progress)
 
     max_workers = question_understanding_worker_count() if len(questions) > 1 else 1
 
@@ -516,21 +528,23 @@ def build_question_understandings(
             )
 
     def record_completion(index: int, question: dict[str, Any], understanding: dict[str, Any]) -> None:
+        del index
         question["question_understanding"] = understanding
-        progress["completed"] = int(progress["completed"]) + 1
-        save_progress(
-            "question_completed",
-            question,
-            phase=(
-                "已配置主模型直接读图"
-                if understanding.get("direct_multimodal")
-                else "已完成视觉题面判断"
-                if understanding.get("vision_used")
-                else "已完成题面结构化"
-            ),
-            needs_vision=bool(understanding.get("needs_vision_model")),
-            vision_used=bool(understanding.get("vision_used")),
-        )
+        with progress_lock:
+            progress["completed"] = int(progress["completed"]) + 1
+            save_progress(
+                "question_completed",
+                question,
+                phase=(
+                    "已配置主模型直接读图"
+                    if understanding.get("direct_multimodal")
+                    else "已完成视觉题面判断"
+                    if understanding.get("vision_used")
+                    else "已完成题面结构化"
+                ),
+                needs_vision=bool(understanding.get("needs_vision_model")),
+                vision_used=bool(understanding.get("vision_used")),
+            )
 
     for question in questions:
         save_progress("question_started", question, phase="正在整理题干、图片和表格信息")
@@ -548,10 +562,10 @@ def build_question_understandings(
         },
         "items": items,
     }
-    output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(output_json, report)
     if progress_json is not None:
-        progress["status"] = "completed"
-        progress["active"] = {}
-        progress_json.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
+        with progress_lock:
+            progress["status"] = "completed"
+            progress["active"] = {}
+            atomic_write_json(progress_json, progress)
     return report

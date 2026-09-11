@@ -100,13 +100,13 @@
 
 #### 验收
 
-- 现有共享教材包（含 MinerU ZIP）零改动可建索引。
+- 现有本机教材包（含 MinerU ZIP）零改动可建索引。
 - 至少 1 份中文教材 PDF（含公式+表格+双栏）与 1 份扫描件：页码映射 `build_page_map` / `audit_page_map` 通过率不低于现网基线。
 - `textbook_package` 校验：缺图引用、缺 content_list 仍按现有 code 报错。
 
 #### 对接模块
 
-`textbook_package.py`、`mineru_content.py`、`textbook_index.py`、`shared_textbook_library.py`、教材导入 API（`server.py` 教材相关路由）。
+`textbook_package.py`、`mineru_content.py`、`textbook_index.py`、教材导入 API（`server.py` 教材相关路由）。
 
 ---
 
@@ -129,7 +129,7 @@
 
 1. 保持 `build_candidates` / `candidates_for_question` / `EvidenceCandidate` 对外形状稳定。
 2. 在 `CorpusTextScorer` 旁增加可选 **向量通道**（见 2.3），由 `build_candidates` 做 hybrid 融合；融合权重进配置，默认关闭向量时行为与现网一致。
-3. 切块策略若改：必须保留 `page_idx` / 印刷页码 / `source_file` / `bbox` / `source_type` 字段；共享教材库 ZIP 兼容（见 `docs/SHARED_TEXTBOOK_LIBRARY.md`）。
+3. 切块策略若改：必须保留 `page_idx` / 印刷页码 / `source_file` / `bbox` / `source_type` 字段，并兼容用户本机已有教材索引。
 
 #### 不要做的事
 
@@ -168,7 +168,7 @@
 #### 验收
 
 - 无 embedding key / 无向量索引时自动降级 bm25s，任务可完成。
-- 索引重建可复现；共享教材下载后的路径重定向仍有效。
+- 索引重建可复现；本机教材迁移后的路径重定向仍有效。
 
 ---
 

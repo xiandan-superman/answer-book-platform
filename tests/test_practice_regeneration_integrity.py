@@ -17,6 +17,7 @@ from app.practice_export import (
     resolve_practice_export_payload,
     validate_practice_export,
 )
+from app.practice_question_format import OBJECTIVE_ANSWER_SLOT
 
 # Loading the capability package first avoids the repository's known
 # order-dependent llm_client/capabilities import cycle.
@@ -184,7 +185,7 @@ def test_single_regeneration_restores_all_blueprint_sources_and_reviews_only_cha
 
     assert result["exercise"]["source_question_id"] == "source_01"
     assert result["exercise"]["source_refs"] == ["source_01", "source_02", "source_03"]
-    assert result["exercise"]["stem"] == changed_stem
+    assert result["exercise"]["stem"] == changed_stem + OBJECTIVE_ANSWER_SLOT
     assert "semantic_review" not in result
     assert len(prompts) == 1
 
@@ -254,7 +255,10 @@ def test_batch_regeneration_keeps_each_blueprint_sources_and_previous_incrementa
     )
     final_exercises = [after_first["exercises"][0], second["exercise"]]
 
-    assert [item["stem"] for item in final_exercises] == [first_stem, second_stem]
+    assert [item["stem"] for item in final_exercises] == [
+        first_stem + OBJECTIVE_ANSWER_SLOT,
+        second_stem + OBJECTIVE_ANSWER_SLOT,
+    ]
     assert final_exercises[0]["source_refs"] == ["source_01", "source_02"]
     assert final_exercises[1]["source_refs"] == ["source_01", "source_02", "source_03"]
     assert "semantic_review" not in first and "semantic_review" not in second
@@ -364,5 +368,5 @@ def test_repair_mode_accepts_minimal_candidate_without_diversity_retry(monkeypat
     assert len(prompts) == 1
     assert "至少两项" not in prompts[0]
     assert instruction in prompts[0]
-    assert result["exercise"]["stem"] == baseline["exercises"][1]["stem"]
+    assert result["exercise"]["stem"] == baseline["exercises"][1]["stem"] + OBJECTIVE_ANSWER_SLOT
     assert practice == baseline

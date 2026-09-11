@@ -88,6 +88,8 @@ class RuntimeMonitorTests(unittest.TestCase):
         self.assertTrue(status["ok"])
         self.assertEqual("normal", status["health"]["status"])
         self.assertEqual(0, status["tasks"]["counts"]["error"])
+        self.assertNotIn("runtime_logs", status)
+        self.assertNotIn("task_events", status)
 
     def test_model_records_exclude_request_content(self) -> None:
         with runtime_monitor.model_call_context(task_id="task_monitor", stage="answer_generation", active_item="第 1 题"):

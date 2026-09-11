@@ -33,7 +33,7 @@ class LanAccessConfigTests(unittest.TestCase):
         self.assertEqual("fixed-password", value["password"])
 
     def test_loopback_server_does_not_advertise_unreachable_lan_url(self) -> None:
-        info = lan_access.lan_access_info(8766, include_secret=True, bind_host="127.0.0.1")
+        info = lan_access.lan_access_info(8766, bind_host="127.0.0.1")
 
         self.assertFalse(info["enabled"])
         self.assertEqual([], info["urls"])
@@ -45,11 +45,11 @@ class LanAccessConfigTests(unittest.TestCase):
             patch.object(lan_access, "lan_access_enabled", return_value=True),
             patch.object(lan_access, "lan_ipv4_addresses", return_value=["100.101.102.103", "192.168.1.20"]),
         ):
-            info = lan_access.lan_access_info(18766, include_secret=True, bind_host="0.0.0.0")
+            info = lan_access.lan_access_info(18766, bind_host="0.0.0.0")
 
         self.assertEqual(["http://100.101.102.103:18766"], info["tailscale_urls"])
         self.assertEqual("http://100.101.102.103:18766", info["urls"][0])
-        self.assertEqual("secret", info["password"])
+        self.assertNotIn("password", info)
 
 
 class LanAuthenticationTests(unittest.TestCase):
@@ -86,7 +86,7 @@ class LanAuthenticationTests(unittest.TestCase):
 
     def test_index_version_is_server_injected(self) -> None:
         """服务端把版本标签注入首页 #platformVersion，首次进入即可见（不依赖前端 refresh）。"""
-        from app.server import _inject_index_version, _index_version_label
+        from app.server import _index_version_label, _inject_index_version
         html = '<span id="platformVersion">版本加载中...</span>'
         out = _inject_index_version(html)
         label = _index_version_label()

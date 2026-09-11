@@ -7,12 +7,14 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import tempfile
 import time
 from dataclasses import asdict, replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from ipaddress import ip_address
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .analysis_profiles import (
@@ -23,7 +25,7 @@ from .analysis_profiles import (
 )
 from .answer_coverage_audit import audit_answer_coverage
 from .api_key_config import ApiKeyConfigUnavailable, api_key_file_info, recover_damaged_api_key_file
-from .artifact_store import build_artifact_integrity_report
+from .artifact_store import atomic_write_json, build_artifact_integrity_report
 from .audit_review_gate import get_pending_review_decision, submit_review_decision
 from .capabilities.quality_metrics import build_quality_metrics_report
 from .delivery_package import build_task_delivery_package
@@ -57,7 +59,7 @@ from .image_orchestration import MAIN_MODEL_TOOL_LOOP, normalize_image_orchestra
 from .invariant_service import build_invariant_report
 from .lan_access import ensure_lan_access_config, lan_access_enabled, lan_access_info, lan_credentials
 from .library_files import delete_library_file, save_library_upload_stream, scan_library_files
-from .llm_client import LLMError, OpenAICompatibleClient, parse_json_content
+from .llm_client import LLMError, OpenAICompatibleClient
 from .local_config import update_dotenv_values
 from .model_tool_loop import tool_loop_supported
 from .page_map_admin import page_map_summary, write_page_map_rows
@@ -116,7 +118,6 @@ from .practice_store import (
 )
 from .process_lock import platform_process_lock
 from .prompt_registry import build_prompt_registry_report, prompt_contract
-from .prompts import build_answer_fragment_prompt
 from .provider_control import (
     explicit_probe_source,
     probe_next_due_route,
@@ -147,15 +148,6 @@ from .settings import (
     provider_supports_image_generation,
     resolve_provider_model,
 )
-from .shared_textbook_library import (
-    fetch_remote_shared_library_catalog,
-    get_shared_library_settings,
-    publish_shared_textbook_library,
-    save_shared_library_settings,
-    shared_library_catalog,
-    shared_library_package_path,
-    sync_shared_textbook_library,
-)
 from .storage_cleanup import cleanup_storage, storage_overview
 from .support_reporting import start_support_retry_worker, stop_support_retry_worker, submit_support_report, support_status
 from .task_cleanup import build_cleanup_recommendation, forget_deleted_tasks, mark_task_downloaded
@@ -166,7 +158,12 @@ from .task_read_model import build_exam_run, build_practice_runs, practice_netwo
 from .task_result_view import build_task_result_view
 from .task_runner import control_exam_task, start_exam_task
 from .task_store import create_task, list_tasks, load_task, recover_interrupted_tasks, save_task, task_dir
-from .textbook_index_cache import prepare_textbook_index_cache, require_textbook_index_cache, textbook_index_cache_status
+from .textbook_index_cache import (
+    normalized_textbook_citation_names,
+    prepare_textbook_index_cache,
+    require_textbook_index_cache,
+    textbook_index_cache_status,
+)
 from .token_meter import build_token_meter_report
 from .unit_delivery import build_unit_package, read_manifest
 from .update_manager import UpdateError, check_for_updates, start_update, update_progress
@@ -215,7 +212,14 @@ def _provider_key_validation_errors(entries: list[tuple[str, object]]) -> list[s
 
 
 def _read_json_if_exists(path: Path):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        # Progress files are live snapshots.  A missing/corrupt observation
+        # must not turn the whole task-detail endpoint into HTTP 500.
+        return None
 
 
 def _task_quality_summary(task_id: str) -> dict:
@@ -807,7 +811,10 @@ def _prepare_selected_textbooks(
     allowed_root = TEXTBOOKS_DIR.resolve()
     copied: list[str] = []
     display_names: dict[str, str] = {}
-    raw_display_names = textbook_display_names or {}
+    raw_display_names = normalized_textbook_citation_names(
+        [Path(str(path)).expanduser().resolve() for path in selected_paths],
+        textbook_display_names,
+    )
     for raw_path in selected_paths:
         source = Path(str(raw_path)).expanduser().resolve()
         try:
@@ -830,16 +837,36 @@ def _prepare_selected_textbooks(
     return selected_dir
 
 
-def _safe_task_file(task_id: str, raw_path: str) -> Path:
-    target = Path(raw_path).expanduser().resolve()
-    for root in _task_file_roots(task_id):
+def _task_file_reference(task_id: str, target: Path) -> str:
+    resolved = target.resolve()
+    for namespace, root in zip(("stage", "output"), _task_file_roots(task_id), strict=True):
         try:
-            target.relative_to(root)
+            relative = resolved.relative_to(root)
         except ValueError:
             continue
-        else:
-            if target.is_file():
-                return target
+        if resolved.is_file():
+            return PurePosixPath(namespace, *relative.parts).as_posix()
+    raise FileNotFoundError("file is not inside this task outputs")
+
+
+def _safe_task_file(task_id: str, raw_reference: str) -> Path:
+    reference = str(raw_reference or "").strip()
+    if not reference or "\\" in reference or any(ord(char) < 32 for char in reference):
+        raise FileNotFoundError("task file reference is invalid")
+    relative = PurePosixPath(reference)
+    if relative.is_absolute() or len(relative.parts) < 2 or any(part in {"", ".", ".."} for part in relative.parts):
+        raise FileNotFoundError("task file reference is invalid")
+    roots = dict(zip(("stage", "output"), _task_file_roots(task_id), strict=True))
+    root = roots.get(relative.parts[0])
+    if root is None:
+        raise FileNotFoundError("task file reference is invalid")
+    target = root.joinpath(*relative.parts[1:]).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise FileNotFoundError("file is not inside this task outputs") from exc
+    if target.is_file():
+        return target
     raise FileNotFoundError("file is not inside this task outputs")
 
 
@@ -865,11 +892,22 @@ def _index_version_label() -> str:
     return f"v{get_app_version()}"
 
 
-def _inject_index_version(html: str) -> str:
+_configured_local_token = str(os.environ.get("ANSWER_BOOK_LOCAL_PRIVILEGE_TOKEN") or "").strip()
+_LOCAL_PRIVILEGE_TOKEN = (
+    _configured_local_token
+    if re.fullmatch(r"[A-Za-z0-9_-]{24,256}", _configured_local_token)
+    else secrets.token_urlsafe(32)
+)
+
+
+def _inject_index_version(html: str, *, local_privilege_token: str = "") -> str:
     """把首页版本占位替换为服务端版本标签，不依赖前端异步刷新。"""
     placeholder = ">版本加载中...</span>"
     if placeholder in html:
-        return html.replace(placeholder, f">{_index_version_label()}</span>")
+        html = html.replace(placeholder, f">{_index_version_label()}</span>")
+    token_placeholder = '<meta name="answer-book-local-privilege-token" content="">'
+    if token_placeholder in html and local_privilege_token:
+        html = html.replace(token_placeholder, f'<meta name="answer-book-local-privilege-token" content="{local_privilege_token}">')
     return html
 
 
@@ -929,7 +967,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
         current = getattr(self, "_support_request_id", "")
         if current:
             return current
-        supplied = str(self.headers.get("X-Request-ID") or "").strip()
+        headers = getattr(self, "headers", None)
+        supplied = str(headers.get("X-Request-ID") or "").strip() if headers is not None else ""
         current = supplied if re.fullmatch(r"[A-Za-z0-9_.-]{6,80}", supplied) else secrets.token_hex(8)
         self._support_request_id = current
         return current
@@ -941,6 +980,59 @@ class PlatformHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             pass
         append_runtime_log("server", f"{self.address_string()} {message}")
+
+    def version_string(self) -> str:
+        return self.server_version
+
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        del message, explain
+        phrase = {
+            400: "请求格式不正确。",
+            404: "请求的资源不存在。",
+            405: "不支持此请求方法。",
+            414: "请求地址过长。",
+            431: "请求头过大。",
+            501: "不支持此请求方法。",
+        }.get(code, "请求无法处理。")
+        self.send_json(
+            {
+                "ok": False,
+                "error": phrase,
+                "error_code": "method_not_allowed" if code in {405, 501} else "http_error",
+                "support_id": self.request_id(),
+                "path": urlparse(self.path).path,
+            },
+            status=code,
+        )
+
+    def _send_method_not_allowed(self) -> None:
+        data = _json_bytes(
+            {
+                "ok": False,
+                "error": f"不支持 {self.command} 请求方法。",
+                "error_code": "method_not_allowed",
+                "support_id": self.request_id(),
+                "path": urlparse(self.path).path,
+            }
+        )
+        self.send_response(405)
+        self.send_header("Allow", "GET, POST")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-ID", self.request_id())
+        self.send_security_headers()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    do_HEAD = _send_method_not_allowed
+    do_PUT = _send_method_not_allowed
+    do_PATCH = _send_method_not_allowed
+    do_DELETE = _send_method_not_allowed
+    do_OPTIONS = _send_method_not_allowed
+    do_TRACE = _send_method_not_allowed
+    do_CONNECT = _send_method_not_allowed
 
     def send_json(self, value, status: int = 200) -> None:
         data = _json_bytes(value)
@@ -954,19 +1046,77 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def send_download(self, target: Path) -> None:
-        data = target.read_bytes()
+        self.send_file(target, content_type="application/zip", disposition="attachment")
+
+    def send_file(
+        self,
+        target: Path,
+        *,
+        content_type: str,
+        disposition: str = "attachment",
+        filename: str = "",
+        cache_control: str = "no-store",
+    ) -> None:
+        size = target.stat().st_size
         self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(target.name)}")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        if disposition:
+            value = disposition
+            if disposition == "attachment":
+                value = f"attachment; filename*=UTF-8''{quote(filename or target.name)}"
+            self.send_header("Content-Disposition", value)
+        self.send_header("Cache-Control", cache_control)
         self.send_security_headers()
         self.end_headers()
-        self.wfile.write(data)
+        with target.open("rb") as stream:
+            shutil.copyfileobj(stream, self.wfile, length=1024 * 1024)
 
     def is_local_client(self) -> bool:
         address = str(self.client_address[0] or "")
         return address in {"127.0.0.1", "::1"} or address.startswith("::ffff:127.")
+
+    def request_host_allowed(self) -> bool:
+        raw = str(self.headers.get("Host") or "").strip()
+        if not raw or any(ord(char) < 33 for char in raw):
+            return False
+        try:
+            parsed = urlparse(f"//{raw}")
+            hostname = str(parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            return False
+        if not hostname or (port is not None and port != int(self.server.server_port)):
+            return False
+        configured = {
+            item.strip().lower().rstrip(".")
+            for item in str(os.environ.get("ANSWER_BOOK_ALLOWED_HOSTS") or "").split(",")
+            if item.strip()
+        }
+        local_names = {"localhost", socket.gethostname().lower().rstrip("."), socket.getfqdn().lower().rstrip(".")}
+        if hostname in local_names or hostname in configured:
+            return True
+        try:
+            requested_ip = ip_address(hostname)
+        except ValueError:
+            return False
+        if requested_ip.is_loopback:
+            return True
+        try:
+            local_endpoint = str(self.connection.getsockname()[0]).split("%", 1)[0]
+            return requested_ip == ip_address(local_endpoint)
+        except (AttributeError, OSError, ValueError):
+            return False
+
+    def local_privilege_allowed(self) -> bool:
+        supplied = str(self.headers.get("X-Answer-Book-Local-Token") or "")
+        return self.is_local_client() and bool(supplied) and secrets.compare_digest(supplied, _LOCAL_PRIVILEGE_TOKEN)
+
+    def require_local_privilege(self, message: str) -> bool:
+        if self.local_privilege_allowed():
+            return True
+        self.send_json({"ok": False, "error": message, "error_code": "local_privilege_required"}, status=403)
+        return False
 
     def lan_request_allowed(self) -> bool:
         if self.is_local_client():
@@ -997,19 +1147,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return False
 
-    def shared_library_publish_allowed(self) -> bool:
-        """Only the local owner or approved Tailscale identities may publish releases."""
-        identity = str(self.headers.get("Tailscale-User-Login") or "").strip().lower()
-        if identity:
-            allowed = {
-                item.strip().lower()
-                for item in str(os.environ.get("ANSWER_BOOK_SHARED_LIBRARY_PUBLISHERS", "")).split(",")
-                if item.strip()
-            }
-            return identity in allowed
-        return self.client_address[0] in {"127.0.0.1", "::1"}
-
     def read_json(self, max_bytes: int | None = None):
+        transfer_encoding = str(self.headers.get("Transfer-Encoding") or "").strip().lower()
+        if transfer_encoding:
+            raise ValueError("请求体不支持分块传输，请发送 Content-Length。")
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length <= 0:
             return {}
@@ -1019,7 +1160,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 raise ValueError("请求内容超过 70 MB，请选择不超过 50 MB 的 Word 文件。")
             raise ValueError("请求内容超过 8 MB，请减少单次提交的内容或文件数量。")
         raw = self.rfile.read(length).decode("utf-8")
-        return json.loads(raw)
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("请求体必须是 JSON 对象。")
+        return value
 
     def send_security_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1028,7 +1172,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self'; script-src-elem 'self'; script-src-attr 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; "
             "base-uri 'self'; frame-ancestors 'none'",
         )
@@ -1037,11 +1182,24 @@ class PlatformHandler(BaseHTTPRequestHandler):
         origin = str(self.headers.get("Origin") or "").strip()
         if not origin:
             return True
-        parsed = urlparse(origin)
-        return parsed.netloc.lower() == str(self.headers.get("Host") or "").strip().lower()
+        try:
+            parsed = urlparse(origin)
+            origin_port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+            host = urlparse(f"//{str(self.headers.get('Host') or '').strip()}")
+            host_port = host.port or int(self.server.server_port)
+        except ValueError:
+            return False
+        return (
+            parsed.scheme.lower() in {"http", "https"}
+            and str(parsed.hostname or "").lower().rstrip(".") == str(host.hostname or "").lower().rstrip(".")
+            and origin_port == host_port
+        )
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if not self.request_host_allowed():
+            self.send_json({"ok": False, "error": "请求地址不是本机服务允许的地址。", "error_code": "host_rejected"}, status=421)
+            return
         try:
             self._do_GET()
         except ApiKeyConfigUnavailable as exc:
@@ -1099,7 +1257,6 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_json(
                 lan_access_info(
                     self.server.server_port,
-                    include_secret=self.is_local_client(),
                     bind_host=str(self.server.server_address[0]),
                 )
             )
@@ -1120,8 +1277,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/update/status":
-            if not self.is_local_client():
-                self.send_json({"ok": False, "error": "只能在运行程序的本机检查和安装更新。"}, status=403)
+            if not self.require_local_privilege("只能在运行程序的本机检查和安装更新。"):
                 return
             refresh = parse_qs(parsed.query).get("refresh", ["0"])[0] in {"1", "true", "yes"}
             try:
@@ -1134,8 +1290,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
         if parsed.path == "/api/update/progress":
-            if not self.is_local_client():
-                self.send_json({"ok": False, "error": "只能在运行程序的本机查看更新进度。"}, status=403)
+            if not self.require_local_privilege("只能在运行程序的本机查看更新进度。"):
                 return
             self.send_json(update_progress())
             return
@@ -1178,16 +1333,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
             except FileNotFoundError as exc:
                 self.send_json({"error": str(exc)}, status=404)
                 return
-            data = target.read_bytes()
             mark_task_downloaded(parts[3])
-            self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_security_headers()
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_file(
+                target,
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=filename,
+            )
             return
         if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "source":
             try:
@@ -1195,15 +1346,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
             except FileNotFoundError as exc:
                 self.send_json({"error": str(exc)}, status=404)
                 return
-            data = target.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_security_headers()
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_file(
+                target,
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=filename,
+            )
             return
         if len(parts) == 5 and parts[:3] == ["api", "word-format", "tasks"] and parts[4] == "preview":
             version = str(parse_qs(parsed.query).get("version", ["source"])[0])
@@ -1215,15 +1362,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"error": f"暂时无法生成预览：{exc}"}, status=503)
                 return
-            data = target.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/pdf")
-            self.send_header("Content-Disposition", "inline")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_security_headers()
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_file(target, content_type="application/pdf", disposition="inline")
             return
         if parsed.path == "/api/practice/history":
             self.send_json(
@@ -1275,18 +1414,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 export_job = {}
             mark_task_downloaded(parts[3], str(export_job.get("history_id") or ""))
-            data = target.read_bytes()
-            self.send_response(200)
-            self.send_header(
-                "Content-Type",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            self.send_file(
+                target,
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=filename,
             )
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
-            self.send_header("Cache-Control", "no-store")
-            self.send_security_headers()
-            self.end_headers()
-            self.wfile.write(data)
             return
         if len(parts) == 4 and parts[:3] == ["api", "practice", "jobs"]:
             include_payload = (parse_qs(parsed.query).get("detail") or [""])[0].lower() in {"1", "true", "yes"}
@@ -1297,15 +1429,6 @@ class PlatformHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/library-files":
             self.send_json(scan_library_files())
-            return
-        if parsed.path == "/api/shared-textbook-library/settings":
-            self.send_json(get_shared_library_settings())
-            return
-        if parsed.path == "/api/shared-textbook-library/catalog":
-            self.send_json(shared_library_catalog())
-            return
-        if len(parts) == 6 and parts[:3] == ["api", "shared-textbook-library", "packages"] and parts[5] == "download":
-            self.send_download(shared_library_package_path(parts[3], parts[4]))
             return
         if parsed.path == "/api/system/status":
             access_host = self.headers.get("Host", "")
@@ -1547,13 +1670,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         if p.is_file():
                             if question_only and is_question_only_excluded_artifact(p.name):
                                 continue
+                            resource_id = _task_file_reference(task_id, p)
                             files.append(
                                 {
-                                    "path": str(p),
+                                    "resource_id": resource_id,
                                     "name": p.name,
                                     "size": p.stat().st_size,
-                                    "kind": "stage" if str(p).startswith(str(stage_dir(task_id))) else "output",
-                                    "download_url": f"/api/tasks/{quote(task_id)}/download?path={quote(str(p))}",
+                                    "kind": resource_id.split("/", 1)[0],
+                                    "download_url": f"/api/tasks/{quote(task_id)}/download?file={quote(resource_id, safe='')}",
                                 }
                             )
             self.send_json({"task_id": task_id, "files": files})
@@ -1561,31 +1685,22 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "download":
             task_id = parts[2]
             query = parse_qs(parsed.query)
-            raw_path = query.get("path", [""])[0]
-            target = _safe_task_file(task_id, raw_path)
-            data = target.read_bytes()
+            raw_reference = query.get("file", [""])[0]
+            target = _safe_task_file(task_id, raw_reference)
             mark_task_downloaded(task_id)
             mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
-            safe_name = quote(target.name)
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{safe_name}")
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_file(target, content_type=mime)
             return
         if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "preview":
             task_id = parts[2]
             query = parse_qs(parsed.query)
-            raw_path = query.get("path", [""])[0]
-            target = _safe_task_file(task_id, raw_path)
-            data = target.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
+            raw_reference = query.get("file", [""])[0]
+            target = _safe_task_file(task_id, raw_reference)
+            self.send_file(
+                target,
+                content_type=mimetypes.guess_type(str(target))[0] or "application/octet-stream",
+                disposition="inline",
+            )
             return
         if parsed.path.startswith("/api/"):
             self.send_json(
@@ -1597,6 +1712,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if not self.request_host_allowed():
+            self.send_json({"ok": False, "error": "请求地址不是本机服务允许的地址。", "error_code": "host_rejected"}, status=421)
+            return
         if not self.request_origin_allowed():
             self.send_json({"ok": False, "error": "请求来源与当前服务地址不一致。", "error_code": "origin_rejected"}, status=403)
             return
@@ -1614,8 +1732,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(result)
                 return
             if parsed.path == "/api/update/apply":
-                if not self.is_local_client():
-                    self.send_json({"ok": False, "error": "只能在运行程序的本机安装更新。"}, status=403)
+                if not self.require_local_privilege("只能在运行程序的本机安装更新。"):
                     return
                 active_tasks = _active_update_tasks()
                 if active_tasks:
@@ -2379,46 +2496,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
-            if parsed.path == "/api/shared-textbook-library/settings":
-                body = self.read_json()
-                self.send_json(save_shared_library_settings(str(body.get("remote_url") or "")))
-                return
-            if parsed.path == "/api/shared-textbook-library/remote-catalog":
-                body = self.read_json()
-                self.send_json(fetch_remote_shared_library_catalog(str(body.get("remote_url") or "")))
-                return
-            if parsed.path == "/api/shared-textbook-library/publish":
-                if not self.shared_library_publish_allowed():
-                    self.send_json({"error": "只有教材库主机本机管理员可发布教材。通过 Tailscale 远程发布时，请配置 ANSWER_BOOK_SHARED_LIBRARY_PUBLISHERS。"}, status=403)
-                    return
-                body = self.read_json()
-                selected = body.get("selected_textbooks") or []
-                if not isinstance(selected, list):
-                    raise ValueError("selected_textbooks must be a list")
-                names = body.get("textbook_display_names") or {}
-                if not isinstance(names, dict):
-                    raise ValueError("textbook_display_names must be an object")
-                result = publish_shared_textbook_library(
-                    [str(item) for item in selected],
-                    {str(key): str(value) for key, value in names.items()},
-                    library_id=str(body.get("library_id") or ""),
-                    title=str(body.get("title") or ""),
-                    version=str(body.get("version") or ""),
-                )
-                append_runtime_log("shared_textbook_library", f"发布共享教材 {result['library_id']}@{result['version']}", payload=result)
-                self.send_json(result)
-                return
-            if parsed.path == "/api/shared-textbook-library/sync":
-                body = self.read_json()
-                result = sync_shared_textbook_library(
-                    str(body.get("library_id") or ""),
-                    str(body.get("version") or ""),
-                    remote_url=str(body.get("remote_url") or ""),
-                )
-                append_runtime_log("shared_textbook_library", f"同步共享教材 {result['library_id']}@{result['version']}", payload=result)
-                self.send_json(result)
-                return
             if parsed.path == "/api/providers/local-keys":
+                if not self.require_local_privilege("只能在运行程序的本机修改 API 配置。"):
+                    return
                 body = self.read_json()
                 keys = body.get("keys", {})
                 if not isinstance(keys, dict):
@@ -2435,8 +2515,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/providers/recover-local-keys":
-                if not self.is_local_client():
-                    self.send_json({"ok": False, "error": "只能在运行程序的本机恢复 API 配置。"}, status=403)
+                if not self.require_local_privilege("只能在运行程序的本机恢复 API 配置。"):
                     return
                 body = self.read_json()
                 if set(body) != {"confirm"} or body.get("confirm") is not True:
@@ -2528,8 +2607,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "saved": False, "issues": issues}, status=400)
                     return
                 path = stage_dir(task_id) / "answer_fragments.json"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                atomic_write_json(path, data)
                 coverage = None
                 structured_exam_path = stage_dir(task_id) / "structured_exam.json"
                 if structured_exam_path.exists():
@@ -2666,8 +2744,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(response_payload)
                 return
             if parsed.path == "/api/provider-control/probe":
-                if not self.is_local_client():
-                    self.send_json({"ok": False, "error": "主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"}, status=403)
+                if not self.require_local_privilege("主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"):
                     return
                 body = self.read_json()
                 result = probe_route(
@@ -2680,36 +2757,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json(result, status=200 if result.get("ok") else 400)
                 return
             if parsed.path == "/api/provider-control/probe-due":
-                if not self.is_local_client():
-                    self.send_json({"ok": False, "error": "主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"}, status=403)
+                if not self.require_local_privilege("主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"):
                     return
                 result = probe_next_due_route()
                 self.send_json(result, status=200 if result.get("ok") else 400)
                 return
-            if parsed.path == "/api/generate-answer-fragment-demo":
-                body = self.read_json()
-                provider = get_provider(str(body.get("provider") or "").strip() or None)
-                client = OpenAICompatibleClient(provider)
-                messages = build_answer_fragment_prompt(body.get("question") or {}, body.get("evidence") or [])
-                model = resolve_provider_model(provider, body.get("model"))
-                with prompt_contract("exam.answer_draft_single"):
-                    result = client.chat_json(
-                        messages,
-                        model=model,
-                        task_stage="answer_generation",
-                        enforce_context_budget=True,
-                    )
-                parsed_content = parse_json_content(result.content)
-                issues = validate_v4_answer_fragment(parsed_content)
-                self.send_json({
-                    "ok": not issues,
-                    "issues": issues,
-                    "provider": result.provider,
-                    "model": result.model,
-                    "answer_fragment": parsed_content,
-                })
-                return
-            self.send_json({"error": "not found"}, status=404)
+            self.send_json(
+                {"ok": False, "error": "接口不存在。", "error_code": "api_not_found", "path": parsed.path},
+                status=404,
+            )
         except ApiKeyConfigUnavailable as exc:
             payload = public_error_payload(exc, status=503, path=parsed.path)
             if exc.recovery_allowed:
@@ -2765,7 +2821,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
         # 服务端把版本号直接注入首页，保证首次进入就能看到版本标签，
         # 不依赖前端异步 refresh()（解决“首次进入无版本号”）。
         if full.name == "index.html":
-            data = _inject_index_version(data.decode("utf-8", errors="replace")).encode("utf-8")
+            data = _inject_index_version(
+                data.decode("utf-8", errors="replace"),
+                local_privilege_token=_LOCAL_PRIVILEGE_TOKEN if self.is_local_client() else "",
+            ).encode("utf-8")
         content_type = {
             ".woff": "font/woff",
             ".woff2": "font/woff2",

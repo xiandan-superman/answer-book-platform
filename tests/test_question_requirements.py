@@ -82,6 +82,10 @@ def test_cross_subject_source_images_remain_reference_only() -> None:
         assert answer_figure_required({"stem": stem, "image_refs": ["source.png"], "needs_figure": True}) is False
 
 
+def test_subject_term_containing_tu_zhong_does_not_invent_source_image() -> None:
+    assert source_image_required({"stem": "说明相图中伪共晶形成的原因。"}) is False
+
+
 def test_annotation_on_supplied_image_is_an_answer_drawing_requirement() -> None:
     question = {"stem": "请在下图中标出入射光线和反射角。", "image_refs": ["optics.png"]}
     assert source_image_required(question) is True

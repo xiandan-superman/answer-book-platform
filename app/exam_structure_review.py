@@ -8,8 +8,10 @@ from typing import Any
 from urllib.parse import quote
 
 from .drawing_code import normalize_drawing_mode
+from .paths import OUTPUTS_DIR
 from .question_scores import format_score, infer_suggested_score, normalize_score, parse_score
 from .question_types import QUESTION_TYPES, infer_question_type, normalize_question_type
+from .resource_ids import bounded_resource_path
 from .task_control import TaskCancelled, read_task_control
 from .task_store import append_event, task_dir, update_task
 from .text_utils import cn_to_int
@@ -101,11 +103,14 @@ def _review_image_refs(task_id: str, item: dict[str, Any]) -> list[dict[str, str
         path = Path(str(raw))
         if not path.exists() or not path.is_file():
             continue
+        resource_id = _review_resource_id(task_id, path)
+        if not resource_id:
+            continue
         refs.append(
             {
-                "path": str(path),
+                "resource_id": resource_id,
                 "name": path.name,
-                "preview_url": f"/api/tasks/{quote(task_id)}/preview?path={quote(str(path))}",
+                "preview_url": f"/api/tasks/{quote(task_id)}/preview?file={quote(resource_id, safe='')}",
             }
         )
     return refs
@@ -117,14 +122,58 @@ def _review_question_snapshot_refs(task_id: str, item: dict[str, Any]) -> list[d
         path = Path(str(raw))
         if not path.exists() or not path.is_file():
             continue
+        resource_id = _review_resource_id(task_id, path)
+        if not resource_id:
+            continue
         refs.append(
             {
-                "path": str(path),
+                "resource_id": resource_id,
                 "name": path.name,
-                "preview_url": f"/api/tasks/{quote(task_id)}/preview?path={quote(str(path))}",
+                "preview_url": f"/api/tasks/{quote(task_id)}/preview?file={quote(resource_id, safe='')}",
             }
         )
     return refs
+
+
+def _review_resource_id(task_id: str, path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    roots = (
+        ("stage", task_dir(task_id) / "stage_outputs"),
+        ("output", bounded_resource_path(OUTPUTS_DIR, task_id)),
+    )
+    for namespace, root in roots:
+        try:
+            relative = resolved.relative_to(root.resolve())
+        except ValueError:
+            continue
+        if relative.parts and all(part not in {"", ".", ".."} for part in relative.parts):
+            return "/".join((namespace, *relative.parts))
+    return ""
+
+
+def _sanitize_review_file_refs(task_id: str, request: dict[str, Any]) -> None:
+    """Upgrade saved review requests without returning absolute host paths."""
+    for item in request.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("question_snapshot_refs", "image_refs"):
+            sanitized: list[dict[str, str]] = []
+            for raw in item.get(key) or []:
+                if not isinstance(raw, dict):
+                    continue
+                resource_id = str(raw.get("resource_id") or "").strip()
+                if not resource_id and raw.get("path"):
+                    resource_id = _review_resource_id(task_id, Path(str(raw["path"])))
+                if not resource_id:
+                    continue
+                sanitized.append(
+                    {
+                        "resource_id": resource_id,
+                        "name": str(raw.get("name") or Path(resource_id).name),
+                        "preview_url": f"/api/tasks/{quote(task_id)}/preview?file={quote(resource_id, safe='')}",
+                    }
+                )
+            item[key] = sanitized
 
 
 def _review_score_fields(item: dict[str, Any]) -> dict[str, Any]:
@@ -371,6 +420,7 @@ def apply_exam_structure_review_updates(structured_exam: dict[str, Any], updates
 
 def get_pending_exam_structure_review(task_id: str) -> dict[str, Any]:
     request = _read_json(exam_structure_request_path(task_id))
+    _sanitize_review_file_refs(task_id, request)
     if request.get("status") != "waiting":
         return {"ok": True, "pending": False}
     response = _read_json(exam_structure_response_path(task_id))

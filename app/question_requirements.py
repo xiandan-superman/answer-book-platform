@@ -12,7 +12,10 @@ _DRAW_COMMAND_RE = re.compile(
     r"标出.{0,20}(?:斑点|峰|相区|晶面|晶向|坐标|曲线)|"
     r"用图.{0,12}(?:表示|说明|表述))"
 )
-_SOURCE_IMAGE_CUE_RE = re.compile(r"(?:下图|上图|如图|图中|观察图|根据图|由图|所示图|附图)")
+_SOURCE_IMAGE_CUE_RE = re.compile(
+    r"(?:下图|上图|如图|观察(?:下|上)?图|根据(?:下|上)?图|由(?:下|上)?图|"
+    r"图\s*(?:\d+|[一二三四五六七八九十]+)|图[（(][A-Za-z0-9]+[）)]|(?:下|上)?图所示|附图)"
+)
 _OPTIONAL_DRAW_FORMAT_RE = re.compile(
     r"(?:可|可以|也可|允许)(?:按|采用|用)?(?:画图|作图|绘图|图示)(?:的)?(?:格式|形式|方式)?"
 )
@@ -73,6 +76,21 @@ def answer_figure_required(question: dict[str, Any]) -> bool:
     # answer drawing requirement when it is not already explained by a source
     # image attachment.
     return bool(question.get("needs_figure")) and not bool(question.get("image_refs"))
+
+
+def main_model_answer_figure_required(fragment: dict[str, Any]) -> bool:
+    """Whether the responsible main model actually adopted an answer image."""
+
+    containers = [fragment]
+    containers.extend(
+        item for item in fragment.get("answer_units", []) or [] if isinstance(item, dict)
+    )
+    return any(
+        str(item.get("asset_id") or "").strip()
+        for container in containers
+        for item in container.get("generated_images", []) or []
+        if isinstance(item, dict)
+    )
 
 
 def source_image_required(question: dict[str, Any]) -> bool:

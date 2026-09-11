@@ -2,6 +2,7 @@
   "use strict";
 
   const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  const localPrivilegeToken = document.querySelector('meta[name="answer-book-local-privilege-token"]')?.content || "";
 
   function requestId() {
     if (globalThis.crypto?.randomUUID) return `R-${globalThis.crypto.randomUUID()}`;
@@ -45,6 +46,7 @@
       headers: {
         "Content-Type": "application/json",
         "X-Request-ID": correlationId,
+        ...(localPrivilegeToken ? { "X-Answer-Book-Local-Token": localPrivilegeToken } : {}),
         ...(options.headers || {})
       }
     };

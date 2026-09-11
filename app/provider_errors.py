@@ -21,6 +21,21 @@ class ProviderRouteDegradedError(RuntimeError):
         )
 
 
+class RequiredImageGenerationError(RuntimeError):
+    """The main model required an answer image but the bounded tool loop failed."""
+
+    def __init__(self, provider: str, model: str, failures: int, last_error: str = "") -> None:
+        self.provider = str(provider or "当前生图供应商")
+        self.model = str(model or "当前生图模型")
+        self.failures = max(1, int(failures or 1))
+        self.last_error = str(last_error or "").strip()
+        detail = f"；最近错误：{self.last_error}" if self.last_error else ""
+        super().__init__(
+            f"主模型已确认本题需要答案图片，但生图模型在有限重试后仍未返回可用图片。"
+            f"供应商：{self.provider}；模型：{self.model}；失败 {self.failures} 次{detail}。"
+        )
+
+
 @dataclass(frozen=True)
 class ProviderErrorInfo:
     kind: str
@@ -87,6 +102,16 @@ def classify_provider_error(
             retryable=retryable,
             requires_configuration=requires_configuration,
             failure_state=failure_state,
+        )
+
+    if isinstance(error, RequiredImageGenerationError):
+        return result(
+            "required_image_generation_failed",
+            "生图模型调用失败，任务已停止",
+            f"本题的主模型明确需要答案图片，但 {error.provider} / {error.model} "
+            f"在有限重试后仍未生成可用图片。已完成内容会保留。",
+            "请检查或更换生图供应商与模型后，从当前步骤重试；这不是题目文本或教材配置错误。",
+            failure_state="route_blocked",
         )
 
     if isinstance(error, ProviderRouteDegradedError) or "供应商模型路由持续异常" in raw:

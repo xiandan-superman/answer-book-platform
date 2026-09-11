@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.pipeline import required_visual_understanding_failures
-from app.question_understanding import attach_question_visuals, build_question_understanding
+from app.question_understanding import attach_question_visuals, build_question_understanding, question_visual_parts
 from app.settings import ProviderConfig, _model_supports_vision_cached, provider_model_supports_vision
 
 
@@ -88,6 +88,51 @@ def test_direct_multimodal_prompt_attaches_each_source_image_once(tmp_path: Path
 
     content = messages[0]["content"]
     assert sum(1 for item in content if item.get("type") == "image_url") == 1
+
+
+def test_multimodal_main_model_receives_whole_question_snapshot_before_hd_original(tmp_path: Path) -> None:
+    snapshot = tmp_path / "question_snapshot.png"
+    original = tmp_path / "original.png"
+    snapshot.write_bytes(b"snapshot")
+    original.write_bytes(b"original")
+    question = {
+        "question_id": "q1",
+        "stem": "普通文字题也保留完整题面视觉上下文。",
+        "question_snapshot_refs": [str(snapshot)],
+        "image_refs": [str(original)],
+    }
+
+    understanding = build_question_understanding(
+        question,
+        tmp_path / "assets",
+        direct_multimodal=("bailian", "qwen3.7-plus"),
+    )
+    parts = question_visual_parts(question)
+
+    assert understanding["direct_multimodal"] is True
+    assert len(parts) == 2
+    assert parts[0]["image_url"]["url"].endswith("c25hcHNob3Q=")
+    assert parts[1]["image_url"]["url"].endswith("b3JpZ2luYWw=")
+
+
+def test_multimodal_main_model_keeps_snapshot_for_text_only_question(tmp_path: Path) -> None:
+    snapshot = tmp_path / "text_question.png"
+    snapshot.write_bytes(b"whole-question")
+    question = {
+        "question_id": "q_text",
+        "stem": "解释名词。",
+        "question_snapshot_refs": [str(snapshot)],
+    }
+
+    understanding = build_question_understanding(
+        question,
+        tmp_path / "assets",
+        direct_multimodal=("bailian", "qwen3.7-plus"),
+    )
+
+    assert understanding["needs_vision_model"] is False
+    assert understanding["direct_multimodal"] is True
+    assert len(question_visual_parts(question)) == 1
 
 
 def test_text_only_model_does_not_inherit_provider_level_vision_support() -> None:

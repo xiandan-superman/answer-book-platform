@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="answer-book-local-privilege-token" content="">
   <title>智能真题解析系统</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/styles/foundation.css">
@@ -106,7 +107,7 @@
             <div class="domain-copy">
               <span class="domain-kicker">01 / 真题解析</span>
               <h2 id="examDomainTitle">真题解析</h2>
-              <p>基于教材证据完成解析与自动验收</p>
+              <p>教材证据驱动解析，自动完成验收</p>
               <div class="domain-primary-actions">
                 <button class="home-primary-action" type="button" onclick="startWizard()">
                   <span>开始解析</span><i class="fas fa-arrow-right"></i>
@@ -161,7 +162,7 @@
             <p>按真题答案或讲义标准检查字体、字号、段落、页眉页脚等格式，并生成修改后的新文件。</p>
           </div>
           <div class="utility-entry-actions">
-            <button class="utility-entry-primary" type="button" onclick="openWordFormatReviewer()">打开工具<i class="fas fa-arrow-right"></i></button>
+            <button class="utility-entry-primary" type="button" onclick="openWordFormatReviewer()">打开格式审查<i class="fas fa-arrow-right"></i></button>
             <button class="utility-entry-link" type="button" onclick="openTaskManager('format')">查看相关任务</button>
           </div>
         </section>
@@ -174,7 +175,7 @@
             <p>复用真题解析的识别、作答与质量审查能力，只解析题目本身，不选择教材，也不生成教材依据。</p>
           </div>
           <div class="utility-entry-actions">
-            <button class="utility-entry-primary" type="button" onclick="startQuestionAnalysis()">开始解析<i class="fas fa-arrow-right"></i></button>
+            <button class="utility-entry-primary" type="button" onclick="startQuestionAnalysis()">打开题目解析<i class="fas fa-arrow-right"></i></button>
             <button class="utility-entry-link" type="button" onclick="openTaskManager('exam')">查看相关任务</button>
           </div>
         </section>
@@ -187,7 +188,7 @@
             <p>上传试题并复用已建立索引的教材，仅产出逐题知识点与已核验教材页码。</p>
           </div>
           <div class="utility-entry-actions">
-            <button class="utility-entry-primary" type="button" onclick="startTextbookEvidenceTool()">打开工具<i class="fas fa-arrow-right"></i></button>
+            <button class="utility-entry-primary" type="button" onclick="startTextbookEvidenceTool()">打开引用定位<i class="fas fa-arrow-right"></i></button>
             <button class="utility-entry-link" type="button" onclick="openTaskManager('exam')">查看相关任务</button>
           </div>
         </section>
@@ -242,7 +243,7 @@
           <label class="key-provider-search">
             <span class="visually-hidden">搜索 API 平台</span>
             <i class="fas fa-search" aria-hidden="true"></i>
-            <input id="keyProviderSearch" type="search" placeholder="搜索平台或能力" oninput="searchKeyProviders(this.value)">
+            <input id="keyProviderSearch" type="search" placeholder="搜索平台、模型或能力" aria-label="搜索平台、模型或能力" oninput="searchKeyProviders(this.value)">
           </label>
         </div>
         <div id="keyProviderGrid" class="key-provider-grid key-provider-split-pane">
@@ -308,7 +309,7 @@
               <input id="knowledgeTitleInput" type="text" maxlength="300" placeholder="例如：晶胞 / 点阵参数">
             </label>
             <label>知识点简介或教材原文
-              <textarea id="knowledgeTextInput" rows="7" placeholder="可粘贴知识点简介、教材原文、公式说明；也可按 Command/Ctrl + V 直接粘贴图片。"></textarea>
+              <textarea id="knowledgeTextInput" rows="7" placeholder="可粘贴知识点简介、教材原文和公式说明。"></textarea>
             </label>
             <div id="knowledgeWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的知识点出题工作区。</span><button id="knowledgeWorkspaceDraftClear" type="button" class="text-button">保留并新建</button><button id="knowledgeWorkspaceDraftRestorePrevious" type="button" class="text-button">恢复上一份</button></div>
             <div class="knowledge-paste-hint"><i class="fas fa-paste"></i><span><strong>支持直接粘贴图片</strong>先点击上方输入框，再按 Command/Ctrl + V；可连续粘贴多张。</span></div>
@@ -623,7 +624,7 @@
 
                 <textarea id="practiceQuestionText" name="practiceQuestionText" rows="7"
                   class="min-h-[160px] w-full resize-y rounded-[var(--brand-radius-md)] border border-[var(--brand-border)] bg-[var(--brand-background)] p-3.5 text-[14px] leading-[1.7] text-[var(--brand-foreground)] outline-none transition focus:border-[var(--brand-primary)] focus:bg-[var(--brand-card)] focus:ring-2 focus:ring-[rgba(30,58,138,0.12)]"
-                  placeholder="粘贴题目文字，或在这里按 Command/Ctrl + V 直接粘贴截图。公式可以使用 LaTeX。"></textarea>
+                  placeholder="粘贴题目文字；公式可以使用 LaTeX。"></textarea>
                 <div id="practiceWorkspaceDraftNotice" class="practice-error hidden" role="status"><span>已恢复上次未提交的出题工作区。</span><button id="practiceWorkspaceDraftClear" type="button" class="text-button">保留并新建</button><button id="practiceWorkspaceDraftRestorePrevious" type="button" class="text-button">恢复上一份</button></div>
 
                 <div class="flex flex-col gap-2">
@@ -632,7 +633,7 @@
                     <span><strong id="practiceUploadLabel">上传题目文件</strong><small class="ml-2">图片、PDF、Word，可多选</small></span>
                     <input id="practiceFile" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.docx" hidden>
                   </label>
-                <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择文件，也可以直接粘贴截图</span></div>
+                <div id="practiceFilePreview" class="text-[11px] text-[var(--brand-muted-foreground)]"><span>未选择题目文件</span></div>
                 </div>
 
                 <details class="practice-submit-advanced-settings">
@@ -1525,32 +1526,6 @@
           </details>
           <div id="textbookMergeBox" class="merge-box hidden"></div>
           <div id="textbookChecklist" class="file-card-grid"></div>
-          <details id="sharedTextbookLibraryPanel" class="shared-library-panel shared-library-details">
-            <summary><i class="fas fa-share-nodes"></i>高级：连接共享教材库</summary>
-            <div class="shared-library-heading">
-              <div>
-                <h3>共享教材库</h3>
-                <p>从已配置的团队教材库下载验证版本。下载后教材与索引保存在本机。</p>
-              </div>
-              <button id="refreshSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-rotate"></i>刷新目录</button>
-            </div>
-            <div class="shared-library-connect">
-              <label for="sharedLibraryUrl">教材库地址</label>
-              <input id="sharedLibraryUrl" type="url" placeholder="https://textbook-host.your-tailnet.ts.net">
-              <button id="saveSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-link"></i>连接教材库</button>
-            </div>
-            <div id="sharedLibraryCatalog" class="shared-library-catalog"><p class="empty-hint">填写教材库地址后，可查看已发布教材。</p></div>
-            <details class="shared-library-publish">
-              <summary>管理员发布已建立索引的教材</summary>
-              <p>只在教材库主机上执行。发布包包含源教材、图片资源与当前索引缓存；客户端仅能下载和安装。</p>
-              <div class="shared-library-publish-fields">
-                <label>教材标识<input id="sharedLibraryId" type="text" placeholder="material-analysis"></label>
-                <label>显示名称<input id="sharedLibraryTitle" type="text" placeholder="材料现代分析测试方法"></label>
-                <label>版本号<input id="sharedLibraryVersion" type="text" placeholder="20260710-001"></label>
-              </div>
-              <button id="publishSharedLibraryBtn" class="secondary-button" type="button"><i class="fas fa-upload"></i>发布当前已选教材</button>
-            </details>
-          </details>
         </article>
         <article id="textbook-upload" class="reference-card hidden">
           <div class="textbook-format-note upload-note">
@@ -1568,10 +1543,10 @@
         </article>
         <div id="selectedTextbookBar" class="selection-bar hidden"></div>
         <div id="duplicateReviewBox" class="helper-box reference-extra"><strong>重复文件审查</strong><p>正在检查教材库和真题库是否存在重复文件。</p></div>
-        <div id="textbookIndexActionRow" class="action-row reference-extra">
-          <button id="prepareTextbookIndexBtn" type="button"><i class="fas fa-database"></i>建立教材索引</button>
+        <div id="textbookIndexActionRow" class="action-row">
+          <button id="prepareTextbookIndexBtn" class="primary-button" type="button"><i class="fas fa-database"></i>建立教材索引</button>
         </div>
-        <div id="textbookIndexBox" class="helper-box reference-extra">
+        <div id="textbookIndexBox" class="helper-box">
           <strong>教材索引状态</strong>
           <p>选择教材后点击“建立教材索引”。索引完成后，真题解析流程会直接复用这份索引；未索引教材不能开始解析。</p>
         </div>
@@ -1594,6 +1569,18 @@
         <span class="material-readiness-icon"><i class="fas fa-list-check"></i></span>
         <div><strong>材料准备情况</strong><p id="examReadinessHint">请选择真题和至少一本教材。</p></div>
       </div>
+      <aside class="exam-workflow-preview" aria-labelledby="examWorkflowPreviewTitle">
+        <div><span>本次流程</span><strong id="examWorkflowPreviewTitle">开始前先了解任务会怎样进行</strong></div>
+        <ol>
+          <li><b>1</b><span>读取材料</span></li>
+          <li><b>2</b><span>确认题目结构</span></li>
+          <li><b>3</b><span>检索教材依据</span></li>
+          <li><b>4</b><span>生成逐题解析</span></li>
+          <li><b>5</b><span>质量检查与作图</span></li>
+          <li><b>6</b><span>审阅并下载</span></li>
+        </ol>
+        <p>需要你确认时任务会暂停；模型或供应商持续异常时会停止并明确说明责任与处理方式。</p>
+      </aside>
       <div id="currentTextbookDisplay" class="selection-bar material-selection-summary exam-textbook-requirement">正在读取教材选择结果。</div>
       <article class="panel-card material-step-card exam-textbook-requirement">
         <div class="task-textbook-head">
@@ -1645,13 +1632,13 @@
       </div>
     </section>
 
-    <section id="page-task" class="page">
+    <section id="page-task" class="page" data-task-state="empty">
       <div class="page-title inline-title task-page-title">
         <button class="icon-button" type="button" onclick="goToPage('exam')" title="返回选择真题"><i class="fas fa-arrow-left"></i></button>
         <div>
-          <p id="taskPageEyebrow" class="task-page-eyebrow">真题解析 · 解析进行中</p>
-          <h2 id="taskPageTitle">解析进度</h2>
-          <p id="taskPageDescription">任务会在后台持续执行，可以离开本页；需要确认或出现问题时，平台会明确提示。</p>
+          <p id="taskPageEyebrow" class="task-page-eyebrow">任务详情</p>
+          <h2 id="taskPageTitle">请选择任务</h2>
+          <p id="taskPageDescription">从任务管理选择一个任务后，这里会显示进度、结果和可执行操作。</p>
         </div>
       </div>
 
@@ -1661,7 +1648,7 @@
           <strong id="totalProgressText">--</strong>
         </div>
         <div class="total-progress"><span id="totalProgressBar"></span></div>
-        <p id="currentStepText">正在读取任务状态…</p>
+        <p id="currentStepText">当前没有选中的任务。</p>
       </article>
 
       <article id="taskUnitDeliveryPanel" class="panel-card hidden" aria-live="polite"></article>
@@ -1792,8 +1779,8 @@
             <div id="finalResultHint" class="result-card muted-card">输出文件会显示在这里，只展示当前任务实际生成的解析文件和审查报告。</div>
             <div id="resultFileList" class="file-list compact-file-list"></div>
             <details id="resultSupportFilesDetails" class="result-support-files hidden">
-              <summary><i class="fas fa-folder-open"></i>复核与过程文件 <span id="resultSupportFileCount"></span></summary>
-              <p>仅在复核依据、模型调用或作图过程时使用，不属于主要交付文件。</p>
+              <summary><i class="fas fa-folder-open"></i>复核与排查材料 <span id="resultSupportFileCount"></span></summary>
+              <p>这些文件用于核对依据或排查问题，不属于正式交付内容。</p>
               <div id="resultSupportFileList" class="file-list compact-file-list"></div>
             </details>
           </div>
@@ -1857,34 +1844,22 @@
           </div>
         </div>
 
-        <div class="task-stat-grid">
+        <div class="task-stat-grid" aria-label="按处理状态筛选任务">
           <button type="button" class="task-stat-card active" data-filter="all" onclick="filterTasks('all')">
             <div><strong id="taskStatTotal">0</strong><span>全部任务</span></div>
             <i class="fas fa-list"></i>
           </button>
-          <button type="button" class="task-stat-card" data-filter="running" onclick="filterTasks('running')">
-            <div><strong id="taskStatRunning">0</strong><span>进行中</span></div>
+          <button type="button" class="task-stat-card" data-filter="active" onclick="filterTasks('active')">
+            <div><strong id="taskStatActive">0</strong><span>进行中</span></div>
             <i class="fas fa-spinner"></i>
           </button>
-          <button type="button" class="task-stat-card" data-filter="queued" onclick="filterTasks('queued')">
-            <div><strong id="taskStatQueued">0</strong><span>排队中</span></div>
-            <i class="fas fa-clock"></i>
-          </button>
-          <button type="button" class="task-stat-card" data-filter="needs_input" onclick="filterTasks('needs_input')">
-            <div><strong id="taskStatNeedsInput">0</strong><span>等待我确认</span></div>
+          <button type="button" class="task-stat-card" data-filter="attention" onclick="filterTasks('attention')">
+            <div><strong id="taskStatAttention">0</strong><span>待你处理</span></div>
             <i class="fas fa-user-check"></i>
           </button>
-          <button type="button" class="task-stat-card" data-filter="completed_with_issues" onclick="filterTasks('completed_with_issues')">
-            <div><strong id="taskStatIssues">0</strong><span>结果需复核</span></div>
-            <i class="fas fa-triangle-exclamation"></i>
-          </button>
-          <button type="button" class="task-stat-card" data-filter="failed" onclick="filterTasks('failed')">
-            <div><strong id="taskStatFailed">0</strong><span>未完成</span></div>
+          <button type="button" class="task-stat-card" data-filter="unsuccessful" onclick="filterTasks('unsuccessful')">
+            <div><strong id="taskStatUnsuccessful">0</strong><span>未成功</span></div>
             <i class="fas fa-circle-exclamation"></i>
-          </button>
-          <button type="button" class="task-stat-card" data-filter="paused" onclick="filterTasks('paused')">
-            <div><strong id="taskStatPaused">0</strong><span>已暂停</span></div>
-            <i class="fas fa-pause"></i>
           </button>
           <button type="button" class="task-stat-card" data-filter="completed" onclick="filterTasks('completed')">
             <div><strong id="taskStatCompleted">0</strong><span>已完成</span></div>
@@ -1946,10 +1921,16 @@
 
         <div id="taskManagerList" class="task-manager-list"></div>
         <nav id="taskManagerPagination" class="task-manager-pagination hidden" aria-label="任务列表分页"></nav>
-        <div id="taskManagerEmpty" class="task-empty-state hidden">
+        <div id="taskManagerEmpty" class="task-empty-state hidden" role="status" aria-live="polite">
           <div><i class="fas fa-inbox"></i></div>
           <h3>暂无任务</h3>
           <p>当前筛选条件下没有找到任务</p>
+          <nav id="taskManagerEmptyCreateActions" class="task-empty-create-actions hidden" aria-label="选择新建任务类型">
+            <button class="primary-button" type="button" onclick="startWizard()"><i class="fas fa-book-open"></i>开始真题解析</button>
+            <button class="secondary-button" type="button" onclick="openPracticeEntry('exam')"><i class="fas fa-layer-group"></i>按题出题</button>
+            <button class="secondary-button" type="button" onclick="openKnowledgeEntry()"><i class="fas fa-lightbulb"></i>知识点出题</button>
+            <button class="text-button" type="button" onclick="openWordFormatReviewer()"><i class="fas fa-file-alt"></i>格式审查</button>
+          </nav>
           <button id="taskManagerEmptyAction" class="primary-button" type="button"><i class="fas fa-filter-circle-xmark"></i><span>清除筛选</span></button>
         </div>
       </div>
@@ -1959,7 +1940,7 @@
       <div class="monitor-shell">
         <div class="monitor-page-title">
           <h2><i class="fas fa-server"></i>运行监控</h2>
-          <p>查看当前打开服务所在电脑的运行状态、最近服务日志和任务事件。</p>
+          <p>查看任务、模型、供应商与本机服务的当前状态。</p>
         </div>
         <article class="system-monitor-panel" id="systemMonitorPanel">
           <div class="system-monitor-header">
@@ -1980,7 +1961,7 @@
             <div><span>服务运行时长</span><strong id="systemUptime">-</strong></div>
             <div><span>当前任务</span><strong id="systemActiveCount">0</strong></div>
             <div><span>等待 / 较慢</span><strong id="systemWaitingCount">0 / 0</strong></div>
-            <div><span>需要处理</span><strong id="systemIssueCount">0</strong></div>
+            <div><span>需要处理</span><strong id="systemIssueCount" class="is-clear">0</strong></div>
           </div>
           <details class="system-technical-details system-runtime-details">
             <summary>服务技术信息</summary>
@@ -2060,20 +2041,6 @@
               </article>
             </div>
           </details>
-          <details class="system-technical-details system-log-details">
-            <summary>技术日志与内部事件</summary>
-            <p class="system-log-explanation">以下内容用于排查故障。普通使用只需查看上方运行摘要和“需要处理”数量。</p>
-            <div class="system-monitor-columns">
-              <section>
-                <h4>最近服务日志</h4>
-                <div id="systemRecentLogs" class="system-log-list"></div>
-              </section>
-              <section>
-                <h4>最近任务事件</h4>
-                <div id="systemRecentEvents" class="system-log-list"></div>
-              </section>
-            </div>
-          </details>
         </article>
 
         <article class="system-monitor-panel provider-control-panel" id="providerControlPanel">
@@ -2141,7 +2108,7 @@
     </section>
   </main>
   <div id="reviewDecisionModal" class="review-decision-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="reviewDecisionTitle">
-    <section class="review-decision-card">
+    <section class="review-decision-card" tabindex="-1">
       <header class="review-decision-header">
         <div class="review-decision-title">
           <span><i class="fas fa-clipboard-check"></i></span>
@@ -2182,7 +2149,7 @@
     </section>
   </div>
   <div id="examStructureReviewModal" class="review-decision-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="examStructureReviewTitle">
-    <section class="review-decision-card exam-structure-review-card">
+    <section class="review-decision-card exam-structure-review-card" tabindex="-1">
       <header class="review-decision-header">
         <div class="review-decision-title">
           <span><i class="fas fa-list-check"></i></span>

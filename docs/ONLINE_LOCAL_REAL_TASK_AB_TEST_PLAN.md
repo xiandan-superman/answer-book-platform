@@ -126,10 +126,10 @@
 
 | ID | 单题方向 | 试题文件 | 教材文件 | 重点比较 |
 |---|---|---|---|---|
-| P2-01 | 原题图片理解：碳相图 | `exams/识图题.docx` | `cache/shared_textbook_library/published/material-science-basics-3rd/20260711-pagefix.zip` | 图片是否传对、O 点/OB 线/相数/自由度/压强影响是否读对；答案是否明确引用图中特征 |
-| P2-02 | 多小问计算一致性 | `exams/结构重复测试_苯蒸发三小问.docx` | `cache/shared_textbook_library/published/physical-chemistry-6th-upper/20260711-pagefix.zip` 和 `cache/shared_textbook_library/published/physical-chemistry-6th-lower/20260711-pagefix.zip` | Q/W/ΔS/ΔG、环境熵变、可逆性判断是否前后一致；小问是否重复或串位 |
-| P2-03 | 确定性专业绘图：[110] 带轴电子衍射 | 待生成单题文件 `.artifacts/version_ab/inputs/single/带轴电子衍射_110.docx`；真实来源为 `exams/画图题-材分析.docx` 第 1 题 | `cache/shared_textbook_library/published/material-analysis-methods/20260711-pagefix.zip` | 是否正确触发绘图；斑点索引、带轴规则、标注和解析是否一致；是否伪造数据 |
-| P2-04 | 确定性专业绘图：有序化前后 XRD 峰 | 待生成单题文件 `.artifacts/version_ab/inputs/single/体心立方有序化_XRD.docx`；真实来源为 `exams/画图题-材分析.docx` 第 2 题 | `cache/shared_textbook_library/published/material-analysis-methods/20260711-pagefix.zip` | 峰位相对关系、晶面指数、超结构峰和有序化前后变化是否科学正确 |
+| P2-01 | 原题图片理解：碳相图 | `exams/识图题.docx` | 本机上传并完成索引的材料科学基础教材 | 图片是否传对、O 点/OB 线/相数/自由度/压强影响是否读对；答案是否明确引用图中特征 |
+| P2-02 | 多小问计算一致性 | `exams/结构重复测试_苯蒸发三小问.docx` | 本机上传并完成索引的物理化学上下册教材 | Q/W/ΔS/ΔG、环境熵变、可逆性判断是否前后一致；小问是否重复或串位 |
+| P2-03 | 确定性专业绘图：[110] 带轴电子衍射 | 待生成单题文件 `.artifacts/version_ab/inputs/single/带轴电子衍射_110.docx`；真实来源为 `exams/画图题-材分析.docx` 第 1 题 | 本机上传并完成索引的材料分析教材 | 是否正确触发绘图；斑点索引、带轴规则、标注和解析是否一致；是否伪造数据 |
+| P2-04 | 确定性专业绘图：有序化前后 XRD 峰 | 待生成单题文件 `.artifacts/version_ab/inputs/single/体心立方有序化_XRD.docx`；真实来源为 `exams/画图题-材分析.docx` 第 2 题 | 本机上传并完成索引的材料分析教材 | 峰位相对关系、晶面指数、超结构峰和有序化前后变化是否科学正确 |
 | P2-05 | 小型多题型集成 | `exams/抽题流程测试_覆盖题型.docx` | 与 P2-01/P2-02 相同的材料科学和物理化学教材包 | 5 道小题覆盖选择、填空、简答、计算和作图；作为单题到整卷之间的过渡测试 |
 
 P2-03/P2-04 的单题 DOCX 只在计划确认后生成。必须保留来源题干和原编号，不改写内容，并为源文件和派生文件都记录 SHA-256。
@@ -190,13 +190,10 @@ P3-03 教材的完整绝对路径为：
 | P3-04 | 按题出题 | `/Users/ljj/Desktop/闲置文件/材料/题目模版.docx` | 选定 3 类原题：1 道普通文本题、1 道原图分析题、1 道要求生成图的题；每题 2 道变式，共 6 道 | 原题来源关系、题量、顺序、变式实质性、图片绑定、局部修复和导出 |
 | P3-05 | 按知识点出题 | `/Users/ljj/Desktop/闲置文件/材料/讲义模版.docx` | 固定两个语义知识单元：“精馏原理”和“晶向/晶面指数”；每单元 3 道，共 6 道；题型和难度比例固定 | 跨学科知识单元拆分、不把讲义当真题、公式/图片保真、题量顺序、批次失败隔离和 Word 导出 |
 
-P3-04 的混合学科任务需要同时使用以下共享教材包：
+P3-04 的混合学科任务需要同时使用对应的本机教材：
 
 ```text
-cache/shared_textbook_library/published/material-science-basics-3rd/20260711-pagefix.zip
-cache/shared_textbook_library/published/material-analysis-methods/20260711-pagefix.zip
-cache/shared_textbook_library/published/physical-chemistry-6th-upper/20260711-pagefix.zip
-cache/shared_textbook_library/published/physical-chemistry-6th-lower/20260711-pagefix.zip
+测试前将对应教材通过“教材管理”上传，并确认索引状态可复用。
 ```
 
 P3-05 以讲义 DOCX 为知识材料，不默认再引入额外教材，避免两个版本因教材检索差异而改变知识单元边界。

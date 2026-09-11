@@ -33,6 +33,12 @@ class ConcurrencyLimitTests(unittest.TestCase):
         finally:
             marker.reset(token)
 
+    def test_limited_workers_preserve_none_results_and_input_positions(self) -> None:
+        self.assertEqual(
+            [None, 1, None, 3],
+            run_limited_concurrent(range(4), lambda value: None if value % 2 == 0 else value, max_workers=3),
+        )
+
     def test_priority_model_tasks_keep_short_calls_fast_and_bound_long_generation_streams(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(0, _model_request_limit())

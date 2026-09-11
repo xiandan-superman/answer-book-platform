@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import re
 import shutil
 from collections import Counter
 from dataclasses import asdict
@@ -11,7 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from .paths import CACHE_DIR, ensure_project_dirs
-from .textbook_index import BLOCK_FIELDS, PAGE_MAP_FIELDS, build_textbook_index_for_files, write_csv
+from .textbook_index import (
+    BLOCK_FIELDS,
+    PAGE_MAP_FIELDS,
+    build_textbook_index_for_files,
+    citation_textbook_name,
+    write_csv,
+)
 
 TEXTBOOK_INDEX_CACHE_DIR = CACHE_DIR / "textbook_indexes"
 INDEX_CACHE_VERSION = "content-block-assets-v5-source-aware-pages"
@@ -26,70 +31,22 @@ def _file_signature(path: Path) -> dict[str, Any]:
     }
 
 
-def _normalized_citation_names(files: list[Path], citation_names_by_path: dict[str, str] | None) -> dict[str, str]:
+def normalized_textbook_citation_names(files: list[Path], citation_names_by_path: dict[str, str] | None) -> dict[str, str]:
     raw = citation_names_by_path or {}
     normalized: dict[str, str] = {}
     for path in files:
         resolved = str(path.resolve())
         name = str(raw.get(resolved) or raw.get(str(path)) or "").strip()
         if not name:
-            shared = _shared_install_manifest(path)
-            if shared is not None:
-                _, manifest = shared
-                names = manifest.get("citation_names_by_file")
-                if isinstance(names, dict):
-                    name = str(names.get(path.name) or "").strip()
+            name = citation_textbook_name(path.stem).strip()
         if name:
             normalized[resolved] = name
     return normalized
 
 
-def _shared_install_manifest(path: Path) -> tuple[Path, dict[str, Any]] | None:
-    """Find the manifest written beside a downloaded shared textbook package."""
-    current = path.resolve().parent
-    while current != current.parent:
-        manifest_path = current / ".shared_library_manifest.json"
-        if manifest_path.is_file():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return None
-            if isinstance(manifest, dict):
-                return manifest_path, manifest
-            return None
-        current = current.parent
-    return None
-
-
-def shared_install_cache_key(files: list[Path], *, require_complete_source_set: bool = True) -> str | None:
-    """Return a published cache key for a valid shared-textbook installation.
-
-    Shared packages preserve source content and ship their completed index.  File
-    timestamp precision differs between macOS and Windows, so cache reuse must
-    not depend on a byte-for-byte match of ``st_mtime_ns`` after installation.
-    """
-    if not files:
-        return None
-    manifests = [_shared_install_manifest(path) for path in files]
-    if any(item is None for item in manifests):
-        return None
-    manifest_paths = {str(item[0]) for item in manifests if item is not None}
-    if len(manifest_paths) != 1:
-        return None
-    _, manifest = manifests[0]  # type: ignore[index]
-    cache_key = str(manifest.get("cache_key") or "").strip()
-    source_names = manifest.get("source_file_names")
-    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", cache_key) or not isinstance(source_names, list):
-        return None
-    expected_names = [Path(str(name)).name for name in source_names if str(name).strip()]
-    selected_names = [path.name for path in files]
-    if not expected_names or len(set(expected_names)) != len(expected_names):
-        return None
-    if any(name not in expected_names for name in selected_names):
-        return None
-    if require_complete_source_set and set(selected_names) != set(expected_names):
-        return None
-    return cache_key
+def _normalized_citation_names(files: list[Path], citation_names_by_path: dict[str, str] | None) -> dict[str, str]:
+    """Backward-compatible private alias for existing cache callers."""
+    return normalized_textbook_citation_names(files, citation_names_by_path)
 
 
 def textbook_index_key(files: list[Path], citation_names_by_path: dict[str, str] | None = None) -> tuple[str, list[dict[str, Any]]]:
@@ -101,9 +58,6 @@ def textbook_index_key(files: list[Path], citation_names_by_path: dict[str, str]
         if citation_name:
             row["citation_textbook"] = citation_name
         manifest.append(row)
-    shared_key = shared_install_cache_key(files)
-    if shared_key:
-        return shared_key, manifest
     raw = json.dumps({"version": INDEX_CACHE_VERSION, "files": manifest}, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:24], manifest
 
@@ -294,14 +248,10 @@ def _rebind_package_audits(
     return rebound
 
 
-def _find_composable_cache_roots(
-    manifest: list[dict[str, Any]], *, allow_shared_timestamp_fallback: bool = False
-) -> list[Path] | None:
+def _find_composable_cache_roots(manifest: list[dict[str, Any]]) -> list[Path] | None:
     if not TEXTBOOK_INDEX_CACHE_DIR.exists():
         return None
-    # Prefer exact identity. Shared ZIP extraction can round mtime on Windows,
-    # so only fully shared selections may fall back to stable source metadata.
-    for include_mtime in (True, False) if allow_shared_timestamp_fallback else (True,):
+    for include_mtime in (True,):
         remaining = _manifest_counter(manifest, include_mtime=include_mtime)
         if not remaining:
             return None
@@ -383,12 +333,9 @@ def _compose_textbook_index_cache(
 
 
 def _ensure_composed_textbook_index_cache(
-    key: str, manifest: list[dict[str, Any]], paths: dict[str, Path], files: list[Path]
+    key: str, manifest: list[dict[str, Any]], paths: dict[str, Path]
 ) -> dict[str, Any] | None:
-    source_roots = _find_composable_cache_roots(
-        manifest,
-        allow_shared_timestamp_fallback=all(_shared_install_manifest(path) is not None for path in files),
-    )
+    source_roots = _find_composable_cache_roots(manifest)
     if not source_roots or len(source_roots) < 2:
         return None
     return _compose_textbook_index_cache(key, manifest, paths, source_roots)
@@ -418,7 +365,7 @@ def textbook_index_cache_status(selected_paths: list[str], citation_names_by_pat
     indexed = validated is not None
     status: dict[str, Any] = validated[0] if validated else {}
     if not indexed:
-        status = _ensure_composed_textbook_index_cache(key, manifest, paths, files) or {}
+        status = _ensure_composed_textbook_index_cache(key, manifest, paths) or {}
         indexed = bool(status)
     package_audits = _rebind_package_audits(status.get("textbook_package_audits") or [], files)
     mapped_page_count = 0
@@ -465,7 +412,7 @@ def prepare_textbook_index_cache(selected_paths: list[str], citation_names_by_pa
     )
     cached = validated is not None
     if not cached:
-        status = _ensure_composed_textbook_index_cache(key, manifest, paths, files)
+        status = _ensure_composed_textbook_index_cache(key, manifest, paths)
         if status is None:
             paths["root"].mkdir(parents=True, exist_ok=True)
             result = build_textbook_index_for_files(files, paths["root"], citation_names_by_source=citation_names)

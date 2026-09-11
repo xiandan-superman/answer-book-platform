@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from app import task_store
 from app.task_store import TaskRecord
@@ -74,6 +75,39 @@ def test_legacy_task_inherits_split_thinking_and_new_task_persists_protocols(tmp
     assert loaded.reasoning_protocol == ""
     assert loaded.answer_protocol == ""
     assert loaded.correctness_protocol == ""
+
+
+def test_load_task_ignores_unknown_forward_compatible_fields(tmp_path, monkeypatch) -> None:
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    monkeypatch.setattr(task_store, "TASKS_DIR", tasks_dir)
+    task_store.task_dir("future-task").mkdir()
+    payload = _record().__dict__.copy()
+    payload["task_id"] = "future-task"
+    payload["future_release_field"] = {"enabled": True}
+    task_store.task_record_path("future-task").write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = task_store.load_task("future-task")
+
+    assert loaded.task_id == "future-task"
+    assert not hasattr(loaded, "future_release_field")
+
+
+def test_concurrent_task_creation_reserves_unique_ids_atomically(tmp_path, monkeypatch) -> None:
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    monkeypatch.setattr(task_store, "TASKS_DIR", tasks_dir)
+    monkeypatch.setattr(task_store, "ensure_project_dirs", lambda: None)
+    monkeypatch.setattr(task_store.time, "strftime", lambda _format: "20260911_221055")
+
+    def create(_index: int) -> str:
+        return task_store.create_task("同一份试卷.docx", "textbooks", "provider", "model").task_id
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        task_ids = list(executor.map(create, range(16)))
+
+    assert len(task_ids) == len(set(task_ids)) == 16
+    assert all(task_store.task_record_path(task_id).is_file() for task_id in task_ids)
 
 
 def test_interrupted_task_is_queued_for_checkpoint_recovery(tmp_path, monkeypatch) -> None:

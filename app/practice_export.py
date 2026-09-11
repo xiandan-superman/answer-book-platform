@@ -34,6 +34,7 @@ from .practice_document_contracts import (
     PRACTICE_PAGE_CONTRACT,
     PRACTICE_TEXT_CONTRACT,
 )
+from .practice_question_format import ensure_objective_answer_slot
 from .rich_text_math import (
     DELIMITED_MATH_RE,
     collapse_delimited_math_newlines,
@@ -1339,7 +1340,8 @@ def _add_question(doc: Document, item: dict[str, Any], index: int) -> None:
             _set_body_paragraph(paragraph)
             _set_run(paragraph.add_run(part))
         return
-    stem_parts = _split_export_paragraphs(normalize_practice_question_text(item.get("stem"))) or [""]
+    export_stem = ensure_objective_answer_slot(item.get("stem"), item.get("question_type"))
+    stem_parts = _split_export_paragraphs(normalize_practice_question_text(export_stem)) or [""]
     question_id = practice_export_exercise_id(item, index - 1)
     _add_rich_text(stem, stem_parts[0], location=f"exercise={question_id} field=stem")
     for part in stem_parts[1:]:

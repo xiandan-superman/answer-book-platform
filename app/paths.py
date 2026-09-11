@@ -41,7 +41,6 @@ TEXTBOOKS_DIR = DATA_ROOT / "textbooks"
 EXAMS_DIR = DATA_ROOT / "exams"
 LOGS_DIR = DATA_ROOT / "logs"
 CACHE_DIR = DATA_ROOT / "cache"
-SHARED_TEXTBOOK_LIBRARY_DIR = CACHE_DIR / "shared_textbook_library"
 
 
 def _copy_tree_without_overwrite(source: Path, target: Path) -> None:
@@ -88,7 +87,7 @@ def _migrate_legacy_source_data() -> None:
     target_config.mkdir(parents=True, exist_ok=True)
     for name in (
         "api_keys.json", "providers.local.json", "support_reporting.json",
-        "support_cloud.json", "remote_monitor.local.json",
+        "remote_monitor.local.json",
     ):
         source = legacy_config / name
         target = target_config / name
@@ -100,5 +99,5 @@ def _migrate_legacy_source_data() -> None:
 
 def ensure_project_dirs() -> None:
     _migrate_legacy_source_data()
-    for path in (DATA_ROOT, LOCAL_CONFIG_DIR, TASKS_DIR, OUTPUTS_DIR, TEXTBOOKS_DIR, EXAMS_DIR, LOGS_DIR, CACHE_DIR, SHARED_TEXTBOOK_LIBRARY_DIR):
+    for path in (DATA_ROOT, LOCAL_CONFIG_DIR, TASKS_DIR, OUTPUTS_DIR, TEXTBOOKS_DIR, EXAMS_DIR, LOGS_DIR, CACHE_DIR):
         path.mkdir(parents=True, exist_ok=True)

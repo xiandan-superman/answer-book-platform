@@ -1712,6 +1712,4 @@ def build_system_status(access_host: str | None = None) -> dict[str, Any]:
         "service": service,
         "tasks": {"counts": counts, "running": live_tasks[:20], "recent": health_tasks[:20]},
         "models": model,
-        "runtime_logs": read_runtime_logs(80),
-        "task_events": _recent_task_events(80),
     }

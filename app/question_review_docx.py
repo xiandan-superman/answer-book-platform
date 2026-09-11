@@ -14,8 +14,8 @@ from docx.shared import Cm, Pt, RGBColor
 
 from .docx_v4 import build_docx_from_fragments
 from .final_acceptance import model_retry_summary
-from .question_requirements import answer_figure_required
-from .question_types import question_has_type, question_kind
+from .question_requirements import main_model_answer_figure_required
+from .question_types import question_kind
 from .render_word import export_docx_to_pdf, render_pdf_to_png
 from .review_export import build_question_review
 
@@ -189,14 +189,14 @@ def _qa_status(item: dict[str, Any]) -> tuple[str, str]:
 
 def collect_question_figure_review_items(stage_dir: Path) -> list[dict[str, Any]]:
     structured_exam = _read_json(stage_dir / "structured_exam.json")
-    figure_qids = {
-        _qid(question)
-        for question in structured_exam.get("items", [])
-        if isinstance(question, dict) and _qid(question) and answer_figure_required(question)
-    }
     records: dict[str, dict[str, Any]] = {}
 
     fragments_data = _read_json(stage_dir / "answer_fragments.json")
+    figure_qids = {
+        _qid(fragment)
+        for fragment in (fragments_data.get("fragments", []) if isinstance(fragments_data, dict) else [])
+        if isinstance(fragment, dict) and _qid(fragment) and main_model_answer_figure_required(fragment)
+    }
     for fragment in fragments_data.get("fragments", []) if isinstance(fragments_data, dict) else []:
         if not isinstance(fragment, dict):
             continue

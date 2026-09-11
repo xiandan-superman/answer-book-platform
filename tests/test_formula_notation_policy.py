@@ -57,6 +57,11 @@ def test_ordinary_fraction_outside_coordinate_tuple_remains_formula_like():
     assert symbolic_formula_like_matches("计算结果为1/2。") == ["1/2"]
 
 
+def test_compact_temperature_difference_symbol_is_not_formula_by_itself():
+    assert symbolic_formula_like_matches("温度变化为 ΔT。") == []
+    assert symbolic_formula_like_matches("由 ΔT=20 K 可得结果。")
+
+
 def test_decimal_division_match_keeps_complete_operands_instead_of_fake_zero_division():
     text = "因此 1.264 / 0.63212 ≈ 2.0。"
 

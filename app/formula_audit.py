@@ -5,12 +5,12 @@ from typing import Any
 
 from .capabilities.catalog import DEFAULT_CAPABILITY_REGISTRY
 
-
 FORMULA_TEXT_RE = re.compile(
     r"("
     r"\\[A-Za-z]+|"
     r"[_^]|"
-    r"[∂∆ΔΣΠ√≈≤≥≠→⇌∞]|"
+    r"[∂ΣΠ√≈≤≥≠→⇌∞]|"
+    r"[∆Δ][A-Za-z0-9]*\s*(?:=|[<>≤≥≈≠])\s*[^。；，,]{1,}|"
     r"[A-Za-z]\s*=\s*[^。；，,\u4e00-\u9fff]{2,}|"
     r"\b(?:ln|log|exp|sin|cos|tan)\s*[\(\w]|"
     r"\b(?:RT|nRT|nF|zF|pV|Kp|Ksp|Ka|Kb)\b|"

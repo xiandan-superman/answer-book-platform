@@ -3204,11 +3204,11 @@ def prepare_figures_for_fragments(
         fragment = fragments_by_id.get(qid)
         if not fragment:
             continue
-        needs_figure = _figure_needed(question)
         planned_strategy = _planned_render_strategy(question)
         mode = question_drawing_mode(question)
         question_specs: list[dict[str, Any]] = []
         accepted_agent_specs = _main_model_generated_image_specs(fragment, qid)
+        needs_figure = bool(accepted_agent_specs) if main_model_owns_image_generation else _figure_needed(question)
         if main_model_owns_image_generation:
             # Isolation boundary: this route can consume only images that the
             # main model actually generated, inspected and accepted.  Legacy

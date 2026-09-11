@@ -59,6 +59,7 @@ from .practice_export import (
     preflight_practice_inline_expressions,
 )
 from .practice_inputs import parse_practice_sources
+from .practice_question_format import ensure_objective_answer_slot
 from .practice_requirements import PRACTICE_REQUIREMENT_PRIORITY, practice_user_focus
 from .practice_result_assembly import (
     PracticeGenerationMetadataContext,
@@ -4349,6 +4350,8 @@ def normalize_practice_set(
         question_type = _clean(item.get("question_type"), 20)
         if planned_types and index <= len(planned_types):
             question_type = planned_types[index - 1]
+        question_type = question_type if question_type in ALLOWED_TYPES else "综合题"
+        stem = ensure_objective_answer_slot(stem, question_type)
         difficulty_evidence = (
             _normalized_difficulty_evidence(item.get("difficulty_evidence"))
             if isinstance(item.get("difficulty_evidence"), dict)
@@ -4365,7 +4368,7 @@ def normalize_practice_set(
                 "variant_mode": _clean(item.get("variant_mode"), 30),
                 "variant_role": _clean(item.get("variant_role"), 100),
                 "number": index,
-                "question_type": question_type if question_type in ALLOWED_TYPES else "综合题",
+                "question_type": question_type,
                 "source_question_id": (
                     _clean(planned_source_ids[index - 1], 80)
                     if planned_source_ids and index <= len(planned_source_ids)

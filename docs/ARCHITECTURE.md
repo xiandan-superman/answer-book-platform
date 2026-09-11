@@ -46,7 +46,7 @@ queued -> running -> needs_input -> running -> completed
 
 - `practice_history/` 只保存规范的用户历史记录；`*_repaired.json`、`*_semantic_candidate.json` 等派生候选不得进入任务中心。
 - `practice_jobs/`、`tasks/`、`outputs/`、`logs/`、`cache/`、`runtime/` 是运行时目录，禁止提交；清理前先按 `history_id`、checksum 和引用关系建立清单。
-- 教材 ZIP、共享教材和渲染产物不直接删除；后续迁移采用内容寻址（checksum）+ 元数据索引 + 双读兼容，确认无引用后再归档。
+- 教材 ZIP 和渲染产物不直接删除；后续迁移采用内容寻址（checksum）+ 元数据索引 + 双读兼容，确认无引用后再归档。
 - 平台提交不包含桌面 App 冻结路径（见 `AGENTS.md`），也不把临时截图、浏览器状态或本地密钥加入版本库。
 
 ## 分层

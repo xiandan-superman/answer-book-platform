@@ -131,7 +131,7 @@ def lan_ipv4_addresses() -> list[str]:
     return tailscale_addresses + sorted(addresses.difference(tailscale_addresses))
 
 
-def lan_access_info(port: int, include_secret: bool = False, *, bind_host: str = "") -> dict[str, Any]:
+def lan_access_info(port: int, *, bind_host: str = "") -> dict[str, Any]:
     normalized_host = str(bind_host or "").strip().lower()
     listening_on_lan = normalized_host not in {"", "127.0.0.1", "::1", "localhost"}
     if not listening_on_lan:
@@ -144,7 +144,7 @@ def lan_access_info(port: int, include_secret: bool = False, *, bind_host: str =
             "reason": "当前服务仅允许本机访问；如需局域网监控，请使用局域网启动入口。",
             "transport_security": "local_only",
         }
-    username, password = lan_credentials()
+    username, _ = lan_credentials()
     addresses = lan_ipv4_addresses()
     tailscale_addresses = [
         address for address in addresses if ip_address(address) in TAILSCALE_IPV4_NETWORK
@@ -161,6 +161,4 @@ def lan_access_info(port: int, include_secret: bool = False, *, bind_host: str =
         "transport_security": "http_basic",
         "warning": "请仅在可信局域网或 Tailscale 私网中使用；远程接口受监控账号和密码保护。",
     }
-    if include_secret and result["enabled"]:
-        result["password"] = password
     return result

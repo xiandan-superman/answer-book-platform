@@ -384,7 +384,14 @@ def _write_question_snapshot(item: dict, snapshot_dir: Path, index: int) -> str:
     return str(output)
 
 
-def _attach_question_snapshots(items: list[dict], output_json: Path) -> None:
+def ensure_question_snapshots(items: list[dict], output_json: Path) -> None:
+    """Render the reviewed whole-question view used by multimodal answer models.
+
+    Re-rendering is intentional: structure review may edit the extracted stem,
+    subquestions, tables, or image assignment.  The snapshot sent to the main
+    model must reflect the confirmed structure rather than an earlier draft.
+    """
+
     snapshot_dir = output_json.parent / "question_snapshots"
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
@@ -1073,7 +1080,7 @@ def extract_exam_structure(exam_file: Path, output_json: Path) -> dict:
         "audit_path": str(package.audit_path),
         "fallback_used": False,
     }
-    _attach_question_snapshots(items, output_json)
+    ensure_question_snapshots(items, output_json)
     source_paragraphs = [line for line in paragraphs if not str(line).startswith(IMAGE_MARKER_PREFIX)]
     source_paragraphs = [text for line in source_paragraphs if (text := _source_line_text(str(line)))]
     data = {

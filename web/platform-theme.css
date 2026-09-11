@@ -305,7 +305,7 @@ body:has(#page-home.active) .brand-mark {
 .brand-button strong,
 body:has(#page-home.active) .brand-button strong {
   color: var(--platform-ink);
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: "PingFang SC", "Microsoft YaHei", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 20px;
   font-weight: 800;
   letter-spacing: -.02em;
@@ -631,7 +631,6 @@ body:not([data-active-page="home"]) .reference-title {
 .task-stat-grid > article,
 .system-monitor-panel,
 .lan-access-panel,
-.shared-library-panel,
 .key-provider-card,
 .knowledge-mode-guide article,
 .knowledge-input-card,
@@ -649,8 +648,7 @@ body:not([data-active-page="home"]) .reference-title {
 .reference-card,
 .panel-card,
 .progress-card,
-.system-monitor-panel,
-.shared-library-panel {
+.system-monitor-panel {
   padding: 25px;
 }
 
@@ -667,8 +665,7 @@ body:not([data-active-page="home"]) .reference-title {
 
 .reference-card h3,
 .panel-card h3,
-.system-monitor-panel h3,
-.shared-library-panel h3 {
+.system-monitor-panel h3 {
   color: var(--platform-ink);
   font-size: 18px;
   font-weight: 800;
@@ -1031,7 +1028,6 @@ textarea:focus {
 
 .model-advanced-details,
 .technical-details,
-.shared-library-publish,
 .advanced-tools {
   border: 1px solid var(--platform-border);
   border-radius: 16px;
@@ -1068,11 +1064,6 @@ textarea:focus {
 .upload-zone.dragover {
   border-color: var(--platform-blue);
   background: rgba(233, 242, 255, .82);
-}
-
-.shared-library-heading,
-.shared-library-connect {
-  gap: 15px;
 }
 
 .selection-bar {
@@ -1537,8 +1528,7 @@ body[data-active-page="result"] .page-title {
 }
 
 .env-observation-details summary,
-.textbook-guidance-details summary,
-.shared-library-details > summary {
+.textbook-guidance-details summary {
   cursor: pointer;
   color: #40536d;
   font-weight: 700;
@@ -1547,8 +1537,6 @@ body[data-active-page="result"] .page-title {
 .env-observation-details .check-row { margin-top: 10px; }
 .textbook-guidance-details { padding: 14px 16px; }
 .textbook-guidance-details p { margin: 10px 0 0; }
-.shared-library-details > summary { padding: 2px 0 14px; }
-.shared-library-details[open] > summary { margin-bottom: 16px; border-bottom: 1px solid #e5ebf3; }
 
 .system-monitor-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .system-runtime-details { margin: 12px 0 0; }
@@ -1977,7 +1965,7 @@ body[data-active-page="result"] .step-track {
 }
 
 #page-tasks .task-stat-grid {
-  grid-template-columns: repeat(9, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0;
   overflow: hidden;
   margin-bottom: 16px;
@@ -1987,6 +1975,30 @@ body[data-active-page="result"] .step-track {
   box-shadow: 0 12px 30px rgba(43, 72, 121, .055);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+}
+
+.exam-workflow-preview {
+  margin: 18px 0 22px;
+  border: 1px solid #dfe7f4;
+  border-radius: 16px;
+  padding: 16px 18px;
+  background: #f8fbff;
+}
+
+.exam-workflow-preview > div { display: flex; align-items: baseline; gap: 10px; }
+.exam-workflow-preview > div > span { color: #5571a7; font-size: 12px; font-weight: 750; }
+.exam-workflow-preview > div > strong { color: #20324f; font-size: 14px; }
+.exam-workflow-preview ol { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin: 14px 0 10px; padding: 0; list-style: none; }
+.exam-workflow-preview li { display: flex; align-items: center; gap: 7px; min-width: 0; color: #41526d; font-size: 12px; }
+.exam-workflow-preview li b { display: grid; flex: 0 0 24px; width: 24px; height: 24px; place-items: center; border-radius: 999px; background: #e5edff; color: #315fbd; }
+.exam-workflow-preview p { margin: 0; color: #687891; font-size: 12px; line-height: 1.6; }
+
+@media (max-width: 900px) {
+  .exam-workflow-preview ol { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .exam-workflow-preview ol { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 #page-tasks .task-stat-grid > article {
@@ -2444,38 +2456,44 @@ body[data-active-page="result"] .step-track {
   }
 
   body:not([data-active-page="home"]) .step-indicator {
-    width: min(calc(100% - 96px), 2080px);
+    width: min(calc(100% - 96px), var(--layout-monitor));
     max-width: none;
   }
 
   body:not([data-active-page="home"]) .reference-narrow,
   body:not([data-active-page="home"]) #page-env > .reference-narrow {
-    max-width: 2080px;
+    max-width: var(--layout-reading);
   }
 
   body:not([data-active-page="home"]) .reference-medium,
   body:not([data-active-page="home"]) #page-textbook > .reference-medium,
   body:not([data-active-page="home"]) #page-exam,
   body:not([data-active-page="home"]) #page-task,
-  body:not([data-active-page="home"]) #page-result,
+  body:not([data-active-page="home"]) #page-result {
+    max-width: var(--layout-workspace);
+  }
+
   body:not([data-active-page="home"]) #page-tasks,
+  body:not([data-active-page="home"]) .task-manager-shell {
+    max-width: var(--layout-task-manager);
+  }
+
   body:not([data-active-page="home"]) #page-monitor,
-  body:not([data-active-page="home"]) .task-manager-shell,
   body:not([data-active-page="home"]) .monitor-shell {
-    max-width: 2000px;
+    max-width: var(--layout-monitor);
   }
 
   body:not([data-active-page="home"]) #page-practice-models .reference-medium,
   body:not([data-active-page="home"]) #page-knowledge-models .reference-medium {
-    max-width: 1840px;
+    max-width: var(--layout-workspace);
   }
 
   body:not([data-active-page="home"]) #page-keys .reference-medium {
-    max-width: 1840px;
+    max-width: var(--layout-workspace);
   }
 
   body:not([data-active-page="home"]) #page-knowledge .reference-medium {
-    max-width: 2000px;
+    max-width: var(--layout-workspace);
   }
 
   body:not([data-active-page="home"]) .page-title h2,
@@ -2709,11 +2727,10 @@ body[data-active-page="result"] .step-track {
   }
 
   .reference-card,
-  .panel-card,
-  .progress-card,
-  .system-monitor-panel,
-  .shared-library-panel,
-  .knowledge-input-card,
+    .panel-card,
+    .progress-card,
+    .system-monitor-panel,
+    .knowledge-input-card,
   .knowledge-config-card,
   .task-model-grid .practice-model-setting {
     padding: 19px;
@@ -3000,7 +3017,7 @@ body.platform-dialog-open {
   background: rgba(252, 253, 255, .92) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .96) !important;
   color: var(--platform-text) !important;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif !important;
+  font-family: "PingFang SC", "Microsoft YaHei", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
   font-size: 15px !important;
   font-weight: 650 !important;
   line-height: 1.35 !important;
@@ -3763,6 +3780,7 @@ input[type="number"]::-webkit-outer-spin-button {
 #page-practice .practice-stem {
   font-size: clamp(16px, 1.1vw, 18px);
   line-height: 1.75;
+  white-space: pre-wrap;
 }
 
 #page-practice .practice-options p,
@@ -5764,9 +5782,25 @@ body[data-active-page="practice"] .app-shell {
   }
 }
 
-/* 任务管理：窄桌面保持扫读性，超宽桌面控制阅读跨度。 */
+/* 任务管理：保留宽工作区，并让内容与操作形成稳定的近距离双栏。 */
 #page-tasks .task-manager-shell {
-  max-width: 1560px;
+  max-width: var(--layout-task-manager);
+}
+
+@media (min-width: 1500px) {
+  #page-tasks .task-manager-item:not(.task-manager-terminal) {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+    column-gap: clamp(24px, 3vw, 52px);
+  }
+
+  #page-tasks .task-manager-copy {
+    max-width: 92ch;
+  }
+
+  #page-tasks .task-manager-side {
+    width: 100%;
+    min-width: 0;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -5824,6 +5858,24 @@ body[data-active-page="practice"] .app-shell {
   display: grid;
   place-content: center;
   margin-top: 0;
+}
+
+#page-tasks .task-empty-create-actions {
+  display: grid;
+  width: min(100%, 620px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+#page-tasks .task-empty-create-actions > .text-button {
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+
+@media (max-width: 720px) {
+  #page-tasks .task-empty-create-actions { grid-template-columns: 1fr; }
+  #page-tasks .task-empty-create-actions > .text-button { grid-column: auto; }
 }
 
 /* API 平台列表：先定位再展开，已配置平台始终优先。 */
@@ -7009,5 +7061,200 @@ button:disabled,
     color: #1d4f91;
   }
 
+  .result-question-outline button.active,
+  .result-question-outline button[aria-current="location"] {
+    border-color: #315fbd;
+    background: #315fbd;
+    color: #fff;
+  }
+
   .question-detail-content > section[id] { scroll-margin-top: 166px; }
+}
+
+/* Compact navigation and progressive empty states. */
+.reference-tabs {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.reference-tabs .tab-button {
+  flex: 0 1 auto;
+  min-width: 180px;
+}
+
+#page-task[data-task-state="empty"] > :not(.task-page-title):not(.progress-card) {
+  display: none !important;
+}
+
+#page-task[data-task-state="empty"] .progress-card {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+#page-practice .stage-bar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+#page-practice .stage-step {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+#page-practice .stage-step span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 620px) {
+  .reference-tabs {
+    width: 100%;
+  }
+
+  .reference-tabs .tab-button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  #page-practice .stage-step {
+    padding-inline: 3px;
+    white-space: normal;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.2;
+  }
+}
+
+/* Readability and data comparison refinements shared by the audited core pages. */
+:where(
+  #page-keys,
+  #page-practice,
+  #page-knowledge,
+  #page-tasks,
+  #page-monitor,
+  #page-task,
+  #page-result
+) small {
+  font-size: var(--type-caption);
+  line-height: 1.45;
+}
+
+:where(#page-tasks, #page-monitor, #page-task, #page-result) {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+:where(.page-title, .reference-title, .monitor-page-title, .task-manager-header) > div > p,
+:where(.page-title, .reference-title, .monitor-page-title, .task-manager-header) > p {
+  max-width: 76ch;
+}
+
+.task-empty-state.is-loading > div:first-child {
+  color: var(--platform-primary, #2563eb);
+}
+
+.task-manager-list.is-loading {
+  pointer-events: none;
+}
+
+.task-loading-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) minmax(220px, 300px);
+  align-items: center;
+  gap: 16px;
+  min-height: 116px;
+  border-bottom: 1px solid rgba(151, 174, 211, .2);
+  padding: 20px;
+}
+
+.task-loading-row:last-child {
+  border-bottom: 0;
+}
+
+.task-loading-icon,
+.task-loading-copy i,
+.task-loading-actions i,
+.task-manager-shell[aria-busy="true"] .task-stat-card strong,
+.task-manager-shell[aria-busy="true"] .task-stat-card span {
+  display: block;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(100deg, #edf1f7 20%, #f8faff 42%, #edf1f7 64%);
+  background-size: 240% 100%;
+  color: transparent;
+  animation: platform-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+.task-loading-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+}
+
+.task-loading-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.task-loading-copy i {
+  width: var(--skeleton-width, 60%);
+  height: 12px;
+}
+
+.task-loading-copy i:first-child {
+  height: 18px;
+}
+
+.task-loading-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.task-loading-actions i {
+  width: 112px;
+  height: 36px;
+}
+
+.task-manager-shell[aria-busy="true"] .task-stat-card {
+  pointer-events: none;
+}
+
+.task-manager-shell[aria-busy="true"] .task-stat-card strong {
+  width: 42px;
+  height: 22px;
+}
+
+.task-manager-shell[aria-busy="true"] .task-stat-card span {
+  width: 64px;
+  height: 12px;
+}
+
+@keyframes platform-skeleton-shimmer {
+  to { background-position: -140% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-loading-icon,
+  .task-loading-copy i,
+  .task-loading-actions i,
+  .task-manager-shell[aria-busy="true"] .task-stat-card strong,
+  .task-manager-shell[aria-busy="true"] .task-stat-card span {
+    animation: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .task-loading-row {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .task-loading-icon {
+    width: 42px;
+    height: 42px;
+  }
+
+  .task-loading-actions {
+    display: none;
+  }
 }

@@ -7,7 +7,7 @@ from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
-from typing import Any, Callable, Iterable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar, cast
 
 from .provider_errors import classify_provider_error
 from .runtime_capacity import (
@@ -20,6 +20,8 @@ from .runtime_capacity import (
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+_MISSING_CONCURRENT_RESULT = object()
 
 
 _MODEL_REQUEST_LOCK = threading.Lock()
@@ -353,7 +355,7 @@ def run_limited_concurrent(
             sequential_results.append(result)
         return sequential_results
 
-    concurrent_results: list[R | None] = [None] * len(values)
+    concurrent_results: list[R | object] = [_MISSING_CONCURRENT_RESULT] * len(values)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         pending = iter(enumerate(values))
         futures: dict[Future[R], tuple[int, T]] = {}
@@ -383,4 +385,7 @@ def run_limited_concurrent(
         finally:
             for future in futures:
                 future.cancel()
-    return [result for result in concurrent_results if result is not None]
+    missing_indexes = [index for index, result in enumerate(concurrent_results) if result is _MISSING_CONCURRENT_RESULT]
+    if missing_indexes:
+        raise RuntimeError(f"concurrent workers did not produce results for indexes: {missing_indexes}")
+    return [cast(R, result) for result in concurrent_results]

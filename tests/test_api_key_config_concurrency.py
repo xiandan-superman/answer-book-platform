@@ -53,7 +53,15 @@ def _post(httpd: ThreadingHTTPServer, path: str, body: dict) -> tuple[int, dict]
     host = str(httpd.server_address[0])
     port = int(httpd.server_address[1])
     connection = http.client.HTTPConnection(host, port, timeout=5)
-    connection.request("POST", path, body=json.dumps(body), headers={"Content-Type": "application/json"})
+    connection.request(
+        "POST",
+        path,
+        body=json.dumps(body),
+        headers={
+            "Content-Type": "application/json",
+            "X-Answer-Book-Local-Token": server_module._LOCAL_PRIVILEGE_TOKEN,
+        },
+    )
     response = connection.getresponse()
     payload = json.loads(response.read().decode("utf-8"))
     connection.close()

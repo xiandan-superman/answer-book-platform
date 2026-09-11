@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.task_diagnostics import _compact_issue, _error_label, _recommendations
+from app.task_diagnostics import _compact_issue, _recommendations
 
 
 def test_figure_acceptance_issue_keeps_real_question_id() -> None:
@@ -30,12 +30,3 @@ def test_missing_required_inline_figure_does_not_recommend_generic_docx_repair()
 
     assert any("配图阶段" in item for item in recommendations)
     assert all("Word 生成审计" not in item for item in recommendations)
-
-
-def test_hybrid_header_encoding_failure_is_explained_without_exposing_python_error() -> None:
-    error = _error_label("'latin-1' codec can't encode characters in position 0-3")
-
-    assert error == "上传任务标识编码失败；请更新客户端与混合云服务端后重试。"
-    recommendations = _recommendations("uploading", error, [])
-    assert any("同步更新客户端和混合云服务端" in item for item in recommendations)
-    assert any("无需修改中文任务名" in item for item in recommendations)

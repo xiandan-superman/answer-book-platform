@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import os
 import re
 import tempfile
@@ -13,7 +12,6 @@ from typing import Any, BinaryIO
 from .paths import EXAMS_DIR, TEXTBOOKS_DIR, ensure_project_dirs
 from .textbook_index_cache import (
     TEXTBOOK_INDEX_CACHE_DIR,
-    shared_install_cache_key,
     validated_textbook_index_cache,
 )
 
@@ -21,6 +19,16 @@ EXAM_EXTENSIONS = {".docx"}
 TEXTBOOK_EXTENSIONS = {".pdf", ".docx", ".json", ".zip"}
 EXAM_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 TEXTBOOK_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+PACKAGED_DEVELOPMENT_EXAMS = {
+    "2017北航911真题-高分子-修订版(全).docx",
+    "2018北航911真题-测试.docx",
+    "demo_物理化学真题.docx",
+    "抽题流程测试_覆盖题型.docx",
+    "画图题-材分析.docx",
+    "真题录入模板_全题型.docx",
+    "结构重复测试_苯蒸发三小问.docx",
+    "识图题.docx",
+}
 _UPLOAD_LOCK = threading.RLock()
 VOLUME_MARKER_RE = re.compile(
     r"^(?P<title>.+?)(?P<volume>[上下中])(?:册|卷|部)?(?:第?(?P<part>[一二三四五六七八九十\d]+)分?册?)?$"
@@ -80,30 +88,13 @@ def _non_overwriting_target(target: Path, uploaded: Path) -> tuple[Path, bool]:
 
 def _file_info(path: Path) -> dict[str, Any]:
     stat = path.stat()
-    info = {
+    return {
         "name": path.name,
         "path": str(path.resolve()),
         "size": stat.st_size,
         "updated_at": stat.st_mtime,
         "extension": path.suffix.lower(),
     }
-    shared_root = TEXTBOOKS_DIR.resolve()
-    current = path.parent.resolve()
-    while current != shared_root and shared_root in current.parents:
-        manifest = current / ".shared_library_manifest.json"
-        if manifest.is_file():
-            try:
-                data = json.loads(manifest.read_text(encoding="utf-8"))
-                citation_name = str((data.get("citation_names_by_file") or {}).get(path.name) or "").strip()
-                if citation_name:
-                    info["citation_textbook"] = citation_name
-                info["shared_library_id"] = str(data.get("library_id") or "")
-                info["shared_library_version"] = str(data.get("version") or "")
-            except (OSError, json.JSONDecodeError):
-                pass
-            break
-        current = current.parent
-    return info
 
 
 def _fingerprint(path: Path) -> str:
@@ -206,7 +197,7 @@ def textbook_group_suggestions(files: list[dict[str, Any]]) -> list[dict[str, An
                 "key": key,
                 "name": citation,
                 "confidence": "high",
-                "reason": "共享教材包声明了相同的教材引用名称",
+                "reason": "教材元数据声明了相同的教材引用名称",
                 "files": [],
             },
         )
@@ -274,26 +265,6 @@ def attach_textbook_index_statuses(files: list[dict[str, Any]]) -> None:
     if not by_identity or not TEXTBOOK_INDEX_CACHE_DIR.exists():
         return
 
-    # Shared packages carry a published cache key.  Do this before legacy
-    # timestamp matching because Windows can round ``st_mtime_ns`` on copy.
-    shared_item_cache_keys: dict[int, str] = {}
-    for item in files:
-        path = Path(str(item.get("path") or ""))
-        cache_key = shared_install_cache_key([path], require_complete_source_set=False)
-        if not cache_key:
-            continue
-        cache_root = TEXTBOOK_INDEX_CACHE_DIR / cache_key
-        validated = validated_textbook_index_cache(cache_root, expected_key=cache_key)
-        if validated is None:
-            continue
-        status, _ = validated
-        item["index_status"] = {
-            "indexed": True,
-            "cache_count": 1,
-            "page_map_ok": bool(status.get("page_map_ok", True)),
-        }
-        shared_item_cache_keys[id(item)] = cache_key
-
     for cache_root in TEXTBOOK_INDEX_CACHE_DIR.iterdir():
         if not cache_root.is_dir():
             continue
@@ -309,8 +280,6 @@ def attach_textbook_index_statuses(files: list[dict[str, Any]]) -> None:
             except (TypeError, ValueError):
                 continue
             for item in by_identity.get(identity, []):
-                if shared_item_cache_keys.get(id(item)) == cache_root.name:
-                    continue
                 current = item["index_status"]
                 current["indexed"] = True
                 current["cache_count"] = int(current.get("cache_count") or 0) + 1
@@ -351,7 +320,11 @@ def _duplicate_issues(label: str, files: list[dict[str, Any]]) -> list[dict[str,
 
 def scan_library_files() -> dict[str, Any]:
     ensure_project_dirs()
-    exams = _scan_dir(EXAMS_DIR, EXAM_EXTENSIONS)
+    exams = [
+        item
+        for item in _scan_dir(EXAMS_DIR, EXAM_EXTENSIONS)
+        if str(item.get("name") or "") not in PACKAGED_DEVELOPMENT_EXAMS
+    ]
     textbooks = _scan_dir(TEXTBOOKS_DIR, TEXTBOOK_EXTENSIONS)
     attach_textbook_index_statuses(textbooks)
     duplicate_issues = _duplicate_issues("真题", exams) + _duplicate_issues("教材", textbooks)

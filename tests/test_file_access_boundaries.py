@@ -17,8 +17,9 @@ def test_task_file_access_allows_own_file_and_rejects_other_task(monkeypatch, tm
     other.write_bytes(b"other")
     monkeypatch.setattr(server, "_task_file_roots", lambda task_id: [own_stage.resolve(), own_output.resolve()])
 
-    assert server._safe_task_file("task-1", str(own)) == own.resolve()
-    with pytest.raises(FileNotFoundError, match="not inside"):
+    assert server._task_file_reference("task-1", own) == "output/answer.docx"
+    assert server._safe_task_file("task-1", "output/answer.docx") == own.resolve()
+    with pytest.raises(FileNotFoundError, match="invalid"):
         server._safe_task_file("task-1", str(other))
 
 
@@ -37,7 +38,7 @@ def test_task_file_access_rejects_symlink_to_outside(monkeypatch, tmp_path) -> N
     monkeypatch.setattr(server, "_task_file_roots", lambda task_id: [own_stage.resolve(), own_output.resolve()])
 
     with pytest.raises(FileNotFoundError, match="not inside"):
-        server._safe_task_file("task-1", str(link))
+        server._safe_task_file("task-1", "output/result.txt")
 
 
 def test_library_delete_rejects_outside_file_and_symlink(monkeypatch, tmp_path) -> None:

@@ -53,3 +53,18 @@ def test_invalid_status_or_foreign_manifest_is_never_reported_as_reusable(tmp_pa
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     assert textbook_index_cache.textbook_index_cache_status([str(source)], names)["indexed"] is False
+
+
+def test_omitted_citation_name_reuses_filename_default_cache_identity(tmp_path) -> None:
+    source = tmp_path / "分析化学第3版上1.zip"
+    source.write_bytes(b"same textbook package")
+
+    implicit_key, implicit_manifest = textbook_index_cache.textbook_index_key([source], None)
+    explicit_key, explicit_manifest = textbook_index_cache.textbook_index_key(
+        [source],
+        {str(source.resolve()): "分析化学第3版上"},
+    )
+
+    assert implicit_key == explicit_key
+    assert implicit_manifest == explicit_manifest
+    assert implicit_manifest[0]["citation_textbook"] == "分析化学第3版上"

@@ -30,10 +30,6 @@ STAGE_LABELS = {
     "final_acceptance": "最终验收",
     "acceptance": "交付验收",
     "pipeline": "生产流程",
-    "uploading": "上传任务到混合云",
-    "hybrid_upload": "上传任务到混合云",
-    "cloud_queue": "等待混合云执行",
-    "cloud_pipeline": "混合云解析流程",
     "completed": "已完成",
 }
 
@@ -106,11 +102,6 @@ def _stage_label(stage: str) -> str:
 
 def _error_label(error: str) -> str:
     normalized = str(error or "").strip()
-    if (
-        ("latin-1" in normalized and "encode" in normalized)
-        or "上传请求头编码失败" in normalized
-    ):
-        return "上传任务标识编码失败；请更新客户端与混合云服务端后重试。"
     return ERROR_LABELS.get(normalized, normalized)
 
 
@@ -273,13 +264,7 @@ def _question_summary(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _recommendations(stage: str, error: str, issues: list[dict[str, Any]]) -> list[str]:
     recs: list[str] = []
-    if stage in {"uploading", "hybrid_upload"}:
-        if "任务标识编码失败" in error or "请求头编码失败" in error:
-            recs.append("这是上传协议编码问题；请同步更新客户端和混合云服务端，然后从检查点重跑。")
-            recs.append("无需修改中文任务名，也无需重新上传或重新建立教材索引。")
-        else:
-            recs.append("检查混合云地址、访问令牌和网络连通性，然后从检查点重跑。")
-    elif stage == "extract_exam":
+    if stage == "extract_exam":
         if "长路径" in error or "MinerU" in error:
             recs.append("MinerU 首次安装可能受 Windows 长路径限制；请启用 Windows 长路径或将解析运行时放到短路径。")
             recs.append("确认磁盘至少有约 2 GB 可用空间，再点击重试；无需重新上传试题。")
@@ -332,19 +317,6 @@ def _related_files(sdir: Path, odir: Path, stage: str) -> list[dict[str, Any]]:
         "pipeline_status.json",
         "pipeline_error.json",
         "events.jsonl",
-        "hybrid_preprocess.json",
-        "hybrid_preprocess_error.json",
-        "hybrid_local_environment.json",
-        "hybrid_client_events.jsonl",
-        "hybrid_handoff.json",
-        "cloud_pipeline_status.json",
-        "hybrid_import_receipt.json",
-        "hybrid_cloud_worker.json",
-        "hybrid_cloud_failure.json",
-        "hybrid_client_error.json",
-        "hybrid_local_delivery_error.json",
-        "academic_expression_audit.local_delivery.json",
-        "hybrid_cloud_preflight.json",
     ]
     files.extend(STAGE_FILES.get(stage, []))
     out: list[dict[str, Any]] = []

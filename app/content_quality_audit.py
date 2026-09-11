@@ -9,7 +9,7 @@ from typing import Any
 from .calculation_consistency import calculation_draft_consistency_issues
 from .capabilities.catalog import capability_policy_contributions
 from .formula_audit import looks_like_formula
-from .question_requirements import answer_figure_required
+from .question_requirements import main_model_answer_figure_required
 from .question_types import infer_question_type, is_calculation_question, iter_leaf_question_parts, question_has_type, question_kind
 from .user_facing_text import contains_internal_repair_provenance
 
@@ -482,8 +482,8 @@ def _has_segment_type(fragment: dict[str, Any], segment_type: str) -> bool:
     )
 
 
-def _needs_figure(question: dict[str, Any]) -> bool:
-    return answer_figure_required(question)
+def _needs_figure(fragment: dict[str, Any]) -> bool:
+    return main_model_answer_figure_required(fragment)
 
 
 def _selected_and_rejected(selection: dict[str, Any] | None) -> tuple[set[str], set[str]]:
@@ -870,7 +870,7 @@ def audit_content_quality(
         if not has_calculation_part and _has_block(fragment, "待复核公式"):
             warning("noncalculation_unintegrated_formulas", "存在未自然融入解析正文的公式，已列入待复核公式并进入审查文档。")
 
-        if _needs_figure(question) and not _has_segment_type(fragment, "image_ref"):
+        if _needs_figure(fragment) and not _has_segment_type(fragment, "image_ref"):
             issue("missing_required_figure", "题目存在作图或图示需求，但最终解析未插入图片。")
 
         mistake_text = _block_text(fragment, "易错点及注意事项").strip()

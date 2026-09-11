@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.llm_client import LLMError, _json_retry_category
-from app.provider_errors import classify_provider_error
+from app.provider_errors import RequiredImageGenerationError, classify_provider_error, is_terminal_provider_route_error
 from app.server import _provider_test_error_payload
 
 
@@ -90,6 +90,25 @@ def test_explicit_media_account_pool_failure_stops_the_exact_task_route() -> Non
     assert info.requires_configuration is False
     assert "图片账号" in info.title
     assert "更换" in info.suggested_action
+
+
+def test_required_answer_image_failure_names_the_image_route_and_stops() -> None:
+    error = RequiredImageGenerationError(
+        "wawapii-gpt-image",
+        "gpt-image-2",
+        3,
+        "Provider HTTP 503: no eligible image account",
+    )
+
+    info = classify_provider_error(error)
+
+    assert info.kind == "required_image_generation_failed"
+    assert info.title == "生图模型调用失败，任务已停止"
+    assert "wawapii-gpt-image / gpt-image-2" in info.message
+    assert "不是题目文本或教材配置错误" in info.suggested_action
+    assert info.retryable is False
+    assert info.failure_state == "route_blocked"
+    assert is_terminal_provider_route_error(error) is True
 
 
 def test_explicit_unsupported_parameter_remains_configuration_blocked() -> None:

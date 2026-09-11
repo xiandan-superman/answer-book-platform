@@ -323,7 +323,7 @@ def audit_academic_expressions(
         capability_counts[expression.capability_id] = capability_counts.get(expression.capability_id, 0) + 1
     report = {
         "schema_version": ACADEMIC_EXPRESSION_REPORT_VERSION,
-        "mode": "local_only" if render_preflight else "cloud_structure_only",
+        "mode": "local_only" if render_preflight else "structure_only",
         "remote_model_calls": 0,
         "mutates_source_content": False,
         "ok": not issues,
