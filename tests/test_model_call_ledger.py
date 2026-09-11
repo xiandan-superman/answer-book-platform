@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 
 import pytest
 
@@ -315,6 +317,28 @@ def test_run_level_model_call_budget_uses_confirmed_task_shape(tmp_path, monkeyp
     assert state["budget"].max_model_calls_per_run == 220
 
 
+def test_run_budget_uses_actual_provider_capacity_profile(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "capacity-budget.jsonl")
+    monkeypatch.delenv("QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", raising=False)
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="capacity-task", run_id="run"):
+        runtime_monitor.configure_model_call_task_shape(
+            question_count=18,
+            task_kind="exam",
+            textbook_evidence_enabled=True,
+        )
+        with runtime_monitor.track_model_call(
+            provider="wawapi_xai", model="grok", purpose="chat", timeout=1
+        ):
+            pass
+
+    budget = runtime_monitor._RUN_MODEL_BUDGETS[("capacity-task", "run")]["budget"]
+    assert budget.provider_concurrency == 8
+    assert budget.max_model_wall_seconds_per_run == 1800
+    assert budget.answer_generation_reserve_seconds == 300
+
+
 def test_provider_circuit_allows_one_recovery_probe_and_resets_after_success(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "circuit.jsonl")
     monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "0")
@@ -334,6 +358,218 @@ def test_provider_circuit_allows_one_recovery_probe_and_resets_after_success(tmp
     route_key = "lingsuan_google|gemini|default"
     assert state["provider_failures"][route_key] == 0
     assert route_key not in state["provider_circuits"]
+
+
+def test_failed_recovery_probe_stops_route_with_user_visible_provider_cause(tmp_path, monkeypatch) -> None:
+    from app.provider_errors import ProviderRouteDegradedError, classify_provider_error
+
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "failed-probe.jsonl")
+    monkeypatch.setenv("QUALITY_PROVIDER_FAILURE_CIRCUIT_BREAKER", "2")
+    monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "0")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="failed-probe-task", run_id="run"):
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="读取空闲超时"):
+                with runtime_monitor.track_model_call(
+                    provider="wawapi_xai", model="grok", purpose="chat", timeout=10
+                ):
+                    from app.llm_client import LLMError
+
+                    raise LLMError("模型响应读取空闲超时。", transport_phase="read_idle")
+        with pytest.raises(ProviderRouteDegradedError) as stopped:
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok", purpose="probe", timeout=10
+            ):
+                from app.llm_client import LLMError
+
+                raise LLMError("模型响应读取空闲超时。", transport_phase="read_idle")
+        with pytest.raises(ProviderRouteDegradedError):
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok", purpose="blocked", timeout=10
+            ):
+                pass
+
+    presentation = classify_provider_error(stopped.value)
+    assert presentation.kind == "provider_route_degraded"
+    assert presentation.failure_state == "route_blocked"
+    assert "任务已停止" in presentation.title
+    assert "wawapi_xai / grok" in presentation.message
+
+
+def test_explicit_media_pool_failure_stops_without_repeated_probes(tmp_path, monkeypatch) -> None:
+    from app.llm_client import LLMError
+    from app.provider_errors import ProviderRouteDegradedError, classify_provider_error
+
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "media-pool.jsonl")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="media-task", run_id="run"):
+        with pytest.raises(ProviderRouteDegradedError):
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok-imagine", purpose="image", timeout=10
+            ):
+                raise LLMError(
+                    "Provider HTTP 503: No eligible Grok media accounts",
+                    status_code=503,
+                    provider_error_code="grok_media_no_eligible_account",
+                )
+        with pytest.raises(ProviderRouteDegradedError) as stopped:
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok-imagine", purpose="image", timeout=10
+            ):
+                pytest.fail("terminal route must be rejected before another provider call")
+
+    info = classify_provider_error(stopped.value)
+    assert info.failure_state == "route_blocked"
+    assert "wawapi_xai / grok-imagine" in info.message
+
+
+def test_provider_circuit_admits_only_one_probe_at_a_time(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "single-probe.jsonl")
+    monkeypatch.setenv("QUALITY_PROVIDER_FAILURE_CIRCUIT_BREAKER", "2")
+    monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "0")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="single-probe-task", run_id="run"):
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="503"):
+                with runtime_monitor.track_model_call(
+                    provider="wawapi_xai", model="grok", purpose="failed", timeout=10
+                ):
+                    raise RuntimeError("Provider HTTP 503: temporary failure")
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    probe_flags: list[bool] = []
+
+    def first_probe() -> None:
+        with runtime_monitor.model_call_context(task_id="single-probe-task", run_id="run"):
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok", purpose="probe-1", timeout=10
+            ) as record:
+                probe_flags.append(bool(record["circuit_probe"]))
+                first_entered.set()
+                assert release_first.wait(2.0)
+
+    def second_probe() -> None:
+        with runtime_monitor.model_call_context(task_id="single-probe-task", run_id="run"):
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok", purpose="probe-2", timeout=10
+            ) as record:
+                probe_flags.append(bool(record["circuit_probe"]))
+                second_entered.set()
+
+    first = threading.Thread(target=first_probe)
+    second = threading.Thread(target=second_probe)
+    first.start()
+    assert first_entered.wait(1.0)
+    second.start()
+    time.sleep(0.05)
+    assert not second_entered.is_set()
+    release_first.set()
+    first.join(1.0)
+    second.join(1.0)
+
+    assert second_entered.is_set()
+    assert probe_flags == [True, False]
+
+
+def test_model_output_structure_error_does_not_blame_provider_circuit(tmp_path, monkeypatch) -> None:
+    from app.llm_client import StructuredOutputError
+
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "model-output.jsonl")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="model-output-task", run_id="run"):
+        for _ in range(3):
+            with pytest.raises(StructuredOutputError):
+                with runtime_monitor.track_model_call(
+                    provider="wawapi_google", model="gemini", purpose="json", timeout=10
+                ):
+                    raise StructuredOutputError("Model returned invalid JSON")
+
+    state = runtime_monitor._RUN_MODEL_BUDGETS[("model-output-task", "run")]
+    assert state["provider_failures"]["wawapi_google|gemini|default"] == 0
+    assert not state["provider_circuits"]
+
+
+def test_unrelated_failure_does_not_erase_prior_provider_failures(tmp_path, monkeypatch) -> None:
+    from app.llm_client import LLMError, StructuredOutputError
+
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "mixed-failures.jsonl")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="mixed-task", run_id="run"):
+        for _ in range(2):
+            with pytest.raises(LLMError):
+                with runtime_monitor.track_model_call(
+                    provider="wawapi_xai", model="grok", purpose="stream", timeout=10
+                ):
+                    raise LLMError("模型响应读取空闲超时。", transport_phase="read_idle")
+        with pytest.raises(StructuredOutputError):
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok", purpose="json", timeout=10
+            ):
+                raise StructuredOutputError("Model returned invalid JSON")
+
+    state = runtime_monitor._RUN_MODEL_BUDGETS[("mixed-task", "run")]
+    assert state["provider_failures"]["wawapi_xai|grok|default"] == 2
+
+
+def test_local_connect_failures_do_not_trigger_supplier_route_attribution(tmp_path, monkeypatch) -> None:
+    from app.llm_client import LLMError
+
+    monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "connect.jsonl")
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+
+    with runtime_monitor.model_call_context(task_id="connect-task", run_id="run"):
+        for _ in range(3):
+            with pytest.raises(LLMError):
+                with runtime_monitor.track_model_call(
+                    provider="wawapi_xai", model="grok", purpose="connect", timeout=10
+                ):
+                    raise LLMError("无法连接模型服务。", transport_phase="connect")
+
+    state = runtime_monitor._RUN_MODEL_BUDGETS[("connect-task", "run")]
+    assert state["provider_failures"]["wawapi_xai|grok|default"] == 0
+    assert not state["provider_circuits"]
+
+
+def test_pre_answer_wall_reserve_interrupts_active_request_but_answer_stage_can_use_it(
+    monkeypatch,
+) -> None:
+    from dataclasses import replace
+
+    from app.capabilities.quality_budget import QualityExecutionBudget
+    from app.concurrency import ensure_model_request_active
+
+    runtime_monitor._RUN_MODEL_BUDGETS.clear()
+    now = time.monotonic()
+    budget = replace(
+        QualityExecutionBudget(),
+        max_model_wall_seconds_per_run=1000,
+        answer_generation_reserve_seconds=300,
+    )
+    runtime_monitor._RUN_MODEL_BUDGETS[("reserve-task", "run")] = {
+        "started_monotonic": now - 701,
+        "call_count": 0,
+        "token_count": 0,
+        "provider_failures": {},
+        "provider_circuits": {},
+        "budget": budget,
+    }
+
+    with runtime_monitor.model_call_context(
+        task_id="reserve-task", run_id="run", stage="evidence_selection"
+    ):
+        with pytest.raises(runtime_monitor.ModelBudgetExhausted, match="reserved for answer"):
+            ensure_model_request_active()
+    with runtime_monitor.model_call_context(
+        task_id="reserve-task", run_id="run", stage="answer_generation"
+    ):
+        ensure_model_request_active()
 
 
 def test_provider_circuit_isolated_by_provider_model_and_protocol(tmp_path, monkeypatch) -> None:
@@ -370,7 +606,7 @@ def test_provider_circuit_isolated_by_provider_model_and_protocol(tmp_path, monk
             pass
 
 
-def test_practice_generation_gets_its_own_long_task_wall_clock_budget(monkeypatch) -> None:
+def test_practice_generation_does_not_bypass_dynamic_task_wall_clock_budget(monkeypatch) -> None:
     monkeypatch.delenv("QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", raising=False)
 
     generation = runtime_monitor._model_execution_budget({
@@ -382,7 +618,7 @@ def test_practice_generation_gets_its_own_long_task_wall_clock_budget(monkeypatc
         "stage": "answer_generation",
     })
 
-    assert generation.max_model_wall_seconds_per_run == 7200
+    assert generation.max_model_wall_seconds_per_run == 1800
     assert regular.max_model_wall_seconds_per_run == 1800
 
 

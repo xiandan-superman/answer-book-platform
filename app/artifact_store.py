@@ -60,7 +60,7 @@ def fsync_directory_best_effort(directory: Path | str) -> None:
 
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
+    with open(long_path(path), "rb") as handle:
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
@@ -69,9 +69,10 @@ def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
 def verify_immutable_file(path: Path, *, sha256: str, size_bytes: int | None = None) -> bool:
     candidate = Path(path)
     try:
-        if not candidate.is_file():
+        raw_candidate = long_path(candidate)
+        if not os.path.isfile(raw_candidate):
             return False
-        if size_bytes is not None and candidate.stat().st_size != int(size_bytes):
+        if size_bytes is not None and os.stat(raw_candidate).st_size != int(size_bytes):
             return False
         return sha256_file(candidate) == str(sha256 or "")
     except OSError:

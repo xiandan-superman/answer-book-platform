@@ -8,6 +8,7 @@ from typing import Any
 from .paths import CONFIG_DIR
 
 MODEL_CAPABILITY_REGISTRY_PATH = CONFIG_DIR / "model_capabilities.json"
+MODEL_PROTOCOL_VERIFICATION_PATH = CONFIG_DIR / "model_protocol_verification.json"
 REQUIRED_MODEL_FIELDS = {
     "kind",
     "evidence_grade",
@@ -48,6 +49,39 @@ def _load_model_capability_registry_path(target: Path) -> dict[str, Any]:
 
 def load_model_capability_registry(path: Path | None = None) -> dict[str, Any]:
     return _load_model_capability_registry_path(path) if path is not None else _load_default_model_capability_registry()
+
+
+def load_model_protocol_verification(path: Path | None = None) -> dict[str, Any]:
+    target = path or MODEL_PROTOCOL_VERIFICATION_PATH
+    if not target.exists():
+        raise ValueError(f"模型协议验证记录不存在：{target}")
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"模型协议验证记录无法读取：{exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("providers"), dict):
+        raise ValueError("模型协议验证记录格式错误：缺少 providers 对象")
+    return payload
+
+
+def get_verified_model_protocols(provider_name: str, model_name: str) -> tuple[str, ...]:
+    registry = load_model_protocol_verification()
+    model = (
+        registry.get("providers", {})
+        .get(str(provider_name or "").strip(), {})
+        .get("models", {})
+        .get(str(model_name or "").strip(), {})
+    )
+    routes = model.get("routes", {}) if isinstance(model, dict) else {}
+    if not isinstance(routes, dict):
+        return ()
+    preferred_order = {"responses": 0, "chat_completions": 1, "anthropic_messages": 2, "images_generations": 3}
+    passed = [
+        str(protocol).strip().lower()
+        for protocol, route in routes.items()
+        if isinstance(route, dict) and route.get("status") == "passed"
+    ]
+    return tuple(sorted(set(passed), key=lambda protocol: (preferred_order.get(protocol, 99), protocol)))
 
 
 def configured_provider_models(provider: dict[str, Any]) -> set[str]:
@@ -172,8 +206,66 @@ def validate_provider_registry_sync(
     return errors
 
 
+def validate_protocol_verification_sync(
+    provider_config: dict[str, Any],
+    verification: dict[str, Any] | None = None,
+) -> list[str]:
+    records = verification or load_model_protocol_verification()
+    configured_providers = provider_config.get("providers", {})
+    verified_providers = records.get("providers", {})
+    grandfathered = {
+        str(item).strip()
+        for item in records.get("grandfathered_failed_snapshot_models", [])
+        if str(item).strip()
+    }
+    errors: list[str] = []
+    if records.get("interpretation", {}).get("point_in_time_only") is not True:
+        errors.append("模型协议验证记录必须声明 point_in_time_only，不能把延迟或失败当作长期状态")
+
+    for provider_name, provider in configured_providers.items():
+        configured = configured_provider_models(provider)
+        provider_record = verified_providers.get(provider_name)
+        if not isinstance(provider_record, dict) or not isinstance(provider_record.get("models"), dict):
+            errors.append(f"服务商 {provider_name} 缺少协议验证记录")
+            continue
+        model_records = provider_record["models"]
+        recorded = {str(model).strip() for model in model_records if str(model).strip()}
+        for model_name in sorted(configured - recorded):
+            errors.append(f"模型 {provider_name}/{model_name} 上线前未测试协议")
+        for model_name in sorted(recorded - configured):
+            errors.append(f"已删除模型仍留在协议验证记录：{provider_name}/{model_name}")
+        for model_name in sorted(configured & recorded):
+            record = model_records.get(model_name)
+            routes = record.get("routes") if isinstance(record, dict) else None
+            if not isinstance(routes, dict) or not routes:
+                errors.append(f"模型 {provider_name}/{model_name} 缺少真实协议探测结果")
+                continue
+            has_pass = False
+            for protocol, route in routes.items():
+                if not str(protocol).strip() or not isinstance(route, dict):
+                    errors.append(f"模型 {provider_name}/{model_name} 的协议记录无效")
+                    continue
+                status = str(route.get("status") or "").strip()
+                if status not in {"passed", "failed_snapshot"}:
+                    errors.append(f"模型 {provider_name}/{model_name}/{protocol} 的验证状态无效")
+                observations = route.get("observations")
+                if not isinstance(observations, list) or not observations:
+                    errors.append(f"模型 {provider_name}/{model_name}/{protocol} 缺少探测观察")
+                has_pass = has_pass or status == "passed"
+            identity = f"{provider_name}/{model_name}"
+            if not has_pass and identity not in grandfathered:
+                errors.append(f"模型 {identity} 没有通过任何协议，禁止作为新模型上线")
+
+    for provider_name in sorted(set(verified_providers) - set(configured_providers)):
+        errors.append(f"已删除服务商仍留在协议验证记录：{provider_name}")
+    return errors
+
+
 def ensure_provider_registry_sync(provider_config: dict[str, Any]) -> None:
-    errors = validate_provider_registry_sync(provider_config)
+    errors = [
+        *validate_provider_registry_sync(provider_config),
+        *validate_protocol_verification_sync(provider_config),
+    ]
     if errors:
         details = "\n- ".join(errors)
         raise ValueError(f"服务商配置与模型能力注册表不同步：\n- {details}")

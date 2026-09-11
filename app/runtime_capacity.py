@@ -52,7 +52,7 @@ def provider_request_max_concurrency(provider: object | None) -> int:
         provider if isinstance(provider, str) else getattr(provider, "name", "") or ""
     ).strip().lower()
     if provider_name == "lingsuan" or provider_name.startswith("lingsuan_"):
-        lingsuan_limit = bounded_env_int("LINGSUAN_REQUEST_MAX_CONCURRENCY", 6, 1, 8)
+        lingsuan_limit = bounded_env_int("LINGSUAN_REQUEST_MAX_CONCURRENCY", 8, 1, 16)
         return min(global_limit, lingsuan_limit) if global_limit > 0 else lingsuan_limit
     profile = provider_capacity_profile(provider_name)
     configured_limit = profile.get("request_concurrency")

@@ -1,39 +1,6 @@
 {
   "active_provider": "bailian",
   "providers": {
-    "deepseek": {
-      "type": "openai_compatible",
-      "api_protocol": "responses",
-      "responses_streaming": true,
-      "responses_fallback_to_chat": false,
-      "base_url": "https://api.deepseek.com",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "api_key": "",
-      "default_model": "deepseek-v4-flash",
-      "vision_model": "deepseek-v4-flash-vision-exp",
-      "vision_model_options": ["deepseek-v4-flash-vision-exp"],
-      "supports_vision": true,
-      "model_capabilities": {
-        "deepseek-v4-flash": ["text"],
-        "deepseek-v4-flash-vision-exp": ["text", "vision"]
-      },
-      "model_profiles": {
-        "deepseek-v4-flash": {"api_protocol": "responses", "omit_parameters": ["store"]},
-        "deepseek-v4-flash-vision-exp": {"api_protocol": "chat_completions", "supports_tool_calls": true}
-      },
-      "image_model": "",
-      "image_size": "1024x1024",
-      "model_options": [
-        "deepseek-v4-flash",
-        "deepseek-v4-flash-vision-exp"
-      ],
-      "model_option_labels": {
-        "deepseek-v4-flash": "DeepSeek-V4-Flash（文本）",
-        "deepseek-v4-flash-vision-exp": "DeepSeek-V4-Flash-Vision-Exp（多模态视觉）"
-      },
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
     "ark": {
       "type": "openai_compatible",
       "api_protocol": "responses",
@@ -42,43 +9,50 @@
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "api_key_env": "ARK_API_KEY",
       "api_key": "",
-      "default_model": "doubao-seed-2-1-pro-260628",
-      "vision_model": "doubao-seed-2-1-pro-260628",
+      "default_model": "deepseek-v4-pro-ga-260813",
+      "vision_model": "doubao-seed-2-0-pro-260215",
       "supports_vision": true,
       "model_capabilities": {
-        "doubao-seed-2-1-pro-260628": ["text", "vision"],
-        "doubao-seed-2-1-turbo-260628": ["text", "vision"],
-        "doubao-seed-2-0-pro-260215": ["text", "vision"]
+        "doubao-seed-2-0-pro-260215": [
+          "text",
+          "vision"
+        ],
+        "deepseek-v4-pro-ga-260813": [
+          "text"
+        ],
+        "deepseek-v4-flash-ga-260731": [
+          "text"
+        ]
       },
       "image_model_env": "ARK_IMAGE_MODEL",
       "image_model": "doubao-seedream-5-0-260128",
       "image_size": "2048x2048",
       "model_options": [
-        "doubao-seed-2-1-pro-260628",
-        "doubao-seed-2-1-turbo-260628",
         "doubao-seed-2-0-pro-260215",
-        "deepseek-v4-flash-260425",
-        "deepseek-v4-pro-260425",
-        "glm-5-2-260617",
-        "kimi-k2"
+        "deepseek-v4-pro-ga-260813",
+        "deepseek-v4-flash-ga-260731"
       ],
       "model_option_labels": {
-        "doubao-seed-2-1-pro-260628": "Doubao-Seed-2.1-pro",
-        "doubao-seed-2-1-turbo-260628": "Doubao-Seed-2.1-turbo",
-        "doubao-seed-2-0-pro-260215": "Doubao-Seed-2.0-pro",
-        "deepseek-v4-flash-260425": "DeepSeek-V4-flash",
-        "deepseek-v4-pro-260425": "DeepSeek-V4-pro",
-        "glm-5-2-260617": "GLM-5.2",
-        "kimi-k2": "Kimi-K2"
+        "doubao-seed-2-0-pro-260215": "Doubao-Seed-2.0-pro（视觉，稳定）",
+        "deepseek-v4-pro-ga-260813": "DeepSeek-V4-Pro-GA（文本）",
+        "deepseek-v4-flash-ga-260731": "DeepSeek-V4-Flash-GA（文本）"
       },
       "model_profiles": {
-        "glm-5-2-260617": {"api_protocol": "chat_completions"},
-        "kimi-k2": {"api_protocol": "chat_completions"}
+        "doubao-seed-2-0-pro-260215": {},
+        "deepseek-v4-pro-ga-260813": {},
+        "deepseek-v4-flash-ga-260731": {}
       },
-      "allow_custom_model": true,
-      "model_hint": "可填写火山方舟文档中的 Model ID，或控制台 API 调用页复制的 ep- 接入点 ID。",
+      "allow_custom_model": false,
+      "model_hint": "仅展示已完成平台短结构化输出验证的火山方舟模型；新增 Model ID 必须先登记并通过验证门禁。",
       "temperature": 0.1,
-      "max_tokens": 24576
+      "max_tokens": 24576,
+      "vision_model_options": [
+        "doubao-seed-2-0-pro-260215"
+      ],
+      "json_mode_unsupported_models": [
+        "deepseek-v4-pro-ga-260813",
+        "deepseek-v4-flash-ga-260731"
+      ]
     },
     "ark_image": {
       "type": "openai_compatible",
@@ -105,6 +79,53 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "deepseek": {
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "responses_streaming": true,
+      "responses_fallback_to_chat": false,
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "api_key": "",
+      "default_model": "deepseek-flash",
+      "vision_model": "deepseek-flash",
+      "vision_model_options": [
+        "deepseek-flash"
+      ],
+      "supports_vision": true,
+      "model_capabilities": {
+        "deepseek-flash": [
+          "text",
+          "vision"
+        ]
+      },
+      "model_profiles": {
+        "deepseek-flash": {
+          "api_protocol": "responses",
+          "supported_thinking_modes": [
+            "disabled",
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "omit_parameters": [
+            "store"
+          ]
+        }
+      },
+      "image_model": "",
+      "image_size": "1024x1024",
+      "model_options": [
+        "deepseek-flash"
+      ],
+      "model_option_labels": {
+        "deepseek-flash": "DeepSeek-V4.1-Flash（原生多模态）"
+      },
+      "allow_custom_model": false,
+      "model_hint": "DeepSeek 官方稳定别名；当前指向 V4.1 Flash。新增或更换模型必须先完成协议与能力验证。",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
     "bailian": {
       "type": "openai_compatible",
       "api_protocol": "responses",
@@ -117,25 +138,70 @@
       "vision_model": "qwen3.7-flash",
       "supports_vision": true,
       "model_capabilities": {
-        "qwen3.7-max": ["text"],
-        "qwen3.7-plus": ["text", "vision"],
-        "qwen3.7-flash": ["text", "vision"],
-        "qwen3.6-plus": ["text", "vision"],
-        "qwen3.6-flash": ["text", "vision"],
-        "qwen3-vl-flash": ["text", "vision"],
-        "qwen-vl-max": ["text", "vision"],
-        "qwen-vl-plus": ["text", "vision"],
-        "qwen-vl-ocr": ["text", "vision"]
+        "qwen3.7-max": [
+          "text"
+        ],
+        "qwen3.7-plus": [
+          "text",
+          "vision"
+        ],
+        "qwen3.7-flash": [
+          "text",
+          "vision"
+        ],
+        "qwen3.6-plus": [
+          "text",
+          "vision"
+        ],
+        "qwen3.6-flash": [
+          "text",
+          "vision"
+        ],
+        "qwen3-vl-flash": [
+          "text",
+          "vision"
+        ],
+        "qwen-vl-max": [
+          "text",
+          "vision"
+        ],
+        "qwen-vl-plus": [
+          "text",
+          "vision"
+        ],
+        "qwen-vl-ocr": [
+          "text",
+          "vision"
+        ]
       },
       "model_profiles": {
-        "qwen3.7-plus": {"supports_tool_calls": true},
-        "qwen3.7-flash": {"supports_tool_calls": true},
-        "qwen3.6-plus": {"supports_tool_calls": true},
-        "qwen3.6-flash": {"supports_tool_calls": true},
-        "qwen3-vl-flash": {"api_protocol": "chat_completions", "supports_tool_calls": true},
-        "qwen-vl-max": {"api_protocol": "chat_completions"},
-        "qwen-vl-plus": {"api_protocol": "chat_completions"},
-        "qwen-vl-ocr": {"api_protocol": "chat_completions", "max_tokens": 4096, "supports_tool_calls": true}
+        "qwen3.7-plus": {
+          "supports_tool_calls": true
+        },
+        "qwen3.7-flash": {
+          "supports_tool_calls": true
+        },
+        "qwen3.6-plus": {
+          "supports_tool_calls": true
+        },
+        "qwen3.6-flash": {
+          "supports_tool_calls": true
+        },
+        "qwen3-vl-flash": {
+          "api_protocol": "chat_completions",
+          "supports_tool_calls": true
+        },
+        "qwen-vl-max": {
+          "api_protocol": "chat_completions"
+        },
+        "qwen-vl-plus": {
+          "api_protocol": "chat_completions"
+        },
+        "qwen-vl-ocr": {
+          "api_protocol": "chat_completions",
+          "max_tokens": 4096,
+          "supports_tool_calls": true
+        }
       },
       "image_model_env": "BAILIAN_IMAGE_MODEL",
       "image_model": "qwen-image-2.0-pro",
@@ -179,238 +245,8 @@
         "qwen-vl-plus": "Qwen-VL-Plus 视觉理解",
         "qwen-vl-ocr": "Qwen-VL-OCR 试题/OCR"
       },
-      "allow_custom_model": true,
-      "model_hint": "可填写百炼模型市场中的 Model ID；北京地域默认使用 dashscope.aliyuncs.com，若要用业务空间专属域名，请把 base_url 改为 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1。",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "sensenova": {
-      "type": "openai_compatible",
-      "api_protocol": "chat_completions",
-      "base_url": "https://token.sensenova.cn/v1",
-      "api_key_env": "SENSENOVA_API_KEY",
-      "api_key": "",
-      "default_model": "sensenova-6.8-flash-lite",
-      "vision_model": "sensenova-6.8-flash-lite",
-      "vision_model_options": ["sensenova-6.8-flash-lite"],
-      "supports_vision": true,
-      "model_capabilities": {
-        "sensenova-6.8-flash-lite": ["text", "vision"],
-        "deepseek-v4-flash": ["text"],
-        "glm-5.2": ["text"]
-      },
-      "supports_image_generation": true,
-      "image_model": "sensenova-u1.5-lite",
-      "image_model_options": ["sensenova-u1.5-lite"],
-      "image_model_option_labels": {
-        "sensenova-u1.5-lite": "SenseNova U1.5 Lite（图片生成）"
-      },
-      "image_size": "2048x2048",
-      "model_options": [
-        "sensenova-6.8-flash-lite",
-        "deepseek-v4-flash",
-        "glm-5.2"
-      ],
-      "model_option_labels": {
-        "sensenova-6.8-flash-lite": "SenseNova 6.8 Flash Lite（多模态）",
-        "deepseek-v4-flash": "DeepSeek V4 Flash（文本）",
-        "glm-5.2": "GLM-5.2（文本）"
-      },
       "allow_custom_model": false,
-      "model_hint": "商汤日日新 Token Plan：SenseNova 6.8 Flash Lite 支持文本和图片输入；U1.5 Lite 用于图片生成。",
-      "thinking_mode": "auto",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "bai": {
-      "type": "openai_compatible",
-      "api_protocol": "chat_completions",
-      "base_url": "https://api.b.ai/v1",
-      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
-      "api_key_env": "BAI_API_KEY",
-      "api_key": "",
-      "default_model": "deepseek-v4-flash",
-      "vision_model": "deepseek-v4-flash-vision-exp",
-      "vision_model_options": ["deepseek-v4-flash-vision-exp"],
-      "supports_vision": true,
-      "model_capabilities": {
-        "deepseek-v4-flash": ["text"],
-        "deepseek-v4-flash-vision-exp": ["text", "vision"],
-        "hy3": ["text"],
-        "mimo-v2.5": ["text"]
-      },
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": [
-        "deepseek-v4-flash",
-        "deepseek-v4-flash-vision-exp",
-        "hy3",
-        "mimo-v2.5"
-      ],
-      "model_option_labels": {
-        "deepseek-v4-flash": "DeepSeek V4 Flash（文本）",
-        "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision Exp（多模态）",
-        "hy3": "Tencent Hy3（文本）",
-        "mimo-v2.5": "MiMo V2.5（文本）"
-      },
-      "allow_custom_model": false,
-      "model_hint": "仅展示已在 B.AI 实测通过文本或图片输入、且支持 JSON 结构化输出的模型。",
-      "thinking_mode": "auto",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "openrouter": {
-      "type": "openai_compatible",
-      "api_protocol": "responses",
-      "responses_streaming": true,
-      "responses_fallback_to_chat": false,
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY",
-      "api_key": "",
-      "default_model": "stealth/ox-alpha",
-      "vision_model": "stealth/ox-alpha",
-      "vision_model_options": [
-        "stealth/ox-alpha",
-        "minimax/minimax-m3:free"
-      ],
-      "supports_vision": true,
-      "model_capabilities": {
-        "stealth/ox-alpha": ["text", "vision"],
-        "z-ai/glm-5.2:free": ["text"],
-        "minimax/minimax-m3:free": ["text", "vision"]
-      },
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": [
-        "stealth/ox-alpha",
-        "z-ai/glm-5.2:free",
-        "minimax/minimax-m3:free"
-      ],
-      "model_option_labels": {
-        "stealth/ox-alpha": "Ox Alpha（文本与多模态理解）",
-        "z-ai/glm-5.2:free": "GLM 5.2 Free（文本，免费池可能限流）",
-        "minimax/minimax-m3:free": "MiniMax M3 Free（文本与多模态理解）"
-      },
-      "model_profiles": {
-        "z-ai/glm-5.2:free": {"api_protocol": "chat_completions"},
-        "minimax/minimax-m3:free": {"api_protocol": "chat_completions", "strip_think_blocks": true}
-      },
-      "allow_custom_model": false,
-      "model_hint": "使用 OpenRouter Responses API。MiniMax M3 Free 已实测通过文本、JSON 与图片输入；GLM 5.2 Free 的上游免费共享池可能临时限流。",
-      "thinking_mode": "auto",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "google_ai": {
-      "type": "openai_compatible",
-      "api_protocol": "chat_completions",
-      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-      "api_key_env": "GEMINI_API_KEY",
-      "api_key": "",
-      "default_model": "gemini-3.7-flash",
-      "vision_model": "gemini-3.7-flash",
-      "vision_model_options": [
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite"
-      ],
-      "supports_vision": true,
-      "model_capabilities": {
-        "gemini-3.7-flash": ["text", "vision"],
-        "gemini-3.6-flash": ["text", "vision"],
-        "gemini-3.5-flash": ["text", "vision"],
-        "gemini-3.5-flash-lite": ["text", "vision"]
-      },
-      "model_profiles": {
-        "gemini-3.7-flash": {"api_protocol": "chat_completions", "thinking_minimum": "low", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.6-flash": {"api_protocol": "chat_completions", "thinking_minimum": "low", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.5-flash": {"api_protocol": "chat_completions", "thinking_minimum": "low", "omit_parameters": ["temperature", "top_p", "top_k"]},
-        "gemini-3.5-flash-lite": {"api_protocol": "chat_completions", "thinking_minimum": "low", "omit_parameters": ["temperature", "top_p", "top_k"]}
-      },
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": [
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite"
-      ],
-      "model_option_labels": {
-        "gemini-3.7-flash": "Gemini 3.7 Flash（最新稳定版）",
-        "gemini-3.6-flash": "Gemini 3.6 Flash（稳定版）",
-        "gemini-3.5-flash": "Gemini 3.5 Flash（稳定版）",
-        "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite（低成本稳定版）"
-      },
-      "allow_custom_model": false,
-      "model_hint": "Google AI Studio 官方 Gemini API；四个模型均已实测通过文本、图片和 JSON 结构化输出。Gemini 3 系列不能关闭推理。",
-      "thinking_mode": "high",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "bigmodel": {
-      "type": "openai_compatible",
-      "api_protocol": "chat_completions",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "api_key_env": "ZAI_API_KEY",
-      "api_key": "",
-      "default_model": "glm-5.3-flash",
-      "vision_model": "glm-5.3-flash",
-      "vision_model_options": ["glm-5.3-flash"],
-      "supports_vision": true,
-      "model_capabilities": {
-        "glm-5.3-flash": ["text", "vision"]
-      },
-      "model_profiles": {
-        "glm-5.3-flash": {
-          "api_protocol": "chat_completions",
-          "thinking_minimum": "low"
-        }
-      },
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": ["glm-5.3-flash"],
-      "model_option_labels": {
-        "glm-5.3-flash": "GLM-5.3-Flash（原生多模态）"
-      },
-      "allow_custom_model": false,
-      "model_hint": "智谱 BigModel 官方 Chat Completions 接口；GLM-5.3-Flash 支持文本、图片和 JSON 结构化输出，且必须开启思考模式。",
-      "thinking_mode": "xhigh",
-      "temperature": 1.0,
-      "max_tokens": 24576
-    },
-    "yuanheng": {
-      "type": "openai_compatible",
-      "api_protocol": "responses",
-      "responses_streaming": true,
-      "responses_fallback_to_chat": false,
-      "base_url": "https://cn.meta-api.vip/v1",
-      "api_key_env": "YUANHENG_API_KEY",
-      "api_key": "",
-      "default_model": "gpt-5.6-luna",
-      "vision_model": "gpt-5.6-luna",
-      "vision_model_options": [
-        "gpt-5.6-luna",
-        "gpt-5.6-terra"
-      ],
-      "supports_vision": true,
-      "model_capabilities": {
-        "gpt-5.6-luna": ["text", "vision"],
-        "gpt-5.6-terra": ["text", "vision"]
-      },
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": [
-        "gpt-5.6-luna",
-        "gpt-5.6-terra"
-      ],
-      "model_option_labels": {
-        "gpt-5.6-luna": "GPT-5.6 Luna（文本与多模态理解）",
-        "gpt-5.6-terra": "GPT-5.6 Terra（文本与多模态理解）"
-      },
-      "allow_custom_model": false,
-      "model_hint": "仅展示已在元衡 API 实测通过流式 Responses、JSON 结构化输出和图片理解的 Luna 与 Terra。",
-      "thinking_mode": "auto",
+      "model_hint": "仅展示已完成平台协议与能力验证的百炼模型；新增 Model ID 必须先登记并通过验证门禁。",
       "temperature": 0.1,
       "max_tokens": 24576
     },
@@ -434,17 +270,40 @@
       ],
       "supports_vision": true,
       "model_capabilities": {
-        "gpt-6-astra": ["text", "vision"],
-        "gpt-5.6-sol": ["text", "vision"],
-        "gpt-5.6-terra": ["text", "vision"],
-        "gpt-5.6-luna": ["text", "vision"],
-        "gpt-5.5": ["text", "vision"]
+        "gpt-6-astra": [
+          "text",
+          "vision"
+        ],
+        "gpt-5.6-sol": [
+          "text",
+          "vision"
+        ],
+        "gpt-5.6-terra": [
+          "text",
+          "vision"
+        ],
+        "gpt-5.6-luna": [
+          "text",
+          "vision"
+        ],
+        "gpt-5.5": [
+          "text",
+          "vision"
+        ]
       },
       "model_profiles": {
-        "gpt-6-astra": {"supports_tool_calls": true},
-        "gpt-5.6-sol": {"supports_tool_calls": true},
-        "gpt-5.6-terra": {"supports_tool_calls": true},
-        "gpt-5.5": {"supports_tool_calls": true}
+        "gpt-6-astra": {
+          "supports_tool_calls": true
+        },
+        "gpt-5.6-sol": {
+          "supports_tool_calls": true
+        },
+        "gpt-5.6-terra": {
+          "supports_tool_calls": true
+        },
+        "gpt-5.5": {
+          "supports_tool_calls": true
+        }
       },
       "supports_image_generation": false,
       "image_model": "",
@@ -476,44 +335,213 @@
       "api_key": "",
       "default_model": "gpt-5.6-sol",
       "vision_model": "gpt-5.6-sol",
-      "vision_model_options": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"],
+      "vision_model_options": [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-6-astra"
+      ],
       "supports_vision": true,
-      "model_capabilities": {"gpt-5.6-sol": ["text", "vision"], "gpt-5.6-terra": ["text", "vision"], "gpt-6-astra": ["text", "vision"]},
+      "model_capabilities": {
+        "gpt-5.6-sol": [
+          "text",
+          "vision"
+        ],
+        "gpt-5.6-terra": [
+          "text",
+          "vision"
+        ],
+        "gpt-6-astra": [
+          "text",
+          "vision"
+        ]
+      },
       "supports_image_generation": false,
       "image_model": "",
-      "model_options": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"],
-      "model_option_labels": {"gpt-5.6-sol": "GPT-5.6 Sol", "gpt-5.6-terra": "GPT-5.6 Terra", "gpt-6-astra": "GPT-6 Astra"},
+      "model_options": [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-6-astra"
+      ],
+      "model_option_labels": {
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+        "gpt-5.6-terra": "GPT-5.6 Terra",
+        "gpt-6-astra": "GPT-6 Astra"
+      },
       "allow_custom_model": false,
       "model_hint": "WawAPI 聚合网关 · GPT 文本与多模态理解模型。",
-      "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
     },
     "wawapi_google": {
-      "type": "openai_compatible", "api_protocol": "chat_completions", "base_url": "https://wawapii.com/v1",
-      "api_key_env": "WAWAPI_GOOGLE_API_KEY", "api_key": "", "default_model": "gemini-3.8-flash", "vision_model": "gemini-3.8-flash",
-      "vision_model_options": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"], "supports_vision": true,
-      "model_capabilities": {"gemini-3.8-flash": ["text", "vision"], "gemini-3.7-flash": ["text", "vision"], "gemini-3.6-flash": ["text", "vision"]},
-      "supports_image_generation": false, "image_model": "", "model_options": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"],
-      "model_option_labels": {"gemini-3.8-flash": "Gemini 3.8 Flash", "gemini-3.7-flash": "Gemini 3.7 Flash", "gemini-3.6-flash": "Gemini 3.6 Flash"},
-      "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Gemini 文本与多模态理解模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+      "type": "openai_compatible",
+      "api_protocol": "chat_completions",
+      "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_GOOGLE_API_KEY",
+      "api_key": "",
+      "default_model": "gemini-3.8-flash",
+      "vision_model": "gemini-3.8-flash",
+      "vision_model_options": [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash"
+      ],
+      "supports_vision": true,
+      "model_capabilities": {
+        "gemini-3.8-flash": [
+          "text",
+          "vision"
+        ],
+        "gemini-3.7-flash": [
+          "text",
+          "vision"
+        ],
+        "gemini-3.6-flash": [
+          "text",
+          "vision"
+        ]
+      },
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash"
+      ],
+      "model_option_labels": {
+        "gemini-3.8-flash": "Gemini 3.8 Flash",
+        "gemini-3.7-flash": "Gemini 3.7 Flash",
+        "gemini-3.6-flash": "Gemini 3.6 Flash"
+      },
+      "allow_custom_model": false,
+      "model_hint": "WawAPI 聚合网关 · Gemini 文本与多模态理解模型。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
     },
     "wawapi_xai": {
-      "type": "openai_compatible", "api_protocol": "responses", "base_url": "https://wawapii.com/v1",
-      "api_key_env": "WAWAPI_XAI_API_KEY", "api_key": "", "default_model": "grok-4.6", "vision_model": "grok-4.6", "vision_model_options": ["grok-4.6", "grok-4.5"], "supports_vision": true,
-      "model_capabilities": {"grok-4.6": ["text", "vision"], "grok-4.5": ["text", "vision"]}, "supports_image_generation": false, "image_model": "",
-      "model_options": ["grok-4.6", "grok-4.5"], "model_option_labels": {"grok-4.6": "Grok 4.6", "grok-4.5": "Grok 4.5"},
-      "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Grok 文本与多模态理解模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_XAI_API_KEY",
+      "api_key": "",
+      "default_model": "grok-4.6",
+      "vision_model": "grok-4.6",
+      "vision_model_options": [
+        "grok-4.6",
+        "grok-4.5"
+      ],
+      "supports_vision": true,
+      "model_capabilities": {
+        "grok-4.6": [
+          "text",
+          "vision"
+        ],
+        "grok-4.5": [
+          "text",
+          "vision"
+        ]
+      },
+      "supports_image_generation": false,
+      "image_model": "",
+      "model_options": [
+        "grok-4.6",
+        "grok-4.5"
+      ],
+      "model_option_labels": {
+        "grok-4.6": "Grok 4.6",
+        "grok-4.5": "Grok 4.5"
+      },
+      "allow_custom_model": false,
+      "model_hint": "WawAPI 聚合网关 · Grok 文本与多模态理解模型。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
     },
     "wawapi_image_openai": {
-      "type": "openai_compatible", "api_protocol": "responses", "base_url": "https://wawapii.com/v1", "api_key_env": "WAWAPI_IMAGE_OPENAI_API_KEY", "api_key": "",
-      "default_model": "gpt-image-2", "supports_text_generation": false, "supports_vision": false, "supports_image_generation": true, "image_model": "gpt-image-2", "image_model_options": ["gpt-image-2"], "image_model_option_labels": {"gpt-image-2": "GPT Image 2"}, "image_size": "1024x1024", "model_options": [], "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · GPT 生图模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_IMAGE_OPENAI_API_KEY",
+      "api_key": "",
+      "default_model": "gpt-image-2",
+      "supports_text_generation": false,
+      "supports_vision": false,
+      "supports_image_generation": true,
+      "image_model": "gpt-image-2",
+      "image_model_options": [
+        "gpt-image-2"
+      ],
+      "image_model_option_labels": {
+        "gpt-image-2": "GPT Image 2"
+      },
+      "image_size": "1024x1024",
+      "model_options": [],
+      "allow_custom_model": false,
+      "model_hint": "WawAPI 聚合网关 · GPT 生图模型。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
     },
     "wawapi_image_google": {
-      "type": "openai_compatible", "api_protocol": "chat_completions", "base_url": "https://wawapii.com/v1", "api_key_env": "WAWAPI_IMAGE_GOOGLE_API_KEY", "api_key": "",
-      "default_model": "gemini-3-pro-image-preview", "supports_text_generation": false, "supports_vision": false, "supports_image_generation": true, "image_model": "gemini-3-pro-image-preview", "image_model_options": ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"], "image_model_option_labels": {"gemini-3-pro-image-preview": "Gemini 3 Pro Image Preview", "gemini-3.1-flash-image-preview": "Gemini 3.1 Flash Image Preview"}, "image_size": "1024x1024", "model_options": [], "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Gemini 生图模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+      "type": "openai_compatible",
+      "api_protocol": "chat_completions",
+      "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_IMAGE_GOOGLE_API_KEY",
+      "api_key": "",
+      "default_model": "gemini-3-pro-image-preview",
+      "supports_text_generation": false,
+      "supports_vision": false,
+      "supports_image_generation": true,
+      "image_model": "gemini-3-pro-image-preview",
+      "image_model_options": [
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image-preview"
+      ],
+      "image_model_option_labels": {
+        "gemini-3-pro-image-preview": "Gemini 3 Pro Image Preview",
+        "gemini-3.1-flash-image-preview": "Gemini 3.1 Flash Image Preview"
+      },
+      "image_size": "1024x1024",
+      "model_options": [],
+      "model_profiles": {
+        "gemini-3-pro-image-preview": {
+          "api_protocol": "chat_completions"
+        },
+        "gemini-3.1-flash-image-preview": {
+          "api_protocol": "responses"
+        }
+      },
+      "allow_custom_model": false,
+      "model_hint": "WawAPI 聚合网关 · Gemini 生图模型；图片以所选模型实测通过的 Chat/Responses 内嵌数据返回。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
     },
     "wawapi_image_xai": {
-      "type": "openai_compatible", "api_protocol": "responses", "base_url": "https://wawapii.com/v1", "api_key_env": "WAWAPI_IMAGE_XAI_API_KEY", "api_key": "",
-      "default_model": "grok-imagine-image-2.0", "supports_text_generation": false, "supports_vision": false, "supports_image_generation": true, "image_model": "grok-imagine-image-2.0", "image_model_options": ["grok-imagine-image-2.0"], "image_model_option_labels": {"grok-imagine-image-2.0": "Grok Imagine Image 2.0"}, "image_size": "1024x1024", "model_options": [], "allow_custom_model": false, "model_hint": "WawAPI 聚合网关 · Grok 生图模型。", "thinking_mode": "auto", "temperature": 0.1, "max_tokens": 24576
+      "type": "openai_compatible",
+      "api_protocol": "responses",
+      "base_url": "https://wawapii.com/v1",
+      "api_key_env": "WAWAPI_IMAGE_XAI_API_KEY",
+      "api_key": "",
+      "default_model": "grok-imagine-image-2.0",
+      "supports_text_generation": false,
+      "supports_vision": false,
+      "supports_image_generation": true,
+      "image_model": "grok-imagine-image-2.0",
+      "image_model_options": [
+        "grok-imagine-image-2.0"
+      ],
+      "image_model_option_labels": {
+        "grok-imagine-image-2.0": "Grok Imagine Image 2.0"
+      },
+      "image_size": "1024x1024",
+      "model_options": [],
+      "allow_custom_model": false,
+      "model_hint": "WawAPI 聚合网关 · Grok 生图模型。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
     },
     "lingsuan_image": {
       "type": "openai_compatible",
@@ -526,7 +554,9 @@
       "supports_vision": false,
       "supports_image_generation": true,
       "image_model": "gpt-image-2",
-      "image_model_options": ["gpt-image-2"],
+      "image_model_options": [
+        "gpt-image-2"
+      ],
       "image_model_option_labels": {
         "gpt-image-2": "GPT-Image-2"
       },
@@ -547,76 +577,89 @@
       "api_key": "",
       "default_model": "gemini-3.6-flash",
       "vision_model": "gemini-3.6-flash",
-      "vision_model_options": ["gemini-3.7-flash-medium", "gemini-3.6-flash", "gemini-3.5-flash"],
+      "vision_model_options": [
+        "gemini-3.8-flash-medium",
+        "gemini-3.7-flash-medium",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash"
+      ],
       "supports_vision": true,
       "model_capabilities": {
-        "gemini-3.7-flash-medium": ["text", "vision"],
-        "gemini-3.6-flash": ["text", "vision"],
-        "gemini-3.5-flash": ["text", "vision"]
+        "gemini-3.8-flash-medium": [
+          "text",
+          "vision"
+        ],
+        "gemini-3.7-flash-medium": [
+          "text",
+          "vision"
+        ],
+        "gemini-3.6-flash": [
+          "text",
+          "vision"
+        ],
+        "gemini-3.5-flash": [
+          "text",
+          "vision"
+        ]
       },
       "model_profiles": {
-        "gemini-3.7-flash-medium": {"api_protocol": "chat_completions", "thinking_minimum": "medium", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
-        "gemini-3.6-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true},
-        "gemini-3.5-flash": {"api_protocol": "chat_completions", "thinking_minimum": "minimal", "omit_parameters": ["temperature", "top_p", "top_k"], "supports_tool_calls": true}
+        "gemini-3.8-flash-medium": {
+          "api_protocol": "chat_completions",
+          "thinking_minimum": "medium",
+          "omit_parameters": [
+            "temperature",
+            "top_p",
+            "top_k"
+          ],
+          "supports_tool_calls": true
+        },
+        "gemini-3.7-flash-medium": {
+          "api_protocol": "chat_completions",
+          "thinking_minimum": "medium",
+          "omit_parameters": [
+            "temperature",
+            "top_p",
+            "top_k"
+          ],
+          "supports_tool_calls": true
+        },
+        "gemini-3.6-flash": {
+          "api_protocol": "chat_completions",
+          "thinking_minimum": "minimal",
+          "omit_parameters": [
+            "temperature",
+            "top_p",
+            "top_k"
+          ],
+          "supports_tool_calls": true
+        },
+        "gemini-3.5-flash": {
+          "api_protocol": "chat_completions",
+          "thinking_minimum": "minimal",
+          "omit_parameters": [
+            "temperature",
+            "top_p",
+            "top_k"
+          ],
+          "supports_tool_calls": true
+        }
       },
       "supports_image_generation": false,
       "image_model": "",
-      "model_options": ["gemini-3.7-flash-medium", "gemini-3.6-flash", "gemini-3.5-flash"],
+      "model_options": [
+        "gemini-3.8-flash-medium",
+        "gemini-3.7-flash-medium",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash"
+      ],
       "model_option_labels": {
+        "gemini-3.8-flash-medium": "Gemini 3.8 Flash",
         "gemini-3.7-flash-medium": "Gemini 3.7 Flash",
         "gemini-3.6-flash": "Gemini 3.6 Flash",
         "gemini-3.5-flash": "Gemini 3.5 Flash"
       },
       "allow_custom_model": false,
       "model_hint": "仅使用灵算 Google Gemini 供应商分组的密钥，不与 GPT、Grok 或 Claude 共用。",
-      "thinking_mode": "auto",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "lingsuan_xai": {
-      "type": "openai_compatible",
-      "api_protocol": "responses",
-      "responses_streaming": true,
-      "responses_fallback_to_chat": false,
-      "base_url": "https://lingsuan.org/v1",
-      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
-      "api_key_env": "LINGSUAN_XAI_API_KEY",
-      "api_key": "",
-      "default_model": "grok-4.5",
-      "vision_model": "grok-4.5",
-      "vision_model_options": ["grok-4.5"],
-      "supports_vision": true,
-      "model_capabilities": {"grok-4.5": ["text", "vision"]},
-      "model_profiles": {"grok-4.5": {"thinking_minimum": "low"}},
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": ["grok-4.5"],
-      "model_option_labels": {"grok-4.5": "Grok 4.5"},
-      "allow_custom_model": false,
-      "model_hint": "仅使用灵算 xAI 供应商分组的密钥。",
-      "thinking_mode": "auto",
-      "temperature": 0.1,
-      "max_tokens": 24576
-    },
-    "lingsuan_anthropic": {
-      "type": "openai_compatible",
-      "api_protocol": "anthropic_messages",
-      "base_url": "https://lingsuan.org/v1",
-      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
-      "api_key_env": "LINGSUAN_ANTHROPIC_API_KEY",
-      "api_key": "",
-      "default_model": "claude-opus-5",
-      "vision_model": "claude-opus-5",
-      "vision_model_options": ["claude-opus-5"],
-      "supports_vision": true,
-      "model_capabilities": {"claude-opus-5": ["text", "vision"]},
-      "model_profiles": {"claude-opus-5": {"api_protocol": "anthropic_messages", "messages_fallback_to_chat": true}},
-      "supports_image_generation": false,
-      "image_model": "",
-      "model_options": ["claude-opus-5"],
-      "model_option_labels": {"claude-opus-5": "Claude Opus 5"},
-      "allow_custom_model": false,
-      "model_hint": "仅使用灵算 Anthropic 供应商分组的密钥。",
       "thinking_mode": "auto",
       "temperature": 0.1,
       "max_tokens": 24576

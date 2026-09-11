@@ -13,6 +13,7 @@ from .capabilities.catalog import apply_capability_policy_transforms, capability
 from .concurrency import model_request_slot, run_limited_concurrent
 from .llm_client import OpenAICompatibleClient
 from .prompt_registry import prompt_contract
+from .provider_errors import is_terminal_provider_route_error
 from .question_requirements import answer_figure_required
 from .runtime_monitor import model_call_context
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
@@ -437,6 +438,8 @@ def build_question_understanding(
                         enforce_context_budget=True,
                     )
         except Exception as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             failures.append(f"{candidate_model}: {str(exc)[:240]}")
             continue
         if not isinstance(visual, dict):

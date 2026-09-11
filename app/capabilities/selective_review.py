@@ -13,6 +13,7 @@ from ..calculation_consistency import evaluate_simple_numeric_expression
 from ..concurrency import model_request_slot, run_limited_concurrent
 from ..llm_client import OpenAICompatibleClient
 from ..prompt_registry import prompt_contract
+from ..provider_errors import is_terminal_provider_route_error
 
 SELECTIVE_REVIEW_VERSION = "answer_book.selective_quality_review.v27"
 SELECTIVE_CONTENT_WARNING_CODES = frozenset(
@@ -1143,6 +1144,8 @@ def review_selective_quality(
                     "remote_model_calls": 1,
                 }
             except Exception as exc:
+                if is_terminal_provider_route_error(exc):
+                    raise
                 # Never trade academic evidence for a successful retry. Shared
                 # transport recovery happens below the provider boundary; an
                 # exhausted rich review remains visibly unavailable.
@@ -1185,6 +1188,8 @@ def review_selective_quality(
             }
         )
     except Exception as exc:
+        if is_terminal_provider_route_error(exc):
+            raise
         base.update(
             {
                 "status": "degraded",

@@ -132,7 +132,9 @@ def test_mineru_managed_runtime_path_is_python_311_specific(tmp_path: Path, monk
 
     monkeypatch.setattr(mineru_runtime, "DATA_ROOT", tmp_path)
 
-    assert "mineru-3.4.5-pipeline-py311" in str(mineru_runtime._managed_python())
+    managed = str(mineru_runtime._managed_python())
+    expected = "mineru-3.4.5-p311" if mineru_runtime.os.name == "nt" else "mineru-3.4.5-pipeline-py311"
+    assert expected in managed
 
 
 def test_mineru_windows_runtime_uses_short_local_app_data_root(tmp_path: Path, monkeypatch) -> None:
@@ -164,14 +166,51 @@ def test_mineru_windows_install_rejects_disabled_long_paths(tmp_path: Path, monk
 
 
 def test_mineru_short_windows_root_can_install_without_long_path_policy(tmp_path: Path, monkeypatch) -> None:
+    from pathlib import PosixPath
+
     from app.adapters import mineru_runtime
 
     monkeypatch.setattr(mineru_runtime.os, "name", "nt")
     monkeypatch.setattr(mineru_runtime, "runtime_python_supported", lambda: True)
     monkeypatch.setattr(mineru_runtime, "_runtime_ready", lambda _python: True)
     monkeypatch.setattr(mineru_runtime, "_windows_long_path_enabled", lambda: False)
-    short_root = tmp_path / "ABP"
+    short_root = PosixPath("C:/ABP")
     assert mineru_runtime._managed_runtime_path_is_short(short_root / "Scripts" / "python.exe")
+
+
+def test_mineru_status_does_not_recommend_long_paths_for_default_short_root(tmp_path: Path, monkeypatch) -> None:
+    from pathlib import PosixPath
+
+    from app.adapters import mineru_runtime
+
+    managed_python = PosixPath("/ABP/mineru/Scripts/python.exe")
+    monkeypatch.setattr(mineru_runtime.os, "name", "nt")
+    monkeypatch.setattr(mineru_runtime, "Path", PosixPath)
+    monkeypatch.setattr(mineru_runtime, "_managed_python", lambda: managed_python)
+    monkeypatch.setattr(mineru_runtime, "_managed_cli", lambda python: python.parent / "mineru.exe")
+    monkeypatch.setattr(mineru_runtime, "_windows_long_path_enabled", lambda: False)
+
+    status = mineru_runtime.runtime_status()
+
+    assert status["installed"] is False
+    assert status["recommended_action"] == ""
+
+
+def test_mineru_document_cache_detection_uses_content_package(tmp_path: Path, monkeypatch) -> None:
+    from app.adapters import mineru_runtime
+
+    source = tmp_path / "exam.docx"
+    source.write_bytes(b"exam")
+    monkeypatch.setattr(mineru_runtime, "CACHE_DIR", tmp_path / "cache")
+    package_id = mineru_runtime.hashlib.sha256(
+        f"{mineru_runtime.MINERU_VERSION}:".encode()
+        + mineru_runtime._sha256_file(source).encode()
+    ).hexdigest()[:24]
+    content = tmp_path / "cache" / "mineru_runtime" / package_id / "exam_content_list.json"
+    content.parent.mkdir(parents=True)
+    content.write_text("[]", encoding="utf-8")
+
+    assert mineru_runtime.document_cache_available(source) is True
 
 
 def test_mineru_requirement_installs_pipeline_extra() -> None:

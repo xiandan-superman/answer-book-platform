@@ -226,7 +226,15 @@ def _remove_orphan_attachments(task_root: Path) -> None:
 def _prune_expired(root: Path) -> None:
     now = datetime.now().timestamp()
     for path in _trace_files(root):
-        age_days = max(0, (now - path.stat().st_mtime) / 86400)
+        try:
+            modified_at = path.stat().st_mtime
+        except OSError:
+            # Cleanup is process-local locked, but desktop workers and probe
+            # commands can prune the same diagnostic directory concurrently.
+            # A file disappearing after enumeration means cleanup already won;
+            # it must never turn a successful provider response into a failure.
+            continue
+        age_days = max(0, (now - modified_at) / 86400)
         retention = SUCCESS_RETENTION_DAYS if "-ok-" in path.name else FAILURE_RETENTION_DAYS
         if age_days > retention:
             path.unlink(missing_ok=True)

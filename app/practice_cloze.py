@@ -36,10 +36,22 @@ CLOZE_SCHEMA = {
 
 
 def compile_requirements(raw: Any, focus: str) -> dict[str, Any]:
+    # With no separate user focus there is no evidence for wording, length, or
+    # cross-source constraints.  Models sometimes copy an instruction embedded
+    # in the source question into this contract.  Normalize that impossible
+    # claim deterministically instead of making the user rerun the whole plan.
+    if not focus.strip():
+        raw = {
+            "wording": "unconstrained",
+            "wording_quote": "",
+            "max_stem_characters": 0,
+            "length_quote": "",
+            "cross_source": "default",
+            "cross_source_quote": "",
+            "conflicts": [],
+        }
     if not isinstance(raw, dict):
-        if focus.strip():
-            raise ValueError("新规划缺少用户要求结构化合同，不能证明已保留要求。")
-        raw = {"wording": "unconstrained", "cross_source": "default"}
+        raise ValueError("新规划缺少用户要求结构化合同，不能证明已保留要求。")
     result = copy.deepcopy(raw)
     if result.get("wording") not in {"strict_verbatim", "minimal_edit", "unconstrained"}:
         raise ValueError("用户要求wording必须明确区分严格原句、少量改写或无约束。")

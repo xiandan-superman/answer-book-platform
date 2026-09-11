@@ -22,22 +22,16 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             "lingsuan_openai": "LINGSUAN_OPENAI_API_KEY",
             "lingsuan_image": "LINGSUAN_IMAGE_API_KEY",
             "lingsuan_google": "LINGSUAN_GOOGLE_API_KEY",
-            "lingsuan_xai": "LINGSUAN_XAI_API_KEY",
-            "lingsuan_anthropic": "LINGSUAN_ANTHROPIC_API_KEY",
         }
         thinking_defaults = {
             "lingsuan_openai": "auto",
             "lingsuan_image": "auto",
             "lingsuan_google": "auto",
-            "lingsuan_xai": "auto",
-            "lingsuan_anthropic": "auto",
         }
         expected_protocols = {
             "lingsuan_openai": "responses",
             "lingsuan_image": "responses",
             "lingsuan_google": "chat_completions",
-            "lingsuan_xai": "responses",
-            "lingsuan_anthropic": "anthropic_messages",
         }
 
         self.assertNotIn("lingsuan", providers)
@@ -68,8 +62,6 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             "lingsuan_openai",
             "lingsuan_image",
             "lingsuan_google",
-            "lingsuan_xai",
-            "lingsuan_anthropic",
         ):
             raw["providers"][name]["base_url"] = "https://lingsuan.top/v1"
             raw["providers"][name]["user_agent"] = ""
@@ -81,8 +73,6 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             "lingsuan_openai",
             "lingsuan_image",
             "lingsuan_google",
-            "lingsuan_xai",
-            "lingsuan_anthropic",
         ):
             with self.subTest(provider=name):
                 self.assertEqual("https://lingsuan.org/v1", providers[name].base_url)
@@ -116,6 +106,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             (
+                "gemini-3.8-flash-medium",
                 "gemini-3.7-flash-medium",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
@@ -126,6 +117,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         self.assertEqual("gemini-3.6-flash", google.vision_model)
         self.assertTrue(all(provider_model_supports_vision(openai, model) for model in openai.model_options))
         self.assertTrue(all(provider_model_supports_vision(google, model) for model in google.model_options))
+        self.assertTrue(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.8-flash-medium"))
         self.assertTrue(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.7-flash-medium"))
         self.assertTrue(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.6-flash"))
         self.assertTrue(tool_loop_supported(OpenAICompatibleClient(google), google, "gemini-3.5-flash"))
@@ -211,8 +203,6 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             ("lingsuan_openai", "LINGSUAN_OPENAI_API_KEY", "灵算 · OpenAI"),
             ("lingsuan_image", "LINGSUAN_IMAGE_API_KEY", "灵算 · OpenAI 图片"),
             ("lingsuan_google", "LINGSUAN_GOOGLE_API_KEY", "灵算 · Google Gemini"),
-            ("lingsuan_xai", "LINGSUAN_XAI_API_KEY", "灵算 · xAI"),
-            ("lingsuan_anthropic", "LINGSUAN_ANTHROPIC_API_KEY", "灵算 · Anthropic"),
         ):
             self.assertIn(f'{provider}: "{env_name}"', source)
             self.assertIn(f'{provider}: "{label}"', source)

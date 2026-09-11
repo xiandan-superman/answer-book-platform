@@ -65,7 +65,8 @@ class PlanDraftUITests(unittest.TestCase):
         self.assertIn("pendingPracticePlanCandidate", self.js)
         self.assertIn("function adoptPracticePlanCandidate()", self.js)
         self.assertIn("function keepOriginalPracticePlan()", self.js)
-        self.assertIn('$("practicePlanConfirmBtn").disabled = false;', self.js)
+        self.assertIn("syncPracticeBlueprintMultiQuestionControls();", self.js)
+        self.assertIn('syncPracticeWorkflowActions("plan");', self.js)
         self.assertIn('id="practicePlanCandidateActions"', self.html)
 
 

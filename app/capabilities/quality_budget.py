@@ -49,6 +49,8 @@ class QualityExecutionBudget:
     # Zero disables the task-wide token cap; positive explicit budgets remain supported.
     max_model_tokens_per_run: int = 0
     max_model_wall_seconds_per_run: int = 1800
+    answer_generation_reserve_seconds: int = 0
+    provider_concurrency: int = 0
     provider_failure_circuit_breaker: int = 3
 
     @classmethod
@@ -58,6 +60,7 @@ class QualityExecutionBudget:
         question_count: int = 0,
         task_kind: str = "",
         textbook_evidence_enabled: bool = False,
+        provider_concurrency: int = 0,
     ) -> QualityExecutionBudget:
         estimated_calls = cls.estimate_model_calls(
             question_count=question_count,
@@ -79,6 +82,40 @@ class QualityExecutionBudget:
             )
         else:
             max_model_calls = 120
+        normalized_concurrency = max(1, min(64, int(provider_concurrency or 1)))
+        explicit_wall_limit = "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN" in os.environ
+        if explicit_wall_limit:
+            max_model_wall_seconds = _bounded_env_int(
+                "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", 1800, minimum=300, maximum=14_400
+            )
+        elif estimated_calls:
+            seconds_per_call = _bounded_env_int(
+                "QUALITY_MODEL_EXPECTED_SECONDS_PER_CALL", 60, minimum=15, maximum=180
+            )
+            fixed_overhead = _bounded_env_int(
+                "QUALITY_MODEL_WALL_FIXED_OVERHEAD_SECONDS", 300, minimum=0, maximum=1800
+            )
+            max_model_wall_seconds = max(
+                1800,
+                min(
+                    14_400,
+                    math.ceil(estimated_calls / normalized_concurrency) * seconds_per_call
+                    + fixed_overhead,
+                ),
+            )
+        else:
+            max_model_wall_seconds = 1800
+
+        answer_reserve_seconds = 0
+        if str(task_kind or "").strip().lower() == "exam" and question_count > 0:
+            reserve_per_wave = _bounded_env_int(
+                "QUALITY_ANSWER_RESERVE_SECONDS_PER_WAVE", 60, minimum=30, maximum=300
+            )
+            answer_reserve_seconds = min(
+                max(0, max_model_wall_seconds - 300),
+                max(300, math.ceil(question_count / normalized_concurrency) * reserve_per_wave),
+            )
+
         return cls(
             max_content_repair_questions=_bounded_env_int(
                 "QUALITY_MAX_CONTENT_REPAIR_QUESTIONS", 5, minimum=0, maximum=20
@@ -119,9 +156,9 @@ class QualityExecutionBudget:
             max_model_tokens_per_run=_bounded_env_int(
                 "QUALITY_MAX_MODEL_TOKENS_PER_RUN", 0, minimum=0, maximum=20_000_000
             ),
-            max_model_wall_seconds_per_run=_bounded_env_int(
-                "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN", 1800, minimum=300, maximum=7200
-            ),
+            max_model_wall_seconds_per_run=max_model_wall_seconds,
+            answer_generation_reserve_seconds=answer_reserve_seconds,
+            provider_concurrency=normalized_concurrency if provider_concurrency else 0,
             provider_failure_circuit_breaker=_bounded_env_int(
                 "QUALITY_PROVIDER_FAILURE_CIRCUIT_BREAKER", 3, minimum=2, maximum=10
             ),

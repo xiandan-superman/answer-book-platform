@@ -245,6 +245,7 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
         quality=quality,
         stage=stage,
         error=str(row.get("error") or ""),
+        support_id=public_support_id(str(row.get("support_id") or ""), task_id=str(row.get("task_id") or "")),
         final_acceptance=final_acceptance,
     )
     enriched["task_kind"] = "exam"
@@ -271,11 +272,15 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
     generation = record.get("generation") or data.get("generation") or {}
     configuration_blocked = record.get("configuration_blocked") is True or generation.get("configuration_blocked") is True
     route_blocked = record.get("route_blocked") is True or generation.get("route_blocked") is True
-    config_error = next(
+    route_error = next(
         (
             str(item.get("message") or "")
             for item in generation.get("batch_errors") or []
-            if isinstance(item, dict) and item.get("requires_configuration") is True
+            if isinstance(item, dict) and (
+                item.get("requires_configuration") is True
+                or item.get("failure_state") == "route_blocked"
+                or item.get("code") == "provider_route_degraded"
+            )
         ),
         "",
     )
@@ -330,7 +335,7 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         quality=quality,
         stage="configuration" if configuration_blocked else "route" if route_blocked else "completed",
         operation="generate_from_plan",
-        error=config_error,
+        error=route_error,
         completion_source=data or row,
     )
     if configuration_blocked or route_blocked:

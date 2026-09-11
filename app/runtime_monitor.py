@@ -13,7 +13,6 @@ import traceback
 from collections import Counter, deque
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -29,9 +28,10 @@ from .concurrency import (
 )
 from .paths import DATA_ROOT, LOGS_DIR, PROJECT_ROOT, TASKS_DIR, ensure_project_dirs
 from .prompt_registry import observe_prompt_request
-from .provider_errors import classify_provider_error
+from .provider_errors import ProviderRouteDegradedError, classify_provider_error
 from .redaction import redact_credentials
 from .resource_ids import bounded_resource_path
+from .runtime_capacity import provider_request_max_concurrency
 from .task_store import list_tasks, load_task
 from .version import get_version
 
@@ -77,6 +77,10 @@ _MODEL_EXECUTION_SESSION_ID = uuid4().hex
 
 class ModelExecutionLedgerError(RuntimeError):
     """A durable execution event could not be recorded safely."""
+
+
+class ModelBudgetExhausted(RuntimeError):
+    """A task reached a platform-owned model budget, not a provider failure."""
 
 
 def _now() -> str:
@@ -277,6 +281,7 @@ def model_call_context(
     task_kind: str = "",
     textbook_evidence_enabled: bool | None = None,
     budget_phase: str = "",
+    request_admitted_callback: Any | None = None,
 ) -> Iterator[None]:
     current = dict(_MODEL_CALL_CONTEXT.get() or {})
     execution_run_id = str(current.get("execution_run_id") or "")
@@ -310,6 +315,36 @@ def model_call_context(
     token = _MODEL_CALL_CONTEXT.set(current)
 
     def ensure_task_is_active() -> None:
+        budget_key = (
+            str(current.get("task_id") or ""),
+            str(current.get("run_id") or ""),
+        )
+        if all(budget_key):
+            with _MODEL_LOCK:
+                state = _RUN_MODEL_BUDGETS.get(budget_key)
+                budget = state.get("budget") if isinstance(state, dict) else None
+                if isinstance(state, dict) and isinstance(budget, QualityExecutionBudget):
+                    elapsed = max(
+                        0.0,
+                        time.monotonic()
+                        - float(state.get("started_monotonic") or time.monotonic()),
+                    )
+                    if elapsed >= budget.max_model_wall_seconds_per_run:
+                        raise ModelBudgetExhausted(
+                            f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)"
+                        )
+                    if (
+                        current.get("stage") != "answer_generation"
+                        and current.get("budget_phase") != "delivery_repair"
+                        and budget.answer_generation_reserve_seconds > 0
+                        and elapsed
+                        >= budget.max_model_wall_seconds_per_run
+                        - budget.answer_generation_reserve_seconds
+                    ):
+                        raise ModelBudgetExhausted(
+                            "model pre-answer wall-clock budget exhausted; "
+                            f"{budget.answer_generation_reserve_seconds}s reserved for answer generation"
+                        )
         current_task_id = str(current.get("task_id") or "")
         if not current_task_id:
             return
@@ -344,6 +379,7 @@ def model_call_context(
         with model_request_context(
             str(current.get("task_id") or ""),
             admission_check=ensure_task_is_active,
+            admitted_callback=request_admitted_callback,
         ):
             yield
     finally:
@@ -359,6 +395,29 @@ def _model_error_kind(error: BaseException) -> str:
     if "timeout" in text or "timed out" in text or "超时" in text:
         return "timeout"
     return "failed"
+
+
+def _provider_circuit_eligible(error: BaseException) -> bool:
+    if isinstance(error, (ModelRequestAborted, ModelBudgetExhausted)):
+        return False
+    info = classify_provider_error(
+        error,
+        status_code=getattr(error, "status_code", None),
+        transport_phase=str(getattr(error, "transport_phase", "") or ""),
+    )
+    if info.kind == "provider_timeout":
+        return str(getattr(error, "transport_phase", "") or "") in {
+            "first_byte",
+            "read_idle",
+        } or info.status_code in {504, 522, 524}
+    return info.kind in {
+        "provider_concurrency_limit",
+        "provider_rate_limit",
+        "provider_route_pool_unavailable",
+        "provider_overloaded",
+        "provider_conflict",
+        "provider_internal_error",
+    }
 
 
 def record_model_call_usage(record: dict[str, Any] | None, raw: dict[str, Any] | None) -> None:
@@ -839,20 +898,13 @@ def configure_model_call_task_shape(
 
 
 def _model_execution_budget(context: dict[str, str]) -> QualityExecutionBudget:
+    provider_concurrency = int(context.get("provider_concurrency") or 0)
     budget = QualityExecutionBudget.from_environment(
         question_count=int(context.get("question_count") or 0),
         task_kind=str(context.get("task_kind") or ""),
         textbook_evidence_enabled=str(context.get("textbook_evidence_enabled") or "") == "1",
+        provider_concurrency=provider_concurrency,
     )
-    if (
-        str(context.get("task_id") or "").startswith("generation_")
-        and str(context.get("stage") or "") == "generating"
-        and "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN" not in os.environ
-    ):
-        # Practice generation may contain many independently retried questions.
-        # Its parent task has its own deadline; the answer-review default must
-        # not silently terminate the entire batch after only 30 minutes.
-        return replace(budget, max_model_wall_seconds_per_run=7200)
     return budget
 
 
@@ -882,6 +934,13 @@ def _wait_for_provider_circuit_probe(
                 "opened_monotonic": time.monotonic(),
                 "probe_in_flight": False,
             })
+            if circuit.get("terminal_failure"):
+                raise ProviderRouteDegradedError(
+                    provider,
+                    str(circuit.get("model") or ""),
+                    failures,
+                    str(circuit.get("last_error") or ""),
+                )
             cooldown = _provider_circuit_cooldown_seconds()
             remaining = cooldown - max(0.0, time.monotonic() - float(circuit.get("opened_monotonic") or 0))
             if remaining <= 0 and not circuit.get("probe_in_flight"):
@@ -929,12 +988,19 @@ def track_model_call(
                 context.setdefault("active_item", task.active_item)
         except Exception:
             pass
-    budget_key = (str(context.get("task_id") or ""), str(context.get("run_id") or ""))
+    budget_key = (
+        str(context.get("task_id") or ""),
+        str(context.get("run_id") or ""),
+    )
     route_key = "|".join((str(provider), str(model), str(protocol or "default")))
     budget: QualityExecutionBudget | None = None
     circuit_probe = False
     if all(budget_key):
-        proposed_budget = _model_execution_budget(context)
+        budget_context = {
+            **context,
+            "provider_concurrency": str(provider_request_max_concurrency(provider)),
+        }
+        proposed_budget = _model_execution_budget(budget_context)
         with _MODEL_LOCK:
             state = _RUN_MODEL_BUDGETS.setdefault(
                 budget_key,
@@ -969,6 +1035,17 @@ def track_model_call(
                 exhausted_reason = f"model token budget exhausted ({budget.max_model_tokens_per_run})"
             elif elapsed >= budget.max_model_wall_seconds_per_run:
                 exhausted_reason = f"model wall-clock budget exhausted ({budget.max_model_wall_seconds_per_run}s)"
+            elif (
+                context.get("stage") != "answer_generation"
+                and context.get("budget_phase") != "delivery_repair"
+                and budget.answer_generation_reserve_seconds > 0
+                and elapsed
+                >= budget.max_model_wall_seconds_per_run - budget.answer_generation_reserve_seconds
+            ):
+                exhausted_reason = (
+                    "model pre-answer wall-clock budget exhausted; "
+                    f"{budget.answer_generation_reserve_seconds}s reserved for answer generation"
+                )
             elif provider_failures >= budget.provider_failure_circuit_breaker and not circuit_probe:
                 exhausted_reason = (
                     f"provider circuit breaker open for {provider} after {provider_failures} consecutive failures"
@@ -1029,6 +1106,34 @@ def track_model_call(
         "image_input_count": int(record.get("image_input_count") or 0),
         "image_input_bytes": int(record.get("image_input_bytes") or 0),
     }
+    route_guard = None
+    try:
+        from .provider_control import runtime_route_guard
+        from .settings import get_provider
+
+        configured_provider = get_provider(str(provider or "").strip())
+        required = set((route_snapshot.get("selection") or {}).get("required_capabilities") or [])
+        route_capability = (
+            "image_generation" if "image_generation" in required else
+            "tool_call" if "native_tool_calls" in required else
+            "vision" if "image_input" in required else "text"
+        )
+        route_guard = runtime_route_guard(
+            provider=str(provider or ""), api_key=str(configured_provider.api_key or ""),
+            model=str(model or ""), protocol=str((route_snapshot.get("transport") or {}).get("protocol") or protocol or "unknown"),
+            capability=route_capability,
+        )
+        route_guard.__enter__()
+    except RuntimeError:
+        with _MODEL_LOCK:
+            _MODEL_ACTIVE.pop(call_id, None)
+            if budget is not None and all(budget_key):
+                state = _RUN_MODEL_BUDGETS.get(budget_key)
+                if state is not None:
+                    state["call_count"] = max(0, int(state.get("call_count") or 0) - 1)
+        raise
+    except Exception:
+        route_guard = None
     try:
         prompt_observation = observe_prompt_request(request_payload)
     except Exception:
@@ -1055,6 +1160,8 @@ def track_model_call(
             prompt_observation=prompt_observation,
         )
     except ModelExecutionLedgerError:
+        if route_guard is not None:
+            route_guard.__exit__(None, None, None)
         with _MODEL_LOCK:
             _MODEL_ACTIVE.pop(call_id, None)
             if budget is not None and all(budget_key):
@@ -1069,15 +1176,27 @@ def track_model_call(
     outcome = "succeeded"
     error_text = ""
     circuit_breaker_eligible = False
+    terminal_route_blocked = False
     provider_error: dict[str, str] = {}
     provider_request_id = ""
     result_ledger_error: ModelExecutionLedgerError | None = None
+    terminal_provider_error: ProviderRouteDegradedError | None = None
     try:
         yield record
     except BaseException as exc:
         outcome = _model_error_kind(exc)
         error_text = _safe_text(exc, 300)
-        circuit_breaker_eligible = not isinstance(exc, ModelRequestAborted) and classify_provider_error(exc).retryable
+        circuit_breaker_eligible = _provider_circuit_eligible(exc)
+        error_info = classify_provider_error(
+            exc,
+            status_code=getattr(exc, "status_code", None),
+            transport_phase=str(getattr(exc, "transport_phase", "") or ""),
+            retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+        )
+        terminal_route_blocked = error_info.failure_state in {
+            "route_blocked",
+            "configuration_blocked",
+        }
         provider_error = {
             key: _safe_text(getattr(exc, f"provider_error_{key}", ""), 300)
             for key in ("code", "type", "param", "message")
@@ -1156,26 +1275,102 @@ def track_model_call(
                         token_value = int(record.get("prompt_tokens") or 0) + int(record.get("completion_tokens") or 0)
                     state["token_count"] = int(state.get("token_count") or 0) + int(token_value or 0)
                     failures = dict(state.get("provider_failures") or {})
-                    failures[route_key] = (
-                        int(failures.get(route_key, 0) or 0) + 1
-                        if outcome != "succeeded" and circuit_breaker_eligible
-                        else 0
-                    )
+                    previous_failures = int(failures.get(route_key, 0) or 0)
+                    if outcome == "succeeded":
+                        failures[route_key] = 0
+                    elif terminal_route_blocked:
+                        failures[route_key] = max(
+                            previous_failures + 1,
+                            budget.provider_failure_circuit_breaker,
+                        )
+                    elif circuit_breaker_eligible:
+                        failures[route_key] = previous_failures + 1
+                    else:
+                        # A schema/content/local failure says nothing about whether
+                        # an earlier provider transport incident has recovered.
+                        failures[route_key] = previous_failures
                     state["provider_failures"] = failures
                     circuits = state.setdefault("provider_circuits", {})
-                    if outcome == "succeeded" or not circuit_breaker_eligible:
+                    if outcome == "succeeded":
                         circuits.pop(route_key, None)
+                    elif terminal_route_blocked:
+                        circuit = circuits.setdefault(
+                            route_key,
+                            {
+                                "opened_monotonic": time.monotonic(),
+                                "probe_in_flight": False,
+                            },
+                        )
+                        circuit.update(
+                            {
+                                "model": model,
+                                "last_error": error_text,
+                                "probe_in_flight": False,
+                                "terminal_failure": True,
+                            }
+                        )
+                        terminal_provider_error = ProviderRouteDegradedError(
+                            provider,
+                            model,
+                            failures[route_key],
+                            error_text,
+                        )
                     elif failures[route_key] >= budget.provider_failure_circuit_breaker:
-                        circuits[route_key] = {
-                            "opened_monotonic": time.monotonic(),
-                            "probe_in_flight": False,
-                        }
+                        circuit = circuits.setdefault(
+                            route_key,
+                            {
+                                "opened_monotonic": time.monotonic(),
+                                "probe_in_flight": False,
+                            },
+                        )
+                        circuit["model"] = model
+                        circuit["last_error"] = error_text
+                        if circuit_probe:
+                            circuit["probe_in_flight"] = False
+                            circuit["terminal_failure"] = True
+                            terminal_provider_error = ProviderRouteDegradedError(
+                                provider,
+                                model,
+                                failures[route_key],
+                                error_text,
+                            )
+                        elif not circuit.get("probe_in_flight"):
+                            circuit["opened_monotonic"] = time.monotonic()
                 if len(_RUN_MODEL_BUDGETS) > 200:
                     oldest_key = min(
                         _RUN_MODEL_BUDGETS,
                         key=lambda key: float(_RUN_MODEL_BUDGETS[key].get("started_monotonic") or 0),
                     )
                     _RUN_MODEL_BUDGETS.pop(oldest_key, None)
+        # Feed real task outcomes back into the exact provider route. This is
+        # deliberately best-effort: telemetry must never break a paid request.
+        try:
+            from .provider_control import explicit_probe_active, is_approved_route, record_provider_observation
+            from .settings import get_provider
+
+            if not explicit_probe_active():
+                selected = (final_record.get("route_decision") or {}).get("selection") or {}
+                transport = (final_record.get("route_decision") or {}).get("transport") or {}
+                required = set(selected.get("required_capabilities") or [])
+                capability = (
+                    "image_generation" if "image_generation" in required else
+                    "tool_call" if "native_tool_calls" in required else
+                    "vision" if "image_input" in required else "text"
+                )
+                configured_provider = get_provider(str(provider or "").strip())
+                observed_protocol = str(transport.get("protocol") or protocol or "unknown")
+                if is_approved_route(str(provider or ""), str(model or ""), observed_protocol, capability):
+                    record_provider_observation(
+                        provider=str(provider or ""), model=str(model or ""), protocol=observed_protocol,
+                        capability=capability, api_key=str(configured_provider.api_key or ""),
+                        success=outcome == "succeeded", elapsed_ms=elapsed_ms,
+                        source="task_runtime", error=None if outcome == "succeeded" else error_text,
+                        task_id=str(record.get("task_id") or ""),
+                    )
+        except Exception:
+            pass
+        if route_guard is not None:
+            route_guard.__exit__(None, None, None)
         if result_ledger_error is not None:
             raise result_ledger_error
         _LAST_MODEL_INVOCATION.set(
@@ -1186,6 +1381,8 @@ def track_model_call(
                 "model": str(record.get("model") or ""),
             }
         )
+        if terminal_provider_error is not None:
+            raise terminal_provider_error
 
 
 def model_call_summary() -> dict[str, Any]:

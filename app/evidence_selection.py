@@ -14,6 +14,7 @@ from .concurrency import run_limited_concurrent
 from .evidence_trace_export import write_evidence_trace_csv
 from .llm_client import LLMError, OpenAICompatibleClient
 from .prompt_registry import prompt_contract
+from .provider_errors import is_terminal_provider_route_error
 from .question_understanding import attach_question_visuals, needs_vision_model
 from .retrieval import EvidenceCandidate, build_candidates, candidates_for_question, formula_match_score, planned_formulas_for_query
 from .settings import ProviderConfig, provider_model_supports_vision
@@ -154,7 +155,6 @@ def _compact_candidate_record(raw: dict[str, Any], *, include_visual_assets: boo
 
 
 def _candidate_payload(candidates: list[EvidenceCandidate], *, include_visual_assets: bool, max_unique: int = 12) -> list[dict[str, Any]]:
-    payload: list[dict[str, Any]] = []
     by_key: dict[str, dict[str, Any]] = {}
     for candidate in candidates:
         raw = asdict(candidate)
@@ -184,10 +184,37 @@ def _candidate_payload(candidates: list[EvidenceCandidate], *, include_visual_as
                 by_key[key] = raw
         except (TypeError, ValueError):
             pass
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
     for raw in by_key.values():
-        payload.append(_compact_candidate_record(raw, include_visual_assets=include_visual_assets))
-        if len(payload) >= max_unique:
+        point = clean_text(raw.get("knowledge_point") or "") or "__unscoped__"
+        if point not in grouped:
+            grouped[point] = []
+            group_order.append(point)
+        grouped[point].append(raw)
+
+    # A single global prefix lets the first knowledge point consume the whole
+    # prompt. Round-robin preserves ranking inside each point while ensuring
+    # every point receives at least one candidate, even when that means
+    # slightly exceeding the legacy cap for an unusually broad plan.
+    payload: list[dict[str, Any]] = []
+    effective_limit = max(max(1, int(max_unique or 1)), len(group_order))
+    offset = 0
+    while len(payload) < effective_limit:
+        added = False
+        for point in group_order:
+            rows = grouped[point]
+            if offset >= len(rows):
+                continue
+            payload.append(
+                _compact_candidate_record(rows[offset], include_visual_assets=include_visual_assets)
+            )
+            added = True
+            if len(payload) >= effective_limit:
+                break
+        if not added:
             break
+        offset += 1
     return payload
 
 
@@ -647,12 +674,22 @@ def _merge_selection(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
         if isinstance(point, dict) and clean_text(point.get("knowledge_point") or "")
     }
     merged_points: list[dict[str, Any]] = []
+    retained_base_points: list[str] = []
     seen: set[str] = set()
     for point in base.get("knowledge_points", []):
         if not isinstance(point, dict):
             continue
         name = clean_text(point.get("knowledge_point") or "")
-        merged_points.append(patch_points.get(name, point))
+        patch_point = patch_points.get(name)
+        base_selected = _strings(point.get("selected_evidence_ids"))
+        patch_selected = _strings(patch_point.get("selected_evidence_ids")) if patch_point else []
+        if base_selected and not patch_selected:
+            # Expansion is additive. An empty or failed patch is not evidence
+            # that a previously confirmed citation became invalid.
+            merged_points.append(point)
+            retained_base_points.append(name)
+        else:
+            merged_points.append(patch_point or point)
         seen.add(name)
     for name, point in patch_points.items():
         if name not in seen:
@@ -662,6 +699,7 @@ def _merge_selection(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
     merged["_meta"] = {
         **(base.get("_meta") or {}),
         "expansion_patch_meta": patch.get("_meta") or {},
+        "retained_confirmed_points": retained_base_points,
     }
     return merged
 
@@ -752,6 +790,8 @@ def _select_one(
         }
         return selection
     except (LLMError, Exception) as exc:
+        if is_terminal_provider_route_error(exc):
+            raise
         selection = _program_selection(
             question,
             plan,

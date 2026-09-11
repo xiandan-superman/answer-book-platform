@@ -58,10 +58,20 @@ class ErrorPresentation:
     message: str
     retry_hint: str
     support_id: str = ""
+    responsibility: str = "platform_unknown"
+    developer_report_required: bool = False
 
 
 PRACTICE_COMPLETION_ISSUES_SCHEMA = "answer_book.practice_completion_issues.v1"
 _PRACTICE_ISSUE_PRESENTATION = {
+    "route_blocked": {
+        "priority": 500,
+        "label": "模型供应商异常 · 已停止",
+        "action": "retry_after_provider_check",
+        "action_label": "重新验证后重试",
+        "class_name": "blocked",
+        "icon": "fas fa-plug-circle-xmark",
+    },
     "configuration_blocked": {
         "priority": 400,
         "label": "需要检查 API 配置",
@@ -179,6 +189,13 @@ def practice_completion_issue_contract(data: dict[str, Any] | None) -> dict[str,
             for item in exercises
         )
     )
+    route_blocked = bool(
+        data.get("route_blocked") is True
+        or generation.get("route_blocked") is True
+        or generation.get("status") == "route_blocked"
+        or any(item.get("failure_state") == "route_blocked" for item in batch_errors)
+        or any(item.get("code") == "provider_route_degraded" for item in batch_errors)
+    )
 
     review_reasons = _practice_issue_reasons(quality.get("blocking_issues"))
     if not review_reasons:
@@ -212,6 +229,12 @@ def practice_completion_issue_contract(data: dict[str, Any] | None) -> dict[str,
         presentation = _PRACTICE_ISSUE_PRESENTATION[code]
         issues.append({"code": code, "count": max(0, int(count)), "reasons": reasons, **presentation})
 
+    if route_blocked:
+        route_reasons = _practice_issue_reasons(
+            [item for item in batch_errors if item.get("failure_state") == "route_blocked" or item.get("code") == "provider_route_degraded"],
+            fallback="所选供应商与模型路由在有限重试后仍不可用，平台已停止继续调用",
+        )
+        add_issue("route_blocked", route_reasons, unfinished_count)
     if configuration_blocked:
         add_issue("configuration_blocked", ["模型服务配置不可用，修正配置后可继续未完成项"], unfinished_count)
     # A legacy partial flag without a trustworthy positive count is not enough
@@ -363,9 +386,37 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
         return None
     public_support_id = str(support_id or "").strip()[:80]
 
-    def public(kind: str, title: str, message: str, retry_hint: str) -> ErrorPresentation:
-        return ErrorPresentation(kind, title, message, retry_hint, public_support_id)
+    def public(
+        kind: str,
+        title: str,
+        message: str,
+        retry_hint: str,
+        responsibility: str = "platform_unknown",
+        developer_report_required: bool = False,
+    ) -> ErrorPresentation:
+        if responsibility == "platform_unknown":
+            if kind in {
+                "provider_missing_api_key", "provider_authentication", "provider_permission",
+                "provider_target_not_found", "provider_configuration",
+            }:
+                responsibility = "user_configuration"
+            elif kind.startswith("provider_"):
+                responsibility = "provider_service"
+            elif kind == "invalid_model_output":
+                responsibility = "model_output"
+            elif kind == "interrupted":
+                responsibility = "local_environment"
+            elif kind == "workflow_failed":
+                responsibility = "platform_defect"
+                developer_report_required = True
+        return ErrorPresentation(
+            kind, title, message, retry_hint, public_support_id,
+            responsibility, developer_report_required,
+        )
 
+    if "供应商模型路由持续异常" in text:
+        info = classify_provider_error(text)
+        return public(info.kind, info.title, info.message, info.suggested_action, "provider_service")
     if "用户拒绝" in text or "user reject" in lowered:
         return public("review_rejected", "等待修正后重新确认", "本次结构确认已被拒绝，任务没有进入后续生成。", "修正题目结构后，从结构确认阶段继续。")
     if (
@@ -376,7 +427,7 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
         or "stream exceeded" in lowered
         or "超时" in text
     ):
-        return public("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。")
+        return public("provider_timeout", "模型服务响应超时", "模型服务在规定时间内没有返回完整结果。", "可从当前安全检查点重试；重试前应确认将复用哪些蓝图和已生成题目。", "provider_service")
     missing_key_match = re.fullmatch(
         r"api key is not configured for provider:\s*([a-z0-9_.-]+)",
         text,
@@ -385,26 +436,25 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
     if missing_key_match:
         provider_name = missing_key_match.group(1).lower()
         provider_label = {
-            "deepseek": "DeepSeek",
             "ark": "火山方舟",
             "bailian": "阿里云百炼",
-            "sensenova": "商汤日日新 · SenseNova",
-            "bai": "B.AI",
-            "openrouter": "OpenRouter",
-            "bigmodel": "智谱 BigModel",
-            "google_ai": "Google AI Studio",
-            "yuanheng": "元衡 API",
+            "deepseek": "DeepSeek 官方",
             "lingsuan_openai": "灵算 · OpenAI",
             "lingsuan_image": "灵算 · OpenAI 图片",
             "lingsuan_google": "灵算 · Google Gemini",
-            "lingsuan_xai": "灵算 · xAI",
-            "lingsuan_anthropic": "灵算 · Anthropic",
+            "wawapi_openai": "WawAPI · GPT",
+            "wawapi_google": "WawAPI · Gemini",
+            "wawapi_xai": "WawAPI · Grok",
+            "wawapi_image_openai": "WawAPI · GPT 图片",
+            "wawapi_image_google": "WawAPI · Gemini 图片",
+            "wawapi_image_xai": "WawAPI · Grok 图片",
         }.get(provider_name, "当前供应商")
         return public(
             "provider_missing_api_key",
             f"{provider_label} API Key 尚未配置",
             f"尚未配置{provider_label} API Key，本次任务没有发出模型请求。",
             f"请前往 API 配置填写并验证{provider_label} Key，验证成功后再重试。",
+            "user_configuration",
         )
     provider_error_markers = (
         "provider", "api key", "apikey", "endpoint", "model service", "llmerror",
@@ -415,7 +465,8 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
     )
     if any(marker in lowered for marker in provider_error_markers) or re.search(r"(?:provider\s+)?http\s+[45]\d{2}", lowered):
         info = classify_provider_error(text)
-        return public(info.kind, info.title, info.message, info.suggested_action)
+        responsibility = "user_configuration" if info.requires_configuration else "provider_service"
+        return public(info.kind, info.title, info.message, info.suggested_action, responsibility)
     if re.search(r"\b401\b", lowered) or any(marker in lowered for marker in ("unauthorized", "authentication failed", "invalid api key", "invalid_api_key")):
         return public(
             "provider_authentication",

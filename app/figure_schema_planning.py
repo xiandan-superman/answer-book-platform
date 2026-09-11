@@ -20,9 +20,10 @@ from .capabilities.figure_semantics import (
 )
 from .concurrency import model_request_slot, run_limited_concurrent
 from .drawing_code import question_drawing_mode
-from .llm_client import LLMError, OpenAICompatibleClient
+from .llm_client import OpenAICompatibleClient
 from .prompt_registry import prompt_contract
 from .prompts import question_image_parts
+from .provider_errors import is_terminal_provider_route_error
 from .question_requirements import answer_figure_required
 from .question_types import iter_leaf_question_parts
 from .settings import DEFAULT_MODEL_MAX_TOKENS
@@ -255,7 +256,9 @@ def _resolve_with_model(question: dict[str, Any], provider: Any, model: str) -> 
                     item_ids=[str(question.get("question_id") or question.get("number") or "")],
                     enforce_context_budget=True,
                 )
-    except (LLMError, Exception):
+    except Exception as exc:
+        if is_terminal_provider_route_error(exc):
+            raise
         return None
     if not isinstance(result, dict):
         return None

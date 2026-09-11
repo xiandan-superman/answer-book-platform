@@ -95,7 +95,7 @@ def _status_for_data(data: dict[str, Any]) -> str:
     completion = practice_completion_issue_contract(data)
     generated_count = int(completion.get("generated_count") or quality.get("generated_count") or 0)
     if generated_count == 0 and any(
-        item.get("code") == "configuration_blocked"
+        item.get("code") in {"configuration_blocked", "route_blocked"}
         for item in completion.get("issues") or [] if isinstance(item, dict)
     ):
         return "failed"

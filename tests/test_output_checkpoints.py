@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -61,3 +62,27 @@ def test_checkpoint_rejects_corrupted_existing_snapshot(tmp_path):
     path.write_text('{}')
     with pytest.raises(ValueError, match="integrity"):
         save_output_checkpoint(**args)
+
+
+def test_checkpoint_returns_long_path_aware_path(tmp_path, monkeypatch):
+    import app.output_checkpoints as checkpoints
+
+    observed = []
+
+    def fake_long_path(value):
+        observed.append(value)
+        return os.path.abspath(str(value))
+
+    monkeypatch.setattr(checkpoints, "long_path", fake_long_path)
+    returned = save_output_checkpoint(
+        tmp_path,
+        stage="generation",
+        object_id="q",
+        source={},
+        candidate={},
+        diagnostics={},
+    )
+
+    assert observed
+    assert returned.is_absolute()
+    assert returned.exists()

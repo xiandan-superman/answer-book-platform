@@ -94,10 +94,10 @@ def test_concurrent_updates_merge_different_provider_fields(tmp_path: Path) -> N
             api_key_config.update_api_key_values({name: f"test-value-{name.lower()}"})
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            list(executor.map(update, ["ARK_API_KEY", "DEEPSEEK_API_KEY"]))
+            list(executor.map(update, ["ARK_API_KEY", "DASHSCOPE_API_KEY"]))
         configured = set(api_key_config.api_key_file_info()["configured_keys"])
 
-    assert configured == {"ARK_API_KEY", "DEEPSEEK_API_KEY"}
+    assert configured == {"ARK_API_KEY", "DASHSCOPE_API_KEY"}
     assert key_file.is_file()
 
 
@@ -143,7 +143,7 @@ def test_atomic_write_failure_preserves_old_file_and_cleans_own_temporary(tmp_pa
         old_digest = hashlib.sha256(key_file.read_bytes()).digest()
         with patch.object(api_key_config.os, "replace", side_effect=OSError("simulated replace failure")):
             with pytest.raises(api_key_config.ApiKeyConfigUnavailable):
-                api_key_config.update_api_key_values({"DEEPSEEK_API_KEY": "new-test-value"})
+                api_key_config.update_api_key_values({"DASHSCOPE_API_KEY": "new-test-value"})
 
         assert hashlib.sha256(key_file.read_bytes()).digest() == old_digest
         assert not list(key_file.parent.glob(f".{key_file.name}.*.tmp"))
@@ -235,7 +235,7 @@ def test_local_key_endpoint_persists_on_runtime_without_fchmod(tmp_path: Path) -
             status, payload = _post(
                 httpd,
                 "/api/providers/local-keys",
-                {"keys": {"DEEPSEEK_API_KEY": "endpoint-test-value"}},
+                {"keys": {"DASHSCOPE_API_KEY": "endpoint-test-value"}},
             )
             saved = api_key_config.read_api_keys()
 
@@ -243,7 +243,7 @@ def test_local_key_endpoint_persists_on_runtime_without_fchmod(tmp_path: Path) -
         assert payload["ok"] is True
         assert payload["updated"] is True
         assert "endpoint-test-value" not in json.dumps(payload)
-        assert saved == {"DEEPSEEK_API_KEY": "endpoint-test-value"}
+        assert saved == {"DASHSCOPE_API_KEY": "endpoint-test-value"}
         assert key_file.is_file()
     finally:
         httpd.shutdown()
@@ -361,7 +361,10 @@ def test_permission_and_symlink_failures_never_offer_or_perform_recovery(tmp_pat
     key_file.parent.mkdir(parents=True)
     real_file = key_file.parent / "outside.json"
     real_file.write_text("[]", encoding="utf-8")
-    key_file.symlink_to(real_file)
+    try:
+        key_file.symlink_to(real_file)
+    except OSError as exc:
+        pytest.skip(f"symlink privilege unavailable: {exc}")
     with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4]:
         with pytest.raises(api_key_config.ApiKeyConfigUnavailable) as symlink_read_error:
             api_key_config.read_api_keys()

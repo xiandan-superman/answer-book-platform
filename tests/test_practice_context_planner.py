@@ -151,8 +151,8 @@ def test_text_primary_cannot_replace_image_without_saved_recognition() -> None:
 def test_context_plan_blocks_omitted_required_image() -> None:
     plan = build_context_plan(
         stage="generation",
-        provider_name="bigmodel",
-        model_name="glm-5.3-flash",
+        provider_name="ark",
+        model_name="doubao-seed-2-0-pro-260215",
         text="生成一道题",
         image_evidence_refs=[],
         required_evidence_refs=["C01P0001", "image:2"],
@@ -169,8 +169,8 @@ def test_context_plan_blocks_omitted_required_image() -> None:
 def test_context_plan_cannot_report_complete_when_text_evidence_is_missing() -> None:
     plan = build_context_plan(
         stage="generation",
-        provider_name="bigmodel",
-        model_name="glm-5.3-flash",
+        provider_name="ark",
+        model_name="doubao-seed-2-0-pro-260215",
         text="生成一道题",
         image_evidence_refs=["image:2"],
         required_evidence_refs=["C01P0001", "image:2"],
@@ -186,8 +186,8 @@ def test_context_plan_cannot_report_complete_when_text_evidence_is_missing() -> 
 def test_context_plan_counts_delivered_images_and_rejects_text_only_model() -> None:
     plan = build_context_plan(
         stage="generation",
-        provider_name="deepseek",
-        model_name="deepseek-v4-flash",
+        provider_name="ark",
+        model_name="deepseek-v4-flash-ga-260731",
         text="生成一道题",
         image_evidence_refs=["image:2"],
         required_evidence_refs=["C01P0001", "image:2"],
@@ -201,8 +201,8 @@ def test_context_plan_counts_delivered_images_and_rejects_text_only_model() -> N
     assert "不支持" in context_plan_block_reason(plan)
 
 
-def test_glm_stage_quality_limits_and_token_estimate_are_available() -> None:
-    assert model_stage_quality_limit("bigmodel", "glm-5.3-flash", "generation") == 20000
+def test_current_catalog_uses_default_generation_quality_limit() -> None:
+    assert model_stage_quality_limit("ark", "deepseek-v4-flash-ga-260731", "generation") == 20000
     assert estimate_text_tokens("材料科学ABC") >= 5
     assert image_numbers_from_evidence_refs(["image:2", "image:2", "image:9"], maximum=3) == [2]
 

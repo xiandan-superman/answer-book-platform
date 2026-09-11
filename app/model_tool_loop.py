@@ -26,6 +26,7 @@ from .llm_client import (
 )
 from .model_context_planner import model_stage_quality_limit
 from .prompt_registry import prompt_contract
+from .provider_errors import classify_provider_error
 from .token_meter import compact_non_core_history, measure_request_tokens
 
 IMAGE_TOOL_NAME = "generate_image"
@@ -71,6 +72,7 @@ class ToolLoopResult:
     generated_artifacts: list[dict[str, Any]] = field(default_factory=list)
     raw_responses: list[dict[str, Any]] = field(default_factory=list)
     tool_event_log: str = ""
+    terminal_route_error: Exception | None = field(default=None, repr=False)
 
 
 def _canonical_json(value: Any) -> str:
@@ -598,6 +600,8 @@ class ModelToolLoop:
         self._session_call_cache: dict[str, dict[str, Any]] = self._event_log.recover_call_cache()
         self._repeat_signature = ""
         self._repeat_count = 0
+        self._terminal_tool_failures: dict[str, dict[str, Any]] = {}
+        self._terminal_route_error: Exception | None = None
 
     @property
     def tool_event_log_path(self) -> Path:
@@ -688,6 +692,10 @@ class ModelToolLoop:
                 f"{type(argument_error).__name__}: {argument_error}",
                 name="ToolArgumentsError",
             )
+        elif tool_name in self._terminal_tool_failures:
+            result = json.loads(
+                json.dumps(self._terminal_tool_failures[tool_name], ensure_ascii=False)
+            )
         else:
             tool = self.tools.get(tool_name)
             if tool is None:
@@ -721,25 +729,42 @@ class ModelToolLoop:
                     try:
                         result = tool.execute(arguments, call_id=call_id)
                     except Exception as exc:
-                        self._event_log.append(
-                            "tool/outcome_unknown",
-                            call_id=call_id,
-                            tool=tool_name,
-                            model=model,
-                            protocol=protocol,
-                            step=step,
-                            call_index=call_index,
-                            arguments_sha256=fingerprint,
-                            error={"name": type(exc).__name__, "message": str(exc)},
+                        info = classify_provider_error(
+                            exc,
+                            status_code=getattr(exc, "status_code", None),
+                            transport_phase=str(getattr(exc, "transport_phase", "") or ""),
+                            retry_after_seconds=getattr(exc, "retry_after_seconds", None),
                         )
-                        result = _tool_failure(
-                            "TOOL_OUTCOME_UNKNOWN",
-                            (
-                                f"{type(exc).__name__}: {exc}; the external operation may have completed, "
-                                "so this call_id will not be replayed automatically"
-                            ),
-                            name=type(exc).__name__,
-                        )
+                        if info.failure_state in {"route_blocked", "configuration_blocked"}:
+                            result = _tool_failure(
+                                "PROVIDER_ROUTE_BLOCKED",
+                                f"{info.title}：{info.message} {info.suggested_action}",
+                                name=type(exc).__name__,
+                            )
+                            self._terminal_tool_failures[tool_name] = json.loads(
+                                json.dumps(result, ensure_ascii=False)
+                            )
+                            self._terminal_route_error = exc
+                        else:
+                            self._event_log.append(
+                                "tool/outcome_unknown",
+                                call_id=call_id,
+                                tool=tool_name,
+                                model=model,
+                                protocol=protocol,
+                                step=step,
+                                call_index=call_index,
+                                arguments_sha256=fingerprint,
+                                error={"name": type(exc).__name__, "message": str(exc)},
+                            )
+                            result = _tool_failure(
+                                "TOOL_OUTCOME_UNKNOWN",
+                                (
+                                    f"{type(exc).__name__}: {exc}; the external operation may have completed, "
+                                    "so this call_id will not be replayed automatically"
+                                ),
+                                name=type(exc).__name__,
+                            )
             self._session_call_cache[call_id] = {
                 "fingerprint": fingerprint,
                 "result": json.loads(json.dumps(result, ensure_ascii=False)),
@@ -943,6 +968,7 @@ class ModelToolLoop:
                     generated_artifacts=[item.to_dict() for item in generated_assets.values()],
                     raw_responses=raw_responses,
                     tool_event_log=str(self.tool_event_log_path.resolve()),
+                    terminal_route_error=self._terminal_route_error,
                 )
 
             if responses_protocol:

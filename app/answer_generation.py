@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .calculation_consistency import (
     calculation_contract_issues,
@@ -35,7 +35,7 @@ from .omml_input import strip_structured_math_metadata
 from .output_checkpoints import file_dependencies, load_output_checkpoint, save_output_checkpoint
 from .prompt_registry import prompt_contract
 from .prompts import build_answer_depth_profile, build_answer_draft_prompt
-from .provider_errors import classify_provider_error
+from .provider_errors import classify_provider_error, is_terminal_provider_route_error
 from .question_requirements import answer_figure_required
 from .question_types import (
     infer_question_type,
@@ -64,6 +64,24 @@ ANSWER_GENERATION_COMPLEX_TIMEOUT_SECONDS = 300
 ANSWER_GENERATION_REASONING_TIMEOUT_SECONDS = 600
 ANSWER_GENERATION_QUESTION_BUDGET_SECONDS = 360
 ANSWER_SOURCE_CONTRACT_VERSION = "answer_book.answer_source_contract.v1"
+
+
+@dataclass
+class _QuestionModelExecutionBudget:
+    """A per-question clock that starts only after provider admission."""
+
+    seconds: int
+    deadline: float | None = None
+
+    def mark_provider_admitted(self) -> None:
+        if self.deadline is None:
+            self.deadline = time.monotonic() + self.seconds
+
+    def deadline_monotonic(self) -> float | None:
+        return self.deadline
+
+    def exhausted(self) -> bool:
+        return self.deadline is not None and time.monotonic() >= self.deadline
 
 
 def _clean_question_stem(question: dict[str, Any]) -> str:
@@ -135,10 +153,12 @@ def generation_completion_state(
     """Separate pipeline continuity from formal-delivery readiness."""
 
     coverage_complete = fragment_count == question_count
+    usable_coverage_complete = coverage_complete and fallback_count == 0
     review_required = bool(issue_count or fallback_count)
     return {
-        "ok": coverage_complete,
+        "ok": usable_coverage_complete,
         "coverage_complete": coverage_complete,
+        "usable_coverage_complete": usable_coverage_complete,
         "review_required": review_required,
         "delivery_readiness": "review_candidate" if review_required else "formal_candidate",
     }
@@ -2861,7 +2881,7 @@ def generate_one_fragment(
     prompt_evidence: list[dict[str, Any]] | None = None,
     attempt_callback: Any | None = None,
     retries: int = 1,
-    deadline_monotonic: float | None = None,
+    deadline_monotonic: float | Callable[[], float | None] | None = None,
     tool_loop: ModelToolLoop | None = None,
     include_textbook_evidence: bool = True,
 ) -> tuple[dict[str, Any] | None, list[str]]:
@@ -2888,8 +2908,9 @@ def generate_one_fragment(
         assistant_content = ""
         thinking_mode = answer_generation_attempt_thinking_mode(provider, question, attempt)
         timeout_seconds = answer_generation_timeout_seconds(question, thinking_mode=thinking_mode)
-        if deadline_monotonic is not None:
-            remaining_seconds = deadline_monotonic - time.monotonic()
+        active_deadline = deadline_monotonic() if callable(deadline_monotonic) else deadline_monotonic
+        if active_deadline is not None:
+            remaining_seconds = active_deadline - time.monotonic()
             if remaining_seconds <= 0:
                 raise LLMError("question model-call budget exhausted")
             timeout_seconds = min(timeout_seconds, max(1, math.ceil(remaining_seconds)))
@@ -2905,6 +2926,12 @@ def generate_one_fragment(
                         timeout=timeout_seconds,
                     )
                     data = agent_result.value
+                    if answer_figure_required(question) and agent_result.terminal_route_error is not None:
+                        # The model has seen the structured tool failure and had
+                        # one chance to respond honestly.  A required figure
+                        # still cannot be delivered, so stop before correctness
+                        # and content-repair stages repeat the same dead route.
+                        raise agent_result.terminal_route_error
                 else:
                     data = client.chat_json_object(
                         messages,
@@ -2950,6 +2977,8 @@ def generate_one_fragment(
             )
             continue
         except LLMError as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             last_issues = [str(exc)]
             error_info = classify_provider_error(
                 exc,
@@ -3221,6 +3250,11 @@ def generate_batch_fragments(
                 timeout=answer_generation_timeout_seconds(thinking_mode=thinking_mode),
             )
             raw = agent_result.value
+            if (
+                any(answer_figure_required(item["question"]) for item in batch_items)
+                and agent_result.terminal_route_error is not None
+            ):
+                raise agent_result.terminal_route_error
         else:
             raw = client.chat_json_object(
                 messages,
@@ -3424,7 +3458,10 @@ def generate_answer_fragments(
         active_progress["elapsed_text"] = _format_elapsed(active_progress["elapsed_seconds"])
         write_progress("running", completed_counter["value"], question)
 
-    def generate_question_inner(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
+    def generate_question_inner(
+        item: tuple[int, dict[str, Any]],
+        question_budget: _QuestionModelExecutionBudget,
+    ) -> dict[str, Any]:
         _, question = item
         qid = str(question.get("question_id", ""))
         evidence_selection = (evidence_selections or {}).get(qid)
@@ -3442,7 +3479,6 @@ def generate_answer_fragments(
             }
         )
         write_progress("running", completed_counter["value"], question)
-        question_deadline = time.monotonic() + answer_generation_question_budget_seconds()
         model_candidates = _answer_model_candidates_for_question(provider, model, question)[
             : answer_generation_max_model_candidates()
         ]
@@ -3471,7 +3507,7 @@ def generate_answer_fragments(
                 )
             ]
         for candidate_model in model_candidates:
-            if time.monotonic() >= question_deadline:
+            if question_budget.exhausted():
                 issues = ["question model-call budget exhausted before another model fallback"]
                 break
             try:
@@ -3504,7 +3540,7 @@ def generate_answer_fragments(
                         evidence_selection=evidence_selection,
                         prompt_evidence=prompt_evidence,
                         attempt_callback=attempt_callback,
-                        deadline_monotonic=question_deadline,
+                        deadline_monotonic=question_budget.deadline_monotonic,
                         tool_loop=tool_loop,
                         include_textbook_evidence=include_textbook_evidence,
                     )
@@ -3521,6 +3557,8 @@ def generate_answer_fragments(
                         include_textbook_evidence=include_textbook_evidence,
                     )
             except LLMError as exc:
+                if is_terminal_provider_route_error(exc):
+                    raise
                 fragment = None
                 issues = [str(exc)]
             if fragment is not None and not issues:
@@ -3582,8 +3620,13 @@ def generate_answer_fragments(
     def generate_question(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
         question = item[1]
         active_item = str(question.get("question_id") or question.get("number") or "")
-        with model_call_context(stage="answer_generation", active_item=active_item):
-            return generate_question_inner(item)
+        question_budget = _QuestionModelExecutionBudget(answer_generation_question_budget_seconds())
+        with model_call_context(
+            stage="answer_generation",
+            active_item=active_item,
+            request_admitted_callback=question_budget.mark_provider_admitted,
+        ):
+            return generate_question_inner(item, question_budget)
 
     def prepared_batch_item(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
         _, question = item
@@ -3670,6 +3713,8 @@ def generate_answer_fragments(
         except ModelRequestAborted:
             raise
         except Exception as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             out = []
             for item in items:
                 result = generate_question(item)
@@ -3794,7 +3839,9 @@ def generate_answer_fragments(
         "source_contract": answer_source_contract(structured_exam),
         "provider": provider.name,
         "model": model,
-        "image_generation_orchestration": "main_model_tool_loop" if image_tool_enabled else "legacy_figure_pipeline",
+        # This is the configured orchestration contract, not a statement that
+        # this particular text-only question happened to call the image tool.
+        "image_generation_orchestration": "main_model_tool_loop",
         "fragments": fragments,
         "issues": all_issues,
         "recovery_events": recovery_events,

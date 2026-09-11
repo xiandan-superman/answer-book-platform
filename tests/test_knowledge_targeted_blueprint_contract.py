@@ -131,7 +131,7 @@ def test_ark_named_planning_pipeline_accepts_both_real_failure_shapes(
         "question_types": ["计算题", "简答题"],
         "generation_strategy": "knowledge_targeted",
         "provider": "ark",
-        "model": "doubao-seed-2-1-pro-260628",
+        "model": "doubao-seed-2-0-pro-260215",
         "thinking": "disabled",
     }
     provider = SimpleNamespace(name="ark")
@@ -143,7 +143,7 @@ def test_ark_named_planning_pipeline_accepts_both_real_failure_shapes(
         plan = plan_practice_set(payload)
 
     assert plan["generation"]["provider"] == "ark"
-    assert plan["generation"]["model"] == "doubao-seed-2-1-pro-260628"
+    assert plan["generation"]["model"] == "doubao-seed-2-0-pro-260215"
     assert plan["generation"]["stage"] == "planning"
     assert plan["blueprint_audit"]["status"] != "blocked"
 

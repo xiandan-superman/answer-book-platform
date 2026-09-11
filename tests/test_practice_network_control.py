@@ -323,7 +323,13 @@ def _ark_fixture_provider(base_url: str) -> ProviderConfig:
     )
 
 
-def _run_ark_transport_fixture(mode: str, monkeypatch, *, hard_timeout: int) -> llm_client.LLMResult:
+def _run_ark_transport_fixture(
+    mode: str,
+    monkeypatch,
+    *,
+    hard_timeout: int,
+    request_elapsed: list[float] | None = None,
+) -> llm_client.LLMResult:
     response_body = json.dumps({
         "choices": [{"message": {"content": "{\"fixture\": true}"}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1},
@@ -349,7 +355,10 @@ def _run_ark_transport_fixture(mode: str, monkeypatch, *, hard_timeout: int) -> 
                     time.sleep(1.2)
                     self.wfile.write(response_body[8:])
                 elif mode == "hard_timeout":
-                    for byte in response_body:
+                    initial_chunk_size = min(8, len(response_body))
+                    self.wfile.write(response_body[:initial_chunk_size])
+                    self.wfile.flush()
+                    for byte in response_body[initial_chunk_size:]:
                         self.wfile.write(bytes([byte]))
                         self.wfile.flush()
                         time.sleep(0.2)
@@ -359,6 +368,10 @@ def _run_ark_transport_fixture(mode: str, monkeypatch, *, hard_timeout: int) -> 
                 pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # The assertion below measures the client wall-clock deadline, not how long
+    # the deliberately slow fixture handler takes to finish after disconnect.
+    server.daemon_threads = True
+    server.block_on_close = False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     monkeypatch.setenv("PRACTICE_MODEL_CONNECT_TIMEOUT_SECONDS", "1")
@@ -368,10 +381,16 @@ def _run_ark_transport_fixture(mode: str, monkeypatch, *, hard_timeout: int) -> 
         client = llm_client.OpenAICompatibleClient(
             _ark_fixture_provider(f"http://127.0.0.1:{server.server_port}/api/v3")
         )
-        return client.chat_text(
-            [{"role": "user", "content": "deterministic Ark fixture"}],
-            timeout=hard_timeout,
-        )
+        request_started = time.monotonic()
+        try:
+            return client._chat_json_once(
+                [{"role": "user", "content": "deterministic Ark fixture"}],
+                timeout=hard_timeout,
+                use_response_format=False,
+            )
+        finally:
+            if request_elapsed is not None:
+                request_elapsed.append(time.monotonic() - request_started)
     finally:
         server.shutdown()
         server.server_close()
@@ -391,11 +410,17 @@ def test_ark_fixture_separates_read_idle_timeout(monkeypatch) -> None:
 
 
 def test_ark_fixture_enforces_one_call_wall_clock_deadline(monkeypatch) -> None:
-    started = time.monotonic()
+    request_elapsed: list[float] = []
     with pytest.raises(llm_client.LLMError) as captured:
-        _run_ark_transport_fixture("hard_timeout", monkeypatch, hard_timeout=2)
+        _run_ark_transport_fixture(
+            "hard_timeout",
+            monkeypatch,
+            hard_timeout=2,
+            request_elapsed=request_elapsed,
+        )
     assert captured.value.transport_phase == "hard_timeout"
-    assert time.monotonic() - started < 4
+    assert captured.value.partial_output_received is True
+    assert request_elapsed and request_elapsed[0] < 4
 
 
 def test_connect_timeout_has_its_own_transport_phase(monkeypatch) -> None:

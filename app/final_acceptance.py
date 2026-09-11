@@ -480,11 +480,15 @@ def build_final_acceptance_report(
     issues: list[str] = []
     formal_issues: list[str] = []
     warnings: list[str] = []
+    fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
+    question_only = str(fragments_data.get("analysis_profile") or "") == "question_only"
     for name, filename in AUDIT_FILES.items():
-        if name == "render" or (document_delivery_skipped and name in {"docx", "figure_size"}):
+        not_applicable = question_only and name == "retrieval"
+        if name == "render" or not_applicable or (document_delivery_skipped and name in {"docx", "figure_size"}):
             gates[name] = {
                 "ok": True,
                 "skipped": True,
+                "not_applicable": not_applicable,
                 "issue_count": 0,
                 "warning_count": 0,
                 "path": str(stage_dir / filename),

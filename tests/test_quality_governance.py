@@ -121,6 +121,29 @@ class QualityGovernanceTests(unittest.TestCase):
         self.assertEqual(16, budget.estimated_model_calls_per_run)
         self.assertEqual(120, budget.max_model_calls_per_run)
 
+    def test_exam_wall_budget_scales_with_calls_capacity_and_reserves_answers(self) -> None:
+        from app.capabilities.quality_budget import QualityExecutionBudget
+
+        with patch.dict(os.environ, {}, clear=False):
+            for name in (
+                "QUALITY_MAX_MODEL_WALL_SECONDS_PER_RUN",
+                "QUALITY_MODEL_EXPECTED_SECONDS_PER_CALL",
+                "QUALITY_MODEL_WALL_FIXED_OVERHEAD_SECONDS",
+                "QUALITY_ANSWER_RESERVE_SECONDS_PER_WAVE",
+            ):
+                os.environ.pop(name, None)
+            budget = QualityExecutionBudget.from_environment(
+                question_count=18,
+                task_kind="exam",
+                textbook_evidence_enabled=True,
+                provider_concurrency=2,
+            )
+
+        self.assertEqual(69, budget.estimated_model_calls_per_run)
+        self.assertEqual(2400, budget.max_model_wall_seconds_per_run)
+        self.assertEqual(540, budget.answer_generation_reserve_seconds)
+        self.assertEqual(2, budget.provider_concurrency)
+
     def test_explicit_model_call_limit_overrides_dynamic_budget(self) -> None:
         from app.capabilities.quality_budget import QualityExecutionBudget
 

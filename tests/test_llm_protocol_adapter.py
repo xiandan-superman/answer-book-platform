@@ -210,18 +210,18 @@ class LLMProtocolAdapterTests(unittest.TestCase):
                     self.assertEqual("chat_completions", provider.api_protocol)
                     self.assertNotIsInstance(client, ResponsesAPIClient)
 
-    def test_deepseek_exposes_text_and_multimodal_flash_models(self):
+    def test_ark_exposes_only_the_retained_verified_text_models(self):
         from app.settings import list_providers, provider_model_supports_vision
 
-        provider = list_providers()["deepseek"]
+        provider = list_providers()["ark"]
         self.assertEqual(
-            ("deepseek-v4-flash", "deepseek-v4-flash-vision-exp"),
+            ("doubao-seed-2-0-pro-260215", "deepseek-v4-pro-ga-260813", "deepseek-v4-flash-ga-260731"),
             provider.model_options,
         )
-        self.assertEqual("deepseek-v4-flash-vision-exp", provider.vision_model)
-        self.assertEqual(("deepseek-v4-flash-vision-exp",), provider.vision_model_options)
-        self.assertFalse(provider_model_supports_vision(provider, "deepseek-v4-flash"))
-        self.assertTrue(provider_model_supports_vision(provider, "deepseek-v4-flash-vision-exp"))
+        self.assertEqual("doubao-seed-2-0-pro-260215", provider.vision_model)
+        self.assertEqual(("doubao-seed-2-0-pro-260215",), provider.vision_model_options)
+        self.assertFalse(provider_model_supports_vision(provider, "deepseek-v4-pro-ga-260813"))
+        self.assertTrue(provider_model_supports_vision(provider, "doubao-seed-2-0-pro-260215"))
 
     def test_stale_local_protocol_overrides_cannot_restore_chat_for_responses_providers(self):
         from app.settings import (

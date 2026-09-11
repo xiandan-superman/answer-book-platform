@@ -4,7 +4,52 @@ import json
 from types import SimpleNamespace
 
 from app import task_diagnostics
-from app.task_diagnostics import STAGE_FILES, _collect_file_issues
+from app.task_diagnostics import (
+    STAGE_FILES,
+    _collect_file_issues,
+    _collect_image_tool_issues,
+    _compact_issue,
+)
+
+
+def test_figure_delivery_issue_exposes_its_question_id() -> None:
+    issue = _compact_issue(
+        "figure_delivery: qa_s01_01_01 required image missing",
+        default_stage="final_acceptance",
+        severity="issue",
+    )
+
+    assert issue["question_id"] == "qa_s01_01_01"
+    assert issue["code"] == "figure_delivery"
+
+
+def test_image_tool_diagnostics_expose_safe_supplier_cause_and_question(tmp_path) -> None:
+    events = tmp_path / "agent_images" / "qa_s01_01_01" / "tool_events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        json.dumps(
+            {
+                "event": "tool/result",
+                "result": {
+                    "ok": False,
+                    "is_error": True,
+                    "error": {
+                        "code": "grok_media_no_eligible_account",
+                        "message": "Provider HTTP 503: No eligible Grok media accounts",
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    issues = _collect_image_tool_issues(tmp_path)
+
+    assert issues[0]["question_id"] == "qa_s01_01_01"
+    assert issues[0]["code"] == "provider_route_pool_unavailable"
+    assert "图片账号" in issues[0]["message"]
+    assert "Provider HTTP" not in issues[0]["message"]
 
 
 def test_answer_generation_diagnostics_expose_checkpoint_reconciliation(tmp_path) -> None:

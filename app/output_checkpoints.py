@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .artifact_store import atomic_write_json, path_exists, read_text, sha256_file
+from .artifact_store import atomic_write_json, long_path, path_exists, read_text, sha256_file
 
 
 def file_dependencies(value: Any) -> dict[str, str | None]:
@@ -87,7 +87,9 @@ def save_output_checkpoint(
     else:
         atomic_write_json(snapshot, payload)
     atomic_write_json(directory / "latest.json", {"snapshot": snapshot.name, "sha256": digest})
-    return snapshot
+    # Preserve the public Path return type while making direct caller access
+    # work beyond MAX_PATH on Windows as well as through our internal helpers.
+    return Path(long_path(snapshot))
 
 
 def load_output_checkpoint(stage_dir: Path, *, stage: str, object_id: str, dependencies: Any) -> dict[str, Any] | None:

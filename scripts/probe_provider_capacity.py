@@ -7,6 +7,7 @@ import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app import llm_client as llm_client_module  # noqa: E402
 from app.llm_client import create_llm_client  # noqa: E402
 from app.settings import get_provider  # noqa: E402
 
@@ -69,8 +71,8 @@ def _route_protocol(provider: Any, model: str) -> str:
     return str(profile.get("api_protocol") or getattr(provider, "api_protocol", "chat_completions"))
 
 
-def _probe_once(provider_name: str, model: str, concurrency: int, round_number: int, slot: int, timeout: int) -> ProbeResult:
-    provider = get_provider(provider_name)
+def _probe_once(provider: Any, model: str, concurrency: int, round_number: int, slot: int, timeout: int) -> ProbeResult:
+    provider_name = str(provider.name)
     protocol = _route_protocol(provider, model)
     client = create_llm_client(provider)
     started = time.monotonic()
@@ -159,8 +161,11 @@ def run_probe(
 ) -> dict[str, Any]:
     results: list[ProbeResult] = []
     started = time.monotonic()
+    providers: dict[str, Any] = {}
     for provider_name, _model in routes:
-        provider = get_provider(provider_name)
+        if provider_name not in providers:
+            providers[provider_name] = get_provider(provider_name)
+        provider = providers[provider_name]
         if not provider.api_key:
             raise RuntimeError(f"API key is not configured for provider: {provider_name}")
     route_groups = [routes] if mixed else [[route] for route in routes]
@@ -171,7 +176,7 @@ def run_probe(
                     futures = [
                         executor.submit(
                             _probe_once,
-                            route_group[(slot - 1) % len(route_group)][0],
+                            providers[route_group[(slot - 1) % len(route_group)][0]],
                             route_group[(slot - 1) % len(route_group)][1],
                             concurrency,
                             round_number,
@@ -223,7 +228,12 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.rounds <= 5:
         parser.error("rounds must be between 1 and 5")
+    # This executable measures the upstream account/model pool. Applying the
+    # production gate here would only measure our current configured ceiling.
+    # The override is process-local and cannot affect the running application.
+    llm_client_module.model_request_slot = lambda _provider: nullcontext()
     report = run_probe(args.route, args.levels, args.rounds, args.timeout, mixed=args.mixed)
+    report["platform_admission_gate_bypassed"] = True
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

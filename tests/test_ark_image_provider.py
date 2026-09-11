@@ -106,11 +106,11 @@ def test_stale_local_config_cannot_restore_other_ark_models() -> None:
     )
 
 
-def test_frontend_exposes_ark_only_through_the_image_provider() -> None:
+def test_frontend_exposes_verified_ark_text_and_image_routes() -> None:
     source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
     hidden_block = source.split("const HIDDEN_USER_PROVIDER_NAMES", 1)[1].split("]);", 1)[0]
-    assert '"ark",' in hidden_block
+    assert '"ark",' not in hidden_block
     assert '"ark_image",' not in hidden_block
     assert 'ark_image: "ARK_API_KEY"' in source
     assert 'ark_image: "火山方舟"' in source

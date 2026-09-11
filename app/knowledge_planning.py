@@ -12,7 +12,7 @@ from typing import Any
 from .concurrency import run_limited_concurrent
 from .llm_client import LLMError, OpenAICompatibleClient
 from .prompt_registry import prompt_contract
-from .provider_errors import classify_provider_error
+from .provider_errors import classify_provider_error, is_terminal_provider_route_error
 from .question_understanding import attach_question_visuals, needs_vision_model
 from .settings import DEFAULT_MODEL_MAX_TOKENS, ProviderConfig, provider_model_supports_vision
 from .text_utils import clean_text, tokenize_zh_en
@@ -289,6 +289,8 @@ def generate_knowledge_plans(
                 "direct_visual_input": include_visual_assets,
             }
         except (LLMError, Exception) as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             report = getattr(client, "last_json_retry_report", {})
             feedback = []
             if report.get("attempts"):

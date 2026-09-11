@@ -47,3 +47,10 @@ def test_corrupt_trace_is_not_proof_attachment_is_orphaned(tmp_path, monkeypatch
     monkeypatch.setattr(diagnostics, "_trace_files", lambda _: [trace])
     diagnostics._remove_orphan_attachments(tmp_path)
     assert asset.exists()
+
+
+def test_prune_tolerates_trace_removed_by_another_process(tmp_path, monkeypatch):
+    missing = tmp_path / "removed-after-enumeration.json.gz"
+    monkeypatch.setattr(diagnostics, "_trace_files", lambda _: [missing])
+
+    diagnostics._prune_expired(tmp_path)

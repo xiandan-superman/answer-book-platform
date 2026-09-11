@@ -6,10 +6,10 @@ import os
 import zipfile
 from pathlib import Path
 
-from app import desktop_word_save
-from app import word_format_tasks
-from app.desktop_word_save import DesktopWordSaveBridge
+import pytest
 
+from app import desktop_word_save, word_format_tasks
+from app.desktop_word_save import DesktopWordSaveBridge
 
 JOB_ID = "practice_word_aaaaaaaaaaaaaaaaaaaaaaaa"
 FORMAT_TASK_ID = "word_format_20260824_120000_aaaaaaaa"
@@ -128,7 +128,10 @@ def test_symlink_source_and_invalid_docx_are_rejected(tmp_path: Path) -> None:
     real_source = cache_root / "real.docx"
     _write_docx(real_source)
     link_source = cache_root / "link.docx"
-    link_source.symlink_to(real_source)
+    try:
+        link_source.symlink_to(real_source)
+    except OSError as exc:
+        pytest.skip(f"symlink privilege unavailable: {exc}")
     bridge, _window = _bridge(tmp_path, tmp_path / "target.docx", source=link_source)
     assert bridge.save_practice_word(JOB_ID, "target.docx")["code"] == "invalid_source"
 

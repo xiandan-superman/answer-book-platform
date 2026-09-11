@@ -78,6 +78,20 @@ def test_gateway_account_group_unavailable_is_retryable_even_when_wrapped_as_mod
     assert info.retryable is True
 
 
+def test_explicit_media_account_pool_failure_stops_the_exact_task_route() -> None:
+    info = classify_provider_error(
+        'Provider HTTP 503: {"error":{"code":"grok_media_no_eligible_account","message":"No eligible Grok media accounts"}}',
+        status_code=503,
+    )
+
+    assert info.kind == "provider_route_pool_unavailable"
+    assert info.failure_state == "route_blocked"
+    assert info.retryable is False
+    assert info.requires_configuration is False
+    assert "图片账号" in info.title
+    assert "更换" in info.suggested_action
+
+
 def test_explicit_unsupported_parameter_remains_configuration_blocked() -> None:
     info = classify_provider_error(
         '{"error":{"message":"unsupported parameter: reasoning_effort","param":"reasoning_effort"}}',

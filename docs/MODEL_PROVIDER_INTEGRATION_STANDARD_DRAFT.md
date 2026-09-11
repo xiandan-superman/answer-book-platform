@@ -7,6 +7,20 @@
 
 ## 1. 总原则
 
+### 2026-09-11 DeepSeek V4.1 Flash 官方直连接入
+
+DeepSeek 官方通道只登记稳定模型别名 `deepseek-flash`，当前对应 V4.1 Flash；已退役的官方直连 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 不再恢复。火山方舟中的 DeepSeek 模型是另一条独立供应商路线，本次不删除、不改名、不继承官方直连的验证或容量结论。
+
+使用官方 Key 完成 `/models`、Responses、Chat Completions、Responses/Chat 图片输入、结构化输出、流式结束以及 `disabled/low/high/xhigh` 思考档位实测。官方 Responses 的关闭思考参数为 `thinking.type=disabled`；其余平台档位映射为 `low/high/max`，不能继续套用通用 Responses 的 `none/minimal/medium/high` 参数。1/2/4 并发、每档两轮的 14 个官方 Responses 短请求全部成功；4 并发仅记为当时验证峰值，未完成真实长任务前生产默认仍保守设置为 2。所有延迟与成功率均为 2026-09-11 时间点观察，不构成长期 SLA。
+
+### 2026-09-10 模型/API 实测登记与上线门禁
+
+当前目录已按用户确认收口为火山方舟、阿里云百炼、灵算 GPT/Gemini/GPT 生图、WawAPI GPT/Gemini/Grok 及三类生图通道；未列出的服务商从公开配置、能力注册表和运行时目录移除，旧的本地覆盖文件也不能将其恢复。完整实测快照见 [`docs/operations/MODEL_PROTOCOL_VERIFICATION_2026-09-10.md`](./operations/MODEL_PROTOCOL_VERIFICATION_2026-09-10.md)，机器记录为 [`config/model_protocol_verification.json`](../config/model_protocol_verification.json)。
+
+协议准入单位固定为“服务商通道 + 模型 + API”。短探测分别验证 Responses、Chat Completions 或生图实际协议，禁止协议回退，且不保存凭据、正文或生成图片。实测延迟与失败只代表测试时间点，不能作为长期 SLA 或永久熔断依据；任务开始前仍需按精确路由重新探测。支持多个已登记协议的模型才显示请求类型选择，选择结果必须进入预检、持久化、恢复和实际调用。
+
+今后任何新服务商或新模型必须先同时加入供应商配置、能力表和协议验证记录；缺少真实观察，或只有失败观察而没有任何通过协议时，配置加载与回归门禁必须失败，禁止先上线再补记录。本轮已经在线但只得到失败快照的路线采用明确的有限存量清单保留并在任务前重检，不能用作新增模型豁免。
+
 ### 2026-09-08 教材依据独立工具与安全并行
 
 教材依据已收口为统一公开产物合同：题号、知识点、已核验印刷页码。教材原文仅留在任务内部候选与诊断文件，不进入该辅助工具的 Markdown/JSON 结果。新增 `textbook_evidence_only` 任务模式复用题面识别、知识点规划、教材索引、候选检索、证据审定和模型用量记账，完成后立即交付，不调用答案生成、正确性复核、生图和 Word 答案链。

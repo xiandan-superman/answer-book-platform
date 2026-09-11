@@ -34,8 +34,8 @@ def test_inspect_messages_counts_multimodal_inputs() -> None:
 def test_platform_context_plan_blocks_unsupported_image_input() -> None:
     plan = build_model_context_plan(
         stage="answer_generation",
-        provider_name="deepseek",
-        model_name="deepseek-v4-flash",
+        provider_name="ark",
+        model_name="deepseek-v4-flash-ga-260731",
         messages=_image_message(1),
     )
 
@@ -43,11 +43,19 @@ def test_platform_context_plan_blocks_unsupported_image_input() -> None:
     assert "不支持" in context_plan_block_reason(plan)
 
 
-def test_platform_context_plan_treats_stage_image_recommendation_as_advisory() -> None:
+def test_platform_context_plan_treats_stage_image_recommendation_as_advisory(monkeypatch) -> None:
+    monkeypatch.setattr(
+        model_context_planner,
+        "get_model_capability",
+        lambda _provider, _model: {
+            "native_inputs": ["text", "image"],
+            "quality_limits": {"source_analysis": {"max_images": 8}},
+        },
+    )
     plan = build_model_context_plan(
         stage="source_analysis",
-        provider_name="bigmodel",
-        model_name="glm-5.3-flash",
+        provider_name="test-provider",
+        model_name="test-model",
         messages=_image_message(9),
     )
 
@@ -86,8 +94,8 @@ def test_platform_context_plan_blocks_only_registered_provider_hard_limit(monkey
 def test_platform_context_plan_blocks_missing_required_evidence() -> None:
     plan = build_model_context_plan(
         stage="evidence_selection",
-        provider_name="bigmodel",
-        model_name="glm-5.3-flash",
+        provider_name="ark",
+        model_name="doubao-seed-2-0-pro-260215",
         messages=[{"role": "user", "content": "选择教材证据"}],
         required_evidence_refs=["page:12", "figure:2"],
         delivered_evidence_refs=["page:12"],
@@ -99,5 +107,5 @@ def test_platform_context_plan_blocks_missing_required_evidence() -> None:
 
 
 def test_task_support_uses_platform_stage_aliases() -> None:
-    assert model_task_support("deepseek", "deepseek-v4-flash", "answer_generation") == "allowed"
-    assert model_task_support("deepseek", "deepseek-v4-flash", "knowledge_planning") == "allowed"
+    assert model_task_support("ark", "deepseek-v4-flash-ga-260731", "answer_generation") == "limited"
+    assert model_task_support("ark", "deepseek-v4-flash-ga-260731", "knowledge_planning") == "limited"

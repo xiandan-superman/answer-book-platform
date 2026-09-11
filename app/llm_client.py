@@ -1355,6 +1355,29 @@ class OpenAICompatibleClient:
             result = self._generate_dashscope_image(prompt, output, model=image_model, size=size, timeout=timeout)
             result.raw.setdefault("_request", {})["context_plan"] = context_plan
             return result
+        if _is_embedded_text_image_model(self.config, image_model):
+            protocol = _model_api_protocol(self.config, image_model)
+            client = _client_for_model_protocol(self.config, image_model, protocol)
+            client._urlopen = self._urlopen
+            result = client.chat_text(
+                [{"role": "user", "content": prompt}],
+                model=image_model,
+                max_tokens=1024,
+                timeout=timeout,
+                task_stage="image_generation",
+                enforce_context_budget=True,
+            )
+            image_bytes = _embedded_image_bytes(result.content)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(image_bytes)
+            request = result.raw.setdefault("_request", {})
+            if isinstance(request, dict):
+                request.update({
+                    "endpoint": "/responses" if protocol == "responses" else "/chat/completions",
+                    "embedded_image_data": True,
+                    "context_plan": context_plan,
+                })
+            return ImageGenerationResult(self.config.name, image_model, output, result.raw)
         image_size = _effective_image_size(image_model, str(size or self.config.image_size or "1024x1024"))
         last_error: LLMError | None = None
         for use_response_format in (True, False):
@@ -1937,8 +1960,12 @@ class ResponsesAPIClient(OpenAICompatibleClient):
             payload["store"] = False
         if json_object:
             payload["text"] = {"format": {"type": "json_object"}}
-        reasoning_effort = _responses_reasoning_effort(thinking_mode)
-        if reasoning_effort:
+        deepseek_effort = _deepseek_reasoning_effort(self.config, thinking_mode)
+        reasoning_effort = deepseek_effort or _responses_reasoning_effort(thinking_mode)
+        if _is_official_deepseek(self.config) and thinking_mode == "disabled":
+            payload["thinking"] = {"type": "disabled"}
+            payload.pop("reasoning", None)
+        elif reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
         def request() -> dict[str, Any]:
             if bool(getattr(self.config, "responses_streaming", True)):
@@ -2011,8 +2038,12 @@ class ResponsesAPIClient(OpenAICompatibleClient):
                     else {"type": "json_object"}
                 )
             }
-        reasoning_effort = _responses_reasoning_effort(thinking_mode)
-        if reasoning_effort:
+        deepseek_effort = _deepseek_reasoning_effort(self.config, thinking_mode)
+        reasoning_effort = deepseek_effort or _responses_reasoning_effort(thinking_mode)
+        if _is_official_deepseek(self.config) and thinking_mode == "disabled":
+            payload["thinking"] = {"type": "disabled"}
+            payload.pop("reasoning", None)
+        elif reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
 
         try:
@@ -2336,6 +2367,29 @@ def _is_dashscope_image_model(config: ProviderConfig, model: str) -> bool:
     return (name in {"bailian", "dashscope"} or "dashscope.aliyuncs.com" in base_url or ".maas.aliyuncs.com" in base_url) and model_name.startswith(("wan", "qwen-image", "z-image"))
 
 
+def _is_embedded_text_image_model(config: ProviderConfig, model: str) -> bool:
+    return (
+        str(getattr(config, "name", "") or "").strip().lower() == "wawapi_image_google"
+        and str(model or "").strip().lower().startswith("gemini-")
+    )
+
+
+def _embedded_image_bytes(content: str) -> bytes:
+    match = re.search(
+        r"data:image/[A-Za-z0-9.+-]+;base64,([A-Za-z0-9+/=\r\n]+)",
+        str(content or ""),
+    )
+    if not match:
+        raise LLMError("Provider text-image response has no embedded image data")
+    try:
+        value = base64.b64decode(re.sub(r"\s+", "", match.group(1)), validate=True)
+    except Exception as exc:
+        raise LLMError("Provider returned invalid embedded base64 image data") from exc
+    if len(value) < 100:
+        raise LLMError("Provider returned an empty embedded image")
+    return value
+
+
 def _dashscope_multimodal_generation_endpoint(base_url: str) -> str:
     text = str(base_url or "").rstrip("/")
     marker = "/compatible-mode/v1"
@@ -2359,7 +2413,10 @@ def _dashscope_image_size(model: str, *, explicit_size: str | None, configured_s
     if model_name.startswith("qwen-image"):
         aliases = {"1K": "1024*1024", "2K": "2048*2048", "4K": "4096*4096"}
         if requested.upper() in aliases:
-            return aliases[requested.upper()]
+            normalized = aliases[requested.upper()]
+            if model_name == "qwen-image-max" and normalized == "2048*2048":
+                return "1664*1664"
+            return normalized
         if not requested:
             return _default_dashscope_image_size(model)
     if model_name.startswith("qwen-image") and not requested:
@@ -2411,11 +2468,19 @@ def _deepseek_reasoning_effort(config: ProviderConfig, thinking_mode: str) -> st
     if name != "deepseek" and "api.deepseek.com" not in base_url:
         return ""
     normalized = _normalize_thinking_mode(thinking_mode)
-    if normalized in {"low", "medium", "high", "enabled"}:
+    if normalized in {"minimal", "low"}:
+        return "low"
+    if normalized in {"medium", "high", "enabled"}:
         return "high"
     if normalized == "xhigh":
         return "max"
     return ""
+
+
+def _is_official_deepseek(config: ProviderConfig) -> bool:
+    name = str(getattr(config, "name", "") or "").lower()
+    base_url = str(getattr(config, "base_url", "") or "").lower()
+    return name == "deepseek" or "api.deepseek.com" in base_url
 
 
 def _responses_reasoning_effort(thinking_mode: str) -> str:

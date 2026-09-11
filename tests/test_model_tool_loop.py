@@ -55,6 +55,26 @@ class _LargeFailingTool:
         return {"ok": False, "error": {"code": "IMAGE_FAILED", "message": "x" * 3000}}
 
 
+class _UnavailableMediaPoolTool:
+    name = "generate_image"
+
+    def __init__(self):
+        self.calls = 0
+
+    def definition(self):
+        return {"type": "function", "name": self.name, "parameters": {"type": "object"}}
+
+    def execute(self, arguments, *, call_id):
+        from app.llm_client import LLMError
+
+        self.calls += 1
+        raise LLMError(
+            "Provider HTTP 503: No eligible Grok media accounts",
+            status_code=503,
+            provider_error_code="grok_media_no_eligible_account",
+        )
+
+
 class ModelToolLoopTests(unittest.TestCase):
     def _client(self):
         from app.llm_client import ResponsesAPIClient
@@ -143,6 +163,35 @@ class ModelToolLoopTests(unittest.TestCase):
             self.assertEqual(0, result.tool_calls)
             self.assertEqual([], tool.calls)
             self.assertEqual(1, len(requests))
+
+    def test_terminal_image_pool_failure_is_reused_without_another_external_call(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            tool = _UnavailableMediaPoolTool()
+            loop = ModelToolLoop(self._client(), [tool], store)
+            first, _ = loop._dispatch_tool_call(
+                {"call_id": "call-1", "name": "generate_image", "arguments": {"prompt": "a"}},
+                model="fake-vision-model",
+                protocol="responses",
+                step=1,
+                call_index=0,
+                budget_exhausted=False,
+            )
+            second, _ = loop._dispatch_tool_call(
+                {"call_id": "call-2", "name": "generate_image", "arguments": {"prompt": "b"}},
+                model="fake-vision-model",
+                protocol="responses",
+                step=2,
+                call_index=0,
+                budget_exhausted=False,
+            )
+
+            self.assertEqual(1, tool.calls)
+            self.assertEqual("PROVIDER_ROUTE_BLOCKED", first["error"]["info"]["code"])
+            self.assertEqual(first["error"]["info"]["code"], second["error"]["info"]["code"])
 
     def test_real_image_tool_exposes_and_executes_the_registered_method(self):
         from app.image_artifacts import ImageArtifactStore

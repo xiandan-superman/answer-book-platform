@@ -82,6 +82,27 @@ def test_unresolved_content_produces_review_candidate_not_artifact_failure(tmp_p
     assert report["formal_issue_count"] == 1
 
 
+def test_question_only_marks_retrieval_gate_not_applicable(tmp_path) -> None:
+    stage = tmp_path / "stage"
+    output = tmp_path / "output"
+    _write_passing_acceptance_inputs(stage, output)
+    (stage / AUDIT_FILES["retrieval"]).unlink()
+    (stage / "answer_fragments.json").write_text(
+        json.dumps({"analysis_profile": "question_only", "fragments": []}),
+        encoding="utf-8",
+    )
+    (stage / "structured_exam.json").write_text(
+        json.dumps({"items": []}), encoding="utf-8"
+    )
+
+    report = build_final_acceptance_report(stage, output, require_render=False)
+
+    assert report["gates"]["retrieval"]["ok"] is True
+    assert report["gates"]["retrieval"]["skipped"] is True
+    assert report["gates"]["retrieval"]["not_applicable"] is True
+    assert not any("retrieval: audit file missing" in issue for issue in report["issues"])
+
+
 def test_one_failed_answer_keeps_other_answers_as_review_candidate(tmp_path) -> None:
     stage = tmp_path / "stage"
     output = tmp_path / "output"

@@ -20,6 +20,8 @@ from uuid import uuid4
 
 from PIL import Image
 
+from .adapters.mineru_runtime import document_cache_available
+from .adapters.mineru_runtime import runtime_status as mineru_runtime_status
 from .analysis_profiles import (
     QUESTION_ONLY_EXCLUDED_ARTIFACT_NAMES,
     analysis_uses_textbook_evidence,
@@ -113,6 +115,7 @@ from .question_understanding import QUESTION_UNDERSTANDING_POLICY_VERSION, build
 from .resource_ids import bounded_resource_path
 from .retrieval import build_candidates, candidates_for_question
 from .review_notes import build_answer_review_notes
+from .runtime_capacity import provider_request_max_concurrency
 from .runtime_monitor import configure_model_call_task_shape, model_call_context
 from .settings import get_provider, provider_model_supports_vision, provider_supports_image_generation
 from .task_control import TaskCancelled, checkpoint
@@ -1233,7 +1236,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         provider = _pin_text_provider_model(provider, record.model, base_protocol)
         reasoning_provider = _pin_text_provider_model(reasoning_provider, reasoning_model, getattr(record, "reasoning_protocol", ""))
         answer_provider = _pin_text_provider_model(answer_provider, answer_model, getattr(record, "answer_protocol", ""))
-        correctness_provider = _pin_text_provider_model(correctness_provider, correctness_model, getattr(record, "answer_protocol", ""))
+        correctness_provider = _pin_text_provider_model(
+            correctness_provider,
+            correctness_model,
+            getattr(record, "correctness_protocol", "") or getattr(record, "answer_protocol", ""),
+        )
         vision_provider = _pin_vision_provider_model(vision_provider, vision_model)
         direct_answer_multimodal = provider_model_supports_vision(answer_provider, answer_model)
         image_provider = get_provider(getattr(record, "image_provider", "") or record.provider)
@@ -1336,12 +1343,29 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         checkpoint_contract_fingerprint = _upstream_checkpoint_contract_fingerprint(checkpoint_contract)
         checkpoint(task_id)
         update_task(task_id, current_stage="extract_exam")
+        mineru_cached = document_cache_available(exam_path)
+        mineru_status = mineru_runtime_status()
+        mineru_installed = bool(mineru_status.get("installed"))
         update_task_health(
             task_id,
-            current_operation="正在准备文档解析运行时",
+            current_operation=(
+                "正在复用已解析的文档内容"
+                if mineru_cached
+                else "正在读取并解析原题"
+                if mineru_installed
+                else "正在首次下载、安装并自检 MinerU 文档解析组件"
+            ),
             health_status="running",
-            warning_reason="",
-            suggested_action="首次使用可能需要下载并安装 MinerU 解析组件。",
+            warning_reason=(
+                "首次安装约需 2 GB 磁盘空间，耗时取决于网络；安装完成后会自动继续解析。"
+                if not mineru_cached and not mineru_installed
+                else ""
+            ),
+            suggested_action=(
+                "无需离开页面或重复提交；可在任务管理中查看状态，安装失败会保留任务并给出原因。"
+                if not mineru_cached and not mineru_installed
+                else ""
+            ),
             progress=True,
         )
         if reusable_early_upstream:
@@ -1398,10 +1422,19 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         )
 
         question_count = len(structured_exam.get("items", []))
+        route_concurrency_values = [
+            value
+            for value in (
+                provider_request_max_concurrency(reasoning_provider),
+                provider_request_max_concurrency(answer_provider),
+            )
+            if value > 0
+        ]
         quality_budget = QualityExecutionBudget.from_environment(
             question_count=question_count,
             task_kind="exam",
             textbook_evidence_enabled=textbook_evidence_enabled,
+            provider_concurrency=min(route_concurrency_values) if route_concurrency_values else 0,
         )
         configure_model_call_task_shape(
             question_count=question_count,

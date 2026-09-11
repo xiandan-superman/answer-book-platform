@@ -1,26 +1,61 @@
 {
   "schema_version": 1,
   "providers": {
-    "wawapi_openai": {
-      "request_concurrency": 2,
+    "deepseek": {
+      "request_concurrency": 8,
       "cooldown_base_seconds": 2,
       "cooldown_cap_seconds": 30,
-      "verified_at": "2026-09-08",
-      "evidence": "native Responses probes at concurrency 1/2/4 plus long-task 524 and server overload observations"
+      "verified_at": "2026-09-11",
+      "evidence": "2026-09-11 upstream-gate-bypassed Responses probes at concurrency 4/8/12/16; all 40 short requests passed. Production uses 8, half the verified short-request peak."
+    },
+    "bailian": {
+      "request_concurrency": 8,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-11",
+      "evidence": "qwen3.7-flash upstream-gate-bypassed Responses probes at concurrency 4/8/12/16; all 40 short requests passed. Production uses 8 to retain long-request headroom."
+    },
+    "wawapi_openai": {
+      "request_concurrency": 8,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-11",
+      "evidence": "all three retained GPT routes passed 40/40 each across upstream-gate-bypassed concurrency 4/8/12/16; a two-round mixed-model concurrency-8 check passed 15/16 with one retryable provider fluctuation. Production uses 8 with cooldown."
     },
     "wawapi_google": {
-      "request_concurrency": 2,
+      "request_concurrency": 8,
       "cooldown_base_seconds": 2,
       "cooldown_cap_seconds": 30,
-      "verified_at": "2026-09-08",
-      "evidence": "native Chat Completions probes at concurrency 1/2/4; production default keeps headroom below the tested peak"
+      "verified_at": "2026-09-11",
+      "evidence": "all three retained Gemini routes passed 40/40 each across upstream-gate-bypassed concurrency 4/8/12/16; a two-round mixed-model concurrency-8 check passed 16/16. Gemini 3.6 showed a long tail near 51 seconds, so production uses 8."
     },
     "wawapi_xai": {
+      "request_concurrency": 8,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-11",
+      "evidence": "grok-4.5 passed 40/40 and grok-4.6 passed 39/40 across upstream-gate-bypassed concurrency 4/8/12/16; a two-round mixed-model concurrency-8 check passed 16/16. Both had roughly 100-second long tails; production uses 8 with provider-pressure cooldown."
+    },
+    "wawapi_image_openai": {
       "request_concurrency": 2,
       "cooldown_base_seconds": 2,
       "cooldown_cap_seconds": 30,
-      "verified_at": "2026-09-08",
-      "evidence": "native Responses probes at concurrency 1/2/4; production default keeps headroom below the tested peak"
+      "verified_at": "2026-09-11",
+      "evidence": "gpt-image-2 passed 2/2 at concurrency 2 but failed 0/4 at concurrency 4; retain 2."
+    },
+    "wawapi_image_google": {
+      "request_concurrency": 1,
+      "cooldown_base_seconds": 5,
+      "cooldown_cap_seconds": 60,
+      "verified_at": "2026-09-11",
+      "evidence": "both Gemini image routes passed sequential 2/2, then returned provider overload/failure at concurrency 2 and 4 after load; serialize this provider snapshot."
+    },
+    "wawapi_image_xai": {
+      "request_concurrency": 4,
+      "cooldown_base_seconds": 2,
+      "cooldown_cap_seconds": 30,
+      "verified_at": "2026-09-11",
+      "evidence": "grok-imagine-image-2.0 passed 4/4 at concurrency 4."
     }
   }
 }

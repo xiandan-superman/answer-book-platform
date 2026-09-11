@@ -74,7 +74,7 @@ from .practice_runtime import (
     partition_compatible_batches,
 )
 from .prompt_registry import practice_prompt_contract_id, prompt_contract
-from .provider_errors import classify_provider_error
+from .provider_errors import classify_provider_error, is_terminal_provider_route_error
 from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
 from .runtime_monitor import record_model_retry_scheduled, record_model_retry_started
@@ -3735,6 +3735,9 @@ def _generation_error_detail(exc: Exception) -> dict[str, Any]:
     elif explicit_error_code == "model_tool_loop_unsupported":
         code = explicit_error_code
         message = raw or "所选主模型不支持自主生图工具回路。"
+    elif provider_info.kind == "provider_route_degraded":
+        code = provider_info.kind
+        message = provider_info.message
     elif transport_phase == "connect":
         code = "provider_connect_timeout"
         message = provider_info.message
@@ -5619,6 +5622,8 @@ def _call_practice_json_with_transport_retry(
                 after_attempt(attempt, None)
             return result
         except Exception as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             if not isinstance(exc, (PracticeGenerationStopped, ModelRequestAborted)) and ensure_active is not None:
                 try:
                     ensure_active()
@@ -8367,6 +8372,8 @@ def _selectively_repair_practice_diversity(
         except PracticeGenerationStopped:
             raise
         except Exception as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             error = _generation_error_detail(exc)
             attempt.update({
                 "status": "repair_request_failed",
@@ -9859,6 +9866,8 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         except PracticeGenerationStopped:
             raise
         except Exception as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             error = _generation_error_detail(exc)
             failed_ids: list[str] = []
             for local_index, planned_item in enumerate(batch_plan):

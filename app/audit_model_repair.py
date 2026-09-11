@@ -35,6 +35,7 @@ from .model_tool_loop import ImageGenerationTool, ModelToolLoop, tool_loop_suppo
 from .output_checkpoints import save_output_checkpoint
 from .prompt_registry import prompt_contract
 from .prompts import question_image_parts
+from .provider_errors import is_terminal_provider_route_error
 from .question_requirements import answer_figure_required
 from .question_types import question_has_type
 from .retrieval import EvidenceCandidate
@@ -990,6 +991,8 @@ def repair_fragments_with_model_for_audit(
         except ModelRequestAborted:
             raise
         except Exception as exc:
+            if is_terminal_provider_route_error(exc):
+                raise
             return qid, None, [str(exc)], validation_history
         return qid, repaired, [], validation_history
 

@@ -13,6 +13,7 @@ from app.practice_document_contracts import (
     PRACTICE_TEXT_CONTRACT,
 )
 from app.practice_export import (
+    CHART_FONT_PATHS,
     build_practice_question_docx,
     build_practice_solution_docx,
     resolve_practice_export_payload,
@@ -497,6 +498,11 @@ def test_practice_export_renders_node_edge_diagram_as_media():
     report = validate_docx_output(content, data)
     assert report["ok"]
     assert report["media_count"] >= 1
+
+
+def test_structured_chart_has_a_bundled_cross_platform_chinese_font():
+    assert CHART_FONT_PATHS[0].name == "Microsoft Yahei.ttf"
+    assert CHART_FONT_PATHS[0].is_file()
 
 
 def test_practice_export_renders_unlabelled_wireframe_vertices_and_shaded_plane():

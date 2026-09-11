@@ -42,11 +42,20 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
 
 
 class ModelRequestFairnessTests(unittest.TestCase):
-    def test_lingsuan_six_slots_are_shared_across_workflows_and_protocols(self) -> None:
-        url = "https://lingsuan-six-shared.invalid/v1"
+    def test_question_model_budget_starts_at_provider_admission(self) -> None:
+        from app import answer_generation
+
+        with patch.object(answer_generation.time, "monotonic", return_value=100.0):
+            budget = answer_generation._QuestionModelExecutionBudget(360)
+            self.assertIsNone(budget.deadline_monotonic())
+            budget.mark_provider_admitted()
+            self.assertEqual(460.0, budget.deadline_monotonic())
+
+    def test_lingsuan_eight_slots_are_shared_across_workflows_and_protocols(self) -> None:
+        url = "https://lingsuan-eight-shared.invalid/v1"
         providers = [_ProviderIdentity(name, url) for name in ("lingsuan_google", "lingsuan_openai")]
         release = threading.Event()
-        entered = [threading.Event() for _ in range(7)]
+        entered = [threading.Event() for _ in range(9)]
         owners = ("exam-task", "question-practice-task", "knowledge-practice-task")
 
         def request(index: int) -> None:
@@ -59,22 +68,22 @@ class ModelRequestFairnessTests(unittest.TestCase):
             return next(row for row in model_request_snapshot()["providers"] if row["base_url"] == url)
 
         with patch.dict(os.environ, {}, clear=True):
-            with ThreadPoolExecutor(max_workers=7) as executor:
+            with ThreadPoolExecutor(max_workers=9) as executor:
                 futures = []
                 try:
-                    futures = [executor.submit(request, index) for index in range(6)]
-                    for event in entered[:6]:
+                    futures = [executor.submit(request, index) for index in range(8)]
+                    for event in entered[:8]:
                         self.assertTrue(event.wait(2.0))
-                    futures.append(executor.submit(request, 6))
+                    futures.append(executor.submit(request, 8))
                     _wait_until(lambda: gate_state()["waiting"] == 1)
-                    self.assertEqual(6, gate_state()["active"])
-                    self.assertEqual(6, gate_state()["limit"])
-                    self.assertFalse(entered[6].is_set())
+                    self.assertEqual(8, gate_state()["active"])
+                    self.assertEqual(8, gate_state()["limit"])
+                    self.assertFalse(entered[8].is_set())
                 finally:
                     release.set()
                 for future in futures:
                     future.result(timeout=2.0)
-        self.assertTrue(entered[6].is_set())
+        self.assertTrue(entered[8].is_set())
         self.assertEqual(0, gate_state()["active"])
         self.assertEqual(0, gate_state()["waiting"])
 
@@ -119,12 +128,12 @@ class ModelRequestFairnessTests(unittest.TestCase):
                         active -= 1
 
         with patch.dict(os.environ, {}, clear=True):
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                list(executor.map(request, range(6)))
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                list(executor.map(request, range(12)))
 
-        self.assertEqual(2, maximum_active)
+        self.assertEqual(8, maximum_active)
 
-    def test_wawapi_overload_starts_shared_cooldown(self) -> None:
+    def test_model_specific_overload_does_not_pause_other_models(self) -> None:
         provider = _ProviderIdentity("wawapi_openai", "https://wawapi-cooldown.invalid/v1")
         entered = threading.Event()
         with (
@@ -139,14 +148,10 @@ class ModelRequestFairnessTests(unittest.TestCase):
                 with model_request_slot(provider):
                     entered.set()
 
-            started = time.monotonic()
             waiter = threading.Thread(target=wait_for_slot)
             waiter.start()
-            time.sleep(0.05)
-            self.assertFalse(entered.is_set())
             waiter.join(1.0)
             self.assertTrue(entered.is_set())
-            self.assertGreaterEqual(time.monotonic() - started, 0.22)
 
     def test_bigmodel_429_pauses_other_waiting_requests(self) -> None:
         provider = _ProviderIdentity("bigmodel", "https://bigmodel-cooldown.invalid/v1")
@@ -366,6 +371,56 @@ class ModelRequestFairnessTests(unittest.TestCase):
 
         self.assertEqual([ModelRequestAborted], observed)
         self.assertFalse(request_body_entered.is_set())
+
+    def test_provider_admission_callback_does_not_run_while_request_is_queued(self) -> None:
+        provider = _ProviderIdentity("admission-provider", "https://admission.invalid/v1")
+        holder_entered = threading.Event()
+        release_holder = threading.Event()
+        admitted = threading.Event()
+
+        def hold_slot() -> None:
+            with model_request_slot(provider):
+                holder_entered.set()
+                self.assertTrue(release_holder.wait(2.0))
+
+        def wait_for_slot() -> None:
+            with model_request_context("queued-task", admitted_callback=admitted.set):
+                with model_request_slot(provider):
+                    pass
+
+        with patch.dict(os.environ, {"MODEL_REQUEST_MAX_CONCURRENCY": "1"}):
+            holder = threading.Thread(target=hold_slot)
+            holder.start()
+            self.assertTrue(holder_entered.wait(1.0))
+            waiter = threading.Thread(target=wait_for_slot)
+            waiter.start()
+            _wait_until(lambda: model_request_snapshot()["waiting"] >= 1)
+            self.assertFalse(admitted.is_set())
+            release_holder.set()
+            holder.join(1.0)
+            waiter.join(1.0)
+
+        self.assertTrue(admitted.is_set())
+
+    def test_model_specific_read_idle_does_not_penalize_other_provider_models(self) -> None:
+        provider = _ProviderIdentity("wawapi_xai", "https://wawapi-read-idle.invalid/v1")
+        with (
+            patch("app.concurrency.provider_pressure_backoff", return_value=(0.25, 0.25)),
+            patch("app.concurrency.random.uniform", return_value=0.0),
+        ):
+            with self.assertRaises(LLMError):
+                with model_request_slot(provider):
+                    raise LLMError("模型响应读取空闲超时。", transport_phase="read_idle")
+
+        row = next(
+            item
+            for item in model_request_snapshot()["providers"]
+            if item["base_url"] == provider.base_url
+        )
+        self.assertEqual(8, row["configured_limit"])
+        self.assertEqual(8, row["limit"])
+        self.assertEqual(0, row["provider_pressure_count"])
+        self.assertEqual(0, row["cooldown_remaining_seconds"])
 
     def test_client_guard_is_reentrant_with_existing_business_guard(self) -> None:
         provider = ProviderConfig(

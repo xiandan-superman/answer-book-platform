@@ -30,7 +30,10 @@ def test_task_file_access_rejects_symlink_to_outside(monkeypatch, tmp_path) -> N
     own_output.mkdir()
     outside.write_text("private", encoding="utf-8")
     link = own_output / "result.txt"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink privilege unavailable: {exc}")
     monkeypatch.setattr(server, "_task_file_roots", lambda task_id: [own_stage.resolve(), own_output.resolve()])
 
     with pytest.raises(FileNotFoundError, match="not inside"):
@@ -45,7 +48,10 @@ def test_library_delete_rejects_outside_file_and_symlink(monkeypatch, tmp_path) 
     textbooks.mkdir()
     outside.write_bytes(b"keep")
     link = exams / "linked.docx"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink privilege unavailable: {exc}")
     monkeypatch.setattr(library_files, "EXAMS_DIR", exams)
     monkeypatch.setattr(library_files, "TEXTBOOKS_DIR", textbooks)
     monkeypatch.setattr(library_files, "ensure_project_dirs", lambda: None)

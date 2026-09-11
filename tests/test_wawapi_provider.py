@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -62,12 +63,88 @@ def test_stale_wawapi_overlay_cannot_restore_blocked_client_identity() -> None:
         assert providers[name].user_agent.startswith("Mozilla/5.0 ")
 
 
-def test_task_admission_rejects_gpt_chat_and_unsupported_thinking_mode() -> None:
-    from app.server import _validate_model_thinking_choice
+def test_wawapi_gemini_image_models_use_their_verified_text_protocols() -> None:
+    provider = _providers()["wawapi_image_google"]
 
-    chat_gpt = SimpleNamespace(api_protocol="chat_completions", model_profiles={})
-    with pytest.raises(ValueError, match="必须使用已验证的 Responses"):
-        _validate_model_thinking_choice(chat_gpt, "gpt-5.6-sol", "low")
+    assert provider.model_profiles["gemini-3-pro-image-preview"]["api_protocol"] == "chat_completions"
+    assert provider.model_profiles["gemini-3.1-flash-image-preview"]["api_protocol"] == "responses"
+
+
+def test_embedded_text_image_data_is_decoded() -> None:
+    from app.llm_client import _embedded_image_bytes
+
+    payload = b"fake-image-bytes" * 20
+    content = f"![generated](data:image/png;base64,{base64.b64encode(payload).decode()})"
+
+    assert _embedded_image_bytes(content) == payload
+
+
+@pytest.mark.parametrize(
+    ("model", "endpoint", "response"),
+    [
+        (
+            "gemini-3-pro-image-preview",
+            "/chat/completions",
+            lambda text: {"choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]},
+        ),
+        (
+            "gemini-3.1-flash-image-preview",
+            "/responses",
+            lambda text: {"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]},
+        ),
+    ],
+)
+def test_wawapi_gemini_image_generation_uses_verified_embedded_data_route(
+    tmp_path: Path, model: str, endpoint: str, response
+) -> None:
+    from dataclasses import replace
+
+    from app.llm_client import OpenAICompatibleClient
+
+    image_bytes = b"verified-image-bytes" * 20
+    embedded = f"![generated](data:image/png;base64,{base64.b64encode(image_bytes).decode()})"
+    requests = []
+
+    class FakeResponse:
+        def __init__(self):
+            self._consumed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, *_args):
+            if self._consumed:
+                return b""
+            self._consumed = True
+            return json.dumps(response(embedded)).encode()
+
+    provider = replace(_providers()["wawapi_image_google"], api_key="test-secret")
+    client = OpenAICompatibleClient(provider)
+
+    def fake_open(request, timeout):
+        requests.append(request)
+        return FakeResponse()
+
+    client._urlopen = fake_open
+    result = client.generate_image("draw a circle", tmp_path / "image.png", model=model)
+
+    assert requests[0].full_url.endswith(endpoint)
+    assert result.path.read_bytes() == image_bytes
+
+
+def test_task_admission_accepts_only_verified_protocols_and_thinking_modes() -> None:
+    from app.server import _validate_model_thinking_choice, _validate_requested_model_protocol
+
+    dual_protocol = SimpleNamespace(
+        api_protocol="responses",
+        model_profiles={"gpt-5.6-sol": {"supported_api_protocols": ["responses", "chat_completions"]}},
+    )
+    assert _validate_requested_model_protocol(dual_protocol, "gpt-5.6-sol", "chat_completions") == "chat_completions"
+    with pytest.raises(ValueError, match="未通过 anthropic_messages"):
+        _validate_requested_model_protocol(dual_protocol, "gpt-5.6-sol", "anthropic_messages")
 
     restricted = SimpleNamespace(
         api_protocol="responses",

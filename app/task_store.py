@@ -36,6 +36,7 @@ class TaskRecord:
     answer_thinking: str = ""
     reasoning_protocol: str = ""
     answer_protocol: str = ""
+    correctness_protocol: str = ""
     reasoning_provider: str = ""
     reasoning_model: str = ""
     answer_provider: str = ""
@@ -101,6 +102,7 @@ def create_task(
     answer_thinking: str = "",
     reasoning_protocol: str = "",
     answer_protocol: str = "",
+    correctness_protocol: str = "",
     reasoning_provider: str = "",
     reasoning_model: str = "",
     answer_provider: str = "",
@@ -128,6 +130,7 @@ def create_task(
         answer_thinking=answer_thinking or model_thinking,
         reasoning_protocol=reasoning_protocol,
         answer_protocol=answer_protocol,
+        correctness_protocol=correctness_protocol or answer_protocol,
         reasoning_provider=reasoning_provider,
         reasoning_model=reasoning_model,
         answer_provider=answer_provider,
@@ -186,6 +189,7 @@ def load_task(task_id: str) -> TaskRecord:
     data.setdefault("answer_thinking", data.get("model_thinking", "auto"))
     data.setdefault("reasoning_protocol", "")
     data.setdefault("answer_protocol", "")
+    data.setdefault("correctness_protocol", data.get("answer_protocol", ""))
     data.setdefault("reasoning_model", "")
     data.setdefault("answer_provider", "")
     data.setdefault("answer_model", "")

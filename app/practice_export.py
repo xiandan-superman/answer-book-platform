@@ -51,6 +51,10 @@ CJK_FONT = PRACTICE_TEXT_CONTRACT.east_asia_font
 CJK_FONT_FALLBACK = PRACTICE_TEXT_CONTRACT.east_asia_fallback_font
 MATH_FONT = PRACTICE_TEXT_CONTRACT.math_font
 CHART_FONT_PATHS = (
+    Path(__file__).resolve().parents[1] / "assets" / "fonts" / "dolbydu-font" / "matplotlib-compatible" / "Microsoft Yahei.ttf",
+    Path("C:/Windows/Fonts/msyh.ttc"),
+    Path("C:/Windows/Fonts/simhei.ttf"),
+    Path("C:/Windows/Fonts/simsun.ttc"),
     Path("/System/Library/Fonts/PingFang.ttc"),
     Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
 )

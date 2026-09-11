@@ -18,9 +18,7 @@
     "enabled": true,
     "providers": [
       "lingsuan_openai",
-      "lingsuan_google",
-      "lingsuan_xai",
-      "lingsuan_anthropic"
+      "lingsuan_google"
     ],
     "sample_rate": 0.1,
     "max_pending": 4,

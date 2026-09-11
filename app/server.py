@@ -117,6 +117,15 @@ from .practice_store import (
 from .process_lock import platform_process_lock
 from .prompt_registry import build_prompt_registry_report, prompt_contract
 from .prompts import build_answer_fragment_prompt
+from .provider_control import (
+    explicit_probe_source,
+    probe_next_due_route,
+    probe_route,
+    provider_control_snapshot,
+    record_provider_observation,
+    start_provider_control_scheduler,
+    stop_provider_control_scheduler,
+)
 from .provider_errors import classify_provider_error
 from .read_snapshot import READ_SNAPSHOTS
 from .redaction import redact_credentials
@@ -363,8 +372,6 @@ def _model_request_protocol(provider: object, model: str) -> str:
 def _validate_model_thinking_choice(provider: object, model: str, thinking: str) -> None:
     selected_model = str(model or "").strip()
     protocol = _model_request_protocol(provider, selected_model)
-    if selected_model.lower().startswith("gpt-") and protocol != "responses":
-        raise ValueError(f"GPT 模型 {selected_model} 必须使用已验证的 Responses 请求类型。")
     profiles = getattr(provider, "model_profiles", {}) or {}
     profile = profiles.get(selected_model, {}) if isinstance(profiles, dict) else {}
     if not isinstance(profile, dict):
@@ -389,11 +396,19 @@ def _validate_model_thinking_choice(provider: object, model: str, thinking: str)
 def _validate_requested_model_protocol(provider: object, model: str, requested: object) -> str:
     configured = _model_request_protocol(provider, model)
     selected = str(requested or configured).strip().lower()
-    if selected != configured:
+    profiles = getattr(provider, "model_profiles", {}) or {}
+    profile = profiles.get(str(model or "").strip(), {}) if isinstance(profiles, dict) else {}
+    supported = {
+        str(value).strip().lower()
+        for value in (profile.get("supported_api_protocols") or [])
+        if str(value).strip()
+    } if isinstance(profile, dict) else set()
+    allowed = supported or {configured}
+    if selected not in allowed:
         raise ValueError(
-            f"模型 {model} 已登记请求类型为 {configured}，不能在任务中改为 {selected}。"
+            f"模型 {model} 未通过 {selected} 请求类型验证；可用请求类型：{', '.join(sorted(allowed))}。"
         )
-    return configured
+    return selected
 
 
 def _optional_bool(value: object, default: bool) -> bool:
@@ -416,15 +431,22 @@ def _provider_test_protocol_override(provider, body: dict) -> tuple[object, bool
         "openai_compatible": "chat_completions",
     }
     protocol = aliases.get(raw_protocol, raw_protocol)
-    if protocol not in {"responses", "chat_completions"}:
+    if protocol not in {"responses", "chat_completions", "anthropic_messages"}:
         raise ValueError(f"Unsupported API protocol: {raw_protocol}")
     fallback = _optional_bool(
         body.get("responses_fallback_to_chat"),
         bool(getattr(provider, "responses_fallback_to_chat", False)),
     )
+    profiles = {key: dict(value) for key, value in (getattr(provider, "model_profiles", {}) or {}).items()}
+    model = str(body.get("model") or getattr(provider, "default_model", "") or "").strip()
+    if model:
+        profile = dict(profiles.get(model) or {})
+        profile["api_protocol"] = protocol
+        profiles[model] = profile
     return replace(
         provider,
         api_protocol=protocol,
+        model_profiles=profiles,
         responses_fallback_to_chat=fallback,
     ), True
 
@@ -1294,6 +1316,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        if parsed.path == "/api/provider-control/status":
+            self.send_json(provider_control_snapshot())
+            return
         if parsed.path == "/api/system/logs":
             self.send_json({"logs": read_runtime_logs()})
             return
@@ -2133,6 +2158,24 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 else:
                     correctness_provider_name, correctness_model = answer_provider_name, answer_model
                 correctness_provider_config = get_provider(correctness_provider_name)
+                model_protocol = _validate_requested_model_protocol(
+                    provider, model, body.get("api_protocol")
+                )
+                reasoning_protocol = _validate_requested_model_protocol(
+                    reasoning_provider_config,
+                    reasoning_model,
+                    body.get("reasoning_protocol"),
+                )
+                answer_protocol = _validate_requested_model_protocol(
+                    answer_provider_config,
+                    answer_model,
+                    body.get("answer_protocol"),
+                )
+                correctness_protocol = _validate_requested_model_protocol(
+                    correctness_provider_config,
+                    correctness_model,
+                    body.get("correctness_protocol"),
+                )
                 _validate_model_thinking_choice(
                     provider,
                     model,
@@ -2216,8 +2259,9 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     model_thinking=model_thinking,
                     reasoning_thinking=reasoning_thinking,
                     answer_thinking=answer_thinking,
-                    reasoning_protocol=_model_request_protocol(reasoning_provider_config, reasoning_model),
-                    answer_protocol=_model_request_protocol(answer_provider_config, answer_model),
+                    reasoning_protocol=reasoning_protocol,
+                    answer_protocol=answer_protocol,
+                    correctness_protocol=correctness_protocol,
                     reasoning_provider=reasoning_provider_name,
                     reasoning_model=reasoning_model,
                     answer_provider=answer_provider_name,
@@ -2241,8 +2285,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                         "model_thinking": model_thinking,
                         "reasoning_thinking": reasoning_thinking,
                         "answer_thinking": answer_thinking,
-                        "reasoning_protocol": _model_request_protocol(reasoning_provider_config, reasoning_model),
-                        "answer_protocol": _model_request_protocol(answer_provider_config, answer_model),
+                        "api_protocol": model_protocol,
+                        "reasoning_protocol": reasoning_protocol,
+                        "answer_protocol": answer_protocol,
+                        "correctness_protocol": correctness_protocol,
                         "reasoning_provider": reasoning_provider_name,
                         "reasoning_model": reasoning_model,
                         "answer_provider": answer_provider_name,
@@ -2519,6 +2565,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/provider-test":
                 body = self.read_json()
+                probe_source = str(body.get("probe_source") or "connection_test").strip()
                 provider = get_provider(str(body.get("provider") or "").strip() or None)
                 temp_key = str(body.get("api_key") or "").strip()
                 if temp_key:
@@ -2526,20 +2573,44 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 provider, protocol_overridden = _provider_test_protocol_override(provider, body)
                 provider = replace(provider, thinking_mode=_normalize_thinking_mode(body.get("model_thinking") or body.get("thinking_mode")))
                 client = OpenAICompatibleClient(provider)
-                if not getattr(provider, "supports_text_generation", True) and provider_supports_image_generation(provider):
+                requested_capability = str(body.get("capability") or "text").strip()
+                if requested_capability in {"vision", "tool_call"}:
+                    model = resolve_provider_model(provider, body.get("model"))
+                    result = probe_route(
+                        provider_name=provider.name, model=model, protocol=provider.api_protocol,
+                        capability=requested_capability, source=probe_source, api_key=provider.api_key,
+                    )
+                    self.send_json(result, status=200 if result.get("ok") else 400)
+                    return
+                if requested_capability == "image_generation" or (
+                    not getattr(provider, "supports_text_generation", True) and provider_supports_image_generation(provider)
+                ):
                     image_model = str(body.get("model") or provider.image_model or "").strip()
+                    probe_started = time.monotonic()
                     try:
-                        with tempfile.TemporaryDirectory(prefix="answer-book-provider-image-test-") as raw_tmp:
-                            with prompt_contract("system.provider_connection_image"):
-                                result = client.generate_image(
-                                    "A single small black circle centered on a plain white background.",
-                                    Path(raw_tmp) / "connection-test.png",
-                                    model=image_model,
-                                    size=provider.image_size,
-                                )
+                        with explicit_probe_source(probe_source):
+                            with tempfile.TemporaryDirectory(prefix="answer-book-provider-image-test-") as raw_tmp:
+                                with prompt_contract("system.provider_connection_image"):
+                                    result = client.generate_image(
+                                        "A single small black circle centered on a plain white background.",
+                                        Path(raw_tmp) / "connection-test.png",
+                                        model=image_model,
+                                        size=provider.image_size,
+                                        timeout=45,
+                                    )
                     except LLMError as exc:
+                        record_provider_observation(
+                            provider=provider.name, model=image_model, protocol=provider.api_protocol,
+                            capability="image_generation", api_key=provider.api_key, success=False,
+                            elapsed_ms=round((time.monotonic() - probe_started) * 1000), source=probe_source, error=exc,
+                        )
                         self.send_json(_provider_test_error_payload(provider.name, image_model, exc), status=400)
                         return
+                    record_provider_observation(
+                        provider=provider.name, model=image_model, protocol=provider.api_protocol,
+                        capability="image_generation", api_key=provider.api_key, success=True,
+                        elapsed_ms=round((time.monotonic() - probe_started) * 1000), source=probe_source,
+                    )
                     self.send_json(
                         {
                             "ok": True,
@@ -2554,21 +2625,35 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     {"role": "system", "content": "Return exactly this JSON object and no other text: {\"ping\":\"pong\"}"},
                     {"role": "user", "content": "Return the JSON object now."},
                 ]
+                probe_started = time.monotonic()
                 try:
-                    with prompt_contract("system.provider_connection_text"):
-                        parsed_content = client.chat_json_object(
-                            messages,
-                            model=model,
-                            max_tokens=DEFAULT_MODEL_MAX_TOKENS,
-                            attempts=1,
-                            task_stage="general",
-                        )
+                    with explicit_probe_source(probe_source):
+                        with prompt_contract("system.provider_connection_text"):
+                            parsed_content = client.chat_json_object(
+                                messages,
+                                model=model,
+                                max_tokens=min(DEFAULT_MODEL_MAX_TOKENS, 256),
+                                timeout=30,
+                                attempts=1,
+                                task_stage="general",
+                            )
                 except LLMError as exc:
+                    record_provider_observation(
+                        provider=provider.name, model=model, protocol=provider.api_protocol,
+                        capability=str(body.get("capability") or "text"), api_key=provider.api_key,
+                        success=False, elapsed_ms=round((time.monotonic() - probe_started) * 1000),
+                        source=probe_source, error=exc,
+                    )
                     error_payload = _provider_test_error_payload(provider.name, model, exc)
                     if protocol_overridden:
                         error_payload["api_protocol_requested"] = provider.api_protocol
                     self.send_json(error_payload, status=400)
                     return
+                record_provider_observation(
+                    provider=provider.name, model=model, protocol=provider.api_protocol,
+                    capability=str(body.get("capability") or "text"), api_key=provider.api_key,
+                    success=True, elapsed_ms=round((time.monotonic() - probe_started) * 1000), source=probe_source,
+                )
                 retry_report = getattr(client, "last_json_retry_report", {})
                 used_model = model
                 for attempt in reversed(retry_report.get("attempts", []) if isinstance(retry_report, dict) else []):
@@ -2579,6 +2664,27 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 if protocol_overridden:
                     response_payload.update(_provider_test_protocol_summary(retry_report, provider.api_protocol))
                 self.send_json(response_payload)
+                return
+            if parsed.path == "/api/provider-control/probe":
+                if not self.is_local_client():
+                    self.send_json({"ok": False, "error": "主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"}, status=403)
+                    return
+                body = self.read_json()
+                result = probe_route(
+                    provider_name=str(body.get("provider") or "").strip(),
+                    model=str(body.get("model") or "").strip(),
+                    protocol=str(body.get("protocol") or "").strip(),
+                    capability=str(body.get("capability") or "text").strip(),
+                    source="manual_probe",
+                )
+                self.send_json(result, status=200 if result.get("ok") else 400)
+                return
+            if parsed.path == "/api/provider-control/probe-due":
+                if not self.is_local_client():
+                    self.send_json({"ok": False, "error": "主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"}, status=403)
+                    return
+                result = probe_next_due_route()
+                self.send_json(result, status=200 if result.get("ok") else 400)
                 return
             if parsed.path == "/api/generate-answer-fragment-demo":
                 body = self.read_json()
@@ -2739,10 +2845,12 @@ def run(host: str = "127.0.0.1", port: int = 8766) -> None:
                 )
             start_practice_queue_consumer()
             start_support_retry_worker()
+            start_provider_control_scheduler()
             print(f"Answer Book Platform v1 running at http://{host}:{port}")
             append_runtime_log("server", f"服务启动 http://{host}:{port}", payload={"host": host, "port": port})
             server.serve_forever()
         finally:
+            stop_provider_control_scheduler()
             stop_support_retry_worker()
             stop_practice_queue_consumer()
             server.server_close()

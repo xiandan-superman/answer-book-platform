@@ -28,17 +28,15 @@ class LocalConfigTests(unittest.TestCase):
             "LINGSUAN_OPENAI_API_KEY": "test-openai-key",
             "LINGSUAN_IMAGE_API_KEY": "test-image-key",
             "LINGSUAN_GOOGLE_API_KEY": "test-google-key",
-            "LINGSUAN_XAI_API_KEY": "test-xai-key",
-            "LINGSUAN_ANTHROPIC_API_KEY": "test-anthropic-key",
         }
         self.assertTrue(set(supplier_keys).issubset(ALLOWED_API_KEY_NAMES))
         self.assertNotIn("LINGSUAN_API_KEY", ALLOWED_API_KEY_NAMES)
-        self.assertIn("SENSENOVA_API_KEY", ALLOWED_API_KEY_NAMES)
-        self.assertIn("BAI_API_KEY", ALLOWED_API_KEY_NAMES)
-        self.assertIn("OPENROUTER_API_KEY", ALLOWED_API_KEY_NAMES)
-        self.assertIn("GEMINI_API_KEY", ALLOWED_API_KEY_NAMES)
-        self.assertIn("ZAI_API_KEY", ALLOWED_API_KEY_NAMES)
-        self.assertIn("YUANHENG_API_KEY", ALLOWED_API_KEY_NAMES)
+        for removed in (
+            "SENSENOVA_API_KEY", "BAI_API_KEY", "OPENROUTER_API_KEY",
+            "GEMINI_API_KEY", "ZAI_API_KEY", "YUANHENG_API_KEY",
+            "LINGSUAN_XAI_API_KEY", "LINGSUAN_ANTHROPIC_API_KEY",
+        ):
+            self.assertNotIn(removed, ALLOWED_API_KEY_NAMES)
         with tempfile.TemporaryDirectory() as raw_tmp:
             project_root = Path(raw_tmp)
             key_file = project_root / "config" / "api_keys.json"

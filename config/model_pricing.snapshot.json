@@ -64,13 +64,11 @@
     "deepseek": {
       "currency": "USD",
       "models": {
-        "deepseek-v4-flash": {
-          "pricing_status": "official_snapshot",
+        "deepseek-flash": {
+          "pricing_status": "missing_price",
           "unit": "per_1m_tokens",
-          "input_cache_hit": 0.0028,
-          "input_cache_miss": 0.14,
-          "output": 0.28,
-          "source": "deepseek_pricing"
+          "source": "deepseek_pricing",
+          "reason": "The official stable alias now points to V4.1 Flash, released after this pricing snapshot; refresh official peak/off-peak prices before cost estimation."
         },
         "deepseek-v4-pro": {
           "pricing_status": "official_snapshot",

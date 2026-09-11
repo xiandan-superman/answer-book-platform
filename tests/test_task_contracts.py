@@ -5,11 +5,13 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from app.practice_store import _status_for_data
 from app.task_contracts import (
     QualityStatus,
     RunStatus,
     WorkflowType,
     capabilities_for,
+    practice_completion_issue_contract,
     present_error,
 )
 from app.task_read_model import build_exam_run, build_practice_runs
@@ -389,24 +391,24 @@ def test_explicit_ark_missing_key_has_precise_sanitized_configuration_contract()
     assert "API key is not configured" not in str(payload)
 
 
-def test_explicit_deepseek_missing_key_has_precise_sanitized_configuration_contract() -> None:
+def test_explicit_wawapi_grok_missing_key_has_precise_sanitized_configuration_contract() -> None:
     from app.server import _practice_job_api_payload
 
     payload = _practice_job_api_payload({
-        "job_id": "job-missing-deepseek-key",
+        "job_id": "job-missing-grok-key",
         "status": "failed",
-        "provider": "deepseek",
+        "provider": "wawapi_xai",
         "current_stage": "analyze",
-        "error": "API key is not configured for provider: deepseek",
+        "error": "API key is not configured for provider: wawapi_xai",
         "requires_configuration": True,
-        "configuration_provider": "deepseek",
+        "configuration_provider": "wawapi_xai",
         "configuration_reason": "missing_api_key",
         "support_id": "PJ-DSNOKEY01",
     })
 
     assert payload["error_presentation"]["kind"] == "provider_missing_api_key"
-    assert payload["error_presentation"]["title"] == "DeepSeek API Key 尚未配置"
-    assert payload["error"] == "尚未配置DeepSeek API Key，本次任务没有发出模型请求。"
+    assert payload["error_presentation"]["title"] == "WawAPI · Grok API Key 尚未配置"
+    assert payload["error"] == "尚未配置WawAPI · Grok API Key，本次任务没有发出模型请求。"
     assert "API key is not configured" not in str(payload)
 
 
@@ -560,3 +562,42 @@ def test_completed_practice_history_uses_job_lifecycle_for_real_duration() -> No
     assert run["active_duration_seconds"] == 410
     assert run["queue_duration_seconds"] == 130
     assert run["model_attempt_count"] == 3
+
+
+def test_sustained_provider_failure_is_not_downgraded_to_generic_timeout() -> None:
+    presentation = present_error(
+        "供应商模型路由持续异常，任务已停止以避免继续等待和消耗。"
+        "供应商：wawapi_xai；模型：grok-4.6；有限重试及恢复探测后仍连续失败 4 次；"
+        "最近错误：模型响应读取空闲超时。"
+    )
+
+    assert presentation is not None
+    assert presentation.kind == "provider_route_degraded"
+    assert presentation.responsibility == "provider_service"
+    assert "wawapi_xai / grok-4.6" in presentation.message
+    assert "自主更换服务商/模型" in presentation.retry_hint
+
+
+def test_zero_output_route_block_is_failed_with_provider_primary_issue() -> None:
+    data = {
+        "route_blocked": True,
+        "total_count": 3,
+        "generated_count": 0,
+        "failed_count": 3,
+        "unfinished_count": 3,
+        "generation": {
+            "status": "route_blocked",
+            "route_blocked": True,
+            "batch_errors": [{
+                "code": "provider_route_degraded",
+                "failure_state": "route_blocked",
+                "message": "所选模型路由持续异常，平台已停止继续调用。",
+            }],
+        },
+        "exercises": [],
+    }
+
+    completion = practice_completion_issue_contract(data)
+    assert _status_for_data(data) == "failed"
+    assert completion["primary_code"] == "route_blocked"
+    assert completion["action"] == "retry_after_provider_check"

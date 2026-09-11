@@ -5,6 +5,22 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class ProviderRouteDegradedError(RuntimeError):
+    """A bounded recovery probe confirmed a sustained provider-route outage."""
+
+    def __init__(self, provider: str, model: str, failures: int, last_error: str = "") -> None:
+        self.provider = str(provider or "当前供应商")
+        self.model = str(model or "当前模型")
+        self.failures = max(1, int(failures or 1))
+        self.last_error = str(last_error or "").strip()
+        detail = f"；最近错误：{self.last_error}" if self.last_error else ""
+        super().__init__(
+            f"供应商模型路由持续异常，任务已停止以避免继续等待和消耗。"
+            f"供应商：{self.provider}；模型：{self.model}；"
+            f"有限重试及恢复探测后仍连续失败 {self.failures} 次{detail}。"
+        )
+
+
 @dataclass(frozen=True)
 class ProviderErrorInfo:
     kind: str
@@ -71,6 +87,22 @@ def classify_provider_error(
             retryable=retryable,
             requires_configuration=requires_configuration,
             failure_state=failure_state,
+        )
+
+    if isinstance(error, ProviderRouteDegradedError) or "供应商模型路由持续异常" in raw:
+        route_match = re.search(r"供应商：([^；]{1,120})；模型：([^；]{1,160})", raw)
+        route_label = (
+            f"异常路由：{route_match.group(1).strip()} / {route_match.group(2).strip()}。"
+            if route_match
+            else ""
+        )
+        return result(
+            "provider_route_degraded",
+            "模型供应商持续异常，任务已停止",
+            f"{route_label}所选供应商与模型路由在有限重试和恢复探测后仍连续失败；"
+            "平台已主动终止本次任务，已完成内容会保留。",
+            "请等待该服务商恢复后从当前步骤重试，或自主更换服务商/模型；无需重复已完成的前置步骤。",
+            failure_state="route_blocked",
         )
 
     missing_key = re.fullmatch(
@@ -201,6 +233,23 @@ def classify_provider_error(
             "模型访问权限不足",
             "当前账号或 API Key 没有所选模型、接入点或所在区域的调用权限。",
             "请在服务商控制台开通对应权限，或在 API 配置中改用已获授权的模型。",
+            failure_state="route_blocked",
+        )
+
+    terminal_pool_markers = (
+        "grok_media_no_eligible_account",
+        "no eligible grok media accounts",
+        "no eligible media accounts",
+        "no eligible image accounts",
+        "当前账号池没有可用媒体账号",
+        "当前账号池没有可用生图账号",
+    )
+    if _contains(lowered, *terminal_pool_markers):
+        return result(
+            "provider_route_pool_unavailable",
+            "供应商当前没有可用的图片账号",
+            "请求已经到达供应商，但其当前账号池没有账号能够执行所选图片模型。",
+            "平台已停止本次任务继续请求该图片路线；请稍后重试，或更换可用的图片服务商。",
             failure_state="route_blocked",
         )
 
@@ -415,3 +464,18 @@ def classify_provider_error(
         retryable=True,
         failure_state="service_degraded",
     )
+
+
+def is_terminal_provider_route_error(error: Any) -> bool:
+    """Return whether the exact route must stop within the current task."""
+
+    info = classify_provider_error(
+        error,
+        status_code=getattr(error, "status_code", None),
+        transport_phase=str(getattr(error, "transport_phase", "") or ""),
+        retry_after_seconds=getattr(error, "retry_after_seconds", None),
+    )
+    return info.kind == "provider_route_degraded" or info.failure_state in {
+        "route_blocked",
+        "configuration_blocked",
+    }

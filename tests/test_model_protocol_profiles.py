@@ -41,7 +41,43 @@ def _responses_response(content: str = '{"ok":true}'):
 
 
 def _provider(name: str):
-    return replace(list_providers()[name], api_key="test-secret")
+    providers = list_providers()
+    if name in providers:
+        return replace(providers[name], api_key="test-secret")
+    base = providers["lingsuan_openai"]
+    fixtures = {
+        "deepseek": replace(
+            base,
+            name="deepseek_fixture",
+            base_url="https://api.deepseek.com",
+            default_model="deepseek-flash",
+            model_options=("deepseek-flash",),
+            model_profiles={"deepseek-flash": {"api_protocol": "responses", "omit_parameters": ["store"]}},
+        ),
+        "openrouter": replace(
+            base,
+            name="openrouter_fixture",
+            default_model="minimax/minimax-m3:free",
+            model_options=("minimax/minimax-m3:free",),
+            model_profiles={"minimax/minimax-m3:free": {"api_protocol": "chat_completions", "strip_think_blocks": True}},
+        ),
+        "lingsuan_anthropic": replace(
+            base,
+            name="anthropic_fixture",
+            api_protocol="anthropic_messages",
+            default_model="claude-opus-5",
+            model_options=("claude-opus-5",),
+            model_profiles={"claude-opus-5": {"api_protocol": "anthropic_messages", "messages_fallback_to_chat": True}},
+        ),
+        "lingsuan_xai": replace(
+            base,
+            name="grok_fixture",
+            default_model="grok-4.5",
+            model_options=("grok-4.5",),
+            model_profiles={"grok-4.5": {"api_protocol": "responses", "thinking_minimum": "low"}},
+        ),
+    }
+    return replace(fixtures[name], api_key="test-secret")
 
 
 def test_provider_model_profiles_keep_supported_models_on_responses():
@@ -50,8 +86,10 @@ def test_provider_model_profiles_keep_supported_models_on_responses():
     assert providers["bailian"].api_protocol == "responses"
     assert providers["bailian"].model_profiles["qwen-vl-max"]["api_protocol"] == "chat_completions"
     assert providers["bailian"].model_profiles["qwen3.7-plus"]["supports_tool_calls"] is True
-    assert providers["ark"].model_profiles["kimi-k2"]["api_protocol"] == "chat_completions"
-    assert providers["openrouter"].model_profiles["z-ai/glm-5.2:free"]["api_protocol"] == "chat_completions"
+    assert providers["ark"].model_profiles["deepseek-v4-pro-ga-260813"]["supported_api_protocols"] == [
+        "responses",
+        "chat_completions",
+    ]
 
 
 def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
@@ -59,7 +97,6 @@ def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
 
     providers = list_providers()
     expected = {
-        "deepseek": {"deepseek-v4-flash-vision-exp"},
         "bailian": {
             "qwen3.7-plus",
             "qwen3.7-flash",
@@ -70,6 +107,7 @@ def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
         },
         "lingsuan_openai": {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"},
         "lingsuan_google": {
+            "gemini-3.8-flash-medium",
             "gemini-3.7-flash-medium",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
@@ -147,7 +185,7 @@ def test_deepseek_responses_use_root_endpoint_without_store():
         return _responses_response()
 
     client._urlopen = request
-    result = client.chat_json([{"role": "user", "content": "Return JSON"}], model="deepseek-v4-flash")
+    result = client.chat_json([{"role": "user", "content": "Return JSON"}], model="deepseek-flash")
 
     payload = json.loads(requests[0].data)
     assert requests[0].full_url == "https://api.deepseek.com/responses"

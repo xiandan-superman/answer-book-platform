@@ -226,12 +226,30 @@ def runtime_status() -> dict[str, object]:
         "windows_long_path_enabled": _windows_long_path_enabled(),
         "recommended_action": (
             "请启用 Windows 长路径或将 ANSWER_BOOK_MINERU_RUNTIME_ROOT 设置为短路径"
-            if os.name == "nt" and _windows_long_path_enabled() is False and not installed
+            if (
+                os.name == "nt"
+                and _windows_long_path_enabled() is False
+                and not installed
+                and not _managed_runtime_path_is_short(_managed_python())
+            )
             else ""
         ),
         "auto_install": os.environ.get("ANSWER_BOOK_MINERU_AUTO_INSTALL", "1").strip().lower() not in {"0", "false", "no"},
         "fallback": False,
     }
+
+
+def document_cache_available(path: Path) -> bool:
+    """Return whether parsing can reuse a complete MinerU content package."""
+
+    source = path.expanduser().resolve()
+    if not source.is_file():
+        return False
+    package_id = hashlib.sha256(
+        f"{MINERU_VERSION}:".encode() + _sha256_file(source).encode()
+    ).hexdigest()[:24]
+    root = CACHE_DIR / "mineru_runtime" / package_id
+    return any(root.rglob("*content_list.json")) if root.exists() else False
 
 
 def parse_document(path: Path) -> TextbookPackage:

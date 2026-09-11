@@ -1212,6 +1212,7 @@
             <label>已配置供应商<select id="practiceTextProviderSelect"></select></label>
             <label>可用模型<select id="practiceTextModelSelect"></select></label>
             <input id="practiceTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            <label id="practiceApiProtocolField" hidden>请求类型<select id="practiceApiProtocolSelect"></select></label>
             <label>思考深度<select id="practiceThinkingModeSelect"></select></label>
             <p id="practiceProtocolHint">请求类型和可选档位随模型更新。</p>
             <p id="practiceTextModelSummary">正在读取模型...</p>
@@ -1261,6 +1262,7 @@
             <label>已配置供应商<select id="knowledgeTextProviderSelect"></select></label>
             <label>可用模型<select id="knowledgeTextModelSelect"></select></label>
             <input id="knowledgeTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            <label id="knowledgeApiProtocolField" hidden>请求类型<select id="knowledgeApiProtocolSelect"></select></label>
             <label>思考深度<select id="knowledgeThinkingModeSelect"></select></label>
             <p id="knowledgeProtocolHint">请求类型和可选档位随模型更新。</p>
             <p id="knowledgeTextModelDetail">正在读取模型...</p>
@@ -1373,6 +1375,8 @@
                   <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="reasoningModelSelect"></select>
                   <input id="reasoningModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <label id="reasoningApiProtocolField" hidden><i class="fas fa-code-branch"></i>请求类型</label>
+                  <select id="reasoningApiProtocolSelect" hidden></select>
                   <label><i class="fas fa-brain"></i>教材依据思考深度</label>
                   <select id="reasoningThinkingModeSelect"></select>
                   <p id="reasoningProtocolHint" class="safe-note"></p>
@@ -1394,6 +1398,8 @@
                   <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="answerModelSelect"></select>
                   <input id="answerModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <label id="answerApiProtocolField" hidden><i class="fas fa-code-branch"></i>请求类型</label>
+                  <select id="answerApiProtocolSelect" hidden></select>
                   <label><i class="fas fa-brain"></i>题目解析思考深度</label>
                   <select id="answerThinkingModeSelect"></select>
                   <p id="answerProtocolHint" class="safe-note"></p>
@@ -1415,6 +1421,9 @@
                   <label><i class="fas fa-microchip"></i>本环节可用模型</label>
                   <select id="correctnessModelSelect"></select>
                   <input id="correctnessModelInput" type="text" hidden placeholder="填写模型 ID">
+                  <label id="correctnessApiProtocolField" hidden><i class="fas fa-code-branch"></i>请求类型</label>
+                  <select id="correctnessApiProtocolSelect" hidden></select>
+                  <p id="correctnessProtocolHint" class="safe-note"></p>
                   <p id="correctnessModelHint" class="safe-note"><i class="fas fa-shield-check"></i>仅在高风险题复核及其单题修复时调用；默认与结构化解析模型相同。</p>
                   <span id="correctnessRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
@@ -2064,6 +2073,45 @@
                 <div id="systemRecentEvents" class="system-log-list"></div>
               </section>
             </div>
+          </details>
+        </article>
+
+        <article class="system-monitor-panel provider-control-panel" id="providerControlPanel">
+          <div class="system-monitor-header">
+            <div>
+              <h3><i class="fas fa-route"></i>供应商运行中心</h3>
+              <p>分开显示已批准接入、当前观测状态和任务实际采用的策略；异常只影响对应账户、模型、协议和能力。</p>
+            </div>
+            <div class="monitor-panel-actions">
+              <button id="probeDueProviderRouteBtn" class="task-card-button" type="button"><i class="fas fa-stethoscope"></i>检测一条到期路线</button>
+              <button id="refreshProviderControlBtn" class="task-card-button blue-action" type="button"><i class="fas fa-sync-alt"></i>刷新状态</button>
+            </div>
+          </div>
+          <div class="provider-control-summary" id="providerControlSummary">
+            <div><span>已接入供应商</span><strong id="providerConfiguredCount">0</strong></div>
+            <div><span>已验证可用率</span><strong id="providerAvailabilityRate">—</strong></div>
+            <div><span>需处理能力</span><strong id="providerAttentionCount">0</strong></div>
+            <div><span>文本有效并发</span><strong id="providerEffectiveConcurrency">0</strong></div>
+          </div>
+          <div class="provider-control-guidance">
+            <i class="fas fa-circle-info"></i>
+            <p><strong>状态会参与任务执行。</strong>真实任务发现异常时，只复核发生问题的精确能力；供应商连续异常会停止无效消耗。账号或额度问题会明确提示由用户处理，平台程序问题不会误伤供应商状态。</p>
+          </div>
+          <div class="provider-control-filters" aria-label="供应商路线筛选">
+            <label>供应商<select id="providerControlProviderFilter"><option value="all">全部供应商</option></select></label>
+            <label>状态<select id="providerControlStatusFilter"><option value="all">全部状态</option><option value="available">可用</option><option value="degraded">降级</option><option value="unavailable">不可用</option><option value="configuration_error">账号或配置问题</option><option value="unverified">待验证</option><option value="not_configured">未接入</option></select></label>
+            <label>能力<select id="providerControlCapabilityFilter"><option value="all">全部能力</option><option value="text">文本</option><option value="vision">视觉输入</option><option value="tool_call">工具调用</option><option value="image_generation">生图</option></select></label>
+          </div>
+          <div id="providerControlNotice" class="system-service-notice hidden"></div>
+          <div class="provider-matrix-legend" aria-label="供应商状态图例"><span><i class="is-available"></i>可用</span><span><i class="is-degraded"></i>降级</span><span><i class="is-unavailable"></i>不可用</span><span><i class="is-unverified"></i>待验证</span><span><i class="is-empty"></i>未接入 / 无观测</span><small>色块为最近观测，最新在右</small></div>
+          <details class="system-technical-details provider-discovery-details">
+            <summary>供应商公开模型列表与待审核候选</summary>
+            <div id="providerDiscoveryList" class="provider-discovery-list"><div class="system-empty-line">尚无发现记录</div></div>
+          </details>
+          <div id="providerControlRoutes" class="provider-control-routes"><div class="system-empty-line">正在读取供应商状态……</div></div>
+          <details class="system-technical-details provider-control-policy">
+            <summary>自动调整边界与检测策略</summary>
+            <div id="providerControlPolicyText" class="provider-control-policy-copy">读取中……</div>
           </details>
         </article>
 

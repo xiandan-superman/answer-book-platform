@@ -13,6 +13,7 @@ from .model_capability_registry import (
     ensure_provider_registry_sync,
     get_model_capability,
     get_native_tool_route,
+    get_verified_model_protocols,
     model_accepts_input,
     provider_has_capability_registry,
 )
@@ -42,14 +43,27 @@ ARK_SEEDREAM_IMAGE_LABELS = {
     "doubao-seedream-5-0-260128": "Seedream-5.0-pro",
     "doubao-seedream-5-0-lite-260128": "Doubao-Seedream-5.0-lite",
 }
+SUPPORTED_PROVIDER_NAMES = frozenset({
+    "ark",
+    "ark_image",
+    "bailian",
+    "deepseek",
+    "lingsuan_google",
+    "lingsuan_image",
+    "lingsuan_openai",
+    "wawapi_google",
+    "wawapi_image_google",
+    "wawapi_image_openai",
+    "wawapi_image_xai",
+    "wawapi_openai",
+    "wawapi_xai",
+})
 REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
 LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
 LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
     "lingsuan_openai": "auto",
     "lingsuan_image": "auto",
     "lingsuan_google": "auto",
-    "lingsuan_xai": "auto",
-    "lingsuan_anthropic": "auto",
 }
 LINGSUAN_PROVIDER_NAMES = frozenset(LINGSUAN_OFFICIAL_THINKING_DEFAULTS)
 LINGSUAN_GATEWAY_BASE_URL = "https://lingsuan.org/v1"
@@ -63,28 +77,21 @@ LINGSUAN_BROWSER_USER_AGENT = (
 )
 WAWAPI_BROWSER_USER_AGENT = LINGSUAN_BROWSER_USER_AGENT
 BUILTIN_RESPONSES_PROVIDER_NAMES = {
-    "deepseek",
     "ark",
     "bailian",
-    "openrouter",
-    "yuanheng",
+    "deepseek",
     "lingsuan_openai",
     "lingsuan_image",
-    "lingsuan_xai",
     "wawapi_openai",
     "wawapi_xai",
     "wawapi_image_openai",
     "wawapi_image_xai",
 }
 BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
-    "sensenova",
-    "bai",
-    "bigmodel",
-    "google_ai",
     "lingsuan_google",
     "wawapi_google",
 }
-BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES = {"lingsuan_anthropic"}
+BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -222,7 +229,7 @@ def list_providers() -> dict[str, ProviderConfig]:
         # A copied providers.local.json may still contain removed 0.9.0
         # entries. Never resurrect Yunwu or the old cross-supplier Lingsuan
         # provider through a local overlay.
-        if name in REMOVED_PROVIDER_NAMES:
+        if name in REMOVED_PROVIDER_NAMES or name not in SUPPORTED_PROVIDER_NAMES:
             continue
         # Built-in providers have been verified against Responses.  Force the
         # transport here as well as in the shipped JSON because older installs
@@ -233,8 +240,6 @@ def list_providers() -> dict[str, ProviderConfig]:
         builtin_chat_completions = name in BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES
         builtin_anthropic_messages = name in BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES
         base_url = str(item.get("base_url", "")).rstrip("/")
-        if name == "deepseek" and re.fullmatch(r"https://api\.deepseek\.com/v1", base_url, re.IGNORECASE):
-            base_url = "https://api.deepseek.com"
         if name in LINGSUAN_PROVIDER_NAMES:
             # Older local overlays may still restore the retired .top endpoint.
             # The current gateway also rejects urllib's default client signature
@@ -289,6 +294,23 @@ def list_providers() -> dict[str, ProviderConfig]:
             for model, profile in dict(item.get("model_profiles", {})).items()
             if str(model).strip() and isinstance(profile, dict)
         }
+        protocol_models = dict.fromkeys((
+            default_model,
+            vision_model,
+            image_model,
+            *model_options,
+            *vision_model_options,
+            *(str(x) for x in item.get("image_model_options", []) if str(x).strip()),
+        ))
+        for configured_model in protocol_models:
+            if not configured_model:
+                continue
+            verified_protocols = get_verified_model_protocols(name, configured_model)
+            profile = model_profiles.setdefault(configured_model, {})
+            configured_protocol = str(
+                profile.get("api_protocol") or item.get("api_protocol") or "chat_completions"
+            ).strip().lower()
+            profile["supported_api_protocols"] = list(dict.fromkeys((configured_protocol, *verified_protocols)))
         # Existing installations commonly keep a copied providers.local.json.
         # Keep the current Bailian flagship selectable even before that local
         # file is manually updated.
@@ -303,14 +325,19 @@ def list_providers() -> dict[str, ProviderConfig]:
         # backed by the verified medium route, so the UI matches Gemini 3.6
         # without ever sending the unavailable unsuffixed id.
         if name == "lingsuan_google":
-            model_options = list(dict.fromkeys([
-                LINGSUAN_GEMINI37_FLASH_MODEL,
-                *(model for model in model_options if model not in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS),
-            ]))
-            vision_model_options = list(dict.fromkeys([
-                LINGSUAN_GEMINI37_FLASH_MODEL,
-                *(model for model in vision_model_options if model not in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS),
-            ]))
+            def normalize_gemini37_routes(models: list[str]) -> list[str]:
+                normalized = [
+                    LINGSUAN_GEMINI37_FLASH_MODEL
+                    if model in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS
+                    else model
+                    for model in models
+                ]
+                if LINGSUAN_GEMINI37_FLASH_MODEL not in normalized:
+                    normalized.insert(0, LINGSUAN_GEMINI37_FLASH_MODEL)
+                return list(dict.fromkeys(normalized))
+
+            model_options = normalize_gemini37_routes(model_options)
+            vision_model_options = normalize_gemini37_routes(vision_model_options)
             for legacy_model in LEGACY_LINGSUAN_GEMINI37_FLASH_MODELS:
                 model_option_labels.pop(legacy_model, None)
                 model_capabilities.pop(legacy_model, None)

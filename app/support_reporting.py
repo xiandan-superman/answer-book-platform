@@ -999,6 +999,21 @@ def queue_automatic_failure_report(context: dict[str, Any]) -> dict[str, Any]:
     task_id = str(value.get("task_id") or "").strip()
     if not task_id:
         return {"scheduled": False, "reason": "missing_task_id"}
+    # Automatic reports are for platform defects. Provider outages, user
+    # configuration, input problems and model-output quality remain visible to
+    # the user but must not consume developer triage capacity.
+    from .task_contracts import present_error
+
+    presentation = present_error(
+        str(value.get("error") or ""),
+        stage=str(value.get("task_stage") or ""),
+    )
+    if presentation is None or not presentation.developer_report_required:
+        return {
+            "scheduled": False,
+            "reason": "developer_report_not_required",
+            "responsibility": presentation.responsibility if presentation else "",
+        }
     if not _config().get("receiver_url"):
         return {"scheduled": False, "reason": "receiver_not_configured"}
     key = _automatic_failure_key(value)

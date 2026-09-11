@@ -137,6 +137,25 @@ def test_minimal_edit_and_history_are_not_upgraded_to_strict():
         compile_requirements(None, "只在原句挖空")
 
 
+def test_empty_user_focus_cannot_acquire_constraints_copied_from_source_question():
+    contract = compile_requirements(
+        {
+            "wording": "minimal_edit",
+            "wording_quote": "要求写出积分因子和最终通解",
+            "max_stem_characters": 20,
+            "length_quote": "题干不超过20字",
+            "cross_source": "explicit",
+            "cross_source_quote": "综合两道原题",
+        },
+        "",
+    )
+
+    assert contract["wording"] == "unconstrained"
+    assert contract["wording_quote"] == ""
+    assert contract["max_stem_characters"] == 0
+    assert contract["cross_source"] == "default"
+
+
 def test_occurrences_and_unicode_are_deterministic():
     catalog = [{"source_question_id": "s", "source_content": "😀甲和甲。😀甲和甲。"}]
     item = {"source_refs": ["s"]}

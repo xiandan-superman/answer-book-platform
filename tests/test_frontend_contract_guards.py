@@ -214,9 +214,16 @@ def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -
     assert 'return "quality";' in APP_JS
 
 
-def test_hidden_providers_are_omitted_from_every_user_facing_model_entry() -> None:
-    for provider in ("ark", "bailian", "sensenova", "openrouter", "lingsuan_xai", "lingsuan_anthropic"):
-        assert f'  "{provider}",' in APP_JS
+def test_retained_providers_are_visible_and_removed_providers_are_not_in_catalog() -> None:
+    import json
+
+    providers = json.loads((ROOT / "config" / "providers.example.json").read_text(encoding="utf-8"))["providers"]
+    assert "ark" in providers
+    assert "bailian" in providers
+    assert '  "ark",' not in APP_JS
+    assert '  "bailian",' not in APP_JS
+    for provider in ("sensenova", "openrouter", "lingsuan_xai", "lingsuan_anthropic"):
+        assert provider not in providers
     assert '  "ark_image",' not in APP_JS.split("const HIDDEN_USER_PROVIDER_NAMES", 1)[1].split("]);", 1)[0]
     assert "function userVisibleProviderEntries" in APP_JS
     assert "return userVisibleProviderEntries()" in APP_JS
@@ -321,7 +328,8 @@ def test_resumed_practice_job_uses_public_error_presentation() -> None:
     assert "function practicePublicErrorText" in APP_JS
     assert "诊断编号：${supportId}" in APP_JS
     assert 'action === "job-config"' in APP_JS
-    assert 'confirmText: configurationRequired ? "检查 API 配置" : "从检查点重试"' in APP_JS
+    assert 'confirmText: "检查 API 配置"' in APP_JS
+    assert "await retryGenerationJob(task, job);" in APP_JS
     assert 'String(presentation?.kind || "")' in APP_JS
 
 
@@ -346,6 +354,25 @@ def test_stale_practice_job_callbacks_cannot_replace_a_newer_workspace() -> None
     assert "if (sessionVersion !== practiceSessionVersion) return;" in APP_JS
     assert "async function openGenerationJob(task)" in APP_JS
     assert "async function resumeRememberedPracticeJob()" in APP_JS
+
+
+def test_failed_plan_retry_has_one_confirmation_and_replaces_loading_state() -> None:
+    retry_start = APP_JS.index("async function retryGenerationJob(task, knownFailedJob = null)")
+    retry_end = APP_JS.index("async function continuePracticeHistory", retry_start)
+    retry = APP_JS[retry_start:retry_end]
+    open_start = APP_JS.index("async function openGenerationJob(task)")
+    open_end = APP_JS.index("async function openGenerationTaskResult", open_start)
+    opened = APP_JS[open_start:open_end]
+
+    assert "knownFailedJob || await api" in retry
+    assert '$("practiceLoading")?.classList.add("hidden");' in retry
+    assert "renderStoppedPracticeRecoveryJob(error?.practiceJob" in retry
+    assert "await retryGenerationJob(task, job);" in opened
+    assert "await retryGenerationJob(task);" not in opened
+
+
+def test_task_polling_preserves_open_technical_details() -> None:
+    assert '#taskManagerList .task-card-more[open], #taskManagerList .task-technical-details[open]' in APP_JS
 
 
 def test_cancelled_practice_job_stops_polling_and_clears_resume_pointer() -> None:
@@ -847,6 +874,23 @@ def test_task_model_pages_bind_thinking_depth_to_each_business_route() -> None:
     assert 'profile.supported_thinking_modes' in APP_JS
 
 
+def test_task_model_pages_offer_only_registered_protocol_choices_and_persist_them() -> None:
+    for control_id in (
+        "reasoningApiProtocolSelect",
+        "answerApiProtocolSelect",
+        "correctnessApiProtocolSelect",
+        "practiceApiProtocolSelect",
+        "knowledgeApiProtocolSelect",
+    ):
+        assert f'id="{control_id}"' in INDEX_HTML
+    assert "profile.supported_api_protocols" in APP_JS
+    assert 'api_protocol: evidenceOnly ? selectedRoleProtocol("reasoning") : selectedRoleProtocol("answer")' in APP_JS
+    assert 'reasoning_protocol: selectedRoleProtocol("reasoning")' in APP_JS
+    assert 'answer_protocol: selectedRoleProtocol("answer")' in APP_JS
+    assert 'correctness_protocol: selectedRoleProtocol("correctness")' in APP_JS
+    assert 'api_protocol: selectedTaskProtocol(knowledgeMode ? "knowledge" : "practice")' in APP_JS
+
+
 def test_practice_question_actions_have_visible_labels() -> None:
     assert '<span>反馈</span>' in APP_JS
     assert '<span>编辑</span>' in APP_JS
@@ -937,6 +981,10 @@ def test_environment_distinguishes_network_configuration_and_actual_model_call()
     assert 'id="testExamModelRoutesBtn"' in INDEX_HTML
     assert "async function testExamModelRoutes()" in APP_JS
     assert 'api("/api/provider-test"' in APP_JS
+    assert 'await preflightTaskModelRoutes(examTaskPreflightRoutes()' in APP_JS
+    assert 'await preflightTaskModelRoutes(practiceTaskPreflightRoutes(operation, queuedPayload)' in APP_JS
+    assert 'await preflightTaskModelRoutes(savedExamTaskPreflightRoutes(task)' in APP_JS
+    assert 'practiceTaskPreflightRoutes("generate_from_plan", saved.request || {})' in APP_JS
 
 
 def test_environment_requires_the_exact_supported_python_runtime() -> None:
@@ -1201,3 +1249,19 @@ def test_practice_requirement_presets_are_compact_editable_and_locally_persisted
     assert 'api("/api/practice/requirement-presets")' in APP_JS
     assert 'parsed.path == "/api/practice/requirement-presets"' in server_py
     assert 'LOCAL_CONFIG_DIR / "practice_requirement_presets.json"' in preset_store
+
+
+def test_provider_control_center_exposes_status_responsibility_and_exact_probes() -> None:
+    assert 'id="providerControlPanel"' in INDEX_HTML
+    assert 'id="providerControlProviderFilter"' in INDEX_HTML
+    assert 'id="providerDiscoveryList"' in INDEX_HTML
+    assert "function providerResponsibilityLabel" in APP_JS
+    assert 'api("/api/provider-control/status")' in APP_JS
+    assert 'api("/api/provider-control/probe"' in APP_JS
+    assert 'probe_source: "task_preflight"' in APP_JS
+    assert 'capability: "vision"' in APP_JS
+    assert 'capability: "tool_call"' in APP_JS
+    assert "function providerControlFamily" in APP_JS
+    assert "provider-history-track" in APP_JS
+    assert 'not_configured: ["未接入"' in APP_JS
+    assert ".provider-matrix-group.status-not-configured" in PLATFORM_THEME_CSS

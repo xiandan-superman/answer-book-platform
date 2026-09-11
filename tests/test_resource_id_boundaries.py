@@ -37,7 +37,10 @@ def test_resource_path_rejects_existing_symlink_escape(tmp_path) -> None:
     outside = tmp_path / "outside"
     root.mkdir()
     outside.mkdir()
-    (root / "task-1").symlink_to(outside, target_is_directory=True)
+    try:
+        (root / "task-1").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink privilege unavailable: {exc}")
 
     with pytest.raises(ValueError, match="编号无效"):
         bounded_resource_path(root, "task-1")

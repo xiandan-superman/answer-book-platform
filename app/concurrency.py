@@ -29,6 +29,10 @@ _MODEL_REQUEST_ADMISSION_CHECK: ContextVar[Callable[[], None] | None] = ContextV
     "model_request_admission_check",
     default=None,
 )
+_MODEL_REQUEST_ADMITTED_CALLBACK: ContextVar[Callable[[], None] | None] = ContextVar(
+    "model_request_admitted_callback",
+    default=None,
+)
 _MODEL_REQUEST_HELD_KEYS: ContextVar[frozenset[tuple[str, str]]] = ContextVar(
     "model_request_held_keys",
     default=frozenset(),
@@ -41,16 +45,19 @@ class _FairProviderGate:
     def __init__(self, limit: int):
         self._condition = threading.Condition()
         self._limit = limit
+        self._configured_limit = limit
         self._active = 0
         self._queues: dict[str, deque[object]] = {}
         self._owners: deque[str] = deque()
         self._cooldown_until = 0.0
         self._rate_limit_streak = 0
         self._rate_limited_count = 0
+        self._provider_pressure_count = 0
 
     def set_limit(self, limit: int) -> None:
         with self._condition:
-            self._limit = limit
+            self._configured_limit = limit
+            self._limit = min(self._limit, limit) if self._provider_pressure_count else limit
             self._condition.notify_all()
 
     def acquire(self, owner: str) -> None:
@@ -112,10 +119,25 @@ class _FairProviderGate:
             self._cooldown_until = max(self._cooldown_until, time.monotonic() + delay + jitter)
             self._condition.notify_all()
 
+    def record_provider_pressure(
+        self,
+        *,
+        retry_after_seconds: float | None = None,
+        backoff: tuple[float, float] | None = None,
+    ) -> None:
+        """Cool the shared route and reduce concurrency after transport pressure."""
+
+        with self._condition:
+            self._provider_pressure_count = min(8, self._provider_pressure_count + 1)
+            self._limit = max(1, self._configured_limit - self._provider_pressure_count)
+        self.record_rate_limit(retry_after_seconds, backoff=backoff)
+
     def record_success(self) -> None:
         with self._condition:
             if time.monotonic() >= self._cooldown_until:
                 self._rate_limit_streak = 0
+                self._provider_pressure_count = 0
+                self._limit = self._configured_limit
 
     def snapshot(self) -> dict[str, object]:
         with self._condition:
@@ -125,9 +147,11 @@ class _FairProviderGate:
                 "waiting_tasks": len(self._queues),
                 "waiting_owners": list(self._owners),
                 "limit": self._limit,
+                "configured_limit": self._configured_limit,
                 "cooldown_remaining_seconds": round(max(0.0, self._cooldown_until - time.monotonic()), 3),
                 "rate_limit_streak": self._rate_limit_streak,
                 "rate_limited_count": self._rate_limited_count,
+                "provider_pressure_count": self._provider_pressure_count,
             }
 
 
@@ -167,15 +191,13 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     return info.kind in {"provider_concurrency_limit", "provider_rate_limit"}
 
 
-def _is_provider_pressure_error(exc: BaseException) -> bool:
-    if _is_rate_limit_error(exc):
-        return True
-    text = str(exc or "").lower()
-    return "server_is_overloaded" in text or "server is currently overloaded" in text or "http 524" in text
-
-
 @contextmanager
-def model_request_context(owner: str, *, admission_check: Callable[[], None] | None = None) -> Iterator[None]:
+def model_request_context(
+    owner: str,
+    *,
+    admission_check: Callable[[], None] | None = None,
+    admitted_callback: Callable[[], None] | None = None,
+) -> Iterator[None]:
     """Associate all nested model calls with one user-visible task."""
     clean_owner = str(owner or "").strip()
     if not clean_owner:
@@ -183,9 +205,11 @@ def model_request_context(owner: str, *, admission_check: Callable[[], None] | N
         return
     token = _MODEL_REQUEST_OWNER.set(clean_owner)
     check_token = _MODEL_REQUEST_ADMISSION_CHECK.set(admission_check)
+    admitted_token = _MODEL_REQUEST_ADMITTED_CALLBACK.set(admitted_callback)
     try:
         yield
     finally:
+        _MODEL_REQUEST_ADMITTED_CALLBACK.reset(admitted_token)
         _MODEL_REQUEST_ADMISSION_CHECK.reset(check_token)
         _MODEL_REQUEST_OWNER.reset(token)
 
@@ -232,6 +256,9 @@ def model_request_slot(provider: object | None):
         admission_check = _MODEL_REQUEST_ADMISSION_CHECK.get()
         if admission_check:
             admission_check()
+        admitted_callback = _MODEL_REQUEST_ADMITTED_CALLBACK.get()
+        if admitted_callback:
+            admitted_callback()
         yield
         return
     with _MODEL_REQUEST_LOCK:
@@ -249,20 +276,27 @@ def model_request_slot(provider: object | None):
         except BaseException:
             gate.release()
             raise
+    admitted_callback = _MODEL_REQUEST_ADMITTED_CALLBACK.get()
+    if admitted_callback:
+        try:
+            admitted_callback()
+        except BaseException:
+            gate.release()
+            raise
     token = _MODEL_REQUEST_HELD_KEYS.set(held_keys | {key})
     try:
         try:
             yield
         except BaseException as exc:
-            if _is_bigmodel_provider(provider) and _is_rate_limit_error(exc):
+            if _is_rate_limit_error(exc) and _is_profiled_provider(provider):
                 retry_after = getattr(exc, "retry_after_seconds", None)
-                gate.record_rate_limit(retry_after if isinstance(retry_after, (int, float)) else None)
-            elif _is_profiled_provider(provider) and _is_provider_pressure_error(exc):
-                retry_after = getattr(exc, "retry_after_seconds", None)
-                gate.record_rate_limit(
-                    retry_after if isinstance(retry_after, (int, float)) else None,
+                gate.record_provider_pressure(
+                    retry_after_seconds=retry_after if isinstance(retry_after, (int, float)) else None,
                     backoff=provider_pressure_backoff(provider),
                 )
+            elif _is_rate_limit_error(exc):
+                retry_after = getattr(exc, "retry_after_seconds", None)
+                gate.record_rate_limit(retry_after if isinstance(retry_after, (int, float)) else None)
             raise
         else:
             if _is_bigmodel_provider(provider) or _is_profiled_provider(provider):

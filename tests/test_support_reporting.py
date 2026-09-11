@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest.mock import patch
@@ -464,7 +465,7 @@ def test_automatic_failure_report_is_nonblocking_deduplicated_and_bounded() -> N
             "task_kind": "practice",
             "task_run_started_at": "2026-08-22T13:00:00+08:00",
             "task_stage": "failed",
-            "error": "model timeout",
+            "error": "unexpected internal invariant violated",
         }
         support_reporting._AUTO_FAILURE_ACTIVE.clear()
         with (
@@ -489,6 +490,20 @@ def test_automatic_failure_report_is_nonblocking_deduplicated_and_bounded() -> N
         assert submitted[0]["submission_mode"] == "automatic_failure"
         assert submitted[0]["events"] == []
         assert len(json.loads(state_path.read_text(encoding="utf-8"))) == 1
+
+
+def test_provider_failure_is_not_automatically_reported_as_platform_defect() -> None:
+    result = support_reporting.queue_automatic_failure_report({
+        "task_id": "provider-failure",
+        "task_stage": "answer_generation",
+        "error": "供应商模型路由持续异常，任务已停止以避免继续等待和消耗。供应商：x；模型：a。",
+    })
+
+    assert result == {
+        "scheduled": False,
+        "reason": "developer_report_not_required",
+        "responsibility": "provider_service",
+    }
 
 
 def test_local_support_receipts_are_compacted() -> None:
@@ -687,8 +702,9 @@ def test_receiver_cleanup_removes_resolved_raw_bundle_but_keeps_summary() -> Non
         digest = support_receiver.hashlib.sha256(source.read_bytes()).hexdigest()
         inbox.store(source, manifest, digest, "device-a")
         old = "2026-01-01T00:00:00+00:00"
-        with inbox.connect() as connection:
+        with closing(inbox.connect()) as connection:
             connection.execute("UPDATE issues SET status='resolved', resolved_at=? WHERE fingerprint='fp-clean'", (old,))
+            connection.commit()
         inbox.cleanup()
         row = inbox.issue("fp-clean")
         assert row is not None

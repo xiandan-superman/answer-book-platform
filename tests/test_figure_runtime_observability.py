@@ -466,6 +466,7 @@ def draw(output_path: str) -> None:
 
         self.assertEqual("2048*2048", _dashscope_image_size("qwen-image-2.0-pro", explicit_size="2K", configured_size="2K"))
         self.assertEqual("1024*1024", _dashscope_image_size("qwen-image-2.0-pro", explicit_size=None, configured_size="1K"))
+        self.assertEqual("1664*1664", _dashscope_image_size("qwen-image-max", explicit_size="2K", configured_size="2K"))
 
     def test_crystallographic_index_whitelist_suppresses_only_physics_claims(self) -> None:
         from app.figures import _apply_crystallographic_index_whitelist

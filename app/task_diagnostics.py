@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .pipeline import output_dir, stage_dir
+from .provider_errors import classify_provider_error
 from .task_store import load_task, task_dir
 
 STAGE_LABELS = {
@@ -122,9 +123,26 @@ def _compact_issue(raw: Any, *, default_stage: str, severity: str) -> dict[str, 
     else:
         text = str(raw).strip()
         figure_match = re.match(r"figure_visual_qa:\s*([^\s/]+)", text)
+        figure_delivery_match = re.match(r"figure_delivery:\s*([^\s/]+)", text)
         numbered_match = re.search(r"第\s*([^\s题]+)\s*题", text)
-        qid = figure_match.group(1) if figure_match else (numbered_match.group(1) if numbered_match else "")
-        code = "figure_visual_qa" if figure_match else ("pipeline_failed_stage" if text.startswith("pipeline_status.json") else "")
+        qid = (
+            figure_match.group(1)
+            if figure_match
+            else figure_delivery_match.group(1)
+            if figure_delivery_match
+            else numbered_match.group(1)
+            if numbered_match
+            else ""
+        )
+        code = (
+            "figure_visual_qa"
+            if figure_match
+            else "figure_delivery"
+            if figure_delivery_match
+            else "pipeline_failed_stage"
+            if text.startswith("pipeline_status.json")
+            else ""
+        )
         message = text
         raw_severity = severity
     return {
@@ -190,6 +208,36 @@ def _collect_file_issues(sdir: Path, stage: str) -> list[dict[str, Any]]:
                     )
             continue
         out.extend(_collect_detail_issues(default_stage, data))
+    return out
+
+
+def _collect_image_tool_issues(sdir: Path) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for path in sorted((sdir / "agent_images").glob("*/tool_events.jsonl")):
+        question_id = path.parent.name
+        for event in _read_events(path, limit=40):
+            if event.get("event") != "tool/result":
+                continue
+            raw_result = event.get("result")
+            result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+            if result.get("ok") is not False and result.get("is_error") is not True:
+                continue
+            raw_error = result.get("error")
+            error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
+            raw_message = str(error.get("message") or result.get("content") or "图片服务调用失败")
+            info = classify_provider_error(raw_message)
+            out.append(
+                _compact_issue(
+                    {
+                        "question_id": question_id,
+                        "code": info.kind,
+                        "message": f"{info.title}：{info.message} {info.suggested_action}",
+                        "severity": "issue",
+                    },
+                    default_stage="answer_generation",
+                    severity="issue",
+                )
+            )
     return out
 
 
@@ -338,6 +386,7 @@ def build_task_diagnostics(task_id: str) -> dict[str, Any]:
     if isinstance(primary, dict):
         issues.extend(_collect_detail_issues(stage, primary.get("detail")))
     issues.extend(_collect_file_issues(sdir, stage))
+    issues.extend(_collect_image_tool_issues(sdir))
     if error and not any(item.get("severity") != "warning" for item in issues):
         issues.append(
             _compact_issue(
