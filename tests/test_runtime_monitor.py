@@ -35,17 +35,25 @@ class RuntimeMonitorTests(unittest.TestCase):
         self.assertEqual("warning", health["health_status"])
         self.assertIn("没有新的业务进展", health["warning_reason"])
 
-    def test_stale_heartbeat_marks_running_task_as_error(self) -> None:
+    def test_stale_heartbeat_and_stale_progress_warn(self) -> None:
         now = datetime.now().astimezone()
         row = {
             "task_id": "task_stale",
             "status": "running",
             "current_stage": "question_understanding",
             "last_heartbeat_at": (now - timedelta(seconds=runtime_monitor.HEARTBEAT_ERROR_SECONDS + 1)).isoformat(),
-            "last_progress_at": now.isoformat(),
+            "last_progress_at": (now - timedelta(seconds=runtime_monitor.PROGRESS_WARNING_SECONDS + 1)).isoformat(),
         }
         health = runtime_monitor.task_health_summary(row)
         self.assertEqual("warning", health["health_status"])
+
+    def test_recent_progress_prevents_stale_heartbeat_warning(self) -> None:
+        now = datetime.now().astimezone()
+        row = {"task_id": "fresh-progress", "status": "running", "current_stage": "answer_generation",
+               "last_heartbeat_at": (now - timedelta(seconds=runtime_monitor.HEARTBEAT_ERROR_SECONDS + 10)).isoformat(),
+               "last_progress_at": now.isoformat()}
+        health = runtime_monitor.task_health_summary(row)
+        self.assertNotEqual("warning", health["health_status"])
 
     def test_user_confirmation_and_queue_are_waiting_not_stalled(self) -> None:
         confirmation = runtime_monitor.task_health_summary({"task_id": "review", "status": "paused", "current_stage": "exam_structure_review"})

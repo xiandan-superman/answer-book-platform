@@ -22,8 +22,8 @@ def test_content_model_repair_only_schedules_machine_blocking_rules() -> None:
     assert "calculation_missing_substitution" not in allowed
     assert "calculation_answer_missing_unit" not in allowed
     assert "formula_absence_after_retry" not in allowed
-    assert "answer_analysis_comparative_contradiction" in allowed
-    assert "composition_partition_missing_declared_component" in allowed
+    assert "answer_analysis_comparative_contradiction" not in allowed
+    assert "composition_partition_missing_declared_component" not in allowed
 
 
 def test_text_only_content_repair_reuses_existing_figures() -> None:

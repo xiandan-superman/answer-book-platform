@@ -71,16 +71,16 @@ def test_discover_textbooks_includes_supported_docx_and_pdf_files(tmp_path: Path
 def test_pdf_textbook_uses_mineru_text_and_visual_blocks(tmp_path: Path, monkeypatch) -> None:
     textbook = tmp_path / "reference.pdf"
     textbook.write_bytes(b"pdf")
-    page = tmp_path / "page-1.jpg"
-    page.write_bytes(b"jpeg")
     package = _mineru_package(
         tmp_path,
         textbook,
         [
             {"type": "text", "page_idx": 0, "text": "相平衡条件与相图"},
-            {"type": "image", "page_idx": 0, "img_path": str(page), "image_caption": ["相图"]},
+            {"type": "image", "page_idx": 0, "img_path": "page-1.jpg", "image_caption": ["相图"]},
         ],
     )
+    page = package.root / "page-1.jpg"
+    page.write_bytes(b"jpeg")
     monkeypatch.setattr(textbook_index, "parse_document", lambda _path: package)
 
     result = build_textbook_index_for_files([textbook], tmp_path / "stage")

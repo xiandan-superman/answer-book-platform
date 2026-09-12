@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +29,10 @@ SUPPORTED_NATIVE_TOOL_PROTOCOLS = {
 }
 
 
-@lru_cache(maxsize=1)
 def _load_default_model_capability_registry() -> dict[str, Any]:
+    # This file is small and may be replaced while the local source app is
+    # running. Always read the same on-disk revision as providers.example.json
+    # so a stale in-memory registry cannot make every provider endpoint fail.
     return _load_model_capability_registry_path(MODEL_CAPABILITY_REGISTRY_PATH)
 
 
@@ -155,24 +156,9 @@ def validate_provider_registry_sync(
         if not isinstance(registered_tool_routes, dict):
             errors.append(f"服务商 {provider_name} 的 native_tool_routes 必须是对象")
             registered_tool_routes = {}
-        configured_profiles = provider.get("model_profiles", {})
-        declared_tool_models = {
-            str(model_name).strip()
-            for model_name, profile in configured_profiles.items()
-            if isinstance(profile, dict) and profile.get("supports_tool_calls") is True
-        }
-        registered_tool_models = {str(model_name).strip() for model_name in registered_tool_routes}
-        if declared_tool_models != registered_tool_models:
-            missing_public = sorted(registered_tool_models - declared_tool_models)
-            stale_public = sorted(declared_tool_models - registered_tool_models)
-            if missing_public:
-                errors.append(
-                    f"服务商 {provider_name} 已登记工具模型未同步公开配置：{', '.join(missing_public)}"
-                )
-            if stale_public:
-                errors.append(
-                    f"服务商 {provider_name} 公开配置误声明工具能力：{', '.join(stale_public)}"
-                )
+        # Native-tool records are retained as historical interoperability
+        # evidence only. They no longer form an allowlist and therefore do not
+        # need to match public supports_tool_calls declarations.
         for model_name, route in registered_tool_routes.items():
             if model_name not in registered_models:
                 errors.append(f"工具能力登记引用未知模型：{provider_name}/{model_name}")
@@ -183,23 +169,6 @@ def validate_provider_registry_sync(
             protocol = str(route.get("protocol") or "").strip().lower()
             if protocol not in SUPPORTED_NATIVE_TOOL_PROTOCOLS:
                 errors.append(f"工具能力协议无效：{provider_name}/{model_name}")
-            profile = configured_profiles.get(model_name, {})
-            configured_protocol = str(
-                (profile.get("api_protocol") if isinstance(profile, dict) else "")
-                or provider.get("api_protocol")
-                or "chat_completions"
-            ).strip().lower()
-            if configured_protocol != protocol:
-                errors.append(
-                    f"工具能力协议与公开配置不一致：{provider_name}/{model_name} "
-                    f"({protocol} != {configured_protocol})"
-                )
-            native_inputs = {
-                str(item).strip().lower()
-                for item in registered_models[model_name].get("native_inputs", [])
-            }
-            if "image" not in native_inputs:
-                errors.append(f"自主生图工具模型必须能回看图片：{provider_name}/{model_name}")
 
     for provider_name in sorted(set(registered_providers) - set(configured_providers)):
         errors.append(f"已删除服务商仍留在能力表：{provider_name}")
@@ -343,7 +312,7 @@ def render_model_capability_markdown(registry: dict[str, Any] | None = None) -> 
         "",
         "能力等级：A＝真实任务流程已验证；B＝接口能力已验证、任务基线待补；C＝配置或通道声明；D＝未知/过期。",
         "",
-        "| 服务商 | 模型 | 类型 | 原生输入 → 输出 | 原生工具回路 | 结构化输出 | 推理 | 任务质量输入预算 | 任务适配 | 证据 | 最后验证 |",
+        "| 服务商 | 模型 | 类型 | 原生输入 → 输出 | 主模型工具闭环 | 结构化输出 | 推理 | 任务质量输入预算 | 任务适配 | 证据 | 最后验证 |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     task_labels = payload.get("task_labels", {})
@@ -356,11 +325,12 @@ def render_model_capability_markdown(registry: dict[str, Any] | None = None) -> 
                 if isinstance(provider_tool_routes, dict)
                 else None
             )
-            tool_summary = (
-                f"已验证（{tool_route.get('protocol')}，{tool_route.get('last_verified_at')}）"
-                if tool_route
-                else "未登记/禁用"
-            )
+            if str(record.get("kind") or "") == "text_generation":
+                tool_summary = "已开启（无需探测）"
+                if tool_route:
+                    tool_summary += f"；历史实测 {tool_route.get('protocol')}@{tool_route.get('last_verified_at')}"
+            else:
+                tool_summary = "不适用"
             inputs = "、".join(record.get("native_inputs", [])) or "无"
             outputs = "、".join(record.get("native_outputs", [])) or "无"
             tasks = "；".join(

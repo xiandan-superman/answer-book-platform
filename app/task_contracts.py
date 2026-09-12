@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 
 from .provider_errors import classify_provider_error
+from .task_identity import public_task_number
 
 
 class WorkflowType(str, Enum):
@@ -577,6 +578,7 @@ def capabilities_for(
             view_progress=is_exam,
             view_result=not is_exam and operation in {"analyze", "plan"},
             view_quality=True,
+            cancel=not is_exam and operation in {"analyze", "plan"},
             reopen_review=is_exam and (stage == "exam_structure_review" or error_kind == "review_rejected"),
             delete=True,
         )
@@ -633,6 +635,7 @@ def enrich_contract(
     )
     return {
         **row,
+        "public_task_id": public_task_number(row),
         "error": presentation.message if presentation else str(row.get("error") or ""),
         "record_type": "run",
         "workflow_type": workflow.value,

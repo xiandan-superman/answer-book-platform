@@ -23,7 +23,6 @@ from .concurrency import ModelRequestAborted, run_limited_concurrent
 from .document_presentation import is_synthetic_requirement_parent
 from .drawing_code import question_drawing_mode
 from .expression_promotion import promote_inline_mathematical_expressions, promote_inline_reactions
-from .formula_audit import looks_like_formula
 from .formula_normalization import normalize_formula_entry
 from .image_artifacts import ImageArtifactStore
 from .image_orchestration import (
@@ -58,7 +57,6 @@ from .settings import (
     provider_supports_image_generation,
 )
 from .text_utils import cn_to_int
-from .user_facing_text import strip_internal_repair_provenance
 from .v4_schema import validate_v4_answer_fragment
 
 ANSWER_GENERATION_TIMEOUT_SECONDS = 180
@@ -84,6 +82,16 @@ class _QuestionModelExecutionBudget:
 
     def exhausted(self) -> bool:
         return self.deadline is not None and time.monotonic() >= self.deadline
+
+    def wait_for_dependency(self, callback: Callable[[], None] | None) -> None:
+        if callback is None:
+            return
+        started = time.monotonic()
+        try:
+            callback()
+        finally:
+            if self.deadline is not None:
+                self.deadline += time.monotonic() - started
 
 
 def _clean_question_stem(question: dict[str, Any]) -> str:
@@ -1265,7 +1273,7 @@ PENDING_ANSWER_VALUES = {"", "待复核", "待补充", "未完成", "未知", "�
 
 def _is_effective_answer_text(answer: Any) -> bool:
     text = str(answer or "").strip()
-    return text not in PENDING_ANSWER_VALUES and not looks_like_formula(text)
+    return text not in PENDING_ANSWER_VALUES
 
 
 def _answer_unit_has_payload(unit: dict[str, Any]) -> bool:
@@ -1447,34 +1455,37 @@ def _answer_from_answer_units(answer_units: list[dict[str, Any]], rows: list[dic
     if len(parts) == 1:
         return parts[0][1]
     rows_by_number = {str(row.get("number") or ""): row for row in rows or []}
-    if rows_by_number and any(rows_by_number.get(number, {}).get("level") == "requirement" or "." in number for number, _answer in parts):
-        grouped: list[str] = []
-        current_parent = ""
-        current_items: list[str] = []
-        parent_titles: dict[str, str] = {}
-        for number, answer in parts:
-            row = rows_by_number.get(number, {})
-            if row.get("level") == "requirement" or "." in number:
-                parent_number = str(row.get("parent_number") or number.rsplit(".", 1)[0]).strip()
-                parent_titles[parent_number] = _parent_subquestion_title(row)
-                if current_parent and parent_number != current_parent:
-                    title = parent_titles.get(current_parent) or _subquestion_label(current_parent)
-                    grouped.append(f"{title}：" + "；".join(current_items))
-                    current_items = []
+    grouped: list[str] = []
+    current_parent = ""
+    current_items: list[str] = []
+
+    def flush_parent() -> None:
+        if current_items:
+            grouped.append(f"{_subquestion_label(current_parent)}：" + "；".join(current_items))
+            current_items.clear()
+
+    for number, answer in parts:
+        row = rows_by_number.get(number, {})
+        # Stable IDs such as 6.1 survive flattening; only display metadata
+        # determines whether they still belong under a visible parent.
+        nested = not row.get("synthetic_flattened") and (
+            row.get("level") == "requirement" or "." in number
+        )
+        if nested:
+            parent_number = str(row.get("parent_number") or number.rsplit(".", 1)[0]).strip()
+            if current_parent != parent_number:
+                flush_parent()
                 current_parent = parent_number
-                current_items.append(f"{_requirement_label(number, row.get('requirement_index', ''))}、{answer}")
-            else:
-                if current_parent:
-                    title = parent_titles.get(current_parent) or _subquestion_label(current_parent)
-                    grouped.append(f"{title}：" + "；".join(current_items))
-                    current_parent = ""
-                    current_items = []
-                grouped.append(f"{_subquestion_label(number)}{answer}")
-        if current_parent:
-            title = parent_titles.get(current_parent) or _subquestion_label(current_parent)
-            grouped.append(f"{title}：" + "；".join(current_items))
-        return "；".join(grouped)
-    return "；".join(f"{_subquestion_label(number)}{answer}" if number else answer for number, answer in parts)
+            current_items.append(f"{_requirement_label(number, row.get('requirement_index', ''))}、{answer}")
+        else:
+            flush_parent()
+            current_parent = ""
+            display_number = str(row.get("display_number") or number)
+            grouped.append(f"{_subquestion_label(display_number)}{answer}" if display_number else answer)
+    flush_parent()
+    # Question text belongs to the question/analysis headings, never to a
+    # program-generated answer summary. Model-authored answers are unchanged.
+    return "；".join(grouped)
 
 
 def _single_answer_unit_blocks(
@@ -2094,52 +2105,9 @@ def _sign_contract_text(value: Any) -> str:
 
 
 def _difference_sign_consistency_issues(fragment: dict[str, Any]) -> list[str]:
-    """Check the machine-verifiable sign of a declared two-term difference.
+    """Retired: a formula and a prose inequality do not establish a shared context."""
+    return []
 
-    For a relation ``A=B-C``, an explicit ``B<C`` premise determines ``A<0``.
-    A conclusion formula claiming the opposite sign is internally inconsistent,
-    independent of the domain or the names of the quantities.
-    """
-
-    draft = fragment.get("_draft") if isinstance(fragment.get("_draft"), dict) else {}
-    formula_source = draft.get("formulas") if isinstance(draft.get("formulas"), list) else fragment.get("formulas", [])
-    formulas = [item for item in formula_source or [] if isinstance(item, dict)]
-    if not formulas:
-        return []
-    analysis_text = _sign_contract_text(
-        "。".join(
-            str(item.get("text") or "")
-            for unit in fragment.get("answer_units", []) or []
-            if isinstance(unit, dict)
-            for item in _analysis_segment_items(unit.get("analysis_segments"))
-        )
-    )
-    conclusions: dict[str, set[int]] = {}
-    for formula in formulas:
-        normalized = _sign_contract_text(formula.get("latex"))
-        match = re.fullmatch(r"(.+?)([<>])0", normalized)
-        if match:
-            conclusions.setdefault(match.group(1), set()).add(1 if match.group(2) == ">" else -1)
-
-    issues: list[str] = []
-    for formula in formulas:
-        normalized = _sign_contract_text(formula.get("latex"))
-        if "=" not in normalized:
-            continue
-        lhs, rhs = normalized.split("=", 1)
-        if rhs.count("-") != 1 or lhs not in conclusions:
-            continue
-        minuend, subtrahend = rhs.split("-", 1)
-        if not minuend or not subtrahend:
-            continue
-        expected = 0
-        if f"{minuend}<{subtrahend}" in analysis_text or f"{subtrahend}>{minuend}" in analysis_text:
-            expected = -1
-        elif f"{minuend}>{subtrahend}" in analysis_text or f"{subtrahend}<{minuend}" in analysis_text:
-            expected = 1
-        if expected and conclusions[lhs] == {-expected}:
-            issues.append("difference_sign_contradiction:" + lhs[:80])
-    return issues
 
 
 def add_review_flag(fragment: dict[str, Any], code: str, message: str) -> dict[str, Any]:
@@ -2224,29 +2192,6 @@ def semantic_generation_issues(
                 missing_drawing_outputs.append(row["number"])
         if missing_drawing_outputs:
             issues.append("missing_drawing_answer_units:" + ",".join(missing_drawing_outputs))
-        for number, unit in by_number.items():
-            answer_text = str(unit.get("answer") or "")
-            analysis_text = "。".join(
-                str(item.get("text") or "")
-                for item in _analysis_segment_items(unit.get("analysis_segments"))
-            )
-            answer_polarities = {
-                1 if phrase == "大于零" else -1
-                for phrase in re.findall(r"大于零|小于零", answer_text)
-            }
-            conclusion_polarities = {
-                1 if phrase == "大于零" else -1
-                for phrase in re.findall(
-                    r"(?:故|因此|所以|即)[^。；]{0,48}?(大于零|小于零)",
-                    analysis_text,
-                )
-            }
-            if (
-                len(answer_polarities) == 1
-                and len(conclusion_polarities) == 1
-                and answer_polarities != conclusion_polarities
-            ):
-                issues.append(f"answer_analysis_zero_polarity_contradiction:{number}")
     if (
         is_calculation_question(question)
         and not fragment.get("formulas")
@@ -2440,7 +2385,7 @@ def fragment_from_analysis_draft(
     draft_analysis_text = _replace_formula_placeholders_in_text(raw_analysis_text, formulas)
     raw_draft_answer = _normalize_multipart_text_layout(str(draft.get("answer") or "待复核"), stem)
     draft_answer = _replace_formula_placeholders_in_text(raw_draft_answer, formulas)
-    top_answer = "见解析" if formulas and looks_like_formula(draft_answer) else draft_answer
+    top_answer = draft_answer
     answer_summary = draft_answer
     if top_answer == "见解析" and formulas:
         contract = draft.get("calculation_contract") if isinstance(draft.get("calculation_contract"), dict) else {}
@@ -2529,7 +2474,7 @@ def fragment_from_analysis_draft(
         unit_answer = _answer_from_answer_units(answer_units, unit_rows)
         if unit_answer:
             fragment["answer_summary"] = unit_answer
-            fragment["answer"] = "见解析" if looks_like_formula(unit_answer) else unit_answer
+            fragment["answer"] = unit_answer
     if answer_units and len(unit_rows) >= 2:
         analysis_segments, step_segments, used_formula_ids = _answer_unit_blocks(answer_units, unit_rows, formulas)
     elif answer_units and len(answer_units) == 1 and len(unit_rows) < 2:
@@ -2572,9 +2517,7 @@ def fragment_from_analysis_draft(
             step_segments, step_used_formula_ids = _inline_formula_segments_from_text(steps_text, formulas)
             used_formula_ids.update(step_used_formula_ids)
             fragment["blocks"].append({"label": "解题步骤", "segments": step_segments})
-    mistake_text = strip_internal_repair_provenance(
-        _strip_program_citation_text(_list_text(draft.get("mistake_notes")))
-    )
+    mistake_text = _strip_program_citation_text(_list_text(draft.get("mistake_notes")))
     if mistake_text:
         formula_ids = [str(formula.get("formula_id", "")) for formula in formulas if formula.get("formula_id")]
         mistake_segments, _ = _segments_from_inline_formula_text(mistake_text, formula_ids)
@@ -3019,8 +2962,6 @@ def generate_one_fragment(
                 "generated_artifacts": agent_result.generated_artifacts,
                 "tool_event_log": getattr(agent_result, "tool_event_log", ""),
             }
-        if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
-            data["answer"] = "见解析"
         syntax_issues = validate_v4_answer_fragment(data)
         semantic_issues = semantic_generation_issues(
             question,
@@ -3232,8 +3173,6 @@ def _fragment_from_batch_draft(
     data = fragment_from_analysis_draft(draft, question, evidence, evidence_selection)
     data = promote_inline_reactions(data)
     data = promote_inline_mathematical_expressions(data)
-    if looks_like_formula(str(data.get("answer", ""))) and data.get("formulas"):
-        data["answer"] = "见解析"
     issues = validate_v4_answer_fragment(data) + semantic_generation_issues(question, data)
     if not issues and evidence and not has_bound_evidence(data):
         issues.append("evidence_ids is empty while retrieval candidates exist")
@@ -3354,6 +3293,7 @@ def generate_answer_fragments(
     image_provider: ProviderConfig | None = None,
     image_model: str = "",
     include_textbook_evidence: bool = True,
+    before_image_generation: Callable[[], None] | None = None,
 ) -> GenerationResult:
     fragments: list[dict[str, Any]] = []
     answer_drafts: list[dict[str, Any]] = []
@@ -3449,6 +3389,7 @@ def generate_answer_fragments(
     completed_counter = {"value": 0}
     preflight_counts = {"checked": 0, "passed": 0, "blocked": 0}
     active_progress: dict[str, Any] = {}
+    active_questions: dict[str, dict[str, Any]] = {}
     progress_events: list[dict[str, Any]] = []
     progress_lock = threading.RLock()
 
@@ -3476,6 +3417,7 @@ def generate_answer_fragments(
                 "elapsed_seconds": elapsed_seconds,
                 "elapsed_text": _format_elapsed(elapsed_seconds),
                 "active": dict(active_progress),
+                "active_questions": [dict(item) for item in active_questions.values()],
                 "unit_preflight": dict(preflight_counts),
                 "recent_events": progress_events[-12:],
             }
@@ -3562,6 +3504,7 @@ def generate_answer_fragments(
                         image_model,
                         artifact_store,
                         reference_images=question.get("image_refs") or [],
+                        before_execute=lambda: question_budget.wait_for_dependency(before_image_generation),
                     )
                     tool_loop = ModelToolLoop(
                         local_client,
@@ -3706,6 +3649,7 @@ def generate_answer_fragments(
                 image_model,
                 artifact_store,
                 reference_images=batch_reference_images,
+                before_execute=before_image_generation,
             )
             batch_tool_loop = ModelToolLoop(
                 local_client,
@@ -3803,6 +3747,21 @@ def generate_answer_fragments(
         return units
 
     def generate_unit(unit: dict[str, Any]) -> dict[str, Any]:
+        items = list(unit.get("items") or [])
+        with progress_lock:
+            for _, question in items:
+                qid = str(question.get("question_id") or "")
+                active_questions[qid] = {"question_id": qid, "number": str(question.get("number") or ""), "section": str(question.get("section") or "")}
+            write_progress("running", completed_counter["value"])
+        try:
+            return generate_unit_inner(unit)
+        finally:
+            with progress_lock:
+                for _, question in items:
+                    active_questions.pop(str(question.get("question_id") or ""), None)
+                write_progress("running", completed_counter["value"])
+
+    def generate_unit_inner(unit: dict[str, Any]) -> dict[str, Any]:
         items = list(unit.get("items") or [])
         if unit.get("kind") == "batch":
             results = generate_batch_question_results(items)

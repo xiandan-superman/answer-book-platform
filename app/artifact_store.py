@@ -81,7 +81,7 @@ def verify_immutable_file(path: Path, *, sha256: str, size_bytes: int | None = N
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(long_path(target.parent), exist_ok=True)
     # Repeating a 64-character content hash in the temporary filename can push
     # deep checkpoint paths over Windows MAX_PATH.  Keep the temporary leaf
     # short and route every low-level path through the same long-path adapter.

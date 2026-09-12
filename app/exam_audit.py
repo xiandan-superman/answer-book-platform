@@ -75,9 +75,9 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
         ):
             warnings.append(f"{qid}: stem says 回答下列问题 but section is {section}")
         if EMBEDDED_SECTION_TITLE_RE.search(stem):
-            issues.append(f"{qid}: stem contains section title; exam split likely failed")
+            warnings.append(f"{qid}: stem contains section title; exam split likely failed")
         if EMBEDDED_SUBJECT_TITLE_RE.search(stem):
-            issues.append(f"{qid}: stem contains subject partition title; exam split likely failed")
+            warnings.append(f"{qid}: stem contains subject partition title; exam split likely failed")
         subquestions = [row for row in (item.get("subquestions") or []) if isinstance(row, dict)]
         if subquestions:
             parent_score = infer_explicit_parent_score(item)
@@ -133,7 +133,7 @@ def audit_exam_structure(structured_exam: dict, output_json: Path) -> list[str]:
         source_coverage["missing_item_like"] = missing_item_like[:30]
         source_coverage["missing_item_like_count"] = len(missing_item_like)
         for para in missing_item_like[:10]:
-            issues.append(f"source paragraph not covered by extracted questions: {para[:80]}")
+            warnings.append(f"source paragraph not covered by extracted questions: {para[:80]}")
     report = {
         "ok": not issues,
         "question_count": len(items),

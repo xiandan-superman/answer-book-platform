@@ -118,7 +118,10 @@ def test_concurrent_cancel_is_idempotent_and_invalidates_once(tmp_path, monkeypa
     latest = practice_jobs.load_practice_job(job["job_id"])
     assert latest["status"] == "cancelled"
     assert latest["control_epoch"] == 1
-    assert sum(result["ok"] is True for result in results) == 1
+    # Cancellation now acknowledges an already-cancelled job successfully.
+    # Idempotency is the single epoch invalidation, not a single HTTP success.
+    assert len(results) == 12
+    assert all(result["ok"] is True and result["status"] == "cancelled" for result in results)
 
 
 def test_cancelled_late_generation_never_saves_history(tmp_path, monkeypatch) -> None:

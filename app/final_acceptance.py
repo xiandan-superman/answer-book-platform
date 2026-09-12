@@ -8,6 +8,7 @@ from typing import Any
 
 from .analysis_profiles import sanitize_question_only_fragments
 from .figure_artifact_audit import audit_figure_artifacts
+from .machine_gate_policy import current_content_report
 from .question_requirements import main_model_answer_figure_required, source_image_required
 
 AUDIT_FILES = {
@@ -67,6 +68,8 @@ def audit_ok(name: str, data: dict[str, Any] | None, require_render: bool) -> tu
         if name in {"figure_size", "academic_expression"}:
             return True, [], [f"{name}: audit file missing (legacy task)"]
         return False, [f"{name}: audit file missing"], []
+    if name == "content_quality":
+        data = current_content_report(data)
     if name == "environment":
         formula = data.get("formula_conversion", {})
         if not formula.get("preferred_chain_ready"):
@@ -84,7 +87,7 @@ def diagnostic_advisories(stage_dir: Path) -> dict[str, Any]:
     fragments_data = read_json(stage_dir / "answer_fragments.json") or {}
     sanitize_question_only_fragments(fragments_data)
     review_docx = read_json(stage_dir / "question_review_docx.json") or {}
-    content_quality = read_json(stage_dir / "content_quality_audit.json") or {}
+    content_quality = current_content_report(read_json(stage_dir / "content_quality_audit.json") or {})
     answer_coverage = read_json(stage_dir / "answer_coverage_audit.json") or {}
     semantic_quality = read_json(stage_dir / "semantic_quality_advisories.json") or {}
     pending_questions: list[dict[str, Any]] = []

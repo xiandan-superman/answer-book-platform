@@ -19,16 +19,19 @@ class LingsuanProviderConfigTests(unittest.TestCase):
     def test_supplier_families_use_independent_keys(self) -> None:
         providers = self._providers()
         expected = {
+            "lingsuan_domestic": "LINGSUAN_DOMESTIC_API_KEY",
             "lingsuan_openai": "LINGSUAN_OPENAI_API_KEY",
             "lingsuan_image": "LINGSUAN_IMAGE_API_KEY",
             "lingsuan_google": "LINGSUAN_GOOGLE_API_KEY",
         }
         thinking_defaults = {
+            "lingsuan_domestic": "auto",
             "lingsuan_openai": "auto",
             "lingsuan_image": "auto",
             "lingsuan_google": "auto",
         }
         expected_protocols = {
+            "lingsuan_domestic": "chat_completions",
             "lingsuan_openai": "responses",
             "lingsuan_image": "responses",
             "lingsuan_google": "chat_completions",
@@ -39,7 +42,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         for name, env_name in expected.items():
             with self.subTest(provider=name):
                 provider = providers[name]
-                self.assertEqual("https://lingsuan.org/v1", provider.base_url)
+                self.assertEqual("https://edge.lingsuan.org/v1", provider.base_url)
                 self.assertTrue(provider.user_agent.startswith("Mozilla/5.0 "))
                 self.assertEqual(expected_protocols[name], provider.api_protocol)
                 if expected_protocols[name] == "responses":
@@ -59,6 +62,7 @@ class LingsuanProviderConfigTests(unittest.TestCase):
 
         raw = json.loads((ROOT / "config" / "providers.example.json").read_text(encoding="utf-8"))
         for name in (
+            "lingsuan_domestic",
             "lingsuan_openai",
             "lingsuan_image",
             "lingsuan_google",
@@ -70,12 +74,13 @@ class LingsuanProviderConfigTests(unittest.TestCase):
             providers = list_providers()
 
         for name in (
+            "lingsuan_domestic",
             "lingsuan_openai",
             "lingsuan_image",
             "lingsuan_google",
         ):
             with self.subTest(provider=name):
-                self.assertEqual("https://lingsuan.org/v1", providers[name].base_url)
+                self.assertEqual("https://edge.lingsuan.org/v1", providers[name].base_url)
                 self.assertTrue(providers[name].user_agent.startswith("Mozilla/5.0 "))
 
     def test_image_provider_is_image_only_and_uses_gpt_image_2(self) -> None:
@@ -161,7 +166,6 @@ class LingsuanProviderConfigTests(unittest.TestCase):
         self.assertEqual(provider.model_options, provider.vision_model_options)
         self.assertEqual(("text", "vision"), provider.model_capabilities["gemini-3.7-flash-medium"])
         self.assertEqual("medium", provider.model_profiles["gemini-3.7-flash-medium"]["thinking_minimum"])
-        self.assertTrue(provider.model_profiles["gemini-3.7-flash-medium"].get("supports_tool_calls"))
         self.assertEqual("Gemini 3.7 Flash", provider.model_option_labels["gemini-3.7-flash-medium"])
         for legacy_model in (
             "gemini-3.7-flash",

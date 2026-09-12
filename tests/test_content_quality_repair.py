@@ -32,13 +32,10 @@ def test_missing_calculation_note_is_derived_from_validated_contract(tmp_path) -
         "warnings": [],
     }
 
+    original = path.read_bytes()
     report = repair_content_quality_locally(path, audit)
-
-    repaired = json.loads(path.read_text(encoding="utf-8"))["fragments"][0]
-    assert report["changed"] is True
-    assert repaired["blocks"][0]["label"] == "易错点及注意事项"
-    assert "计算基准" in repaired["blocks"][0]["segments"][0]["text"]
-    assert repaired["_draft"]["mistake_notes"]
+    assert report["changed"] is False
+    assert path.read_bytes() == original
 
 
 def test_internal_repair_provenance_is_removed_but_subject_note_is_preserved(tmp_path) -> None:
@@ -75,13 +72,10 @@ def test_internal_repair_provenance_is_removed_but_subject_note_is_preserved(tmp
         "warnings": [],
     }
 
+    original = path.read_bytes()
     report = repair_content_quality_locally(path, audit)
-
-    repaired = json.loads(path.read_text(encoding="utf-8"))["fragments"][0]
-    note = repaired["blocks"][0]["segments"][0]["text"]
-    assert report["changed"] is True
-    assert note == "比较时需同时考虑冷却速率和缺陷。"
-    assert repaired["_draft"]["mistake_notes"] == [note]
+    assert report["changed"] is False
+    assert path.read_bytes() == original
 
 
 def test_internal_repair_provenance_is_removed_from_analysis_and_steps(tmp_path) -> None:
@@ -107,12 +101,10 @@ def test_internal_repair_provenance_is_removed_from_analysis_and_steps(tmp_path)
     )
     audit = {"issues": [{"question_id": "q1", "code": "internal_repair_provenance_leak"}], "warnings": []}
 
-    repair_content_quality_locally(path, audit)
-
-    repaired = json.loads(path.read_text(encoding="utf-8"))["fragments"][0]
-    assert repaired["blocks"][0]["segments"][0]["text"] == "机理说明。"
-    assert repaired["blocks"][1]["segments"][0]["text"] == "先比较数值。"
-    assert repaired["_draft"]["analysis"] == "机理说明。"
+    original = path.read_bytes()
+    report = repair_content_quality_locally(path, audit)
+    assert report["changed"] is False
+    assert path.read_bytes() == original
 
 
 def test_missing_analysis_is_recovered_from_model_draft_without_invention(tmp_path) -> None:
@@ -197,11 +189,7 @@ def test_unsupported_xrd_spacing_trend_is_removed_without_touching_question_sour
         "warnings": [],
     }
 
+    original = path.read_bytes()
     report = repair_content_quality_locally(path, audit)
-
-    repaired = json.loads(path.read_text(encoding="utf-8"))["fragments"][0]
-    assert report["changed"] is True
-    assert repaired["subquestions"][0]["stem"] == "请分析峰间距是否随角度变化。"
-    assert repaired["blocks"][0]["segments"][0]["text"] == "标注各晶面。"
-    assert repaired["blocks"][0]["segments"][1] == {"type": "formula_ref", "formula_id": "f1"}
-    assert "逐渐增大" not in repaired["_draft"]["analysis_segments"][0]["text"]
+    assert report["changed"] is False
+    assert path.read_bytes() == original

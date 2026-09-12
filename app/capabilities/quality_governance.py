@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 
+from ..machine_gate_policy import RETIRED_CONTENT_CODES
 from .quality import QualityPolicy
 
 
@@ -124,34 +125,6 @@ RULE_GOVERNANCE: dict[str, RuleGovernance] = {
             ActionCeiling.BLOCK,
             "numeric_equality_and_step_result_postcondition",
             "regenerate_answer",
-        ),
-        _rule(
-            "content_quality.answer_analysis_comparative_contradiction",
-            EvidenceClass.REPAIRABLE,
-            ActionCeiling.REPAIR_THEN_BLOCK,
-            "same_subject_same_property_opposite_direction_then_bounded_repair",
-            "stop_delivery",
-        ),
-        _rule(
-            "content_quality.composition_partition_missing_declared_component",
-            EvidenceClass.REPAIRABLE,
-            ActionCeiling.REPAIR_THEN_BLOCK,
-            "declared_constituents_vs_same_level_numeric_partition_then_bounded_repair",
-            "stop_delivery",
-        ),
-        _rule(
-            "content_quality.internal_repair_provenance_leak",
-            EvidenceClass.DETERMINISTIC,
-            ActionCeiling.BLOCK,
-            "exact_user_facing_process_phrase_exclusion_then_local_sentence_removal",
-            "stop_delivery",
-        ),
-        _rule(
-            "content_quality.spatial_relation_improper_membership_inference",
-            EvidenceClass.REPAIRABLE,
-            ActionCeiling.REPAIR_THEN_BLOCK,
-            "attachment_or_adjacency_is_not_taxonomic_membership_then_bounded_evidence_repair",
-            "stop_delivery",
         ),
         _rule(
             "content_quality.missing_confirmed_evidence",
@@ -351,6 +324,8 @@ UNKNOWN_RULE_GOVERNANCE = _rule(
 
 def governance_for(code: str) -> RuleGovernance:
     normalized = str(code or "").strip()
+    if normalized.removeprefix("content_quality.") in RETIRED_CONTENT_CODES:
+        return _rule(normalized, EvidenceClass.HEURISTIC, ActionCeiling.OBSERVE_ONLY, "retired_content_heuristic", "no_action")
     exact = RULE_GOVERNANCE.get(normalized)
     if exact is not None:
         return exact

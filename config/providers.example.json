@@ -255,7 +255,7 @@
       "api_protocol": "responses",
       "responses_streaming": true,
       "responses_fallback_to_chat": false,
-      "base_url": "https://lingsuan.org/v1",
+      "base_url": "https://edge.lingsuan.org/v1",
       "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_OPENAI_API_KEY",
       "api_key": "",
@@ -545,7 +545,7 @@
     },
     "lingsuan_image": {
       "type": "openai_compatible",
-      "base_url": "https://lingsuan.org/v1",
+      "base_url": "https://edge.lingsuan.org/v1",
       "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_IMAGE_API_KEY",
       "api_key": "",
@@ -568,10 +568,143 @@
       "temperature": 0.1,
       "max_tokens": 24576
     },
+    "lingsuan_domestic": {
+      "type": "openai_compatible",
+      "api_protocol": "chat_completions",
+      "base_url": "https://edge.lingsuan.org/v1",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
+      "api_key_env": "LINGSUAN_DOMESTIC_API_KEY",
+      "api_key": "",
+      "default_model": "deepseek-v4-flash",
+      "model_options": [
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-0813",
+        "glm-5.2",
+        "glm-5.3",
+        "glm-5.3-flash",
+        "kimi-k3",
+        "qwen3.7-max",
+        "qwen3.8-max"
+      ],
+      "allow_custom_model": false,
+      "supports_text_generation": true,
+      "supports_image_generation": false,
+      "supports_vision": false,
+      "model_capabilities": {
+        "deepseek-v4-flash": [
+          "text"
+        ],
+        "deepseek-v4-flash-0731": [
+          "text"
+        ],
+        "deepseek-v4-pro": [
+          "text"
+        ],
+        "deepseek-v4-pro-0813": [
+          "text"
+        ],
+        "glm-5.2": [
+          "text"
+        ],
+        "glm-5.3": [
+          "text"
+        ],
+        "glm-5.3-flash": [
+          "text"
+        ],
+        "kimi-k3": [
+          "text"
+        ],
+        "qwen3.7-max": [
+          "text"
+        ],
+        "qwen3.8-max": [
+          "text"
+        ]
+      },
+      "model_profiles": {
+        "deepseek-v4-flash": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "deepseek-v4-flash-0731": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "deepseek-v4-pro": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "deepseek-v4-pro-0813": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "glm-5.2": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "glm-5.3": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "glm-5.3-flash": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "kimi-k3": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "qwen3.7-max": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        },
+        "qwen3.8-max": {
+          "api_protocol": "chat_completions",
+          "supported_thinking_modes": [
+            "auto"
+          ],
+          "default_thinking_mode": "auto"
+        }
+      },
+      "model_hint": "国模分组-openai协议：本组全部模型共用一个独立 Key，不与灵算 GPT、Gemini 或图片分组共用。仅登记 Chat Completions 文本路线，未验证图片输入或额外思考档位。",
+      "thinking_mode": "auto",
+      "temperature": 0.1,
+      "max_tokens": 24576
+    },
     "lingsuan_google": {
       "type": "openai_compatible",
       "api_protocol": "chat_completions",
-      "base_url": "https://lingsuan.org/v1",
+      "base_url": "https://edge.lingsuan.org/v1",
       "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
       "api_key_env": "LINGSUAN_GOOGLE_API_KEY",
       "api_key": "",

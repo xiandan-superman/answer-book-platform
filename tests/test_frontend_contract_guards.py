@@ -220,7 +220,7 @@ def test_upload_feedback_resets_when_files_or_upload_tabs_change() -> None:
     assert "function resetUploadFeedback(kind)" in APP_JS
     assert 'renderUploadSelection("textbook");\n    resetUploadFeedback("textbook");' in APP_JS
     assert 'renderUploadSelection("exam");\n    resetUploadFeedback("exam");' in APP_JS
-    assert 'input.addEventListener("change", () => {\n    renderUploadSelection(kind);\n    resetUploadFeedback(kind);' in APP_JS
+    assert 'input.addEventListener("change", () => {\n    if (kind === "exam") { autoUploadExam(); return; }\n    renderUploadSelection(kind);\n    resetUploadFeedback(kind);' in APP_JS
 
 
 def test_frontend_displays_formal_app_version_without_legacy_internal_label() -> None:
@@ -244,8 +244,8 @@ def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -
     assert 'id="examModelRoleDetails"' in INDEX_HTML
     assert 'EXAM_MODEL_PRESET_STORAGE_KEY = "answerBook.examModelPreset.v1"' in APP_JS
     assert 'label: "质量优先（推荐）"' in APP_JS
-    assert 'reasoning: ["lingsuan_openai", "gpt-5.6-terra"]' in APP_JS
-    assert 'answer: ["lingsuan_openai", "gpt-5.6-terra"]' in APP_JS
+    assert 'reasoning: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
+    assert 'answer: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
     assert 'correctness: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
     assert 'answer: ["lingsuan_google", "gemini-3.6-flash"]' in APP_JS
     assert 'if (saved === "balanced") return "quality";' in APP_JS
@@ -264,7 +264,7 @@ def test_retained_providers_are_visible_and_removed_providers_are_not_in_catalog
         assert provider not in providers
     assert '  "ark_image",' not in APP_JS.split("const HIDDEN_USER_PROVIDER_NAMES", 1)[1].split("]);", 1)[0]
     assert "function userVisibleProviderEntries" in APP_JS
-    assert "return userVisibleProviderEntries()" in APP_JS
+    assert 'const entries = userVisibleProviderEntries()' in APP_JS
     assert '.filter(([, cfg]) => cfg.api_key_set === true)' in APP_JS
     assert "HIDDEN_API_CONFIG_PROVIDER_NAMES" in APP_JS
     assert "Object.entries(providerConfigs || {}).filter" in APP_JS
@@ -277,6 +277,20 @@ def test_practice_generation_defaults_to_lingsuan_gemini_and_image_two() -> None
     assert 'id="practiceImageProviderSelect"' in INDEX_HTML
     assert 'id="knowledgeImageProviderSelect"' in INDEX_HTML
     assert 'for (const kind of ["text", "vision", "image"])' in APP_JS
+
+
+def test_exam_model_matrix_uses_recommended_defaults_and_one_ark_image_route() -> None:
+    assert 'class="model-config-matrix-head"' in INDEX_HTML
+    assert "系统自动应用推荐的请求方式与中等思考强度" in INDEX_HTML
+    assert 'populateRoleThinkingMode("reasoning", "medium");' in APP_JS
+    assert 'populateRoleThinkingMode("answer", "medium");' in APP_JS
+    assert 'const configuredDefault = modes.includes("medium") ? "medium" : registeredDefault;' in APP_JS
+    assert 'if (kind === "image" && entries.some(([name]) => name === "ark_image"))' in APP_JS
+    assert 'return entries.filter(([name]) => name !== "ark");' in APP_JS
+    assert 'state.wrapper.hidden = select.hidden;' in APP_JS
+    assert 'class="model-role-static protocol-static">按需调用' not in INDEX_HTML
+    assert 'class="model-role-static thinking-static">—' not in INDEX_HTML
+    assert 'return Boolean(String(model || "").trim());' in APP_JS
 
 
 def test_practice_and_knowledge_expose_one_primary_model_by_default() -> None:
@@ -295,7 +309,8 @@ def test_main_model_image_route_is_fixed_and_requires_configuration() -> None:
     assert 'image_provider: imageFallbackConfigured ?' in APP_JS
     assert 'image_model: imageFallbackConfigured ?' in APP_JS
     assert 'image_orchestration: imageOrchestrationMode("exam")' in APP_JS
-    assert '已选择“主模型自主生图”' in APP_JS
+    assert 'return Boolean(String(model || "").trim());' in APP_JS
+    assert "未通过原生工具调用与图片回看逐模型验证" not in APP_JS
 
 
 def test_api_key_password_fields_belong_to_non_submitting_forms() -> None:
@@ -372,7 +387,8 @@ def test_review_candidate_download_prefers_explicit_candidate_filename() -> None
 def test_resumed_practice_job_uses_public_error_presentation() -> None:
     assert "job.error_presentation?.message" in APP_JS
     assert "function practicePublicErrorText" in APP_JS
-    assert "诊断编号：${supportId}" in APP_JS
+    assert "诊断编号：${supportId}" not in APP_JS
+    assert "任务编号：${job.public_task_id}" in APP_JS
     assert 'action === "job-config"' in APP_JS
     assert 'confirmText: "检查 API 配置"' in APP_JS
     assert "await retryGenerationJob(task, job);" in APP_JS
@@ -1024,7 +1040,7 @@ def test_terminal_task_page_uses_static_state_copy_and_loading_ids_are_disclosed
     assert 'title: "任务已暂停"' in APP_JS
     assert 'executionHeading: "暂停位置"' in APP_JS
     assert 'activeTaskFilter !== "unsuccessful"' in APP_JS
-    assert '<summary>查看任务标识</summary>' in INDEX_HTML
+    assert '<summary>任务编号（反馈时提供）</summary>' in INDEX_HTML
     assert 'row?.classList.toggle("flex"' not in APP_JS
     assert '#page-task[data-task-state="failed"] .progress-card' in PLATFORM_THEME_CSS
     assert '#page-task .task-page-title.inline-title > .icon-button' in PLATFORM_THEME_CSS
@@ -1063,7 +1079,8 @@ def test_environment_distinguishes_network_configuration_and_actual_model_call()
     assert 'id="testExamModelRoutesBtn"' in INDEX_HTML
     assert "async function testExamModelRoutes()" in APP_JS
     assert 'api("/api/provider-test"' in APP_JS
-    assert 'await preflightTaskModelRoutes(examTaskPreflightRoutes()' in APP_JS
+    assert 'const preflightRoutes = examTaskPreflightRoutes();' in APP_JS
+    assert 'await preflightTaskModelRoutes(preflightRoutes' in APP_JS
     assert 'await preflightTaskModelRoutes(practiceTaskPreflightRoutes(operation, queuedPayload)' in APP_JS
     assert 'await preflightTaskModelRoutes(savedExamTaskPreflightRoutes(task)' in APP_JS
     assert 'practiceTaskPreflightRoutes("generate_from_plan", saved.request || {})' in APP_JS
@@ -1167,9 +1184,9 @@ def test_generation_network_summary_exposes_each_transport_layer() -> None:
 def test_practice_loading_shows_copyable_task_id() -> None:
     assert 'id="practiceLoadingTaskId"' in INDEX_HTML
     assert 'id="practiceLoadingCopyTaskId"' in INDEX_HTML
-    assert 'id="practiceLoadingRunId"' in INDEX_HTML
-    assert 'id="practiceLoadingCopyRunId"' in INDEX_HTML
-    assert 'showPracticeLoadingTaskId(queued.task_id || "", queued.run_id || queued.job_id || "")' in APP_JS
+    assert 'id="practiceLoadingRunId"' not in INDEX_HTML
+    assert 'id="practiceLoadingCopyRunId"' not in INDEX_HTML
+    assert 'showPracticeLoadingTaskId(queued.task_id || "", queued.run_id || queued.job_id || "", queued.public_task_id)' in APP_JS
 
 
 def test_failed_analysis_material_is_replaced_and_scope_snapshot_is_pinned() -> None:
@@ -1340,9 +1357,15 @@ def test_provider_control_center_exposes_status_responsibility_and_exact_probes(
     assert "function providerResponsibilityLabel" in APP_JS
     assert 'api("/api/provider-control/status")' in APP_JS
     assert 'api("/api/provider-control/probe"' in APP_JS
-    assert 'probe_source: "task_preflight"' in APP_JS
+    assert "watchStartupProviderRegistration()" in APP_JS
+    assert "startup_probe_pending_provider_count" in APP_JS
+    assert '<option value="tool_call">' not in INDEX_HTML
+    preflight = APP_JS.split("async function preflightTaskModelRoutes(", 1)[1].split("function practiceTaskPreflightRoutes", 1)[0]
+    assert 'api("/api/provider-test"' not in preflight
+    assert 'throw ' not in preflight
+    assert "loadProviderControl()" in preflight
     assert 'capability: "vision"' in APP_JS
-    assert 'capability: "tool_call"' in APP_JS
+    assert '工具调用</option>' not in INDEX_HTML
     assert "function providerControlFamily" in APP_JS
     assert "provider-history-track" in APP_JS
     assert 'not_configured: ["未接入"' in APP_JS
@@ -1409,3 +1432,16 @@ def test_removed_shared_textbook_library_has_no_frontend_contract() -> None:
         "共享教材库",
     ):
         assert legacy_marker not in combined
+def test_provider_refresh_preserves_disclosures_and_reading_position():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "web" / "app.js").read_text(encoding="utf-8")
+    helper = source.split("function preserveProviderControlView(panel) {", 1)[1].split("function renderProviderControl()", 1)[0]
+    assert "details.has(node.dataset.viewKey)" in helper
+    assert "node.open = details.get(node.dataset.viewKey)" in helper
+    assert "getBoundingClientRect().top - anchorTop" in helper
+    assert 'behavior: "instant"' in helper
+    renderer = source.split("function renderProviderControl() {", 1)[1].split("async function loadProviderControl()", 1)[0]
+    assert "restoreView();" in renderer
+    for identity in ("supplier:", "model:", "registration:", "route:", "directory:"):
+        assert f'data-view-key="{identity}' in renderer

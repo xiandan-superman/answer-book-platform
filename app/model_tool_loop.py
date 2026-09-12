@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from PIL import Image
 
@@ -269,8 +269,10 @@ class ImageGenerationTool:
         size: str = "",
         timeout_seconds: int = 240,
         reference_images: Iterable[str | Path] = (),
+        before_execute: Callable[[], None] | None = None,
     ) -> None:
         self.provider = provider
+        self.before_execute = before_execute
         self.model = str(model or getattr(provider, "image_model", "") or "")
         self.store = store
         self.size = str(size or getattr(provider, "image_size", "") or "")
@@ -448,6 +450,8 @@ class ImageGenerationTool:
 
     def execute(self, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
         self.validate_arguments(arguments)
+        if self.before_execute is not None:
+            self.before_execute()
         prompt = arguments["prompt"].strip()
         temporary = self.store.root / f".{re.sub(r'[^0-9A-Za-z_.-]+', '_', call_id or 'call')}.png"
         raw_paths = arguments.get("referenced_image_paths")
@@ -1078,28 +1082,13 @@ class ModelToolLoop:
 
 
 def tool_loop_supported(client: OpenAICompatibleClient, provider: Any, model: str) -> bool:
-    from .model_capability_registry import (
-        get_native_tool_route,
-        provider_has_capability_registry,
-    )
-    from .settings import provider_model_supports_vision
-
     selected = str(model or "").strip()
-    if not provider_model_supports_vision(provider, selected):
+    if not selected:
         return False
     if isinstance(client, AnthropicMessagesClient) or not isinstance(client, OpenAICompatibleClient):
         return False
-    profile = dict((getattr(provider, "model_profiles", {}) or {}).get(selected) or {})
-    if profile.get("supports_tool_calls") is not True:
-        return False
     protocol = _model_tool_protocol(provider, selected)
-    if protocol not in {"responses", "responses_api", "chat_completions", "openai_compatible", ""}:
-        return False
-    provider_name = str(getattr(provider, "name", "") or "").strip()
-    route = get_native_tool_route(provider_name, selected)
-    if route is None:
-        # Tests and external custom providers can still opt in explicitly, but
-        # a built-in provider/model pair is denied unless it is in the closed
-        # verified registry allowlist.
-        return not provider_has_capability_registry(provider_name)
-    return str(route.get("protocol") or "").strip().lower() == protocol
+    # Product policy: every selected main model is eligible for the image tool
+    # loop.  We only retain the transport-adapter check needed to construct a
+    # real native tool request; capability probes and allowlists do not gate it.
+    return protocol in {"responses", "responses_api", "chat_completions", "openai_compatible", ""}

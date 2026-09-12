@@ -85,7 +85,25 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt -c constraints-py311.txt
           python -m playwright install --with-deps chromium
       - name: Run critical Chromium flows
-        run: python -m pytest -q -m e2e tests/e2e/test_platform_smoke.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANSWER_BOOK_DATA_DIR="$(mktemp -d)"
+          export ANSWER_BOOK_E2E_URL="http://127.0.0.1:8873"
+          python scripts/start_platform.py --port 8873 > "$RUNNER_TEMP/browser-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill -INT "$server_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in $(seq 1 120); do
+            if curl --fail --silent "$ANSWER_BOOK_E2E_URL/api/version" >/dev/null; then
+              ready=true
+              break
+            fi
+            kill -0 "$server_pid" || { cat "$RUNNER_TEMP/browser-server.log"; exit 1; }
+            sleep 1
+          done
+          test "$ready" = true || { cat "$RUNNER_TEMP/browser-server.log"; exit 1; }
+          python -m pytest -q -m e2e tests/e2e/test_platform_smoke.py
 
   source-dependency-locks:
     name: Source dependency locks (${{ matrix.os }}, Python ${{ matrix.python-version }})

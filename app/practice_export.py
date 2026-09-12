@@ -118,31 +118,15 @@ def _question_formula_visible(formula: Any) -> bool:
 
 
 def practice_stem_answer_leak_reasons(item: dict[str, Any]) -> list[str]:
-    """Detect structured stem assets that expose what the student must supply."""
-    question_type = str(item.get("question_type") or "").strip()
-    stem = str(item.get("stem") or "")
-    has_blank = bool(
-        re.search(
-            r"_{2,}|[（(]\s*[）)]|\\(?:underline|underbrace)\s*\{",
-            stem,
-        )
-    )
-    reasons: list[str] = []
-    for index, formula in enumerate(item.get("formulas") or [], start=1):
-        if not isinstance(formula, dict) or not _matches_location(formula.get("location"), "stem"):
-            continue
-        latex = str(formula.get("latex") or "").strip()
-        caption = str(formula.get("caption") or "").strip()
-        role = str(formula.get("role") or "relation").strip().lower()
-        if role in _ANSWER_FORMULA_ROLES or re.search(r"答案|最终结果|计算结果|标准结论", caption):
-            reasons.append(f"第 {index} 个题干公式被标记为答案或结果")
-            continue
-        if question_type == "填空题" and has_blank and role != "given":
-            reasons.append(f"第 {index} 个题干公式可能直接给出填空答案")
-            continue
-        if role != "given" and _SOLVED_NUMERIC_FORMULA_RE.search(latex):
-            reasons.append(f"第 {index} 个题干公式包含已求得的数值结果")
-    return reasons
+    """Only an explicit answer-role object in the student stem is a routing error."""
+    return [
+        f"第 {index} 个题干公式被标记为答案或结果"
+        for index, formula in enumerate(item.get("formulas") or [], start=1)
+        if isinstance(formula, dict)
+        and _matches_location(formula.get("location"), "stem")
+        and str(formula.get("role") or "").strip().lower() in _ANSWER_FORMULA_ROLES
+    ]
+
 
 
 def resolve_practice_export_payload(

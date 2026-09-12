@@ -10,7 +10,10 @@ let systemMonitorPollInFlight = false;
 let taskBulkMode = false;
 const selectedTaskIds = new Set();
 let providerConfigs = {};
+let startupProviderRegistrationTimer = null;
+let startupProviderRegistrationPolls = 0;
 let providerControlData = null;
+let modelHealthPollTimer = null;
 let apiKeyFileInfo = {};
 let apiKeyConfigLoadState = { providers: "loading", keyFile: "loading", recoveryAvailable: false };
 let activeKeyProviderFilter = "all";
@@ -30,6 +33,8 @@ let activeTaskAnalysisProfile = "evidence_backed";
 let taskNavigationVersion = 0;
 let cancelActiveReviewDecisionModal = null;
 let cancelActiveExamStructureReviewModal = null;
+const examStructureReviewInFlight = new Set();
+const submittedExamStructureRequests = new Map();
 let selectedTextbookPaths = new Set();
 let textbookSelectionInitialized = false;
 let activeTextbookGroups = {};
@@ -248,10 +253,10 @@ const EXAM_MODEL_PRESET_STORAGE_KEY = "answerBook.examModelPreset.v1";
 const examModelPresets = {
   quality: {
     label: "质量优先（推荐）",
-    description: "GPT-5.6 Terra 负责主要解析和读图，GPT-5.6 Sol 只复核高风险题，兼顾质量与调用成本。",
+    description: "GPT-5.6 Sol 负责教材依据、主要解析和高风险复核，读图使用已登记的多模态模型。",
     base: ["lingsuan_openai", "gpt-5.6-terra"],
-    reasoning: ["lingsuan_openai", "gpt-5.6-terra"],
-    answer: ["lingsuan_openai", "gpt-5.6-terra"],
+    reasoning: ["lingsuan_openai", "gpt-5.6-sol"],
+    answer: ["lingsuan_openai", "gpt-5.6-sol"],
     correctness: ["lingsuan_openai", "gpt-5.6-sol"],
     vision: ["lingsuan_openai", "gpt-5.6-terra"],
     image: ["lingsuan_image", "gpt-image-2"],
@@ -324,6 +329,12 @@ function setText(id, value) {
 
 function startWizard() {
   currentExamAnalysisProfile = "evidence_backed";
+  for (const role of ["reasoning", "answer"]) {
+    setExamTextRoleRoute(role, ["lingsuan_openai", "gpt-5.6-sol"]);
+    syncPlatformSelectElement($(textModelRoles[role].providerId));
+    syncPlatformSelectElement($(textModelRoles[role].modelSelectId));
+  }
+  updateModelRoleCards();
   goToPage("env");
 }
 
@@ -1670,6 +1681,7 @@ function providerEnvKey(providerName) {
     bailian: "DASHSCOPE_API_KEY",
     deepseek: "DEEPSEEK_API_KEY",
     lingsuan_openai: "LINGSUAN_OPENAI_API_KEY",
+    lingsuan_domestic: "LINGSUAN_DOMESTIC_API_KEY",
     lingsuan_image: "LINGSUAN_IMAGE_API_KEY",
     lingsuan_google: "LINGSUAN_GOOGLE_API_KEY"
     ,wawapi_openai: "WAWAPI_OPENAI_API_KEY", wawapi_google: "WAWAPI_GOOGLE_API_KEY", wawapi_xai: "WAWAPI_XAI_API_KEY"
@@ -1685,6 +1697,7 @@ function displayProviderName(name) {
     bailian: "阿里云百炼",
     deepseek: "DeepSeek 官方",
     lingsuan_openai: "灵算 · OpenAI",
+    lingsuan_domestic: "灵算 · 国模分组",
     lingsuan_image: "灵算 · OpenAI 图片",
     lingsuan_google: "灵算 · Google Gemini"
     ,wawapi_openai: "WawAPI · GPT", wawapi_google: "WawAPI · Gemini", wawapi_xai: "WawAPI · Grok"
@@ -1767,6 +1780,7 @@ function examRequiredTextRoutes() {
         label: "题目识别",
         provider: primaryCfg.name || $("providerSelect")?.value || "",
         model: selectedModel() || primaryCfg.default_model || "",
+        api_protocol: modelRequestProtocol(primaryCfg, selectedModel() || primaryCfg.default_model || ""),
         tone: "purple",
         capabilityOk: Boolean(selectedModel() || primaryCfg.default_model),
         keySaved: Boolean(primaryCfg.api_key_set)
@@ -1790,9 +1804,6 @@ function examTaskPreflightRoutes() {
   if (currentExamAnalysisProfile === "evidence_backed" && image.provider && image.model) {
     routes.push({ ...image, capability: "image_generation" });
   }
-  if (currentExamAnalysisProfile === "evidence_backed" && imageOrchestrationMode("exam") === "main_model_tool_loop") {
-    routes.push({ ...textRoleRoute("answer", "答案模型工具调用"), capability: "tool_call" });
-  }
   return routes;
 }
 
@@ -1812,9 +1823,6 @@ function savedExamTaskPreflightRoutes(task) {
   add("读图模型", task.vision_provider, task.vision_model, "", "auto", "vision");
   if (task.image_provider && task.image_model) {
     routes.push({ label: "生图模型", provider: task.image_provider, model: task.image_model, capability: "image_generation" });
-  }
-  if (task.image_orchestration === "main_model_tool_loop" && task.answer_provider && task.answer_model) {
-    add("答案模型工具调用", task.answer_provider, task.answer_model, task.answer_protocol, task.answer_thinking, "tool_call");
   }
   return routes;
 }
@@ -1894,15 +1902,18 @@ function updateEnvironmentSummary(env) {
   syncExamModelTestAvailability();
   const networkReady = hasNetworkCheck && requiredRoutes.every((route) => providerNetwork[route.provider] === true);
   const routeTests = requiredRoutes
-    .map((route) => modelConnectionTests[modelConnectionTestKey(route.provider, route.model)])
+    .map((route) => {
+      const state = routeConnectionStatus(route);
+      return state.tone === "ok" ? { ok: true } : state.tone === "warn" ? { ok: false } : null;
+    })
     .filter(Boolean);
   const routeTestFailed = routeTests.some((test) => test.ok === false);
   const allRoutesTested = routeTests.length === requiredRoutes.length && routeTests.every((test) => test.ok === true);
-  const ready = runtimeReady && toolsReady && routesConfigured && networkReady && !routeTestFailed;
+  const ready = runtimeReady && toolsReady && routesConfigured;
   const readyHint = allRoutesTested
     ? `当前解析模型已测试，可以继续选择${currentExamAnalysisProfile === "question_only" ? "题目" : currentExamAnalysisProfile === "textbook_evidence_only" ? "试题与教材" : "真题"}`
     : ready
-      ? "当前模型网络可达；建议先测试连接，再继续选择真题"
+      ? (routeTestFailed || !networkReady ? "近期连接异常，仍可继续；任务会实际调用并报告结果" : "模型已配置，可以继续选择材料")
       : !routesConfigured
         ? (currentExamAnalysisProfile === "question_only" ? "请先为结构化解析选择模型并配置 Key" : currentExamAnalysisProfile === "textbook_evidence_only" ? "请先配置题目识别和教材依据模型与 Key" : "请先为知识识别和结构化解析配置模型与 Key")
         : !networkReady
@@ -1943,8 +1954,8 @@ function updateEnvironmentSummary(env) {
     visual.className = `status-result ${ready ? "result-ok" : (!runtimeReady ? "result-error" : "result-warn")}`;
     visual.innerHTML = ready
       ? allRoutesTested
-        ? '<i class="fas fa-check-circle"></i><strong>环境和当前解析模型均已测试通过</strong>'
-        : '<i class="fas fa-circle-info"></i><strong>基础环境就绪；当前模型网络可达，但尚未完成连接测试</strong>'
+        ? '<i class="fas fa-check-circle"></i><strong>环境已就绪，当前解析模型已测试通过</strong>'
+        : '<i class="fas fa-check-circle"></i><strong>环境已就绪；当前模型网络可达，连接调用待验证</strong>'
       : hasNetworkCheck
         ? `<i class="fas fa-exclamation-circle"></i><strong>${escapeHtml(readyHint)}</strong>`
         : '<i class="fas fa-minus-circle"></i><strong>网络连通性尚未检查，请重启本地服务后重试</strong>';
@@ -1968,7 +1979,7 @@ function syncExamModelTestAvailability() {
 async function testExamModelRoutes() {
   const button = $("testExamModelRoutesBtn");
   const routes = examRequiredTextRoutes()
-    .filter((route, index, all) => all.findIndex((item) => item.provider === route.provider && item.model === route.model) === index);
+    .filter((route, index, all) => all.findIndex((item) => item.provider === route.provider && item.model === route.model && item.api_protocol === route.api_protocol) === index);
   const invalid = routes.find((route) => !route.provider || !route.model || !route.keySaved || !route.capabilityOk);
   if (invalid) {
     await platformAlert(`${invalid.label || "当前模型"}缺少服务商、模型或已保存的 API Key。`, { title: "无法开始连接测试", tone: "warning" });
@@ -1984,7 +1995,7 @@ async function testExamModelRoutes() {
       try {
         const data = await api("/api/provider-test", {
           method: "POST",
-          body: JSON.stringify({ provider: route.provider, model: route.model })
+          body: JSON.stringify({ provider: route.provider, model: route.model, api_protocol: route.api_protocol })
         });
         rememberModelConnectionTest(route.provider, data.model || route.model, true);
         return { route, ok: true };
@@ -1994,6 +2005,7 @@ async function testExamModelRoutes() {
         return { route, ok: false, message };
       }
     }));
+    await loadProviderControl();
     updateEnvironmentSummary(latestEnvironmentStatus || {});
     updateModelRoleCards();
     const failed = results.filter((item) => !item.ok);
@@ -2506,15 +2518,21 @@ function applyPracticeRequirementPresets() {
 
 function supportFeedbackPayload(scope = "page", extra = {}) {
   const taskScopedPage = ["task", "result", "practice", "knowledge", "tasks"].includes(currentPage);
+  const practicePage = ["practice", "knowledge"].includes(currentPage);
+  const observedTask = taskScopedPage ? latestTasks.find(task => practicePage
+    ? ((activePracticeJobId && task.job_id === activePracticeJobId) || (currentPracticeHistoryId && task.history_id === currentPracticeHistoryId))
+    : task.task_id === activeTaskId) : null;
   return {
     scope,
     page: currentPage,
     session_id: window.SupportTelemetry?.sessionId || "",
     events: window.SupportTelemetry?.snapshot() || [],
     selection: window.SupportTelemetry?.selectedText() || "",
-    task_id: taskScopedPage ? (activeTaskId || "") : "",
+    task_id: taskScopedPage ? (practicePage ? (activePracticeJobId || "") : (activeTaskId || "")) : "",
+    public_task_id: observedTask?.public_task_id || "",
+    stable_task_id: observedTask?.task_id || "",
     question_id: taskScopedPage ? (activeResultQuestionId || "") : "",
-    history_id: taskScopedPage ? (currentPracticeHistoryId || "") : "",
+    history_id: practicePage ? (currentPracticeHistoryId || "") : "",
     ...extra
   };
 }
@@ -2586,11 +2604,13 @@ async function submitSupportFeedback(scope = "page", extra = {}, button = null) 
 function taskSupportContext(task = {}, reportGroupId = "") {
   const taskId = String(task.task_id || "");
   return {
-    task_id: taskId,
+    task_id: task.is_generation_job ? String(task.job_id || task.run_id || taskId) : taskId,
+    public_task_id: String(task.public_task_id || ""),
+    stable_task_id: taskId,
     question_id: "",
     exercise_index: null,
-    job_id: task.is_generation_job ? taskId : "",
-    history_id: task.is_generation_task && !task.is_generation_job ? taskId : "",
+    job_id: task.is_generation_job ? String(task.job_id || task.run_id || "") : "",
+    history_id: task.is_generation_task ? String(task.history_id || "") : "",
     task_kind: String(task.task_kind || ""),
     task_status: String(task.status || ""),
     task_stage: String(task.current_stage || ""),
@@ -2751,13 +2771,6 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
     };
   }
   if (practiceRequestRequiresImageTools(request) && String(request.image_orchestration || "") === "main_model_tool_loop") {
-    const mainConfig = providerConfigs?.[providerName] || {};
-    if (!modelSupportsMainToolLoop(model, mainConfig)) {
-      return {
-        provider: providerName,
-        message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 未通过“原生工具调用 + 图片回看”逐模型验证。请改选已验证模型；当前材料已保留。`,
-      };
-    }
     const imageProvider = String(request.image_provider || "").trim();
     const imageModel = String(request.image_model || "").trim();
     if (!imageProvider || !imageModel || providerConfigs?.[imageProvider]?.api_key_set !== true) {
@@ -2790,7 +2803,6 @@ function hidePracticeConfigurationAction(mode) {
 function practicePublicErrorText(presentation = {}, fallback = "任务执行失败。", { includeAction = true } = {}) {
   const message = String(presentation.message || fallback || "任务执行失败。").trim();
   const action = String(presentation.retry_hint || "").trim();
-  const supportId = String(presentation.support_id || "").trim();
   const responsibility = ({
     user_configuration: "用户配置",
     provider_service: "模型供应商服务",
@@ -2805,7 +2817,6 @@ function practicePublicErrorText(presentation = {}, fallback = "任务执行失�
     responsibility ? `责任归属：${responsibility}` : "",
     includeAction && action ? `建议：${action}` : "",
     presentation.developer_report_required ? "平台处理：该问题需要报告平台开发者。" : "",
-    supportId ? `诊断编号：${supportId}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -3014,27 +3025,27 @@ function updatePracticeLoadingProgress(job = {}) {
   setText("practiceLoadingElapsed", `${formatPracticeWaitTime(elapsed)} · ${practiceWaitExpectation(job)}`);
 }
 
-function showPracticeLoadingTaskId(taskId, runId = "") {
-  const taskValue = String(taskId || "").trim();
-  const runValue = String(runId || "").trim();
+function showPracticeLoadingTaskId(taskId, runId = "", publicId = "") {
+  const taskValue = String(publicId || "").trim();
   setText("practiceLoadingTaskId", taskValue);
-  setText("practiceLoadingRunId", runValue);
   const row = $("practiceLoadingTaskIdRow");
-  row?.classList.toggle("hidden", !taskValue && !runValue);
-  if (row && !taskValue && !runValue) row.open = false;
+  row?.classList.toggle("hidden", !taskValue);
+  if (row && !taskValue) row.open = false;
 }
 
 async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
+  const session = practiceSessionVersion;
   let transientFailures = 0;
   while (true) {
     try {
       const job = await api(`/api/practice/jobs/${encodeURIComponent(jobId)}?detail=1`);
       transientFailures = 0;
-      showPracticeLoadingTaskId(job.task_id || "", job.run_id || job.job_id || jobId);
-      if (typeof onUpdate === "function") {
+      const observing = session === practiceSessionVersion && activePracticeJobId === jobId;
+      if (observing) showPracticeLoadingTaskId(job.task_id || "", job.run_id || job.job_id || jobId, job.public_task_id);
+      if (observing && typeof onUpdate === "function") {
         try { onUpdate(job); } catch (e) {}
       }
-      if (job.progress_message && activePracticeJobId === jobId) {
+      if (job.progress_message && observing) {
         setPracticeStageDescription(job.progress_message);
         updatePracticeLoadingProgress(job);
       }
@@ -3042,30 +3053,26 @@ async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
         return job;
       }
       if (job.status === "failed") {
-        if (activePracticeJobId === jobId) rememberPracticeJob("");
-        const stableTaskId = String(job.task_id || "").trim();
-        const executionId = String(job.run_id || job.job_id || jobId).trim();
-        const identifiers = [
-          stableTaskId ? `任务 ID：${stableTaskId}` : "",
-          executionId ? `本次执行 ID：${executionId}` : "",
-        ].filter(Boolean).join("\n");
+        if (observing) rememberPracticeJob("");
+        const identifiers = job.public_task_id ? `任务编号：${job.public_task_id}` : "";
         const terminalError = new Error(`${job.error || "后台出题任务失败。"}${identifiers ? `\n${identifiers}` : ""}`);
         terminalError.practiceJob = job;
         throw terminalError;
       }
       if (job.status === "cancelled") {
-        if (activePracticeJobId === jobId) rememberPracticeJob("");
+        if (observing) rememberPracticeJob("");
         const terminalError = new Error(job.error || "后台出题任务已取消。");
         terminalError.practiceJob = job;
         throw terminalError;
       }
       if (job.status === "paused") {
-        if (activePracticeJobId === jobId) rememberPracticeJob("");
+        if (observing) rememberPracticeJob("");
         const pausedError = new Error("后台出题任务已暂停，已生成题目已保留。");
         pausedError.practiceJob = job;
         throw pausedError;
       }
     } catch (error) {
+      if (error.practiceJob) throw error;
       transientFailures += 1;
       if (transientFailures >= 5 || !/fetch|network|连接|Failed to fetch/i.test(String(error))) throw error;
     }
@@ -3074,6 +3081,8 @@ async function waitForPracticeJob(jobId, { onUpdate = null } = {}) {
 }
 
 async function submitPracticeJob(operation, payload) {
+  const session = practiceSessionVersion;
+  const observedJob = activePracticeJobId;
   const batchId = payload?.practice_batch_id || practiceBatchId || newPracticeBatchId();
   practiceBatchId = batchId;
   const queuedPayload = { ...(payload || {}), practice_batch_id: batchId };
@@ -3082,8 +3091,10 @@ async function submitPracticeJob(operation, payload) {
     method: "POST",
     body: JSON.stringify({ operation, payload: queuedPayload })
   });
-  showPracticeLoadingTaskId(queued.task_id || "", queued.run_id || queued.job_id || "");
-  rememberPracticeJob(queued.job_id);
+  if (session === practiceSessionVersion && activePracticeJobId === observedJob) {
+    showPracticeLoadingTaskId(queued.task_id || "", queued.run_id || queued.job_id || "", queued.public_task_id);
+    rememberPracticeJob(queued.job_id);
+  }
   return waitForPracticeJob(queued.job_id);
 }
 
@@ -3103,34 +3114,12 @@ function uniqueTaskModelRoutes(routes) {
 }
 
 async function preflightTaskModelRoutes(routes, workflowLabel) {
-  const required = uniqueTaskModelRoutes(routes);
-  const failures = [];
-  for (const route of required) {
-    try {
-      const request = {
-        provider: route.provider,
-        model: route.model,
-        model_thinking: route.thinking || "auto",
-        capability: route.capability || "text",
-        probe_source: "task_preflight",
-      };
-      if (route.api_protocol !== "images") request.api_protocol = route.api_protocol;
-      const result = await api("/api/provider-test", {
-        method: "POST",
-        body: JSON.stringify(request),
-      });
-      rememberModelConnectionTest(route.provider, result.model || route.model, true);
-    } catch (error) {
-      const advice = providerErrorAdvice(error);
-      rememberModelConnectionTest(route.provider, route.model, false, advice.body);
-      failures.push(`${route.label || route.model}（${displayProviderName(route.provider)} / ${route.model}）：${advice.body}`);
-    }
-  }
-  if (failures.length) {
-    const error = new Error(`${workflowLabel}未创建：本次任务所需模型预检失败。\n${failures.join("\n")}`);
-    error.userMessage = error.message;
-    throw error;
-  }
+  // Health is advice, not admission. Actual task calls retain their own
+  // bounded retries, failure reporting and durable recovery checkpoints.
+  await loadProviderControl().catch(() => {});
+  return uniqueTaskModelRoutes(routes).map((route) => ({
+    ...route, health: taskModelHealth(route.provider, route.model, route.api_protocol),
+  }));
 }
 
 function practiceTaskPreflightRoutes(operation, payload) {
@@ -3147,9 +3136,6 @@ function practiceTaskPreflightRoutes(operation, payload) {
   }
   if (operation === "generate_from_plan" && payload.image_provider && payload.image_model) {
     routes.push({ label: "生图模型", provider: payload.image_provider, model: payload.image_model, capability: "image_generation" });
-  }
-  if (practiceRequestRequiresImageTools(payload) && payload.image_orchestration === "main_model_tool_loop") {
-    routes.push({ label: "主模型工具调用", provider: payload.provider, model: payload.model, api_protocol: payload.api_protocol, thinking: payload.thinking, capability: "tool_call" });
   }
   return routes;
 }
@@ -3215,7 +3201,36 @@ async function refresh() {
   $("platformVersion").textContent = `v${appVersion}`;
   $("versionBox").textContent = `应用版本 v${appVersion} · ${version.release_manifest_exists ? "本机数据安全保存" : "本地源码预览"}`;
   await loadApiConfiguration();
+  await loadProviderControl().catch(() => {});
+  if (!modelHealthPollTimer) modelHealthPollTimer = window.setInterval(() => {
+    if (!document.hidden) loadProviderControl().catch(() => {});
+  }, 60000);
+  startupProviderRegistrationPolls = 0;
+  watchStartupProviderRegistration();
   await Promise.all([loadLibraryFiles(), loadPracticeHistory()]);
+}
+
+async function watchStartupProviderRegistration() {
+  if (startupProviderRegistrationTimer) window.clearTimeout(startupProviderRegistrationTimer);
+  startupProviderRegistrationPolls += 1;
+  try {
+    const status = await api("/api/provider-control/status");
+    const pending = Number(status?.summary?.startup_probe_pending_provider_count || 0);
+    if (pending <= 0) {
+      const providers = await api("/api/providers");
+      providerConfigs = providers || {};
+      syncProviderControls(providerConfigs);
+      startupProviderRegistrationTimer = null;
+      return;
+    }
+  } catch (_error) {
+    // Startup probes are best-effort and must never block the local workspace.
+  }
+  if (startupProviderRegistrationPolls < 300) {
+    startupProviderRegistrationTimer = window.setTimeout(watchStartupProviderRegistration, 3000);
+  } else {
+    startupProviderRegistrationTimer = null;
+  }
 }
 
 function syncProviderControls(providers) {
@@ -6671,14 +6686,17 @@ async function generatePracticeFromPlan() {
     setText("practiceSourceStatus", "已生成并保存");
     await loadPracticeHistory();
   } catch (error) {
+    if (sessionVersion !== practiceSessionVersion) return;
     $("practiceLoading")?.classList.add("hidden");
     $("practicePlanReview")?.classList.remove("hidden");
     setPracticeStage("plan");
     setPracticeStageDescription("题目生成失败，蓝图和已修改内容仍保留，可查看原因后重试。");
     showPracticePlanError(`生成失败：${String(error).replace(/^Error:\s*/, "")}`);
   } finally {
-    button.disabled = false;
-    button.innerHTML = original;
+    if (sessionVersion === practiceSessionVersion) {
+      button.disabled = false;
+      button.innerHTML = original;
+    }
   }
 }
 
@@ -6727,10 +6745,12 @@ async function regeneratePracticeSet() {
 
 async function saveCurrentPractice(showFeedback = true, changeReason = "manual_save") {
   if (!latestPracticeSet) return;
+  const context = practiceEditContext(0);
   const record = await api("/api/practice/history", {
     method: "POST",
     body: JSON.stringify({ data: latestPracticeSet, request: latestPracticeRequest || practiceRequestPayload(), change_reason: changeReason })
   });
+  if (!practiceEditContextIsCurrent(context)) return;
   currentPracticeHistoryId = String(record.history_id || record.data?.history_id || "");
   currentPracticeRevisionCount = Number(record.revisions?.length || 0);
   latestPracticeSet = record.data;
@@ -6757,8 +6777,10 @@ async function loadPracticeHistory() {
   `; }).join("") : "<p>暂无历史记录</p>";
   container.querySelectorAll("[data-practice-history]").forEach((button) => {
     button.addEventListener("click", async () => {
+      const session = ++practiceSessionVersion;
       try {
         const record = await api(`/api/practice/history/${encodeURIComponent(button.dataset.practiceHistory)}`);
+        if (session !== practiceSessionVersion) return;
         latestPracticeRequest = record.request || null;
         restorePracticePreferenceOrders(latestPracticeRequest);
         syncPracticeSourceContentPreference(latestPracticeRequest?.include_source_content_in_generation !== false);
@@ -6772,6 +6794,7 @@ async function loadPracticeHistory() {
           ? "历史已载入，但原始材料不可恢复；请重新上传后再运行"
           : "已载入历史记录");
       } catch (error) {
+        if (session !== practiceSessionVersion) return;
         $("practiceError").textContent = String(error).replace(/^Error:\s*/, "");
         $("practiceError").classList.remove("hidden");
       }
@@ -6781,6 +6804,7 @@ async function loadPracticeHistory() {
 }
 
 const PRACTICE_EDITOR_DRAFT_PREFIX = "answerBook.practiceEditorDraft.v1.";
+let practiceEditorTargetContext = null;
 const PRACTICE_EDITOR_FIELD_IDS = [
   "practiceEditType", "practiceEditDifficulty", "practiceEditSkill", "practiceEditStem",
   "practiceEditOptions", "practiceEditFormulas", "practiceEditTables", "practiceEditFigures"
@@ -6893,6 +6917,13 @@ function clearPracticeEditorDraft() {
 function restorePracticeEditorDraft() {
   if (!practiceEditorDraftKey) return null;
   try {
+    // Keep manual drafts and each detached candidate separate. Once an older
+    // draft is dealt with, the next candidate is recoverable on reopening.
+    if (!localStorage.getItem(practiceEditorDraftKey)) {
+      const prefix = `${practiceEditorDraftKey}.candidate.`;
+      const key = Object.keys(localStorage).filter((key) => key.startsWith(prefix)).sort().at(-1);
+      if (key) practiceEditorDraftKey = key;
+    }
     const record = JSON.parse(localStorage.getItem(practiceEditorDraftKey) || "null");
     if (!record || record.schema !== "practice_editor_draft.v1" || !record.values) return null;
     applyPracticeEditorValues(record.values);
@@ -6924,8 +6955,8 @@ function populatePracticeEditor(item) {
   syncPlatformSelectElement(difficultySelect);
   $("practiceEditSkill").value = item.target_skill || "";
   $("practiceEditStem").value = item.stem || "";
-  $("practiceEditOptions").value = (item.options || []).map((option) => option.text || "").join("\n");
-  $("practiceEditFormulas").value = (item.formulas || []).map((row) => `${row.location || "stem"} | ${row.latex || ""} | ${row.caption || ""}`).join("\n");
+  $("practiceEditOptions").value = JSON.stringify(item.options || [], null, 2);
+  $("practiceEditFormulas").value = JSON.stringify(item.formulas || [], null, 2);
   $("practiceEditTables").value = JSON.stringify(item.tables || [], null, 2);
   $("practiceEditFigures").value = JSON.stringify(item.figures || [], null, 2);
 }
@@ -6933,6 +6964,7 @@ function populatePracticeEditor(item) {
 function openPracticeEditor(index, draftItem = null, draftBaseVersion = null) {
   const currentItem = latestPracticeSet?.exercises?.[index];
   if (!currentItem) return;
+  practiceEditorTargetContext = practiceEditContext(index);
   const item = draftItem && typeof draftItem === "object" ? draftItem : currentItem;
   practiceEditingIndex = index;
   practiceEditorDraftKey = practiceEditorStorageKey(index, currentItem);
@@ -6971,6 +7003,8 @@ async function applyPracticeEditor(event) {
   event.preventDefault();
   const item = latestPracticeSet?.exercises?.[practiceEditingIndex];
   if (!item) return;
+  const editContext = practiceEditorTargetContext;
+  if (!editContext || !practiceEditContextIsCurrent(editContext)) return;
   if (practiceEditorDraftStale && !practiceEditorMergeInProgress) {
     $("practiceEditorError").textContent = "旧稿基线已过期，不能直接应用。请先复制旧稿并开始受控手工合并，或放弃旧稿加载最新版本。";
     $("practiceEditorError").classList.remove("hidden");
@@ -6981,11 +7015,9 @@ async function applyPracticeEditor(event) {
   try {
     const tables = JSON.parse($("practiceEditTables").value || "[]");
     const figures = JSON.parse($("practiceEditFigures").value || "[]");
-    const options = $("practiceEditOptions").value.split("\n").map((text) => text.trim()).filter(Boolean)
-      .map((text, index) => ({ label: String.fromCharCode(65 + index), text }));
-    const formulas = $("practiceEditFormulas").value.split("\n")
-      .map(parsePracticeFormulaEditorLine)
-      .filter((row) => row.latex);
+    const options = JSON.parse($("practiceEditOptions").value || "[]");
+    const formulas = JSON.parse($("practiceEditFormulas").value || "[]");
+    if (!Array.isArray(options) || !Array.isArray(formulas)) throw new Error("选项和公式必须是 JSON 数组。");
     const editedExercise = {
       ...item,
       question_type: $("practiceEditType").value,
@@ -6999,13 +7031,16 @@ async function applyPracticeEditor(event) {
     };
     if (saveButton) saveButton.disabled = true;
     $("practiceEditorError").classList.add("hidden");
-    await saveRegeneratedPracticeExercise(practiceEditingIndex, editedExercise, "manual_edit");
+    await saveRegeneratedPracticeExercise(practiceEditingIndex, editedExercise, "manual_edit", null, null,
+      { ...editContext, version: practiceEditorMergeInProgress ? practiceEditorServerVersion : practiceEditorDraftBaseVersion });
+    if (!practiceEditContextIsCurrent(editContext)) return;
     clearPracticeEditorDraft();
     $("practiceEditor").close();
     renderPracticeResults(latestPracticeSet);
     setPracticeStatusBanner(`第 ${practiceEditingIndex + 1} 题已保存。`, "success");
     await loadPracticeHistory();
   } catch (error) {
+    if (!practiceEditContextIsCurrent(editContext)) return;
     editConflict = error?.code === "practice_edit_conflict";
     if (practiceEditorDraftTimer) clearTimeout(practiceEditorDraftTimer);
     practiceEditorDraftTimer = null;
@@ -7015,6 +7050,7 @@ async function applyPracticeEditor(event) {
         const historyId = String(latestPracticeSet?.history_id || currentPracticeHistoryId || "");
         if (historyId) {
           const latest = await api(`/api/practice/history/${encodeURIComponent(historyId)}`);
+          if (!practiceEditContextIsCurrent(editContext) || practiceEditorTargetContext !== editContext) return;
           currentPracticeRevisionCount = Number(latest.revision_count || latest.revisions?.length || 0);
           latestPracticeSet = latest.data;
           latestPracticeRequest = latest.request || latestPracticeRequest;
@@ -7032,7 +7068,7 @@ async function applyPracticeEditor(event) {
   } finally {
     // A conflicted draft must not be retried against a newly fetched token,
     // because that would turn a safe conflict into a silent overwrite.
-    if (saveButton) saveButton.disabled = editConflict || (practiceEditorDraftStale && !practiceEditorMergeInProgress);
+    if (saveButton && practiceEditorTargetContext === editContext && practiceEditContextIsCurrent(editContext)) saveButton.disabled = editConflict || (practiceEditorDraftStale && !practiceEditorMergeInProgress);
   }
 }
 
@@ -7073,10 +7109,10 @@ function practiceRegenerationPayload(index, instruction) {
   };
 }
 
-async function regeneratePracticeExercise(index, instruction) {
+async function regeneratePracticeExercise(index, instruction, payload = practiceRegenerationPayload(index, instruction)) {
   return api("/api/practice/regenerate", {
     method: "POST",
-    body: JSON.stringify(practiceRegenerationPayload(index, instruction))
+    body: JSON.stringify(payload)
   });
 }
 
@@ -7087,35 +7123,72 @@ function setPracticeRegenerationBusy(busy) {
   });
 }
 
-async function saveRegeneratedPracticeExercise(index, exercise, changeReason = "regenerate_question", semanticReview = null, practiceUpdates = null) {
-  const historyId = String(latestPracticeSet?.history_id || currentPracticeHistoryId || "");
+function practiceEditContext(index) {
+  return { session: practiceSessionVersion, historyId: String(latestPracticeSet?.history_id || currentPracticeHistoryId || ""),
+    version: String(latestPracticeSet?.exercises?.[index]?._edit_version || ""),
+    data: structuredClone(latestPracticeSet), request: structuredClone(latestPracticeRequest || {}), index };
+}
+
+function practiceEditContextIsCurrent(context) {
+  return context.session === practiceSessionVersion && context.historyId === String(latestPracticeSet?.history_id || currentPracticeHistoryId || "");
+}
+
+function retainPracticeRegenerationCandidate(context, exercise) {
+  if (!context.historyId || !exercise) return false;
+  const item = context.data?.exercises?.[context.index];
+  const identity = practiceExerciseExportId(item, context.index);
+  const key = `${PRACTICE_EDITOR_DRAFT_PREFIX}${encodeURIComponent(context.historyId)}.${encodeURIComponent(identity)}.candidate.${Date.now()}.${crypto.randomUUID()}`;
+  const values = {
+    practiceEditType: exercise.question_type || "综合题", practiceEditDifficulty: exercise.difficulty || "进阶",
+    practiceEditSkill: exercise.target_skill || "", practiceEditStem: exercise.stem || "",
+    ...Object.fromEntries([['Options', 'options'], ['Formulas', 'formulas'], ['Tables', 'tables'], ['Figures', 'figures']]
+      .map(([field, property]) => [`practiceEdit${field}`, JSON.stringify(exercise[property] || [], null, 2)]))
+  };
+  try {
+    localStorage.setItem(key, JSON.stringify({ schema: "practice_editor_draft.v1", history_id: context.historyId,
+      exercise_index: context.index, base_edit_version: context.version, source: "regeneration_candidate", saved_at: Date.now(), values }));
+    return true;
+  } catch (error) {
+    console.warn("未能保存未应用的重生成候选草稿", error);
+    return false;
+  }
+}
+
+async function saveRegeneratedPracticeExercise(index, exercise, changeReason = "regenerate_question", semanticReview = null, practiceUpdates = null, context = practiceEditContext(index)) {
+  const historyId = context.historyId;
   if (!historyId) {
-    latestPracticeSet.exercises[index] = exercise;
-    await saveCurrentPractice(false, changeReason);
-    return latestPracticeSet;
+    const data = structuredClone(context.data);
+    data.exercises[index] = exercise;
+    const record = await api("/api/practice/history", { method: "POST", body: JSON.stringify({ data, request: context.request, change_reason: changeReason }) });
+    if (practiceEditContextIsCurrent(context)) {
+      latestPracticeSet = record.data;
+      currentPracticeHistoryId = String(record.history_id || record.data?.history_id || "");
+    }
+    return record.data;
   }
   const record = await api(`/api/practice/history/${encodeURIComponent(historyId)}/exercise`, {
     method: "POST",
     body: JSON.stringify({
       exercise_index: index,
       exercise,
-      expected_edit_version: String(latestPracticeSet?.exercises?.[index]?._edit_version || exercise?._edit_version || ""),
+      expected_edit_version: context.version,
       change_reason: changeReason,
       ...(practiceUpdates && Object.keys(practiceUpdates).length ? { practice_updates: practiceUpdates } : {})
     })
   });
   const revisionCount = Number(record.revision_count || record.revisions?.length || 0);
-  if (revisionCount >= currentPracticeRevisionCount) {
+  if (practiceEditContextIsCurrent(context) && revisionCount >= currentPracticeRevisionCount) {
     currentPracticeHistoryId = String(record.history_id || historyId);
     currentPracticeRevisionCount = revisionCount;
     latestPracticeRequest = record.request || latestPracticeRequest;
     latestPracticeSet = record.data;
   }
-  return latestPracticeSet;
+  return record.data;
 }
 
 async function regeneratePracticeQuestion(index, button, instructionOverride = null) {
   if (!latestPracticeSet || practiceRegenerationInProgress) return;
+  const context = practiceEditContext(index);
   const auditNeedsReview = latestPracticeSet?.exercises?.[index]?.audit_status === "audit_failed"
     || latestPracticeSet?.exercises?.[index]?.generation_error?.code === "blueprint_audit_failed";
   const instruction = instructionOverride !== null ? instructionOverride : await platformPrompt({
@@ -7126,7 +7199,7 @@ async function regeneratePracticeQuestion(index, button, instructionOverride = n
     placeholder: "例如：换一个生活化情境，计算量保持不变",
     confirmText: auditNeedsReview ? "复审并生成" : "重新生成"
   });
-  if (instruction === null) return;
+  if (instruction === null || !practiceEditContextIsCurrent(context)) return;
   const original = button.innerHTML;
   setPracticeRegenerationBusy(true);
   button.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
@@ -7140,16 +7213,22 @@ async function regeneratePracticeQuestion(index, button, instructionOverride = n
   try {
     const response = await regeneratePracticeExercise(index, instruction);
     generatedCandidate = response.exercise;
-    await saveRegeneratedPracticeExercise(index, response.exercise, auditNeedsReview ? "review_and_regenerate_question" : "regenerate_question", null, response.practice_updates);
+    await saveRegeneratedPracticeExercise(index, response.exercise, auditNeedsReview ? "review_and_regenerate_question" : "regenerate_question", null, response.practice_updates, context);
+    if (!practiceEditContextIsCurrent(context)) return;
     renderPracticeResults(latestPracticeSet);
     await loadPracticeHistory();
   } catch (error) {
+    if (!practiceEditContextIsCurrent(context)) {
+      retainPracticeRegenerationCandidate(context, generatedCandidate);
+      return;
+    }
     const message = String(error).replace(/^Error:\s*/, "");
     if (error?.code === "practice_edit_conflict") {
       try {
         const historyId = String(latestPracticeSet?.history_id || currentPracticeHistoryId || "");
         if (historyId) {
           const latest = await api(`/api/practice/history/${encodeURIComponent(historyId)}`);
+          if (!practiceEditContextIsCurrent(context)) return;
           currentPracticeRevisionCount = Number(latest.revision_count || latest.revisions?.length || 0);
           latestPracticeSet = latest.data;
           latestPracticeRequest = latest.request || latestPracticeRequest;
@@ -7173,7 +7252,7 @@ async function regeneratePracticeQuestion(index, button, instructionOverride = n
   } finally {
     button.innerHTML = original;
     setPracticeRegenerationBusy(false);
-    updatePracticeSelectionActions();
+    if (practiceEditContextIsCurrent(context)) updatePracticeSelectionActions();
   }
 }
 
@@ -7181,6 +7260,7 @@ async function regenerateSelectedPracticeQuestions(button) {
   if (!latestPracticeSet || !button || practiceRegenerationInProgress) return;
   const indexes = [...selectedPracticeExerciseIndexes].sort((a, b) => a - b)
     .filter((index) => latestPracticeSet?.exercises?.[index]);
+  const contexts = new Map(indexes.map((index) => [index, practiceEditContext(index)]));
   if (!indexes.length) {
     await platformAlert("请先选择至少一道可操作题目。", { title: "尚未选择题目", tone: "warning" });
     return;
@@ -7193,28 +7273,40 @@ async function regenerateSelectedPracticeQuestions(button) {
     placeholder: "例如：换一种情境，难度保持不变",
     confirmText: `重新生成 ${indexes.length} 题`
   });
-  if (instruction === null) return;
+  if (instruction === null || !practiceEditContextIsCurrent(contexts.get(indexes[0]))) return;
+  // Freeze all inputs before the first await: later items still belong to the
+  // original task even if the user opens a different task while this runs.
+  const payloads = new Map(indexes.map((index) => [index, structuredClone(practiceRegenerationPayload(index, instruction))]));
   const original = button.innerHTML;
   setPracticeRegenerationBusy(true);
   const succeeded = [];
   const failures = [];
   try {
     for (const [position, index] of indexes.entries()) {
-      button.innerHTML = `<i class="fas fa-circle-notch fa-spin"></i><span>${position + 1}/${indexes.length}</span>`;
-      setPracticeStatusBanner(`正在重新生成已选题目（${position + 1}/${indexes.length}）`, "loading");
+      const context = contexts.get(index);
+      if (practiceEditContextIsCurrent(context)) {
+        button.innerHTML = `<i class="fas fa-circle-notch fa-spin"></i><span>${position + 1}/${indexes.length}</span>`;
+        setPracticeStatusBanner(`正在重新生成已选题目（${position + 1}/${indexes.length}）`, "loading");
+      }
+      let generatedCandidate = null;
       try {
-        const response = await regeneratePracticeExercise(index, instruction);
+        const response = await regeneratePracticeExercise(index, instruction, payloads.get(index));
+        generatedCandidate = response.exercise;
         await saveRegeneratedPracticeExercise(
           index,
           response.exercise,
           "regenerate_selected_questions",
-          null
+          null,
+          response.practice_updates,
+          context
         );
         succeeded.push(index);
       } catch (error) {
+        retainPracticeRegenerationCandidate(context, generatedCandidate);
         failures.push({ index, message: String(error).replace(/^Error:\s*/, "") });
       }
     }
+    if (!practiceEditContextIsCurrent(contexts.get(indexes[0]))) return;
     if (succeeded.length) {
       renderPracticeResults(latestPracticeSet);
       succeeded.forEach((index) => selectedPracticeExerciseIndexes.add(index));
@@ -7232,11 +7324,12 @@ async function regenerateSelectedPracticeQuestions(button) {
   } finally {
     button.innerHTML = original;
     setPracticeRegenerationBusy(false);
-    updatePracticeSelectionActions();
+    if (practiceEditContextIsCurrent(contexts.get(indexes[0]))) updatePracticeSelectionActions();
   }
 }
 
 async function undoPracticeChange() {
+  const context = practiceEditContext(0);
   const historyId = String(latestPracticeSet?.history_id || currentPracticeHistoryId || "");
   if (!historyId || currentPracticeRevisionCount < 1) return;
   const confirmed = await platformConfirm({
@@ -7246,11 +7339,12 @@ async function undoPracticeChange() {
     confirmText: "恢复上一版",
     tone: "warning",
   });
-  if (!confirmed) return;
+  if (!confirmed || !practiceEditContextIsCurrent(context)) return;
   const button = $("practiceUndoBtn");
   if (button) button.disabled = true;
   try {
     const record = await api(`/api/practice/history/${encodeURIComponent(historyId)}/undo`, { method: "POST", body: "{}" });
+    if (!practiceEditContextIsCurrent(context)) return;
     currentPracticeHistoryId = String(record.history_id || historyId);
     currentPracticeRevisionCount = Number(record.revision_count || record.revisions?.length || 0);
     latestPracticeRequest = record.request || latestPracticeRequest;
@@ -7258,6 +7352,7 @@ async function undoPracticeChange() {
     renderPracticeResults(record.data);
     await loadPracticeHistory();
   } catch (error) {
+    if (!practiceEditContextIsCurrent(context)) return;
     await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "撤销失败", tone: "danger" });
     if (button) button.disabled = currentPracticeRevisionCount < 1;
   }
@@ -7314,13 +7409,18 @@ async function regeneratePlanItem(index, button) {
   if (!latestPracticePlan || !latestPracticeRequest) return;
   const currentItem = latestPracticePlan.blueprint?.exercise_plan?.[index];
   if (!currentItem) return;
+  const plan = latestPracticePlan;
+  const session = practiceSessionVersion;
+  const baseline = JSON.stringify(currentItem);
+  const isCurrent = () => session === practiceSessionVersion && latestPracticePlan === plan && JSON.stringify(plan.blueprint?.exercise_plan?.[index]) === baseline;
   const revisionSpec = await requestPlanRevisionSpec(currentItem);
-  if (revisionSpec === null) return;
+  if (revisionSpec === null || !isCurrent()) return;
   const original = button.innerHTML;
   button.disabled = true;
   button.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>重新设计中';
   try {
     const result = await api("/api/practice/plan-item-regenerate", { method: "POST", body: JSON.stringify({ ...latestPracticeRequest, plan: latestPracticePlan, plan_index: index, revision_spec: revisionSpec }) });
+    if (!isCurrent()) return;
     const items = latestPracticePlan.blueprint?.exercise_plan || [];
     if (!result.plan_item || !items[index]) throw new Error("未获得可用的蓝图候选项。");
     items[index] = result.plan_item;
@@ -7332,6 +7432,7 @@ async function regeneratePlanItem(index, button) {
     for (const key of Object.keys(practicePlanDrafts)) delete practicePlanDrafts[key];
     renderPracticePlan(latestPracticePlan);
   } catch (error) {
+    if (!isCurrent()) return;
     await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "本项蓝图重设计失败", tone: "danger" });
   } finally { button.disabled = false; button.innerHTML = original; }
 }
@@ -7748,6 +7849,7 @@ function renderPracticeWordRecoveryNotice() {
     return;
   }
   notice.classList.remove("hidden");
+  setText("practiceWordRecoveryTitle", `Word 导出记录 · ${pointers.length} 条（点击展开）`);
   list.innerHTML = pointers.map((pointer, index) => {
     const entry = practiceWordRecoveryJobs.get(pointer.export_key);
     const job = entry?.job || { status: "checking" };
@@ -7756,7 +7858,7 @@ function renderPracticeWordRecoveryNotice() {
     return `
       <section class="practice-word-recovery-item" data-tone="${escapeHtml(meta.tone)}">
         <div class="practice-word-recovery-item__copy">
-          <strong title="${escapeHtml(pointer.filename)}">${escapeHtml(pointer.filename)}</strong>
+          <strong title="${escapeHtml(pointer.filename || job.filename)}">${escapeHtml(pointer.filename || job.filename)}</strong>
           <p>${escapeHtml(meta.message)}</p>
           <small>${escapeHtml(pointer.desktop_saved_at ? "保存于" : pointer.last_download_triggered_at ? "最近触发于" : "创建于")} ${escapeHtml(formatTaskTimestamp(latestTime))}</small>
         </div>
@@ -8024,7 +8126,7 @@ function practiceWordFilename(data = latestPracticeSet, scopeLabel = "题目") {
     .replace(/\s+/g, " ").trim().slice(0, 48) || fallback;
   const stampSource = data?.completed_at || data?.generated_at || data?.created_at || new Date();
   const stampDate = new Date(stampSource);
-  const stamp = Number.isNaN(stampDate.getTime()) ? "" : stampDate.toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  const stamp = Number.isNaN(stampDate.getTime()) ? "" : [stampDate.getFullYear(), String(stampDate.getMonth() + 1).padStart(2, "0"), String(stampDate.getDate()).padStart(2, "0"), String(stampDate.getHours()).padStart(2, "0"), String(stampDate.getMinutes()).padStart(2, "0")].join("");
   return `${safe(rawTitle, "专项练习")}-${safe(rawModel, "model")}-${stamp || "export"}-${safe(scopeLabel, "题目")}.docx`;
 }
 
@@ -8100,8 +8202,7 @@ async function prepareOrDownloadPracticeWord(data = latestPracticeSet, button = 
     }
     wordReady = true;
     const downloadedFilename = job.filename || filename || practiceWordFilename(data);
-    const completedPointer = readPracticeWordExportPointers().find((item) => item.export_key === exportKey)
-      || rememberPracticeWordExportPointer(exportKey, job.job_id, downloadedFilename);
+    const completedPointer = rememberPracticeWordExportPointer(exportKey, job.job_id, downloadedFilename, pointer?.created_at);
     practiceWordRecoveryJobs.set(exportKey, { pointer: completedPointer, job });
     const delivery = await downloadRememberedPracticeWord(completedPointer, button);
     const reviewCandidate = job.release_level === "review_candidate";
@@ -8150,7 +8251,7 @@ function exportablePracticeSet() {
   return {
     ...latestPracticeSet,
     exercises,
-    export_scope: "selected",
+    export_scope: exercises.length === (latestPracticeSet.exercises || []).length ? "all" : "selected",
     selected_exercise_ids: exercises.map(practiceExerciseExportId)
   };
 }
@@ -8229,7 +8330,7 @@ async function loadLibraryFiles() {
   renderLibraryFiles();
   if (!libraryTabsInitialized) {
     libraryTabsInitialized = true;
-    switchExamTab((libraryFiles.exams || []).length ? "existing" : "upload");
+    if (!examUploadState) switchExamTab((libraryFiles.exams || []).length ? "existing" : "upload");
     switchTextbookTab((libraryFiles.textbooks || []).length ? "existing" : "upload");
   }
 }
@@ -8681,8 +8782,12 @@ function selectedTextbooks() {
   return Array.from(selectedTextbookPaths).filter(Boolean);
 }
 
+let examUploadState = null;
+let examSelectionRevision = 0;
+
 function selectExamFile(path) {
   const value = String(path || "");
+  if (value !== ($("examSelect")?.value || $("examPath")?.value || "")) examSelectionRevision += 1;
   if ($("examSelect")) $("examSelect").value = value;
   if ($("examPath")) $("examPath").value = value;
   document.querySelectorAll(".exam-card").forEach((card) => {
@@ -8697,14 +8802,15 @@ function updateCreateTaskAvailability() {
   const examPath = $("examSelect")?.value || $("examPath")?.value || "";
   const textbookCount = selectedTextbooks().length;
   const questionOnly = currentExamAnalysisProfile === "question_only";
-  const ready = Boolean(examPath && (questionOnly || textbookCount));
+  const uploading = examUploadState?.status === "uploading" || examUploadState?.status === "deleting";
+  const ready = Boolean(!uploading && examPath && (questionOnly || textbookCount));
   button.disabled = !ready;
   button.setAttribute("aria-disabled", ready ? "false" : "true");
-  button.title = ready ? "确认本次解析范围后开始" : !examPath ? "请先选择一份真题" : "请至少选择一本教材";
+  button.title = uploading ? "请等待真题文件处理完成" : ready ? "确认本次解析范围后开始" : !examPath ? "请先选择一份真题" : "请至少选择一本教材";
   const readiness = $("examReadinessHint");
   const readinessBox = readiness?.closest(".material-readiness");
   if (readiness) {
-    readiness.textContent = questionOnly
+    readiness.textContent = uploading ? "正在处理真题文件，请稍候。" : questionOnly
       ? (ready ? "题目已准备，可以开始解析；本任务不会使用教材。" : "请选择或上传一份需要解析的题目 DOCX。")
       : ready
       ? `材料已准备：1 份真题、${textbookCount} 本教材，可以开始解析。`
@@ -8835,6 +8941,11 @@ function uploadElements(kind) {
 }
 
 function renderUploadSelection(kind, progress = {}) {
+  if (kind === "exam" && examUploadState) {
+    Object.assign(examUploadState, progress[0] || {});
+    renderExamUpload();
+    return;
+  }
   const { input, list } = uploadElements(kind);
   if (!input || !list) return;
   const files = Array.from(input.files || []);
@@ -8872,6 +8983,7 @@ function resetUploadFeedback(kind) {
   const { input } = uploadElements(kind);
   const count = Array.from(input?.files || []).length;
   if (kind === "exam") {
+    if (examUploadState) return;
     $("taskResult").textContent = count ? `已选择 ${count} 个待上传真题。` : "等待选择真题 DOCX 文件。";
     setVisual(
       "taskVisualResult",
@@ -8924,18 +9036,97 @@ async function deleteLibraryFile(kind, paths, label) {
         body: JSON.stringify({ kind, path })
       });
       if (kind === "textbook") selectedTextbookPaths.delete(path);
-      if (kind === "exam" && $("examPath")?.value === path) $("examPath").value = "";
+      if (kind === "exam" && ($("examPath")?.value === path || $("examSelect")?.value === path)) selectExamFile("");
     }
-    await loadLibraryFiles();
     if (kind === "exam") {
+      if (validPaths.includes(examUploadState?.path)) {
+        examUploadState = null;
+        renderExamUpload();
+      }
+      try { await loadLibraryFiles(); }
+      catch (_error) {
+        setVisual("taskVisualResult", "真题已删除", "文件已删除；列表刷新失败，请稍后刷新。", "warn");
+        return true;
+      }
       setVisual("taskVisualResult", "真题已删除", label, "ok");
     } else {
+      await loadLibraryFiles();
       setVisual("libraryVisualResult", "教材已删除", label, "ok");
     }
+    return true;
   } catch (err) {
     const messageText = String(err).replace(/^Error:\s*/, "");
     if (kind === "exam") setVisual("taskVisualResult", "真题删除失败", messageText, "error");
     else setVisual("libraryVisualResult", "教材删除失败", messageText, "error");
+  }
+}
+
+function renderExamUpload() {
+  const list = $("examUploadList");
+  const state = examUploadState;
+  list.classList.toggle("hidden", !state);
+  if (!state) { list.innerHTML = ""; return; }
+  const busy = state.status === "uploading" || state.status === "deleting";
+  const percent = Math.max(0, Math.min(100, Number(state.percent || 0)));
+  const selected = ($("examSelect")?.value || $("examPath")?.value) === state.path;
+  const label = state.status === "done" ? (selected ? "上传完成 · 已选中，可直接开始解析" : "上传完成 · 已保存在已有真题中")
+    : state.status === "deleting" ? "正在删除…"
+    : state.status === "error" ? `${state.error || "上传失败"}；请选择文件重新上传`
+    : percent >= 100 ? "传输完成，正在保存…" : `上传中 ${percent}%`;
+  list.innerHTML = `<div class="upload-file-row upload-${escapeHtml(state.status)}">
+    <button class="upload-remove-button" type="button" aria-label="${state.path ? "删除已上传真题" : "移除上传记录"}" title="${state.path ? "删除已上传真题" : "移除上传记录"}" ${busy ? "disabled" : ""}><i class="fas fa-times"></i></button>
+    <span class="upload-file-icon"><i class="fas fa-file-alt"></i></span>
+    <span class="upload-file-meta"><strong>${escapeHtml(state.file.name)}</strong><small>${escapeHtml(formatBytes(state.file.size))} · ${escapeHtml(label)}</small>
+    <span class="upload-progress-track" role="progressbar" aria-label="真题上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></span></span></div>`;
+  list.querySelector(".upload-remove-button").addEventListener("click", async () => {
+    if (state !== examUploadState || busy) return;
+    if (!state.path) { examUploadState = null; renderExamUpload(); return; }
+    state.status = "deleting";
+    renderExamUpload();
+    updateCreateTaskAvailability();
+    try { await deleteLibraryFile("exam", state.path, state.file.name); }
+    finally {
+      if (examUploadState === state) { state.status = "done"; renderExamUpload(); }
+      updateCreateTaskAvailability();
+    }
+  });
+}
+
+async function autoUploadExam() {
+  const input = $("examUploadInput");
+  if (examUploadState?.status === "uploading" || examUploadState?.status === "deleting") return;
+  const file = input.files?.[0];
+  if (!file) return;
+  selectExamFile("");
+  const revision = examSelectionRevision;
+  const navigationVersion = taskNavigationVersion;
+  const state = { file, path: "", status: "uploading", percent: 0 };
+  examUploadState = state;
+  input.disabled = true;
+  updateCreateTaskAvailability();
+  renderExamUpload();
+  try {
+    if (!file.name.toLowerCase().endsWith(".docx")) throw new Error("仅支持 DOCX 真题");
+    const uploaded = await uploadFileWithProgress("exam", file, 0, {});
+    state.path = uploadedFilePath(uploaded);
+    if (!state.path) throw new Error("服务器未返回上传文件，请刷新已有真题列表确认");
+    // A library refresh failure must not turn a completed upload into a retry.
+    state.status = "uploading";
+    try { await loadLibraryFiles(); } catch (_error) { /* The returned path remains usable. */ }
+    state.status = "done";
+    if (examSelectionRevision === revision && taskNavigationVersion === navigationVersion) {
+      selectExamFile(state.path);
+      $("taskResult").textContent = "真题已上传并选中。";
+      setVisual("taskVisualResult", "真题已上传并选中", `${file.name}；可直接点击下方按钮开始解析。`, "ok");
+    }
+  } catch (error) {
+    state.status = "error";
+    state.error = String(error.message || error);
+  } finally {
+    input.value = "";
+    input.disabled = false;
+    renderExamUpload();
+    updateCreateTaskAvailability();
   }
 }
 
@@ -8989,6 +9180,7 @@ function setupUploadInput(kind) {
   if (!input) return;
   const zone = input.closest(".upload-zone");
   input.addEventListener("change", () => {
+    if (kind === "exam") { autoUploadExam(); return; }
     renderUploadSelection(kind);
     resetUploadFeedback(kind);
   });
@@ -9006,9 +9198,16 @@ function setupUploadInput(kind) {
     });
   });
   zone.addEventListener("drop", (event) => {
+    if (input.disabled) return;
     const files = Array.from(event.dataTransfer?.files || []);
     if (!files.length) return;
     const transfer = new DataTransfer();
+    if (kind === "exam") {
+      transfer.items.add(files[0]);
+      input.files = transfer.files;
+      autoUploadExam();
+      return;
+    }
     const allowed = kind === "exam" ? [".docx"] : [".pdf", ".docx", ".json", ".zip"];
     for (const file of files) {
       const lower = file.name.toLowerCase();
@@ -9022,6 +9221,7 @@ function setupUploadInput(kind) {
 }
 
 async function uploadLibraryFiles(kind) {
+  if (kind === "exam") return autoUploadExam();
   const input = kind === "exam" ? $("examUploadInput") : $("textbookUploadInput");
   const files = Array.from(input.files || []);
   if (!files.length) throw new Error(kind === "exam" ? "请先选择一个真题 DOCX 文件" : "请先选择教材文件");
@@ -9040,22 +9240,16 @@ async function uploadLibraryFiles(kind) {
   }
   input.value = "";
   await loadLibraryFiles();
-  if (kind === "exam") {
-    const latest = uploaded[uploaded.length - 1];
-    if (latest) selectExamFile(latest);
-    switchExamTab("existing");
-  } else {
-    selectedTextbookPaths = new Set(uploaded.filter(Boolean));
-    renderLibraryFiles();
-    switchTextbookTab("upload");
-    showUploadIndexAction();
-  }
+  selectedTextbookPaths = new Set(uploaded.filter(Boolean));
+  renderLibraryFiles();
+  switchTextbookTab("upload");
+  showUploadIndexAction();
   if (list) {
     list.classList.remove("hidden");
     list.innerHTML = `
       <div class="upload-complete-row">
         <i class="fas fa-check-circle"></i>
-        <strong>${escapeHtml(kind === "exam" ? "真题已上传，已切回已有真题列表" : "教材已上传")}</strong>
+        <strong>教材已上传</strong>
       </div>
     `;
   }
@@ -9170,8 +9364,6 @@ function taskPurposeSupportKeys(kind, purpose = "") {
 function registeredModelSupportsKind(cfg, model, kind, purpose = "") {
   const profile = registeredModelProfile(cfg, model);
   if (!profile || !modelTaskSupportIsUsable(profile, taskPurposeSupportKeys(kind, purpose))) return false;
-  const providerName = String(cfg?.name || "").trim();
-  if (modelConnectionTests[modelConnectionTestKey(providerName, model)]?.ok === false) return false;
   const nativeInputs = Array.isArray(profile.native_inputs) ? profile.native_inputs.map((item) => String(item).toLowerCase()) : [];
   if (kind === "vision") return nativeInputs.includes("image");
   if (kind === "image") return String(profile.kind || "").toLowerCase() === "image_generation";
@@ -9179,9 +9371,13 @@ function registeredModelSupportsKind(cfg, model, kind, purpose = "") {
 }
 
 function configuredTaskProviderEntries(kind = "text", purpose = "") {
-  return userVisibleProviderEntries()
+  const entries = userVisibleProviderEntries()
     .filter(([, cfg]) => cfg.api_key_set === true)
     .filter(([, cfg]) => taskModelOptions(kind, cfg, purpose).length > 0);
+  if (kind === "image" && entries.some(([name]) => name === "ark_image")) {
+    return entries.filter(([name]) => name !== "ark");
+  }
+  return entries;
 }
 
 function providerEntriesByCapability(kind, purpose = "") {
@@ -9202,10 +9398,8 @@ function modelLooksVisionCapable(model, cfg = currentProviderConfig()) {
     || nativeInputs.includes("image");
 }
 
-function modelSupportsMainToolLoop(model, cfg = currentProviderConfig()) {
-  const value = String(model || "").trim();
-  const profile = (cfg?.model_profiles || {})[value] || {};
-  return modelLooksVisionCapable(value, cfg) && profile.supports_tool_calls === true;
+function modelSupportsMainToolLoop(model, cfg = currentProviderConfig(), protocol = "") {
+  return Boolean(String(model || "").trim());
 }
 
 function initializeExamProgressiveLayout() {
@@ -9233,7 +9427,7 @@ function syncExamProgressiveModelUi() {
   const cfg = selectedTextRoleProviderConfig("answer");
   const model = selectedTextRoleModel("answer") || cfg.default_model || "";
   const readsImages = modelLooksVisionCapable(model, cfg);
-  const supportsImageTools = modelSupportsMainToolLoop(model, cfg);
+  const supportsImageTools = modelSupportsMainToolLoop(model, cfg, selectedRoleProtocol("answer"));
   const answerCard = $("answerModelRoleCard");
   const visionCard = $("visionModelRoleCard");
   const imageCard = $("imageModelRoleCard");
@@ -9258,12 +9452,10 @@ function syncExamProgressiveModelUi() {
     return;
   }
   const label = readableModelLabel(model, cfg);
-  notice.className = `model-progressive-notice ${supportsImageTools ? "ok" : readsImages ? "info" : "warn"}`;
-  notice.innerHTML = supportsImageTools
-    ? `<i class="fas fa-circle-check"></i><span><strong>${escapeHtml(label)} 可直接读图并自主生图</strong>无需单独配置识图模型；需要生成新图时才调用下方生图模型。</span>`
-    : readsImages
-      ? `<i class="fas fa-eye"></i><span><strong>${escapeHtml(label)} 可直接读取题图</strong>但不支持自主生图闭环；含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`
-      : `<i class="fas fa-images"></i><span><strong>${escapeHtml(label)} 是文本模型</strong>含图材料会先由独立识图模型处理；含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`;
+  notice.className = "model-progressive-notice ok";
+  notice.innerHTML = readsImages
+    ? `<i class="fas fa-circle-check"></i><span><strong>${escapeHtml(label)} 可直接读图并自主生图</strong>需要生成新图时才调用下方生图模型。</span>`
+    : `<i class="fas fa-circle-check"></i><span><strong>${escapeHtml(label)} 已开启自主生图闭环</strong>题图由独立识图模型处理；需要生成新图时，主模型可直接调用生图模型并继续任务。</span>`;
 }
 
 function populateProviderSelect(selectId, kind, preferredName, purpose = "") {
@@ -9409,14 +9601,14 @@ function routeConnectionStatus(route) {
   if (!route?.capabilityOk) {
     return { ok: false, tone: "warn", icon: "fa-triangle-exclamation", label: "能力需检查" };
   }
-  const tested = modelConnectionTests[modelConnectionTestKey(route.provider, route.model)];
-  if (tested?.ok === true) {
+  const health = taskModelHealth(route.provider, route.model, route.api_protocol);
+  if (health.status === "available" && !health.stale && health.confidence !== "expired") {
     return { ok: true, tone: "ok", icon: "fa-circle", label: "可用" };
   }
-  if (tested?.ok === false) {
-    return { ok: false, tone: "warn", icon: "fa-circle-xmark", label: "不可用" };
+  if (["unavailable", "configuration_error", "degraded"].includes(health.status)) {
+    return { ok: true, tone: "warn", icon: "fa-circle-exclamation", label: "近期异常 · 仍可尝试" };
   }
-  return { ok: false, tone: "neutral", icon: "fa-circle-info", label: "Key已保存 · 未测试" };
+  return { ok: false, tone: "neutral", icon: "fa-circle-info", label: "待验证" };
 }
 
 function aggregateRouteStatus(routes) {
@@ -9426,7 +9618,7 @@ function aggregateRouteStatus(routes) {
   if (statuses.length && statuses.every((status) => status.ok)) {
     return { ok: true, tone: "ok", icon: "fa-circle", label: "可用" };
   }
-  return { ok: false, tone: "neutral", icon: "fa-circle-info", label: "Key已保存 · 未测试" };
+  return { ok: false, tone: "neutral", icon: "fa-circle-info", label: "待验证" };
 }
 
 function textRoleRoute(roleKey, label) {
@@ -9491,6 +9683,7 @@ function updateModelRoleCards() {
   setModelRoleStatus("imageRoleStatus", routeConnectionStatus(imageRoute()));
   syncExamProgressiveModelUi();
   syncExamModelTestAvailability();
+  if (latestEnvironmentStatus) updateEnvironmentSummary(latestEnvironmentStatus);
 }
 
 function questionTypeModelCards() {
@@ -9715,8 +9908,8 @@ function applyExamModelPreset(key, { persist = true } = {}) {
     populateImageModelControls(imageModel);
     if (selectHasValue($("imageModelSelect"), imageModel)) $("imageModelSelect").value = imageModel;
   }
-  populateRoleThinkingMode("reasoning", "high");
-  populateRoleThinkingMode("answer", "high");
+  populateRoleThinkingMode("reasoning", "medium");
+  populateRoleThinkingMode("answer", "medium");
   updateCapabilityModelHints();
   updateModelCapabilityRisk();
   renderQuestionTypeModelCards();
@@ -10046,7 +10239,7 @@ function buildApiProviderNavigation(entries) {
     item("image:ark", "火山方舟图片", "图片", ["ark_image"], "fa-image"),
     item("image:lingsuan", "灵算图片", "图片", ["lingsuan_image"], "fa-image"),
     item("image:wawapi", "WawAPI 图片", "图片", ["wawapi_image_openai", "wawapi_image_google", "wawapi_image_xai"], "fa-image"),
-    item("gateway:lingsuan", "灵算", "聚合网关", ["lingsuan_openai", "lingsuan_google"], "fa-network-wired"),
+    item("gateway:lingsuan", "灵算", "聚合网关", ["lingsuan_openai", "lingsuan_google", "lingsuan_domestic"], "fa-network-wired"),
     item("gateway:wawapi", "WawAPI", "聚合网关", ["wawapi_openai", "wawapi_google", "wawapi_xai"], "fa-network-wired"),
   ].filter((entry) => entry.entries.length);
   const configuredIds = new Set(catalog
@@ -10572,13 +10765,14 @@ function updateTaskModelSummary(profile) {
   const imageKeyState = imageProvider.api_key_set ? "" : " · 缺少 Key";
   const primaryHandlesImages = modelLooksVisionCapable(textModel, textProvider);
   const visionModelLabel = readableModelLabel(visionModel, visionProvider);
-  const protocolLabel = protocolDisplayName(selectedTaskProtocol(profile));
+  const health = taskModelHealth(textProviderName, textModel, selectedTaskProtocol(profile));
+  const healthLabel = ["unavailable", "configuration_error", "degraded"].includes(health.status) ? "近期异常，仍可尝试" : health.status === "available" && health.confidence !== "expired" ? "近期可用" : "状态待更新";
   const thinkingLabel = displayThinkingMode(selectedTaskThinkingMode(profile));
   setText(
     taskModelControlIds(profile, "text").summary,
     textKeyState
       ? `当前主模型缺少 API Key：${displayProviderName(textProviderName || "未选择")}`
-      : `${primaryHandlesImages ? "可直接读取图文材料" : "有图材料将使用备用读图模型"} · ${protocolLabel} · ${thinkingLabel}`
+      : `${primaryHandlesImages ? "可直接读取图文材料" : "有图材料将使用备用读图模型"} · ${healthLabel} · ${thinkingLabel}`
   );
   setText(
     taskModelControlIds(profile, "vision").summary,
@@ -10610,7 +10804,7 @@ function syncTaskProgressiveModelUi(profile, state = {}) {
   const textProvider = state.textProvider || providerConfigs[taskProviderName(profile, "text")] || {};
   const textModel = state.textModel || selectedTaskModel(profile, "text");
   const readsImages = state.primaryHandlesImages ?? modelLooksVisionCapable(textModel, textProvider);
-  const supportsImageTools = modelSupportsMainToolLoop(textModel, textProvider);
+  const supportsImageTools = modelSupportsMainToolLoop(textModel, textProvider, selectedTaskProtocol(profile));
   const fallback = $(`${prefix}VisionFallbackDetails`);
   const imageCard = $(`${prefix}ImageModelCard`);
   if (fallback) {
@@ -10626,12 +10820,10 @@ function syncTaskProgressiveModelUi(profile, state = {}) {
     return;
   }
   const modelLabel = readableModelLabel(textModel, textProvider);
-  target.className = `task-model-compatibility ${supportsImageTools ? "ok" : readsImages ? "info" : "warn"}`;
-  target.innerHTML = supportsImageTools
+  target.className = "task-model-compatibility ok";
+  target.innerHTML = readsImages
     ? `<i class="fas fa-circle-check"></i><span><strong>主模型可直接处理图文并自主生图</strong>${escapeHtml(modelLabel)} 会在确有需要时调用生图模型并回看结果。</span>`
-    : readsImages
-      ? `<i class="fas fa-eye"></i><span><strong>主模型可直接读图</strong>${escapeHtml(modelLabel)} 不支持自主生图闭环；含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`
-      : `<i class="fas fa-images"></i><span><strong>已启用独立识图模型</strong>${escapeHtml(modelLabel)} 只负责文本生成；含图材料会先识图，含作图要求的任务需要改选支持工具调用的主模型并配置生图模型。</span>`;
+    : `<i class="fas fa-circle-check"></i><span><strong>主模型已开启自主生图</strong>${escapeHtml(modelLabel)} 可调用生图模型继续任务；原始题图仍由独立识图模型处理。</span>`;
 }
 
 function updatePracticeModelSummary() {
@@ -10708,8 +10900,9 @@ function populateProtocolControl(selectId, fieldId, cfg, model, preferred = "") 
   )).join("");
   select.value = protocols.includes(previous) ? previous : (protocols.includes(configured) ? configured : protocols[0]);
   select.disabled = protocols.length <= 1;
-  select.hidden = protocols.length <= 1 && Boolean(field && !field.contains(select));
-  if (field) field.hidden = protocols.length <= 1;
+  select.hidden = false;
+  if (field) field.hidden = false;
+  select.title = protocols.length === 1 ? "该模型仅登记此请求方式" : "仅可选择该模型已登记支持的请求方式";
   return select.value || configured;
 }
 
@@ -10753,8 +10946,9 @@ function populateThinkingModeControl(selectId, hintId, providerName, model, pref
   const cfg = providerConfigs?.[providerName] || {};
   const profile = (cfg.model_profiles || {})[String(model || "").trim()] || {};
   const modes = supportedThinkingModes(cfg, model);
-  const previous = String(preferred || select.value || "").trim().toLowerCase();
-  const configuredDefault = String(profile.default_thinking_mode || cfg.thinking_mode || "auto").trim().toLowerCase();
+  const previous = String(preferred || (select.dataset.userSelected === "true" ? select.value : "") || "").trim().toLowerCase();
+  const registeredDefault = String(profile.default_thinking_mode || cfg.thinking_mode || "auto").trim().toLowerCase();
+  const configuredDefault = modes.includes("medium") ? "medium" : registeredDefault;
   select.innerHTML = modes.map((mode) => `<option value="${escapeHtml(mode)}">${escapeHtml(THINKING_MODE_LABELS[mode] || mode)}</option>`).join("");
   select.value = modes.includes(previous) ? previous : (modes.includes(configuredDefault) ? configuredDefault : modes[0]);
   select.disabled = modes.length <= 1;
@@ -10852,6 +11046,7 @@ function providerErrorAdvice(error) {
 }
 
 async function createTask() {
+  if (examUploadState?.status === "uploading" || examUploadState?.status === "deleting") return;
   const questionOnly = currentExamAnalysisProfile === "question_only";
   const evidenceOnly = currentExamAnalysisProfile === "textbook_evidence_only";
   $("taskResult").textContent = "创建中...";
@@ -10867,41 +11062,15 @@ async function createTask() {
     const selectedBooks = selectedTextbooks();
     if (!questionOnly && !selectedBooks.length) throw new Error("请至少选择一本已建立索引的教材");
     const selectedBookNames = selectedTextbookNames();
-    if (!questionOnly) await requirePreparedTextbookIndex();
-    const confirmed = await platformConfirm({
-      eyebrow: evidenceOnly ? "开始教材引用定位" : questionOnly ? "开始题目解析" : "开始真题解析",
-      title: "确认本次解析范围",
-      message: questionOnly
-        ? `题目：${shortName(examPath)}\n教材：不使用\n\n开始后会调用当前配置的模型，并在后台持续执行。`
-        : `${evidenceOnly ? "试题" : "真题"}：${shortName(examPath)}\n教材：已选择 ${selectedBookNames.length} 本（${selectedBookNames.join("、")}）\n\n${evidenceOnly ? "只产出知识点与已核验页码，不生成答案和教材原文。" : "开始后会调用当前配置的模型，并在后台持续执行。"}`,
-      confirmText: "确认开始解析",
-      tone: "primary"
-    });
-    if (!confirmed) {
-      setVisual("taskVisualResult", "尚未开始", "你可以继续调整真题或教材范围。", "info");
-      return;
-    }
     const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel()) && !evidenceOnly;
     if (!evidenceOnly && imageOrchestrationMode("exam") === "main_model_tool_loop" && !imageFallbackConfigured) {
       throw new Error("请先配置并验证默认生图流程所需的生图模型。");
     }
     const answerProviderName = $("answerProviderSelect")?.value || $("providerSelect").value;
     const answerModelName = selectedTextRoleModel("answer") || requireSelectedModel();
-    if (
-      !evidenceOnly
-      && imageOrchestrationMode("exam") === "main_model_tool_loop"
-      && !modelSupportsMainToolLoop(answerModelName, providerConfigs?.[answerProviderName] || {})
-    ) {
-      throw new Error(
-        "已选择“主模型自主生图”，但当前答案模型未通过原生工具调用与图片回看逐模型验证。"
-        + "请改选已通过该能力验证的模型。"
-      );
-    }
-    setVisual("taskVisualResult", "正在验证本次模型组合", "逐一检查本任务实际选择的供应商、模型和请求类型；任一路由异常都不会创建任务。", "info");
-    await preflightTaskModelRoutes(examTaskPreflightRoutes(), evidenceOnly ? "教材引用定位任务" : questionOnly ? "题目解析任务" : "真题解析任务");
-    const data = await api("/api/tasks", {
-      method: "POST",
-      body: JSON.stringify({
+    setVisual("taskVisualResult", "正在创建任务", "保留你选择的模型。运行状态仅作参考，任务将实际调用并反馈结果。", "info");
+    const preflightRoutes = examTaskPreflightRoutes();
+    const taskPayload = JSON.stringify({
         exam_path: examPath,
         textbooks_dir: questionOnly ? "" : ($("textbooksDir").value.trim() || libraryFiles.textbooks_root),
         selected_textbooks: questionOnly ? [] : selectedBooks,
@@ -10927,9 +11096,26 @@ async function createTask() {
         model_thinking: evidenceOnly ? selectedRoleThinkingMode("reasoning") : selectedRoleThinkingMode("answer"),
         reasoning_thinking: selectedRoleThinkingMode("reasoning"),
         answer_thinking: selectedRoleThinkingMode("answer")
-      })
+      });
+    // Capture materials, profile and every model role together before any
+    // index check, confirmation dialog or provider preflight yields control.
+    if (!questionOnly) await requirePreparedTextbookIndex();
+    const confirmed = await platformConfirm({
+      eyebrow: evidenceOnly ? "开始教材引用定位" : questionOnly ? "开始题目解析" : "开始真题解析",
+      title: "确认本次解析范围",
+      message: questionOnly
+        ? `题目：${shortName(examPath)}\n教材：不使用\n\n将使用点击开始时的模型配置，在后台持续执行。`
+        : `${evidenceOnly ? "试题" : "真题"}：${shortName(examPath)}\n教材：已选择 ${selectedBookNames.length} 本（${selectedBookNames.join("、")}）\n\n${evidenceOnly ? "只产出知识点与已核验页码，不生成答案和教材原文。" : "将使用点击开始时的模型配置，在后台持续执行。"}`,
+      confirmText: "确认开始解析",
+      tone: "primary"
     });
-    $("taskResult").textContent = data.task?.task_id ? `任务已创建：${data.task.task_id}` : "任务已创建";
+    if (!confirmed) {
+      setVisual("taskVisualResult", "尚未开始", "你可以继续调整真题或教材范围。", "info");
+      return;
+    }
+    await preflightTaskModelRoutes(preflightRoutes, evidenceOnly ? "教材引用定位任务" : questionOnly ? "题目解析任务" : "真题解析任务");
+    const data = await api("/api/tasks", { method: "POST", body: taskPayload });
+    $("taskResult").textContent = data.task?.public_task_id ? `任务已创建：${data.task.public_task_id}` : "任务已创建";
     if (data.task && data.task.task_id) {
       $("taskIdInput").value = data.task.task_id;
       activeTaskId = data.task.task_id;
@@ -11008,15 +11194,6 @@ function taskProgressPercent(task) {
   }
   if (Number.isFinite(Number(task.progress_percent))) return Math.max(0, Math.min(100, Number(task.progress_percent)));
   return 0;
-}
-
-function compactTaskId(taskId) {
-  const text = String(taskId || "").trim();
-  if (!text) return "未知";
-  const timeMatch = text.match(/(\d{8}_\d{6})$/);
-  if (timeMatch) return `#${timeMatch[1].slice(-6)}`;
-  if (text.length <= 10) return `#${text}`;
-  return `#${text.slice(-8)}`;
 }
 
 function taskSortTimestamp(task) {
@@ -11242,6 +11419,10 @@ function renderAnswerProgressDetails(progress) {
     active.status ? `状态：${displayAttemptStatus(active.status)}` : "",
     active.elapsed_text ? `耗时：${active.elapsed_text}` : ""
   ].filter(Boolean).join(" · ");
+  const parallelText = progress.parallel_enabled
+    ? `并行处理中 · ${Number(progress.max_workers || 1)} 路上限 · 已完成 ${Number(progress.completed || 0)}/${Number(progress.total || 0)}`
+    : "当前为串行处理";
+  const activeQuestions = Array.isArray(progress.active_questions) ? progress.active_questions : null;
   const evidenceText = active.full_evidence_count || active.prompt_evidence_count
     ? `依据压缩：${active.prompt_evidence_count || 0}/${active.full_evidence_count || 0}`
     : "";
@@ -11252,6 +11433,8 @@ function renderAnswerProgressDetails(progress) {
       <strong>${escapeHtml(activeText || "等待模型返回")}</strong>
       ${evidenceText ? `<span>${escapeHtml(evidenceText)}</span>` : ""}
     </div>
+    <div class="answer-progress-parallel"><i class="fas fa-layer-group"></i><span>${escapeHtml(parallelText)}</span></div>
+    ${activeQuestions ? `<div class="answer-progress-event"><span>处理中 ${activeQuestions.length} 题（含模型等待、工具调用及本地处理，不等于同时发出的 API 请求数）</span></div>${activeQuestions.map((item) => `<div class="answer-progress-event"><span>${escapeHtml([item.section, item.number ? `第 ${item.number} 题` : item.question_id].filter(Boolean).join(" · "))}</span></div>`).join("")}` : '<div class="answer-progress-event"><span>此任务尚未提供同时处理的题目明细；上方单题信息仅为最近活动。</span></div>'}
     ${events.map((event) => `
       <div class="answer-progress-event">
         <span>${escapeHtml([event.model, event.strategy, displayAttemptStatus(event.status), event.error].filter(Boolean).join(" · "))}</span>
@@ -11376,6 +11559,7 @@ function renderTaskManagerPagination(total) {
 
 function taskSearchText(task = {}) {
   return [
+    task.public_task_id,
     task.display_title,
     task.description,
     task.exam_display_name,
@@ -11620,8 +11804,7 @@ function renderTaskManager(tasks = latestTasks) {
           <details class="task-technical-details">
             <summary><i class="fas fa-circle-info"></i>运行详情</summary>
             <div>
-              <button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(taskId)}" title="复制稳定任务 ID"><i class="fas fa-diagram-project"></i><span>任务</span><strong>${escapeHtml(compactTaskId(taskId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>
-              ${resourceId !== taskId ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(resourceId)}" title="复制本次执行 ID"><i class="fas fa-hashtag"></i><span>执行</span><strong>${escapeHtml(compactTaskId(resourceId).replace(/^#/, ""))}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
+              ${task.public_task_id ? `<button class="task-id-copy" type="button" data-action="copy-task-id" data-task-id="${escapeHtml(task.public_task_id)}" title="复制任务编号，用于反馈定位"><i class="fas fa-hashtag"></i><span>任务编号</span><strong>${escapeHtml(task.public_task_id)}</strong><i class="far fa-copy task-id-copy-icon"></i></button>` : ""}
               <span title="包含排队、模型处理和重试"><i class="fas fa-hourglass-half"></i>总耗时 ${escapeHtml(taskDurationText(task))}</span>
               ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
               ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
@@ -11881,14 +12064,17 @@ function renderSystemStatus(data) {
 const PROVIDER_ROUTE_STATUS = {
   available: ["可用", "available"],
   degraded: ["降级运行", "degraded"],
-  unavailable: ["供应商路线不可用", "unavailable"],
+  unavailable: ["当前模型不能用了", "unavailable"],
   configuration_error: ["账号或配置问题", "configuration-error"],
   unverified: ["待验证", "unverified"],
+  candidate_detected: ["已探测·待审核", "candidate-detected"],
+  candidate_unverified: ["候选待验证", "candidate-unverified"],
+  candidate_unavailable: ["候选探测未通过", "candidate-unavailable"],
   not_configured: ["未接入", "not-configured"]
 };
 
 const PROVIDER_CAPABILITY_LABEL = {
-  text: "文本", vision: "视觉输入", tool_call: "工具调用", image_generation: "生图"
+  text: "文本", vision: "图片输入", image_generation: "生图", image_edit: "参考图编辑"
 };
 
 function providerResponsibilityLabel(value) {
@@ -11914,15 +12100,246 @@ function filteredProviderControlRoutes() {
   );
 }
 
+function preserveProviderControlView(panel) {
+  if (!panel) return () => {};
+  const details = new Map([...panel.querySelectorAll("details[data-view-key]")]
+    .map((node) => [node.dataset.viewKey, node.open]));
+  const x = window.scrollX;
+  const y = window.scrollY;
+  const anchor = [...panel.querySelectorAll("[data-view-key]")].find((node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.height > 0 && rect.top >= 0 && rect.top < window.innerHeight;
+  });
+  const anchorKey = anchor?.dataset.viewKey;
+  const anchorTop = anchor?.getBoundingClientRect().top;
+  const focused = panel.contains(document.activeElement) ? document.activeElement : null;
+  const focusKey = focused?.closest("[data-view-key]")?.dataset.viewKey;
+  return () => {
+    const nodes = [...panel.querySelectorAll("[data-view-key]")];
+    for (const node of nodes) {
+      if (node.tagName === "DETAILS" && details.has(node.dataset.viewKey)) {
+        node.open = details.get(node.dataset.viewKey);
+      }
+    }
+    const nextFocus = nodes.find((node) => node.dataset.viewKey === focusKey);
+    if (focused?.tagName === "SUMMARY") nextFocus?.querySelector("summary")?.focus({ preventScroll: true });
+    const nextAnchor = nodes.find((node) => node.dataset.viewKey === anchorKey);
+    const offset = nextAnchor ? nextAnchor.getBoundingClientRect().top - anchorTop : 0;
+    window.scrollTo({ left: x, top: nextAnchor ? window.scrollY + offset : y, behavior: "instant" });
+  };
+}
+
+function modelHealthRows(rows) {
+  return rows.filter((row) => row.capability === "text" || row.capability === "image_generation" ||
+    (row.capability === "vision" && ["degraded", "unavailable", "configuration_error"].includes(row.status)));
+}
+
+const providerManualTestReserved = new Set();
+const providerManualTestActive = new Set();
+const providerManualTestFeedback = new Map();
+let providerManualFeedbackTimer = null;
+
+function finishProviderManualTest(routeId, ok) {
+  providerManualTestActive.delete(routeId);
+  providerManualTestFeedback.set(routeId, { ok, seenAt: 0 });
+  syncProviderManualTestButtons();
+}
+
+function providerManualTestRoutes(identity = null, family = "") {
+  const seen = new Set();
+  return (providerControlData?.routes || []).filter((row) => {
+    if (!row.configured || row.approved === false || row.capability_candidate) return false;
+    if (!["text", "image_generation"].includes(row.capability)) return false;
+    if (identity && (row.provider !== identity[0] || row.account_fingerprint !== identity[1] || row.model !== identity[2] || row.protocol !== identity[3])) return false;
+    if (family && providerControlFamily(row.provider) !== family) return false;
+    const key = JSON.stringify([row.provider, row.account_fingerprint, row.model, row.protocol, row.capability]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((row) => ({ ...row }));
+}
+
+function syncProviderManualTestButtons() {
+  document.querySelectorAll(".provider-model-test").forEach((button) => {
+    const ids = JSON.parse(button.dataset.testRoutes || "[]");
+    const reserved = ids.some((id) => providerManualTestReserved.has(id));
+    button.disabled = reserved || !ids.length;
+    const active = ids.some((id) => providerManualTestActive.has(id));
+    const feedback = button.dataset.testBatch !== "true" && ids.map((id) => providerManualTestFeedback.get(id)).find(Boolean);
+    if (feedback && !document.hidden) {
+      const bounds = button.getBoundingClientRect();
+      if (bounds.height && bounds.bottom > 0 && bounds.top < window.innerHeight && !feedback.seenAt) feedback.seenAt = Date.now();
+    }
+    const showing = feedback && (!feedback.seenAt || Date.now() - feedback.seenAt < 7000);
+    button.textContent = active ? "测试中…" : showing ? (feedback.ok ? "✓ 已通过" : "! 未通过") : reserved ? "待测试…" : button.dataset.testLabel;
+    const row = button.closest(".compact-model");
+    if (row) {
+      row.classList.toggle("probe-finished-ok", Boolean(showing && feedback.ok));
+      row.classList.toggle("probe-finished-error", Boolean(showing && !feedback.ok));
+    }
+    button.setAttribute("aria-busy", active ? "true" : "false");
+  });
+  for (const [id, feedback] of providerManualTestFeedback) {
+    if (feedback.seenAt && Date.now() - feedback.seenAt >= 7000) providerManualTestFeedback.delete(id);
+  }
+  if (providerManualTestFeedback.size && !providerManualFeedbackTimer) {
+    providerManualFeedbackTimer = setTimeout(() => { providerManualFeedbackTimer = null; syncProviderManualTestButtons(); }, 500);
+  }
+}
+
+function providerManualTestButton(routes, label, title, batch = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "provider-model-test";
+  button.dataset.testLabel = label;
+  button.dataset.testBatch = String(batch);
+  button.setAttribute("aria-live", "polite");
+  button.dataset.testRoutes = JSON.stringify(routes.map((row) => row.route_id));
+  button.textContent = label;
+  button.title = routes.length ? `${title}；真实调用可能产生费用，结果写入运行记录` : "请先配置并接入模型";
+  button.setAttribute("aria-label", `${title}：${label}`);
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    runProviderManualTests(routes, title, batch).catch((error) => showProviderControlNotice(String(error.message || error), true));
+  });
+  return button;
+}
+
+async function runProviderManualTests(routes, title, batch = false) {
+  if (!routes.length || routes.some((row) => providerManualTestReserved.has(row.route_id))) return;
+  routes.forEach((row) => { providerManualTestReserved.add(row.route_id); providerManualTestFeedback.delete(row.route_id); });
+  syncProviderManualTestButtons();
+  let succeeded = 0;
+  let failed = 0;
+  const problems = [];
+  let refreshFailed = false;
+  try {
+    if (batch && !await platformConfirm({
+      title: "测试该供应商全部已接入模型？",
+      message: `${title}，共 ${routes.length} 条模型通道（含 ${routes.filter((row) => row.capability === "image_generation").length} 条生图通道）。将逐个真实调用，可能产生费用；不受当前列表筛选影响，不修改能力登记。`,
+      confirmText: "开始测试", tone: "primary"
+    })) return;
+    for (const [index, row] of routes.entries()) {
+      const current = (providerControlData?.routes || []).find((item) => item.route_id === row.route_id && item.account_fingerprint === row.account_fingerprint && item.configured);
+      if (!current) { failed += 1; problems.push(`${row.model}：配置已变化，未调用`); continue; }
+      providerManualTestActive.add(row.route_id);
+      syncProviderManualTestButtons();
+      showProviderControlNotice(`${title} · 正在测试 ${index + 1}/${routes.length}：${row.model}（通过 ${succeeded}，未通过 ${failed}）`);
+      let passed = false;
+      try {
+        const result = await api("/api/provider-control/probe", { method: "POST", body: JSON.stringify({
+          provider: row.provider, model: row.model, protocol: row.protocol, capability: row.capability
+        }) });
+        if (result.ok && !result.skipped) { succeeded += 1; passed = true; }
+        else { failed += 1; problems.push(`${row.model}：${result.error || result.reason || "未通过"}`); }
+      } catch (error) {
+        failed += 1;
+        problems.push(`${row.model}：${String(error.message || error)}`);
+      }
+      // Read back durable observations even after a failed probe. A failed
+      // status refresh must never cause another paid probe.
+      try { await loadProviderControl(); } catch (_error) { refreshFailed = true; }
+      finishProviderManualTest(row.route_id, passed);
+    }
+    showProviderControlNotice(`${title} · 测试完成：通过 ${succeeded}，未通过 ${failed}。${failed ? `${problems.slice(0, 3).join("；")}。详情见对应模型；不可用仍按连续失败规则判定，服务连接失败时无法更新记录。` : "运行记录已更新。"}${refreshFailed ? "部分状态刷新失败，请点击刷新状态查看最新记录。" : ""}`, failed > 0 || refreshFailed);
+  } finally {
+    routes.forEach((row) => { providerManualTestReserved.delete(row.route_id); providerManualTestActive.delete(row.route_id); });
+    syncProviderManualTestButtons();
+  }
+}
+
+function compactProviderModels(box) {
+  const severity = { unavailable: 4, configuration_error: 4, degraded: 3, unverified: 2, available: 1 };
+  const entries = [...box.querySelectorAll(".provider-model-row")].map((card) => {
+    const identity = JSON.parse(card.dataset.viewKey.slice("model:".length));
+    const rows = (providerControlData.routes || []).filter((row) =>
+      row.provider === identity[0] && row.account_fingerprint === identity[1] && row.model === identity[2] && row.protocol === identity[3]);
+    const mainRows = rows.filter((row) => row.capability !== "image_edit");
+    const primary = modelHealthRows(rows).sort((a, b) => (severity[b.status] || 0) - (severity[a.status] || 0) || Number(b.confidence === "expired") - Number(a.confidence === "expired"))[0] || rows[0];
+    const status = primary.status;
+    const label = status === "available" && primary.confidence === "expired" ? "待更新" : ({available:"可用",degraded:"不稳定",unavailable:"不可用",configuration_error:"账号异常",unverified:"待确认",not_configured:"未接入"})[status] || "待确认";
+    const error = primary.last_error || primary.last_platform_or_request_error || {};
+    const warning = ["unavailable", "configuration_error", "degraded"].includes(status);
+    const details = document.createElement("details");
+    details.className = `compact-model status-${status === "unavailable" ? "danger" : warning ? "warning" : label === "可用" ? "available" : "pending"}`;
+    details.dataset.viewKey = `compact:${card.dataset.viewKey}`;
+    const kind = rows.some((row) => row.capability === "image_generation") ? "生图" : rows.some((row) => row.capability === "vision") ? "文本 + 图片" : "纯文本";
+    const capabilityBadges = mainRows.map((row) => {
+      const registeredVision = row.capability === "vision" && !["degraded", "unavailable", "configuration_error", "not_configured"].includes(row.status);
+      const badgeLabel = registeredVision ? (row.last_probe_success ? "已验证" : "已登记") : row.status === "available" && row.confidence === "expired" ? "上次可用 · 待更新" : ({available:"可用",degraded:"不稳定",unavailable:"不可用",configuration_error:"账号异常",unverified:"尚无有效验证",not_configured:"未接入"})[row.status] || "待确认";
+      const tone = row.status === "unavailable" ? "danger" : ["degraded", "configuration_error"].includes(row.status) ? "warning" : ["可用", "已验证"].includes(badgeLabel) ? "available" : "pending";
+      return `<span class="model-capability-badge tone-${tone}"><span>${escapeHtml(PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability)}</span><em>${badgeLabel}</em></span>`;
+    }).join("");
+    details.innerHTML = `<summary><strong>${escapeHtml(identity[2])}</strong><span class="model-capability-badges">${capabilityBadges}</span><span>${primary.p50_latency_ms == null ? "—" : `${(primary.p50_latency_ms / 1000).toFixed(1)} 秒`}</span><span class="compact-model-reason">${escapeHtml(warning ? error.message || error.title || "查看详情了解原因" : label === "待更新" ? "近期证据已过期" : "—")}</span><span class="compact-model-expand">详情</span></summary>`;
+    const actions = details.querySelector(".compact-model-expand");
+    actions.prepend(providerManualTestButton(providerManualTestRoutes(identity), "测试", `${providerControlFamily(identity[0])} / ${identity[2]}`));
+    details.appendChild(card);
+    return {details, name: identity[2], rank: severity[status] || 0, family: providerControlFamily(identity[0]), kind, warning, unavailable: status === "unavailable", healthy: label === "可用", awaitingUpdate: label === "待更新", configured: primary.configured};
+  });
+  if (!entries.length) return;
+  entries.sort((a, b) => b.rank - a.rank);
+  const families = new Map();
+  for (const entry of entries) {
+    if (!families.has(entry.family)) families.set(entry.family, []);
+    families.get(entry.family).push(entry);
+  }
+  const groups = [...families.entries()].map(([family, models]) => {
+    const failed = models.filter((model) => model.warning).length;
+    const unavailable = models.filter((model) => model.unavailable).length;
+    const healthy = models.filter((model) => model.healthy).length;
+    const pending = models.length - failed - healthy;
+    const tone = unavailable ? "danger" : failed ? "warning" : pending ? "pending" : "available";
+    const awaitingUpdate = models.filter((model) => model.awaitingUpdate).length;
+    const pendingSummary = [awaitingUpdate ? `${awaitingUpdate} 个上次可用，等待状态更新` : "", pending - awaitingUpdate ? `${pending - awaitingUpdate} 个尚无有效验证或未接入` : ""].filter(Boolean).join("；");
+    const statusLabel = unavailable ? `${unavailable} 个模型不可用` : failed ? `${failed} 个模型不稳定或账号异常` : pending ? pendingSummary : "近期全部可用";
+    const group = document.createElement("details");
+    group.className = `supplier-overview status-${tone}`;
+    group.dataset.viewKey = `supplier-overview:${family}`;
+    group.open = false;
+    group.innerHTML = `<summary><span class="supplier-overview-icon"><i class="fas fa-building" aria-hidden="true"></i></span><span class="supplier-overview-name"><strong>${escapeHtml(family)}</strong><small>${models.filter((model) => model.configured).length} / ${models.length} 条模型通道已接入</small></span><span class="supplier-overview-counts"><span>可用 <b>${healthy}</b></span><span>异常 <b>${failed}</b></span><span>待确认 <b>${pending}</b></span></span><span class="supplier-overview-status">${statusLabel}</span><span class="supplier-overview-chevron" aria-hidden="true">⌄</span></summary>`;
+    group.querySelector("summary").insertBefore(providerManualTestButton(providerManualTestRoutes(null, family), "测试全部模型", family, true), group.querySelector(".supplier-overview-chevron"));
+    if (failed) {
+      const problemNames = document.createElement("span");
+      problemNames.className = "supplier-problem-models";
+      problemNames.textContent = `异常模型：${models.filter((model) => model.warning).map((model) => model.name).join("、")}`;
+      group.querySelector("summary").appendChild(problemNames);
+    }
+    for (const kind of ["纯文本", "文本 + 图片", "生图"]) {
+      const matching = models.filter((model) => model.kind === kind);
+      if (!matching.length) continue;
+      const section = document.createElement("section");
+      section.className = "supplier-model-section";
+      section.innerHTML = `<h4>${kind}<span>${matching.length}</span></h4><div class="compact-model-columns" aria-hidden="true"><span>模型</span><span>能力 / 当前状态</span><span>响应中位</span><span>问题说明</span><span>操作</span></div>`;
+      section.append(...matching.map((model) => model.details));
+      group.appendChild(section);
+    }
+    return {group, rank: unavailable ? 3 : failed ? 2 : pending ? 1 : 0};
+  });
+  groups.sort((a, b) => b.rank - a.rank);
+  box.replaceChildren(...groups.map((item) => item.group));
+}
+
 function renderProviderControl() {
+  const panel = $("providerControlPanel");
+  const systemPanel = $("systemMonitorPanel");
+  if (panel && systemPanel && panel.previousElementSibling === systemPanel) systemPanel.before(panel);
+  const restoreView = preserveProviderControlView($("providerControlPanel"));
   const data = providerControlData || {};
   const summary = data.summary || {};
   const supportedFamilies = new Set((data.routes || []).map((row) => providerControlFamily(row.provider)));
   const configuredFamilies = new Set((data.routes || []).filter((row) => row.configured).map((row) => providerControlFamily(row.provider)));
   setText("providerConfiguredCount", `${configuredFamilies.size}/${supportedFamilies.size}`);
-  setText("providerAvailabilityRate", summary.available_rate == null ? "—" : `${summary.available_rate}%`);
-  setText("providerAttentionCount", summary.attention_route_count || 0);
-  setText("providerEffectiveConcurrency", summary.effective_text_concurrency || 0);
+  setText("providerAvailabilityRate", `${summary.healthy_model_count || 0} / ${summary.configured_model_count || 0}`);
+  setText("providerAttentionCount", summary.attention_model_count || 0);
+  setText("providerEffectiveConcurrency", `${summary.effective_text_concurrency || 0}${summary.uncapped_text_pool_count ? " + 未设上限" : ""}`);
+  const capacityBox = $("providerCapacityList");
+  if (capacityBox) capacityBox.innerHTML = (data.capacity_pools || []).map((pool) => {
+    const observed = pool.observations || {};
+    return `<div class="provider-discovery-row"><strong>${escapeHtml([...new Set(pool.providers.map(providerControlFamily))].join("、"))}</strong>
+      <span>当前并发上限 ${pool.configured_limit ? Number(pool.limit) : "未设置"} · 正在调用 ${Number(pool.active)} · 等待 ${Number(pool.waiting)}</span>
+      <p>配置上限 ${pool.configured_limit || "未设置"}；${observed.samples ? `累计 ${Number(observed.samples)} 次观测，成功时观测到 ${Number(observed.observed_success_concurrency || 0)} 路同时调用，限流 ${Number(observed.pressure_events || 0)} 次` : "尚无并发观测"}。同一共享额度只统计一次；观测值不代表供应商最大容量。</p></div>`;
+  }).join("");
   const filter = $("providerControlProviderFilter");
   if (filter) {
     const current = filter.value || "all";
@@ -11941,6 +12358,8 @@ function renderProviderControl() {
         <strong>${escapeHtml(displayProviderName(item.provider))}</strong>
         <span>${item.ok ? `供应商返回 ${Number((item.advertised_models || []).length)} 个模型` : escapeHtml(item.error_title || "列表读取失败")}</span>
         <p>${candidates.length ? `待人工验证候选：${escapeHtml(candidates.slice(0, 12).join("、"))}` : "没有新的待审核候选"}${missing.length ? `；${missing.length} 个已接入模型未出现在本次列表中（不会自动删除）` : ""}</p>
+        <small>${item.ok ? "最近读取" : "本次读取失败，保留上次成功目录"} · ${escapeHtml(formatLogTime(item.checked_at))}</small>
+        <details data-view-key="directory:${escapeHtml(item.provider)}"><summary>查看供应商模型目录（${Number((item.advertised_models || []).length)}）</summary><p>${escapeHtml((item.advertised_models || []).join("、") || "尚无可用目录")}</p></details>
       </div>`;
     }).join("") : '<div class="system-empty-line">尚无模型列表发现记录；后台会每日读取一次，发现结果只作为候选，不会自动上线或删除模型。</div>';
   }
@@ -11952,12 +12371,18 @@ function renderProviderControl() {
       if (!providerGroups.has(family)) providerGroups.set(family, []);
       providerGroups.get(family).push(row);
     });
-    const severity = { unavailable: 6, configuration_error: 5, degraded: 4, unverified: 3, available: 2, not_configured: 1 };
+    const severity = { unavailable: 8, configuration_error: 7, degraded: 6, candidate_detected: 5, unverified: 4, candidate_unavailable: 3, candidate_unverified: 2, available: 1, not_configured: 0 };
     box.innerHTML = rows.length ? [...providerGroups.entries()].map(([providerName, providerRows]) => {
       const configuredRows = providerRows.filter((row) => row.configured);
-      const statusRows = configuredRows.length ? configuredRows : providerRows;
-      const providerStatus = [...statusRows].sort((a, b) => (severity[b.status] || 0) - (severity[a.status] || 0))[0]?.status || "unverified";
-      const [providerStatusLabel, providerStatusClass] = PROVIDER_ROUTE_STATUS[providerStatus] || PROVIDER_ROUTE_STATUS.unverified;
+      const approvedConfiguredRows = configuredRows.filter((row) => row.approved !== false);
+      const statusRows = approvedConfiguredRows.length ? approvedConfiguredRows : (configuredRows.length ? configuredRows : providerRows);
+      const providerStatus = statusRows.length && statusRows.every((row) => ["unavailable", "configuration_error", "not_configured"].includes(row.status))
+        ? [...statusRows].sort((a, b) => (severity[b.status] || 0) - (severity[a.status] || 0))[0]?.status
+        : statusRows.some((row) => ["degraded", "unavailable", "configuration_error"].includes(row.status)) ? "degraded"
+        : statusRows.some((row) => row.status === "available") ? "available" : "unverified";
+      const [, providerStatusClass] = PROVIDER_ROUTE_STATUS[providerStatus] || PROVIDER_ROUTE_STATUS.unverified;
+      const problemModels = new Set(statusRows.filter((row) => ["unavailable", "configuration_error", "degraded"].includes(row.status) || ["unavailable", "configuration_error", "degraded"].includes(row.model_activity?.status)).map((row) => `${row.provider}|${row.model}|${row.protocol}`));
+      const providerStatusLabel = problemModels.size ? `${problemModels.size} 个模型需处理` : configuredRows.length ? "已接入" : "未接入";
       const modelGroups = new Map();
       providerRows.forEach((row) => {
         const key = `${row.provider}|${row.model}|${row.protocol}`;
@@ -11973,14 +12398,16 @@ function renderProviderControl() {
         return `<i class="${cls}" title="${escapeHtml(formatLogTime(event.checked_at))} · ${event.success ? "成功" : escapeHtml(event.error?.title || "失败")}"></i>`;
       }).join("");
       const capabilitySummary = Object.keys(PROVIDER_CAPABILITY_LABEL).map((capability) => {
-        const capabilityRows = providerRows.filter((row) => row.capability === capability);
-        if (!capabilityRows.length) return "";
+        const allCapabilityRows = providerRows.filter((row) => row.capability === capability);
+        if (!allCapabilityRows.length) return "";
+        const approvedCapabilityRows = allCapabilityRows.filter((row) => row.approved !== false);
+        const capabilityRows = approvedCapabilityRows.length ? approvedCapabilityRows : allCapabilityRows;
         const capabilityStatus = [...capabilityRows].sort((a, b) => (severity[b.status] || 0) - (severity[a.status] || 0))[0].status;
         const statusClass = (PROVIDER_ROUTE_STATUS[capabilityStatus] || PROVIDER_ROUTE_STATUS.unverified)[1];
         return `<span class="provider-capability-summary status-${statusClass}">${escapeHtml(PROVIDER_CAPABILITY_LABEL[capability])}</span>`;
       }).join("");
-      const forceOpen = ($("providerControlProviderFilter")?.value || "all") !== "all" || ($("providerControlStatusFilter")?.value || "all") !== "all";
-      return `<details class="provider-matrix-group status-${providerStatusClass}" ${forceOpen ? "open" : ""}>
+      const forceOpen = true;
+      return `<details data-view-key="supplier:${escapeHtml(providerName)}" class="provider-matrix-group status-${providerStatusClass}" ${forceOpen ? "open" : ""}>
         <summary>
           <span class="provider-matrix-icon"><i class="fas fa-building"></i></span>
           <span class="provider-matrix-title"><strong>${escapeHtml(providerName)}</strong><small>${configuredRows.length ? `已接入 ${modelGroups.size} 条模型通道` : `支持 ${modelGroups.size} 条模型通道 · 尚未接入`}</small></span>
@@ -11991,20 +12418,37 @@ function renderProviderControl() {
         </summary>
         <div class="provider-model-matrix">${[...modelGroups.values()].map((modelRows) => {
           const first = modelRows[0];
-          return `<div class="provider-model-row">
-            <div class="provider-model-name"><strong>${escapeHtml(first.model)}</strong><small>${escapeHtml(displayProviderName(first.provider))} · ${escapeHtml(first.protocol)} · 账户 ${escapeHtml(first.account_fingerprint)}</small></div>
+          const onboarding = first.onboarding || {};
+          const inputLabel = modelRows.some((row) => row.capability === "image_generation") ? "生图模型" : modelRows.some((row) => row.capability === "vision") ? "文本 + 图片输入" : "文本输入";
+          const onboardingLabel = { passed: "接入验证已保存", failed: "首次接入测试未通过", started: "接入测试已发起" }[onboarding.status] || "等待一次接入测试";
+          const activity = first.model_activity || {};
+      const activityError = String(activity.last_observed_at || "") > String(first.last_observed_at || "") ? (activity.last_error || activity.last_platform_or_request_error) : null;
+          const modelViewKey = escapeHtml(JSON.stringify([first.provider, first.account_fingerprint, first.model, first.protocol]));
+          return `<div class="provider-model-row" data-view-key="model:${modelViewKey}">
+            <div class="provider-model-name"><strong>${escapeHtml(first.model)}</strong><small>${inputLabel} · 平台已登记</small>
+              <div class="model-evidence-strip"><span>${({high:"高可信",medium:"中可信",low:"证据较少",expired:"证据已过期"})[first.confidence] || "暂无证据"}</span><span>响应中位 ${first.p50_latency_ms == null ? "—" : `${(first.p50_latency_ms / 1000).toFixed(1)} 秒`}</span><span>近 24 小时 ${Number(first.sample_count || 0)} 次</span></div>
+              <small>${first.last_observed_at ? `最近证据 ${escapeHtml(formatLogTime(first.last_observed_at))}` : "尚无调用记录"} · ${first.confidence === "expired" ? "等待更新" : "状态仅作选择参考"}</small>
+              <details data-view-key="registration:${modelViewKey}" class="model-registration-details"><summary>登记与技术详情</summary><small>${onboardingLabel} · ${escapeHtml(first.protocol)} · 账户 ${escapeHtml(first.account_fingerprint)}</small>${onboarding.error?.error ? `<small>${escapeHtml(onboarding.error.error)}</small>` : ""}</details>
+              ${activityError ? `<small>${escapeHtml(PROVIDER_ROUTE_STATUS[activity.status]?.[0] || "最近请求未通过")}：${escapeHtml(activityError.message || activityError.title)}</small>` : ""}</div>
             <div class="provider-capability-grid">${modelRows.map((row) => {
-              const [statusLabelText, statusClass] = PROVIDER_ROUTE_STATUS[row.status] || PROVIDER_ROUTE_STATUS.unverified;
-              const error = row.last_error || {};
+              let [statusLabelText, statusClass] = PROVIDER_ROUTE_STATUS[row.status] || PROVIDER_ROUTE_STATUS.unverified;
+              if (row.capability === "vision" && !["degraded", "unavailable", "configuration_error", "not_configured"].includes(row.status)) {
+                statusLabelText = row.last_probe_success || row.onboarding?.status === "passed" ? "图片输入已验证" : "图片输入已登记";
+                statusClass = row.last_probe_success || row.onboarding?.status === "passed" ? "available" : "pending";
+              }
+              const error = row.last_error || row.last_platform_or_request_error || {};
               const history = Array.isArray(row.history) ? row.history : [];
               const concurrency = row.effective_concurrency === 0 ? (row.effective_allowed ? "供应商默认" : "已阻止") : `${row.effective_concurrency} 路`;
-              return `<details class="provider-capability-cell status-${statusClass}">
+              return `<details data-view-key="route:${escapeHtml(row.route_id)}" class="provider-capability-cell status-${statusClass}">
                 <summary><span>${escapeHtml(PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability)}</span><strong>${escapeHtml(statusLabelText)}</strong></summary>
                 <div class="provider-capability-popover">
                   <p><strong>${escapeHtml(providerResponsibilityLabel(row.responsibility))}</strong>${error.title ? ` · ${escapeHtml(error.title)}` : ""}</p>
-                  <small>任务策略：${row.effective_allowed ? `允许，并发 ${escapeHtml(concurrency)}` : "阻止调用"} · ${row.last_observed_at ? `最近 ${escapeHtml(formatLogTime(row.last_observed_at))}` : "尚未验证"}</small>
+                  ${error.message ? `<p>${escapeHtml(error.message)}</p>` : ""}
+                  <small>${row.effective_allowed ? "可选择并尝试执行，失败后由任务显示原因" : "请先完成配置与平台登记"} · ${row.last_observed_at ? `最近 ${escapeHtml(formatLogTime(row.last_observed_at))}` : "尚未验证"}</small>
+                  <small>近 24 小时成功率 ${row.success_rate == null ? "—" : `${row.success_rate}%`} · 较慢响应 P95 ${row.p95_latency_ms == null ? "—" : `${(row.p95_latency_ms / 1000).toFixed(1)} 秒`}</small>
+                  <small>${row.capability === "text" ? `下次自动检测 ${row.next_check_at ? escapeHtml(formatLogTime(row.next_check_at)) : "待安排"}` : "由真实任务或手动检测更新"} · ${row.runtime_sample_count || 0} 次真实任务证据</small>
                   ${error.suggested_action ? `<small>${escapeHtml(error.suggested_action)}</small>` : ""}
-                  <button class="task-card-button provider-route-probe" type="button" data-route-id="${escapeHtml(row.route_id)}" ${row.configured ? "" : 'disabled title="请先配置 API Key"'}><i class="fas fa-vial"></i>${row.configured ? "只检测这项能力" : "需先配置 Key"}</button>
+                  <button class="task-card-button provider-route-probe" type="button" data-route-id="${escapeHtml(row.route_id)}" ${row.configured ? "" : 'disabled title="请先配置 API Key"'}><i class="fas fa-vial"></i>${row.configured ? "检测当前可用性" : "需先配置 Key"}</button>
                   <div class="provider-route-history compact">${history.length ? history.slice(0, 3).map((event) => `<div class="${event.success ? "is-success" : "is-failure"}"><span>${escapeHtml(formatLogTime(event.checked_at))}</span><strong>${event.success ? "成功" : "失败"}</strong><p>${escapeHtml(event.error?.title || event.source || "任务反馈")}</p></div>`).join("") : '<div class="system-empty-line">暂无检测历史</div>'}</div>
                 </div>
               </details>`;
@@ -12013,16 +12457,55 @@ function renderProviderControl() {
         }).join("")}</div>
       </details>`;
     }).join("") : '<div class="system-empty-line">当前筛选条件下没有路线</div>';
+    compactProviderModels(box);
+    syncProviderManualTestButtons();
     box.querySelectorAll(".provider-route-probe").forEach((button) => button.addEventListener("click", () => probeProviderRoute(button.dataset.routeId, button)));
   }
   const policies = data.policies || {};
-  setText("providerControlPolicyText", `常规文本状态每 ${policies.active_health_interval_hours || 5} 小时到期；生图仅手动主动检测。允许自动临时停用和精确检测成功后立即恢复；模型增删、协议切换必须人工验证批准。真实任务只更新实际出错的能力，不会把同供应商其他模型或其他账号一起判坏。`);
+  setText("providerControlPolicyText", "能力登记长期保存。正常文本模型低频检测，失败后缩短复测间隔，连续失败逐步延长冷却，恢复后短期观察。生图与图片编辑不自动反复测试。状态不阻止用户选择模型；任务实际调用失败后按原有预算停止并反馈。跨任务共享并发遇到压力减半，稳定成功后逐步回升至配置安全上限。可信度表示证据充足程度，不保证下一次请求成功。");
+  restoreView();
 }
 
 async function loadProviderControl() {
   providerControlData = await api("/api/provider-control/status");
   renderProviderControl();
+  refreshTaskHealthOptions();
+  updateModelRoleCards();
   return providerControlData;
+}
+
+function taskModelHealth(provider, model, protocol = "") {
+  const candidates = modelHealthRows((providerControlData?.routes || []).filter((row) => row.provider === provider && row.model === model && (!protocol || row.protocol === protocol)));
+  const severity = { unavailable: 4, configuration_error: 4, degraded: 3, unverified: 2, available: 1 };
+  return candidates.sort((a, b) => (severity[b.status] || 0) - (severity[a.status] || 0))[0] || { status: "unverified" };
+}
+
+function refreshTaskHealthOptions() {
+  if (typeof openPlatformSelect !== "undefined" && openPlatformSelect) return;
+  const pairs = Object.values(textModelRoles).map((role) => [role.providerId, role.modelSelectId]);
+  for (const profile of ["practice", "knowledge"]) for (const kind of ["text", "vision", "image"]) {
+    const ids = taskModelControlIds(profile, kind);
+    pairs.push([ids.provider, ids.model]);
+  }
+  pairs.push(["providerSelect", "modelSelect"], ["visionProviderSelect", "visionModelSelect"], ["imageProviderSelect", "imageModelSelect"]);
+  for (const [providerId, modelId] of pairs) {
+    const select = $(modelId);
+    if (!select || !$(providerId)) continue;
+    const selected = select.value;
+    const options = [...select.options];
+    for (const option of options) {
+      if (!option.value) continue;
+      const health = taskModelHealth($(providerId).value, option.value);
+      option.dataset.baseLabel ||= option.textContent;
+      const warning = ["degraded", "unavailable", "configuration_error"].includes(health.status);
+      option.dataset.health = warning ? "warning" : health.confidence === "expired" ? "unverified" : health.status;
+      option.textContent = `${option.dataset.baseLabel}${warning ? " · 近期异常，仍可尝试" : option.dataset.health === "available" ? " · 近期可用" : " · 待更新"}`;
+      option.title = health.last_error?.message || "按登记能力选择；状态仅作参考";
+    }
+    options.sort((a, b) => Number(b.dataset.health === "available") - Number(a.dataset.health === "available"));
+    options.forEach((option) => select.appendChild(option));
+    select.value = selected;
+  }
 }
 
 function showProviderControlNotice(message, isError = false) {
@@ -12034,13 +12517,16 @@ function showProviderControlNotice(message, isError = false) {
 }
 
 async function probeProviderRoute(routeId, button) {
+  if (providerManualTestReserved.has(routeId)) return;
   const row = (providerControlData?.routes || []).find((item) => item.route_id === routeId);
   if (!row || button?.disabled) return;
   if (button) { button.disabled = true; button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>检测中'; }
   showProviderControlNotice(`正在单独检测 ${displayProviderName(row.provider)} / ${row.model} / ${PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability}，不会检测或改动其他路线。`);
   try {
     await api("/api/provider-control/probe", { method: "POST", body: JSON.stringify(row) });
-    showProviderControlNotice("精确检测成功，任务策略已立即恢复为可用。", false);
+    showProviderControlNotice(row.capability_candidate
+      ? "候选能力真实探测成功，已为当前 Key、模型和协议登记启用。"
+      : "精确检测成功，任务策略已立即恢复为可用。", false);
   } catch (error) {
     showProviderControlNotice(providerErrorAdvice(error).body || String(error), true);
   } finally {
@@ -12173,12 +12659,15 @@ function renderStorageOverview(overview) {
       const row = document.createElement("div");
       row.className = "storage-entry";
       const name = entry.title || entry.file_names?.join("、") || entry.id || entry.key;
+      const identity = String(entry.id || entry.key || "");
+      const updated = entry.updated_at ? new Date(entry.updated_at * 1000).toLocaleString() : "时间未知";
+      const entryLabel = `${name} · ${STORAGE_AREA_LABELS[area.kind] || area.kind} · ${identity} · ${formatStorageBytes(entry.size_bytes)} · 最近缓存更新 ${updated}${entry.source_path ? ` · 来源 ${entry.source_path}` : ""}`;
       const inUseTag = entry.in_use ? '<span class="storage-entry-inuse"><i class="fas fa-lock"></i> 使用中</span>' : "";
       row.innerHTML = `
         <label class="flex items-center gap-1.5 flex-shrink-0">
-          <input type="checkbox" class="storage-entry-check" data-kind="${area.kind}" data-id="${entry.id || entry.key}" ${entry.deletable ? "" : "disabled"}>
+          <input type="checkbox" class="storage-entry-check" aria-label="${escapeHtml(entryLabel)}" data-kind="${area.kind}" data-id="${escapeHtml(identity)}" ${entry.deletable ? "" : "disabled"}>
         </label>
-        <span class="storage-entry-name" title="${escapeHtml(String(name || ""))}">${escapeHtml(String(name || "-"))}</span>
+        <span class="storage-entry-name" title="${escapeHtml(entryLabel)}">${escapeHtml(String(name || "-"))}<small> · ${escapeHtml(identity.slice(0, 12))}</small></span>
         ${inUseTag}
         <span class="storage-entry-meta">${formatStorageBytes(entry.size_bytes)}${entry.age_days !== undefined ? ` · ${Number(entry.age_days).toFixed(0)} 天前` : ""}</span>
       `;
@@ -12443,7 +12932,7 @@ async function copyTextToClipboard(text) {
 }
 
 async function copyTaskId(task, button) {
-  const taskId = button?.dataset.taskId || task?.task_id || "";
+  const taskId = button?.dataset.taskId || task?.public_task_id || "";
   if (!taskId) return;
   const original = button?.innerHTML || "";
   try {
@@ -12570,19 +13059,29 @@ async function renameGenerationTask(task) {
 }
 
 async function cancelGenerationJob(task) {
+  const awaitingConfirmation = task.status === "needs_input" && ["analyze", "plan"].includes(task.operation);
   const confirmed = await platformConfirm({
     eyebrow: "任务控制",
-    title: "取消后台出题任务？",
-    message: "任务会停止接受迟到的模型结果；已保存的部分题目和蓝图仍会保留，之后可以从检查点重试。",
+    title: "取消出题任务？",
+    message: awaitingConfirmation
+      ? "取消后，本任务将不再等待确认。已保存的原题分析和蓝图仍会保留，不会删除。"
+      : "任务会停止接受迟到的模型结果；已保存的部分题目和蓝图仍会保留，之后可以从检查点重试。",
     confirmText: "确认取消",
     tone: "danger"
   });
   if (!confirmed) return;
-  await api(`/api/practice/jobs/${encodeURIComponent(taskResourceId(task))}/cancel`, {
-    method: "POST",
-    body: JSON.stringify({ reason: "用户取消出题任务" })
-  });
-  await loadTasks({ silent: true, includeLiveDetails: true });
+  try {
+    const result = await api(`/api/practice/jobs/${encodeURIComponent(taskResourceId(task))}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "用户取消出题任务" })
+    });
+    if (result?.ok === false) {
+      await platformAlert(result.message || "当前任务不能取消，请刷新任务状态后重试。", { title: "未能取消任务", tone: "warning" });
+    }
+    await loadTasks({ silent: true, includeLiveDetails: true });
+  } catch (error) {
+    await platformAlert(String(error).replace(/^Error:\s*/, ""), { title: "取消任务失败", tone: "danger" });
+  }
 }
 
 async function retryExamTask(task, reopenReview = false) {
@@ -13258,20 +13757,59 @@ function questionTypeOptions(types = [], selected = "") {
     .join("");
 }
 
+function examStemEditorHtml(value, attr, rows = 2) {
+  return `<button type="button" class="task-card-button" data-stem-edit-toggle aria-expanded="false">编辑题干</button>
+    <div class="exam-structure-formula-preview" data-formula-preview>${practiceMarkdown(value || "") || "（暂无题干，点击编辑填写）"}</div>
+    <textarea hidden rows="${rows}" ${attr} aria-label="编辑题干">${escapeHtml(value || "")}</textarea>`;
+}
+
+function toggleExamStemEditor(button) {
+  const field = button.parentElement;
+  const input = field.querySelector("textarea");
+  const preview = field.querySelector("[data-formula-preview]");
+  const editing = input.hidden;
+  input.hidden = !editing;
+  preview.hidden = editing;
+  button.textContent = editing ? "完成编辑" : "编辑题干";
+  button.setAttribute("aria-expanded", String(editing));
+  if (editing) input.focus();
+  else {
+    preview.innerHTML = practiceMarkdown(input.value) || "（暂无题干，点击编辑填写）";
+    typesetMath(preview);
+  }
+}
+
 function scoreInputValue(item) {
-  const value = item?.confirmed_score ?? item?.score ?? item?.suggested_score ?? "";
-  return value == null ? "" : String(value);
+  for (const value of [item?.confirmed_score, item?.score, item?.suggested_score]) {
+    if (value == null || String(value).trim() === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) return String(number);
+  }
+  return "";
 }
 
 function scoreFieldHtml(item, label = "确认分值", attr = "data-score-input") {
-  const suggested = item?.suggested_score ? `建议：${item.suggested_score} 分` : "未识别到建议分值";
+  const suggested = scoreInputValue(item) !== "" ? "已预填识别或确认分值，可修改" : "未识别到分值，请填写";
   return `
-    <label class="exam-structure-field exam-structure-score-field">
-      <span>${escapeHtml(label)}</span>
-      <input ${attr} type="number" min="0" step="0.5" value="${escapeHtml(scoreInputValue(item))}" placeholder="必填">
+    <div class="exam-structure-field exam-structure-score-field">
+      <label><span>${escapeHtml(label)}</span>
+      <input ${attr} type="number" min="0" step="0.5" value="${escapeHtml(scoreInputValue(item))}" placeholder="必填"></label>
+      <div class="exam-score-shortcuts" role="group" aria-label="快捷填写${escapeHtml(label)}">
+        ${[5, 10, 20].map((score) => `<button type="button" data-score-shortcut="${score}">${score}分</button>`).join("")}
+      </div>
       <small>${escapeHtml(suggested)}</small>
-    </label>
+    </div>
   `;
+}
+
+function applyScoreShortcut(button) {
+  const input = button.closest(".exam-structure-score-field")?.querySelector("input");
+  if (!input) return;
+  input.value = button.dataset.scoreShortcut;
+  input.classList.remove("invalid");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  input.focus();
 }
 
 const DRAWING_GENERATION_MODES = [
@@ -13432,8 +13970,7 @@ function requirementEditorRowHtml(req, types, parentType, parentNumber, reqIndex
       </label>
       <label class="exam-structure-field exam-structure-req-stem">
         <span>作答要求</span>
-        <div class="exam-structure-formula-preview" data-formula-preview>${practiceMarkdown(req?.stem || "")}</div>
-        <textarea rows="2" data-requirement-stem>${escapeHtml(req?.stem || "")}</textarea>
+        ${examStemEditorHtml(req?.stem, "data-requirement-stem")}
       </label>
       <label class="exam-structure-type exam-structure-req-type">
         <span>要求题型</span>
@@ -13482,8 +14019,7 @@ function subquestionEditorRowHtml(sub, types, parentType, subIndex) {
         </label>
         <label class="exam-structure-field exam-structure-sub-stem">
           <span>小问题干</span>
-          <div class="exam-structure-formula-preview" data-formula-preview>${practiceMarkdown(sub?.stem || "")}</div>
-          <textarea rows="2" data-subquestion-stem>${escapeHtml(sub?.stem || "")}</textarea>
+          ${examStemEditorHtml(sub?.stem, "data-subquestion-stem")}
         </label>
         <label class="exam-structure-type exam-structure-sub-type">
           <span>小问题型</span>
@@ -13541,7 +14077,7 @@ function stemPreview(text, maxLength = 180) {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
 }
 
-function showExamStructureReviewModal(request) {
+function showExamStructureReviewModal(request, submit = null) {
   const modal = $("examStructureReviewModal");
   if (!modal) return Promise.resolve(null);
   if (examStructureReviewModalOpen) return Promise.resolve(null);
@@ -13570,8 +14106,7 @@ function showExamStructureReviewModal(request) {
                 <div class="exam-structure-stem-layout">
                   <label class="exam-structure-field exam-structure-stem-field">
                     <span>题干</span>
-                    <div class="exam-structure-formula-preview" data-formula-preview>${practiceMarkdown(item.stem || item.question_text || "")}</div>
-                    <textarea rows="4" data-question-stem>${escapeHtml(item.stem || item.question_text || "")}</textarea>
+                    ${examStemEditorHtml(item.stem || item.question_text, "data-question-stem", 4)}
                   </label>
                   ${renderQuestionImagePreview(item)}
                 </div>
@@ -13597,6 +14132,18 @@ function showExamStructureReviewModal(request) {
     const rejectBtn = $("examStructureRejectBtn");
     const body = $("examStructureReviewBody");
     const onBodyClick = (event) => {
+      const scoreButton = event.target.closest("[data-score-shortcut]");
+      if (scoreButton) {
+        event.preventDefault();
+        applyScoreShortcut(scoreButton);
+        return;
+      }
+      const editButton = event.target.closest("[data-stem-edit-toggle]");
+      if (editButton) {
+        event.preventDefault();
+        toggleExamStemEditor(editButton);
+        return;
+      }
       const addBtn = event.target.closest("[data-subquestion-add]");
       const removeBtn = event.target.closest("[data-subquestion-remove]");
       const requirementAddBtn = event.target.closest("[data-requirement-add]");
@@ -13695,9 +14242,9 @@ function showExamStructureReviewModal(request) {
       }
     };
     let finished = false;
-    const finish = (decision) => {
-      if (finished) return;
-      finished = true;
+    let submitting = false;
+    const finish = async (decision) => {
+      if (finished || submitting) return;
       if (decision === "confirm") {
         const scoreInputs = Array.from(modal.querySelectorAll("[data-question-score], [data-subquestion-score], [data-requirement-score]"));
         scoreInputs.forEach((input) => input.classList.remove("invalid"));
@@ -13740,6 +14287,25 @@ function showExamStructureReviewModal(request) {
           }))
         };
       });
+      if (submit) {
+        submitting = true;
+        confirmBtn.disabled = true;
+        rejectBtn.disabled = true;
+        try {
+          await submit({ decision, updates });
+        } catch (err) {
+          if (!finished) await platformAlert(String(err).replace(/^Error:\s*/, ""), {
+            title: "确认未提交成功", message: "已保留填写内容，请重试。", tone: "warning"
+          });
+          return;
+        } finally {
+          submitting = false;
+          confirmBtn.disabled = false;
+          rejectBtn.disabled = false;
+        }
+      }
+      if (finished) return;
+      finished = true;
       deactivateAccessibleModal(modal);
       examStructureReviewModalOpen = false;
       confirmBtn.removeEventListener("click", onConfirm);
@@ -13904,20 +14470,31 @@ async function checkReviewDecision(taskId) {
 async function checkExamStructureReview(taskId) {
   if (!taskId) return;
   if (currentPage !== "task" || taskId !== activeTaskId) return;
-  const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/exam-structure-review`);
-  if (currentPage !== "task" || taskId !== activeTaskId) return;
-  if (!data.pending || !data.request) return;
-  const result = await showExamStructureReviewModal(data.request);
-  if (!result || currentPage !== "task" || taskId !== activeTaskId) return;
-  await api(`/api/tasks/${encodeURIComponent(taskId)}/exam-structure-review`, {
-    method: "POST",
-    body: JSON.stringify({
-      decision: result.decision,
-      updates: result.updates,
-      note: result.decision === "confirm" ? "用户在前端确认题目结构、题型与分值。" : "用户在前端拒绝题目结构、题型与分值。"
-    })
-  });
-  await loadTasks({ silent: true, includeLiveDetails: true });
+  if (examStructureReviewInFlight.has(taskId)) return;
+  examStructureReviewInFlight.add(taskId);
+  const navigationVersion = taskNavigationVersion;
+  try {
+    const data = await api(`/api/tasks/${encodeURIComponent(taskId)}/exam-structure-review`);
+    if (navigationVersion !== taskNavigationVersion || currentPage !== "task" || taskId !== activeTaskId) return;
+    if (!data.pending || !data.request) return;
+    const requestId = data.request.request_id;
+    if (requestId && submittedExamStructureRequests.get(taskId) === requestId) return;
+    const result = await showExamStructureReviewModal(data.request, async (result) => {
+      await api(`/api/tasks/${encodeURIComponent(taskId)}/exam-structure-review`, {
+        method: "POST",
+        body: JSON.stringify({
+          decision: result.decision,
+          updates: result.updates,
+          note: result.decision === "confirm" ? "用户在前端确认题目结构、题型与分值。" : "用户在前端拒绝题目结构、题型与分值。"
+        })
+      });
+      if (requestId) submittedExamStructureRequests.set(taskId, requestId);
+    });
+    if (!result || currentPage !== "task" || taskId !== activeTaskId) return;
+    await loadTasks({ silent: true, includeLiveDetails: true });
+  } finally {
+    examStructureReviewInFlight.delete(taskId);
+  }
 }
 
 function maybeOpenActiveReviewDecision(task) {
@@ -14078,6 +14655,9 @@ $("taskCleanupRecommended")?.addEventListener("click", () => runStartupTaskClean
 $("taskCleanupAllOverflow")?.addEventListener("click", () => runStartupTaskCleanup("overflow_all"));
 
 async function runTask(noModel = false, reuseFragments = false) {
+  const navigationVersion = taskNavigationVersion;
+  const requestedTaskId = $("taskIdInput").value.trim();
+  const isCurrent = () => navigationVersion === taskNavigationVersion && $("taskIdInput").value.trim() === requestedTaskId;
   $("runResult").textContent = "任务已提交...";
   setVisual("runVisualResult", "任务已提交", "平台正在启动生产流程，稍后会自动刷新进度。", "info");
   setProgress("任务启动中，正在等待第一个阶段状态。", 3, "info");
@@ -14092,11 +14672,13 @@ async function runTask(noModel = false, reuseFragments = false) {
         document_diagnostics: Boolean($("documentDiagnosticsCheck")?.checked)
       })
     });
+    if (!isCurrent()) return;
     activeTaskId = taskId;
     clearTaskDiagnostics();
     $("runResult").textContent = pretty(data);
     startTaskPolling(taskId);
   } catch (err) {
+    if (!isCurrent()) return;
     $("runResult").textContent = String(err);
     setVisual("runVisualResult", "任务启动失败", String(err).replace(/^Error:\s*/, ""), "error");
     setProgress("任务没有启动成功。", 0, "error");
@@ -14153,7 +14735,6 @@ function executionStageProgress(task, current, progress, stages) {
   }
   const total = Number(progress?.total || 0);
   const completed = Number(progress?.completed || 0);
-  const health = task.health || {};
   const progressStage = String(progress?.stage || "");
   const progressMatchesCurrentStage = !progressStage || progressStage === current || visibleStepStage(progressStage) === current;
   if (total > 0 && progressMatchesCurrentStage) {
@@ -14180,6 +14761,7 @@ function executionStageProgress(task, current, progress, stages) {
 }
 
 function buildTaskExecutionDetail(task, current, progress, stages) {
+  const health = task.health || {};
   const questionOnly = (task.analysis_profile || activeTaskAnalysisProfile) === "question_only";
   const percent = taskProgressPercent(task);
   const detail = {
@@ -14194,6 +14776,7 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
   const addMetric = (value) => {
     if (value) detail.metrics.push(value);
   };
+  if (task.public_task_id) addMetric(`任务编号：${task.public_task_id}`);
   const total = Number(progress?.total || 0);
   const completed = Number(progress?.completed || 0);
 
@@ -14286,6 +14869,11 @@ function buildTaskExecutionDetail(task, current, progress, stages) {
     detail.text = "全部阶段已完成，可以查看结果和交付文件。";
   }
 
+  if (progress?.parallel_answer) {
+    const draft = progress.parallel_answer;
+    const draftState = draft.status === 'completed' ? '已完成' : (draft.status === 'completed_with_issues' ? '部分待处理' : (draft.status === 'waiting_dependencies' ? '等待作图方案' : '处理中'));
+    addMetric(`解析草稿 ${Number(draft.completed || 0)}/${Number(draft.total || 0)} 题 · ${draftState}（同供应商教材优先；生图等待依据确认）`);
+  }
   if (health.health_status) {
     const healthState = String(health.health_status);
     if (Number(health.total_count || 0) > 0) addMetric(`实际进展 ${Number(health.completed_count || 0)}/${Number(health.total_count || 0)}`);
@@ -14458,26 +15046,35 @@ function startTaskPolling(taskId) {
 }
 
 async function taskStatus() {
+  const navigationVersion = taskNavigationVersion;
+  const requestedTaskId = $("taskIdInput").value.trim();
+  const isCurrent = () => navigationVersion === taskNavigationVersion && $("taskIdInput").value.trim() === requestedTaskId;
   $("runResult").textContent = "读取中...";
   try {
     const taskId = $("taskIdInput").value.trim();
     const data = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+    if (!isCurrent()) return;
     activeTaskId = taskId;
     clearTaskDiagnostics();
     updateTaskSummary(data.task);
     renderTaskVisual(data);
     $("runResult").textContent = pretty(summarizeTaskStatus(data));
   } catch (err) {
+    if (!isCurrent()) return;
     $("runResult").textContent = String(err);
     setVisual("runVisualResult", "进度读取失败", String(err).replace(/^Error:\s*/, ""), "error");
   }
 }
 
 async function taskQuality() {
+  const navigationVersion = taskNavigationVersion;
+  const requestedTaskId = $("taskIdInput").value.trim();
+  const isCurrent = () => navigationVersion === taskNavigationVersion && $("taskIdInput").value.trim() === requestedTaskId;
   $("runResult").textContent = "读取审计摘要中...";
   try {
     const taskId = $("taskIdInput").value.trim();
     const data = await api(`/api/tasks/${encodeURIComponent(taskId)}`);
+    if (!isCurrent()) return;
     activeTaskId = taskId;
     updateTaskSummary(data.task);
     renderTaskVisual(data);
@@ -14496,6 +15093,7 @@ async function taskQuality() {
       acceptance_report: data.acceptance_report
     });
   } catch (err) {
+    if (!isCurrent()) return;
     $("runResult").textContent = String(err);
     setVisual("runVisualResult", "质量检查读取失败", String(err).replace(/^Error:\s*/, ""), "error");
   }
@@ -15332,19 +15930,6 @@ $("saveFragmentsBtn").addEventListener("click", saveFragments);
 $("loadReviewBtn").addEventListener("click", loadReview);
 $("exportReviewBtn").addEventListener("click", exportReview);
 $("validateFragmentBtn").addEventListener("click", validateFragment);
-$("uploadExamBtn").addEventListener("click", async () => {
-  $("taskResult").textContent = "上传真题中...";
-  setVisual("taskVisualResult", "正在上传真题", "上传完成后会自动切回已有真题列表。", "info");
-  try {
-    const uploaded = await uploadLibraryFiles("exam");
-    $("taskResult").textContent = "真题已上传，已切回已有真题列表。";
-    setVisual("taskVisualResult", "真题已上传", `已上传 ${uploaded.length} 个文件，并选中新上传的真题。`, "ok");
-  } catch (err) {
-    const message = String(err).replace(/^Error:\s*/, "");
-    $("taskResult").textContent = `上传失败：${message}`;
-    setVisual("taskVisualResult", "真题上传失败", message, "error");
-  }
-});
 $("uploadTextbooksBtn").addEventListener("click", async () => {
   $("libraryResult").textContent = "上传教材中...";
   setVisual("libraryVisualResult", "正在上传教材", "上传完成后可点击右下角“去建立索引”。", "info");
@@ -15413,7 +15998,10 @@ for (const roleKey of Object.keys(textModelRoles)) {
     updatePracticeModelSummary();
     markExamModelPresetCustom();
   });
-  $(role.thinkingSelectId)?.addEventListener("change", markExamModelPresetCustom);
+  $(role.thinkingSelectId)?.addEventListener("change", (event) => {
+    event.target.dataset.userSelected = "true";
+    markExamModelPresetCustom();
+  });
   $(role.protocolSelectId)?.addEventListener("change", markExamModelPresetCustom);
 }
 $("visionProviderSelect").addEventListener("change", () => {
@@ -15475,6 +16063,7 @@ for (const profile of ["practice", "knowledge"]) {
   }
   const thinkingIds = taskThinkingControlIds(profile);
   $(thinkingIds.select)?.addEventListener("change", () => {
+    $(thinkingIds.select).dataset.userSelected = "true";
     saveTaskModelSetting(profile, "text");
     updateTaskModelSummary(profile);
   });
@@ -15505,7 +16094,10 @@ $("imageModelInput").addEventListener("input", () => {
   switchQuestionTypeTab(modelQuestionTypeTab);
   markExamModelPresetCustom();
 });
-$("thinkingModeSelect")?.addEventListener("change", markExamModelPresetCustom);
+$("thinkingModeSelect")?.addEventListener("change", (event) => {
+  event.target.dataset.userSelected = "true";
+  markExamModelPresetCustom();
+});
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopSystemMonitorPolling();
   if (!document.hidden) resumeRememberedPracticeJob().catch(() => {});
@@ -15611,15 +16203,6 @@ $("practiceWorkspaceDraftClear")?.addEventListener("click", (event) => {
 });
 $("practiceLoadingCopyTaskId")?.addEventListener("click", async (event) => {
   const value = String($("practiceLoadingTaskId")?.textContent || "").trim();
-  if (!value) return;
-  await copyTextToClipboard(value);
-  const button = event.currentTarget;
-  const original = button.textContent;
-  button.textContent = "已复制";
-  setTimeout(() => { button.textContent = original; }, 1200);
-});
-$("practiceLoadingCopyRunId")?.addEventListener("click", async (event) => {
-  const value = String($("practiceLoadingRunId")?.textContent || "").trim();
   if (!value) return;
   await copyTextToClipboard(value);
   const button = event.currentTarget;
@@ -16282,11 +16865,13 @@ function closePlatformSelect(state = openPlatformSelect, restoreFocus = false) {
 function positionPlatformSelect(state) {
   const rect = state.button.getBoundingClientRect();
   const gap = 8;
+  const isModelSelect = String(state.select.id || "").toLowerCase().includes("model");
+  const menuWidth = Math.min(Math.max(rect.width, isModelSelect ? 320 : 240), window.innerWidth - 24);
   const availableBelow = window.innerHeight - rect.bottom - gap;
   const listHeight = Math.min(state.list.scrollHeight || 280, 320);
   const openAbove = availableBelow < Math.min(listHeight, 220) && rect.top > availableBelow;
-  state.list.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - rect.width - 12))}px`;
-  state.list.style.width = `${rect.width}px`;
+  state.list.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - menuWidth - 12))}px`;
+  state.list.style.width = `${menuWidth}px`;
   state.list.style.top = openAbove
     ? `${Math.max(12, rect.top - listHeight - gap)}px`
     : `${Math.min(window.innerHeight - listHeight - 12, rect.bottom + gap)}px`;
@@ -16303,10 +16888,11 @@ function syncPlatformSelect(state) {
   const selected = options.find((option) => option.selected) || options[0];
   button.querySelector(".platform-select-label").textContent = selected?.textContent?.trim() || "请选择";
   button.disabled = select.disabled;
+  state.wrapper.hidden = select.hidden;
   list.innerHTML = options.map((option, index) => `
-    <button type="button" role="option" data-option-index="${index}" aria-selected="${option.selected ? "true" : "false"}" ${option.disabled ? "disabled" : ""}>
+    <button type="button" role="option" data-health="${escapeHtml(option.dataset.health || "")}" data-option-index="${index}" aria-selected="${option.selected ? "true" : "false"}" ${option.disabled ? "disabled" : ""}>
       <span>${escapeHtml(option.textContent?.trim() || "")}</span>
-      <i class="fas fa-check"></i>
+      ${option.selected ? '<i class="fas fa-check" aria-hidden="true"></i>' : '<span class="platform-select-option-spacer" aria-hidden="true"></span>'}
     </button>
   `).join("");
 }
@@ -16319,6 +16905,7 @@ function syncPlatformSelectElement(select) {
 
 function openCustomSelect(state) {
   if (state.select.disabled) return;
+  refreshTaskHealthOptions();
   if (openPlatformSelect && openPlatformSelect !== state) closePlatformSelect(openPlatformSelect);
   syncPlatformSelect(state);
   state.list.classList.remove("hidden");
@@ -16350,8 +16937,12 @@ function enhancePlatformSelect(select) {
   button.setAttribute("aria-haspopup", "listbox");
   button.setAttribute("aria-expanded", "false");
   const wrappingLabel = select.closest("label");
-  const labelText = wrappingLabel
-    ? Array.from(wrappingLabel.childNodes).filter((node) => node.nodeType === 3).map((node) => node.textContent.trim()).filter(Boolean).join(" ")
+  const associatedLabel = !wrappingLabel && select.id
+    ? document.querySelector(`label[for="${CSS.escape(select.id)}"]`)
+    : null;
+  const effectiveLabel = wrappingLabel || associatedLabel;
+  const labelText = effectiveLabel
+    ? Array.from(effectiveLabel.childNodes).map((node) => node.textContent.trim()).filter(Boolean).join(" ")
     : "";
   button.setAttribute("aria-label", select.getAttribute("aria-label") || labelText || "选择");
   button.innerHTML = '<span class="platform-select-label"></span><i class="fas fa-chevron-down"></i>';

@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .machine_gate_policy import current_content_report
 from .user_facing_text import strip_internal_repair_provenance
 
 XRD_UNSUPPORTED_SPACING_CLAUSE_RE = re.compile(
@@ -110,7 +111,7 @@ def repair_content_quality_locally(
     """Apply semantics-preserving repairs derivable from validated content."""
 
     data = json.loads(fragments_json.read_text(encoding="utf-8"))
-    issue_codes = _question_issue_codes(audit_report)
+    issue_codes = _question_issue_codes(current_content_report(audit_report))
     repaired_question_ids: list[str] = []
     for fragment in data.get("fragments", []):
         if not isinstance(fragment, dict):

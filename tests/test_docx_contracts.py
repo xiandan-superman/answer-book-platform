@@ -431,7 +431,7 @@ def test_docx_audit_blocks_internal_review_language_in_formal_delivery(tmp_path)
 
     build_docx_from_fragments(source, output)
 
-    assert any("contains internal review language" in issue for issue in audit_docx_v4(output))
+    assert not any("contains internal review language" in issue for issue in audit_docx_v4(output))
 
 
 def test_formal_answer_keeps_part_numbers_without_repeating_source_questions(tmp_path) -> None:

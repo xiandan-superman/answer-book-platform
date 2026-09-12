@@ -26,7 +26,23 @@ _MISSING_CONCURRENT_RESULT = object()
 
 _MODEL_REQUEST_LOCK = threading.Lock()
 _MODEL_REQUEST_GATES: dict[tuple[str, str], "_FairProviderGate"] = {}
+_UNLIMITED_ACTIVE: dict[tuple[str, str], int] = {}
 _MODEL_REQUEST_OWNER: ContextVar[str] = ContextVar("model_request_owner", default="")
+_BACKGROUND_REQUEST: ContextVar[tuple[threading.Event, threading.Event] | None] = ContextVar(
+    "background_model_request", default=None,
+)
+
+
+@contextmanager
+def background_model_requests(foreground_done: threading.Event, stopped: threading.Event):
+    """Speculative requests use spare capacity until the foreground joins."""
+    token = _BACKGROUND_REQUEST.set((foreground_done, stopped))
+    try:
+        yield
+    finally:
+        _BACKGROUND_REQUEST.reset(token)
+
+
 _MODEL_REQUEST_ADMISSION_CHECK: ContextVar[Callable[[], None] | None] = ContextVar(
     "model_request_admission_check",
     default=None,
@@ -49,20 +65,23 @@ class _FairProviderGate:
         self._limit = limit
         self._configured_limit = limit
         self._active = 0
+        self._background_active = 0
+        self._background: dict[object, tuple[threading.Event, threading.Event]] = {}
         self._queues: dict[str, deque[object]] = {}
         self._owners: deque[str] = deque()
         self._cooldown_until = 0.0
         self._rate_limit_streak = 0
         self._rate_limited_count = 0
         self._provider_pressure_count = 0
+        self._recovery_successes = 0
 
     def set_limit(self, limit: int) -> None:
         with self._condition:
             self._configured_limit = limit
-            self._limit = min(self._limit, limit) if self._provider_pressure_count else limit
+            self._limit = min(self._limit, limit)
             self._condition.notify_all()
 
-    def acquire(self, owner: str) -> None:
+    def acquire(self, owner: str) -> bool:
         token = object()
         with self._condition:
             queue = self._queues.get(owner)
@@ -71,33 +90,52 @@ class _FairProviderGate:
                 self._queues[owner] = queue
                 self._owners.append(owner)
             queue.append(token)
-            while True:
-                cooldown_remaining = max(0.0, self._cooldown_until - time.monotonic())
-                can_enter = (
-                    cooldown_remaining <= 0
-                    and self._active < self._limit
-                    and self._owners
-                    and self._owners[0] == owner
-                    and self._queues.get(owner)
-                    and self._queues[owner][0] is token
-                )
-                if can_enter:
-                    break
-                self._condition.wait(timeout=cooldown_remaining or None)
-            queue.popleft()
-            self._owners.popleft()
+            background = _BACKGROUND_REQUEST.get()
+            if background:
+                self._background[token] = background
+            try:
+                while True:
+                    if background and background[1].is_set():
+                        raise ModelRequestAborted("Parallel answer draft stopped")
+                    check = _MODEL_REQUEST_ADMISSION_CHECK.get()
+                    if check:
+                        check()
+                    # Preserve task round-robin within each priority. A foreground
+                    # request may bypass a speculative request of the same task.
+                    normal = next((item for name in self._owners for item in self._queues[name]
+                                   if item not in self._background or self._background[item][0].is_set()), None)
+                    first = normal if normal is not None else self._queues[self._owners[0]][0]
+                    low = bool(background and not background[0].is_set())
+                    spare = not low or self._background_active < max(0, self._limit - 1)
+                    if time.monotonic() >= self._cooldown_until and self._active < self._limit and first is token and spare:
+                        break
+                    self._condition.wait(timeout=0.25)
+            except BaseException:
+                queue.remove(token)
+                self._background.pop(token, None)
+                if not queue:
+                    self._queues.pop(owner, None)
+                    self._owners.remove(owner)
+                self._condition.notify_all()
+                raise
+            queue.remove(token)
+            self._background.pop(token, None)
+            self._owners.remove(owner)
             if queue:
                 self._owners.append(owner)
             else:
                 self._queues.pop(owner, None)
             self._active += 1
+            self._background_active += int(low)
             self._condition.notify_all()
+            return low
 
-    def release(self) -> None:
+    def release(self, background: bool = False) -> None:
         with self._condition:
             if self._active <= 0:
                 raise RuntimeError("model request gate released without an active request")
             self._active -= 1
+            self._background_active -= int(background)
             self._condition.notify_all()
 
     def record_rate_limit(
@@ -131,20 +169,27 @@ class _FairProviderGate:
 
         with self._condition:
             self._provider_pressure_count = min(8, self._provider_pressure_count + 1)
-            self._limit = max(1, self._configured_limit - self._provider_pressure_count)
+            self._limit = max(1, self._limit // 2)
+            self._recovery_successes = 0
         self.record_rate_limit(retry_after_seconds, backoff=backoff)
 
     def record_success(self) -> None:
         with self._condition:
             if time.monotonic() >= self._cooldown_until:
                 self._rate_limit_streak = 0
-                self._provider_pressure_count = 0
-                self._limit = self._configured_limit
+                self._recovery_successes += 1
+                if self._recovery_successes >= max(3, self._limit):
+                    self._limit = min(self._configured_limit, self._limit + 1)
+                    self._recovery_successes = 0
+                    self._provider_pressure_count = max(0, self._provider_pressure_count - 1)
+                    self._condition.notify_all()
 
     def snapshot(self) -> dict[str, object]:
         with self._condition:
             return {
                 "active": self._active,
+                "background_active": self._background_active,
+                "background_waiting": len(self._background),
                 "waiting": sum(len(queue) for queue in self._queues.values()),
                 "waiting_tasks": len(self._queues),
                 "waiting_owners": list(self._owners),
@@ -235,6 +280,51 @@ def _provider_key(provider: object | None) -> tuple[str, str]:
     )
 
 
+def _capacity_pool_id(key: tuple[str, str]) -> str:
+    import hashlib
+
+    return hashlib.sha256("\x1f".join(key).encode()).hexdigest()[:24]
+
+
+def provider_capacity_snapshot() -> list[dict[str, Any]]:
+    """Report actual shared gates, counting a pool once across its models."""
+    from .provider_control import capacity_observations
+    from .settings import list_providers
+
+    observations = capacity_observations()
+    pools: dict[tuple[str, str], dict[str, Any]] = {}
+    with _MODEL_REQUEST_LOCK:
+        gates = dict(_MODEL_REQUEST_GATES)
+        unlimited_active = dict(_UNLIMITED_ACTIVE)
+    for provider in list_providers().values():
+        if not getattr(provider, "api_key", ""):
+            continue
+        key = _provider_key(provider)
+        limit = _provider_request_limit(provider)
+        row = pools.setdefault(key, {
+            "pool_id": _capacity_pool_id(key), "providers": [], "supports_text": False,
+            "configured_limit": limit, "limit": limit, "active": 0, "waiting": 0,
+        })
+        row["providers"].append(provider.name)
+        row["supports_text"] |= bool(getattr(provider, "supports_text_generation", True))
+        if key in gates:
+            row.update({name: value for name, value in gates[key].snapshot().items() if name != "waiting_owners"})
+        elif limit <= 0:
+            row["active"] = unlimited_active.get(key, 0)
+        row["observations"] = observations.get(row["pool_id"], {})
+    return list(pools.values())
+
+
+def _record_capacity(key: tuple[str, str], concurrent: int, succeeded: bool, pressure: bool) -> None:
+    try:
+        from .provider_control import record_capacity_observation
+
+        record_capacity_observation(_capacity_pool_id(key), concurrent=concurrent, success=succeeded, pressure=pressure)
+    except Exception:
+        # Monitoring storage must not turn a completed request into a failure.
+        pass
+
+
 @contextmanager
 def model_request_slot(provider: object | None):
     """Apply the provider ceiling and shared cooldown across tasks.
@@ -245,6 +335,9 @@ def model_request_slot(provider: object | None):
     remain uncapped unless the global emergency ceiling is configured.
     """
     key = _provider_key(provider)
+    background_request = _BACKGROUND_REQUEST.get()
+    if background_request and background_request[1].is_set():
+        raise ModelRequestAborted("Parallel answer draft stopped")
     held_keys = _MODEL_REQUEST_HELD_KEYS.get()
     if key in held_keys:
         admission_check = _MODEL_REQUEST_ADMISSION_CHECK.get()
@@ -261,7 +354,23 @@ def model_request_slot(provider: object | None):
         admitted_callback = _MODEL_REQUEST_ADMITTED_CALLBACK.get()
         if admitted_callback:
             admitted_callback()
-        yield
+        with _MODEL_REQUEST_LOCK:
+            concurrent = _UNLIMITED_ACTIVE.get(key, 0) + 1
+            _UNLIMITED_ACTIVE[key] = concurrent
+        token = _MODEL_REQUEST_HELD_KEYS.set(held_keys | {key})
+        succeeded = False
+        pressure = False
+        try:
+            yield
+            succeeded = True
+        except BaseException as exc:
+            pressure = _is_rate_limit_error(exc)
+            raise
+        finally:
+            _MODEL_REQUEST_HELD_KEYS.reset(token)
+            with _MODEL_REQUEST_LOCK:
+                _UNLIMITED_ACTIVE[key] = max(0, _UNLIMITED_ACTIVE.get(key, 0) - 1)
+            _record_capacity(key, concurrent, succeeded, pressure)
         return
     with _MODEL_REQUEST_LOCK:
         gate = _MODEL_REQUEST_GATES.get(key)
@@ -270,26 +379,30 @@ def model_request_slot(provider: object | None):
             _MODEL_REQUEST_GATES[key] = gate
         else:
             gate.set_limit(limit)
-    gate.acquire(_request_owner())
+    background = gate.acquire(_request_owner())
     admission_check = _MODEL_REQUEST_ADMISSION_CHECK.get()
     if admission_check:
         try:
             admission_check()
         except BaseException:
-            gate.release()
+            gate.release(background)
             raise
     admitted_callback = _MODEL_REQUEST_ADMITTED_CALLBACK.get()
     if admitted_callback:
         try:
             admitted_callback()
         except BaseException:
-            gate.release()
+            gate.release(background)
             raise
     token = _MODEL_REQUEST_HELD_KEYS.set(held_keys | {key})
+    concurrent = int(cast(int, gate.snapshot()["active"]))
+    succeeded = False
+    pressure = False
     try:
         try:
             yield
         except BaseException as exc:
+            pressure = _is_rate_limit_error(exc)
             if _is_rate_limit_error(exc) and _is_profiled_provider(provider):
                 retry_after = getattr(exc, "retry_after_seconds", None)
                 gate.record_provider_pressure(
@@ -301,11 +414,13 @@ def model_request_slot(provider: object | None):
                 gate.record_rate_limit(retry_after if isinstance(retry_after, (int, float)) else None)
             raise
         else:
+            succeeded = True
             if _is_bigmodel_provider(provider) or _is_profiled_provider(provider):
                 gate.record_success()
     finally:
         _MODEL_REQUEST_HELD_KEYS.reset(token)
-        gate.release()
+        gate.release(background)
+        _record_capacity(key, concurrent, succeeded, pressure)
 
 
 def model_request_snapshot() -> dict[str, object]:

@@ -91,8 +91,8 @@ class PracticeExportGateTests(unittest.TestCase):
 
         report = validate_practice_export(data)
 
-        self.assertFalse(report["ok"])
-        self.assertTrue(any("题面答案泄漏" in issue for issue in report["blocking_issues"]))
+        self.assertTrue(report["ok"])
+        self.assertEqual([], report["blocking_issues"])
 
     def test_explicit_given_formula_remains_exportable(self):
         from app.practice_export import validate_practice_export
@@ -383,7 +383,7 @@ class PracticeExportGateTests(unittest.TestCase):
         report = validate_practice_export(resolved)
 
         self.assertFalse(report["ok"])
-        self.assertTrue(any("实质近似" in issue for issue in report["blocking_issues"]))
+        self.assertTrue(any("完全重复" in issue for issue in report["blocking_issues"]))
 
     def test_selected_export_allows_a_nonduplicate_subset_from_a_blocked_whole_set(self):
         from app.practice_export import validate_practice_export

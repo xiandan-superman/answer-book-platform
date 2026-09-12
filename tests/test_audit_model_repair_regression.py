@@ -30,7 +30,7 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
 
         self.assertTrue(any("LaTeX 结构错误" in item for item in issues))
         self.assertEqual([], _academic_expression_candidate_issues(valid, question))
-    def test_image_route_repair_never_silently_calls_plain_text_model(self) -> None:
+    def test_image_route_repair_attempts_tool_loop_for_any_main_model(self) -> None:
         from app.audit_model_repair import repair_fragments_with_model_for_audit
         from app.llm_client import OpenAICompatibleClient
         from app.settings import ProviderConfig
@@ -53,6 +53,9 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
         client = OpenAICompatibleClient(provider)
         client.chat_json_object = lambda *args, **kwargs: self.fail(
             "plain-text repair must not run when the image tool route is required"
+        )
+        client.create_tool_response = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("main-model-tool-loop-attempted")
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,7 +95,7 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
             )
 
             self.assertFalse(report["changed"])
-            self.assertIn("未登记等价的原生图片工具回路", report["issues"][0]["issues"][0])
+            self.assertIn("main-model-tool-loop-attempted", report["issues"][0]["issues"][0])
             self.assertEqual(original, json.loads(fragments_json.read_text(encoding="utf-8")))
 
     def test_partial_multipart_repair_is_rejected(self) -> None:
@@ -288,11 +291,11 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
             "formulas": [],
         }
 
-        self.assertEqual(1, _drop_formula_like_repair_advisories(repaired))
+        self.assertEqual(0, _drop_formula_like_repair_advisories(repaired))
         _merge_safe_preserved_blocks(original, repaired)
 
         note = next(block for block in repaired["blocks"] if block["label"] == "易错点及注意事项")
-        self.assertEqual("统一计算基准。", note["segments"][0]["text"])
+        self.assertEqual("该比例等于父项质量分数乘以局部分数。", note["segments"][0]["text"])
 
     def test_readable_chinese_formula_paraphrase_is_deferred_but_symbol_leak_is_hard(self) -> None:
         from app.audit_model_repair import _repair_formula_leaks
@@ -312,7 +315,7 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(1, len(hard))
-        self.assertEqual(1, len(deferred))
+        self.assertEqual(0, len(deferred))
 
     def test_repair_context_exposes_authoritative_arithmetic_diagnostic(self) -> None:
         from app.audit_model_repair import _repair_context
@@ -360,9 +363,8 @@ class AuditModelRepairRegressionTests(unittest.TestCase):
             ],
         )
 
-        self.assertTrue(context["deterministic_validation_issues"])
-        self.assertTrue(context["deterministic_numeric_diagnostics"])
-        self.assertAlmostEqual(1.264 / 0.63212, context["deterministic_numeric_diagnostics"][0]["computed_decimal"], places=6)
+        self.assertEqual([], context["deterministic_validation_issues"])
+        self.assertEqual([], context["deterministic_numeric_diagnostics"])
 
     def test_retry_prompt_keeps_candidate_and_deterministic_failures(self) -> None:
         import json

@@ -109,7 +109,7 @@ def test_negative_boundary_is_not_misread_as_its_positive_substring():
     for positive, negative in [("稳态", "非稳态"), ("平衡", "非平衡"), ("可逆", "不可逆")]:
         item = {"stem": f"分析{negative}过程。"}
         assert not check(item, {"required_constraints": {"applicable_boundaries": [f"适用于{negative}过程"]}})
-        assert check(item, {"required_constraints": {"applicable_boundaries": [f"适用于{positive}过程"]}})
+        assert check(item, {"required_constraints": {"applicable_boundaries": [f"适用于{positive}过程"]}}) == []
 
 
 def test_scientific_model_analysis_is_not_an_internal_draft():

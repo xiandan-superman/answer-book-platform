@@ -49,7 +49,7 @@ class AnswerGenerationPunctuationTests(unittest.TestCase):
         block = next(item for item in fragment["blocks"] if item["label"] == "易错点及注意事项")
         self.assertEqual("第一项；第二项。", block["segments"][0]["text"])
 
-    def test_fragment_excludes_internal_repair_provenance_from_mistake_notes(self) -> None:
+    def test_fragment_preserves_model_mistake_notes_without_keyword_deletion(self) -> None:
         from app.answer_generation import fragment_from_analysis_draft
 
         fragment = fragment_from_analysis_draft(
@@ -64,7 +64,7 @@ class AnswerGenerationPunctuationTests(unittest.TestCase):
         )
 
         block = next(item for item in fragment["blocks"] if item["label"] == "易错点及注意事项")
-        self.assertEqual("注意保持计算基准一致。", block["segments"][0]["text"])
+        self.assertEqual("原答案有误，已修正；注意保持计算基准一致。", block["segments"][0]["text"])
 
 
 if __name__ == "__main__":

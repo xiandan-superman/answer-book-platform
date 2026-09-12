@@ -30,7 +30,7 @@ def test_no_declared_vision_route_fails_closed() -> None:
     assert _answer_model_candidates_for_question(_provider(supports_vision=False), "text-selected", {"image_refs": ["q.png"]}) == []
 
 
-def test_image_tool_model_retry_keeps_only_equivalent_registered_candidate() -> None:
+def test_image_tool_model_retry_accepts_all_main_model_candidates() -> None:
     provider = ProviderConfig(
         name="custom-test",
         type="openai_compatible",
@@ -61,4 +61,4 @@ def test_image_tool_model_retry_keeps_only_equivalent_registered_candidate() -> 
         OpenAICompatibleClient(provider),
         provider,
         ["tool-model", "vision-without-tools", "text-only"],
-    ) == ["tool-model"]
+    ) == ["tool-model", "vision-without-tools", "text-only"]

@@ -12,10 +12,10 @@
     "pass_meaning": "A short real request completed on the exact provider/model/protocol and satisfied its output contract."
   },
   "summary": {
-    "providers": 13,
-    "models": 42,
-    "routes": 72,
-    "passed_routes": 61,
+    "providers": 14,
+    "models": 52,
+    "routes": 82,
+    "passed_routes": 71,
     "failed_snapshot_routes": 11,
     "catalog_models_without_observation": []
   },
@@ -795,6 +795,220 @@
                   "responsibility": "",
                   "retryable": null,
                   "http_status": null
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "lingsuan_domestic": {
+      "models": {
+        "deepseek-v4-flash": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 4.52,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "deepseek-v4-flash-0731": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 3.35,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "deepseek-v4-pro": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 3.48,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "deepseek-v4-pro-0813": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 3.15,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "glm-5.2": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 3.23,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "glm-5.3": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 4.78,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "glm-5.3-flash": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 3.68,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "kimi-k3": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 7.23,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "qwen3.7-max": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 2.64,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
+                }
+              ]
+            }
+          }
+        },
+        "qwen3.8-max": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 2.84,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "thinking_mode": "auto",
+                  "base_url": "https://edge.lingsuan.org/v1",
+                  "verified_at": "2026-09-12",
+                  "max_output_tokens": 8192
                 }
               ]
             }

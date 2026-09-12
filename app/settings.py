@@ -12,10 +12,8 @@ from .api_key_config import load_api_keys
 from .model_capability_registry import (
     ensure_provider_registry_sync,
     get_model_capability,
-    get_native_tool_route,
     get_verified_model_protocols,
     model_accepts_input,
-    provider_has_capability_registry,
 )
 from .paths import CONFIG_DIR, DATA_ROOT, LOCAL_CONFIG_DIR
 
@@ -44,6 +42,7 @@ ARK_SEEDREAM_IMAGE_LABELS = {
     "doubao-seedream-5-0-lite-260128": "Doubao-Seedream-5.0-lite",
 }
 SUPPORTED_PROVIDER_NAMES = frozenset({
+    "lingsuan_domestic",
     "ark",
     "ark_image",
     "bailian",
@@ -61,12 +60,13 @@ SUPPORTED_PROVIDER_NAMES = frozenset({
 REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
 LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
 LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
+    "lingsuan_domestic": "auto",
     "lingsuan_openai": "auto",
     "lingsuan_image": "auto",
     "lingsuan_google": "auto",
 }
 LINGSUAN_PROVIDER_NAMES = frozenset(LINGSUAN_OFFICIAL_THINKING_DEFAULTS)
-LINGSUAN_GATEWAY_BASE_URL = "https://lingsuan.org/v1"
+LINGSUAN_GATEWAY_BASE_URL = "https://edge.lingsuan.org/v1"
 WAWAPI_PROVIDER_NAMES = frozenset({
     "wawapi_openai", "wawapi_google", "wawapi_xai", "wawapi_image_openai", "wawapi_image_google", "wawapi_image_xai",
 })
@@ -88,6 +88,7 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "wawapi_image_xai",
 }
 BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
+    "lingsuan_domestic",
     "lingsuan_google",
     "wawapi_google",
 }
@@ -142,10 +143,11 @@ class ProviderConfig:
             if not model:
                 continue
             registry_profile = get_model_capability(self.name, model) or {}
-            public_model_profiles[model] = {
+            public_profile = {
                 **registry_profile,
                 **dict(self.model_profiles.get(model, {})),
             }
+            public_model_profiles[model] = public_profile
         return {
             "name": self.name,
             "type": self.type,
@@ -366,16 +368,6 @@ def list_providers() -> dict[str, ProviderConfig]:
             supports_vision = False
             model_options = []
             model_option_labels = {}
-        # The registry is a closed allowlist for built-in routes. A copied
-        # local config may be older or may overstate a model's capability, so
-        # normalize the public profile from the verified provider/model entry.
-        if provider_has_capability_registry(name):
-            for configured_model in model_options:
-                profile = model_profiles.setdefault(configured_model, {})
-                if get_native_tool_route(name, configured_model) is not None:
-                    profile["supports_tool_calls"] = True
-                else:
-                    profile.pop("supports_tool_calls", None)
         providers[name] = ProviderConfig(
             name=name,
             type=str(item.get("type", "openai_compatible")),

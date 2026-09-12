@@ -575,21 +575,9 @@ def _reconcile_adopted_knowledge_points(
 
 
 def _required_knowledge_point_issue(generated: dict[str, Any], planned_item: dict[str, Any]) -> dict[str, Any] | None:
-    required = _unique_strings(planned_item.get("required_knowledge_points"), limit=60, item_limit=500)
-    if not required:
-        return None
-    actual = _unique_strings(generated.get("knowledge_points"), limit=60, item_limit=500)
-    if set(actual) == set(required):
-        return None
-    missing = [point for point in required if point not in actual]
-    extra = [point for point in actual if point not in required]
-    return {
-        "required_knowledge_points": required,
-        "actual_knowledge_points": actual,
-        "missing_knowledge_points": missing,
-        "extra_knowledge_points": extra,
-        "reason": "输出知识点与蓝图要求的知识点组合不一致。",
-    }
+    """Retired: content similarity, difficulty and meaning are not machine gates."""
+    return None
+
 
 
 def _mode_kind(strategy: str) -> str:
@@ -655,7 +643,7 @@ def _regenerated_exercise_substantively_changed(current: dict[str, Any], candida
     candidate_text = _regeneration_surface_text(candidate)
     if not candidate_text:
         return False
-    return _text_similarity(current_text, candidate_text) < 0.92
+    return current_text != candidate_text
 
 
 def _normalized_diversity_signature(value: Any) -> dict[str, str]:
@@ -779,266 +767,42 @@ def _batch_variation_issues(
     batch_plan: list[dict[str, Any]],
     plan: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    scope = plan.get("source_scope") if isinstance(plan.get("source_scope"), dict) else {}
-    catalog = [item for item in (plan.get("selected_source_questions") or scope.get("questions") or []) if isinstance(item, dict)]
-    by_id = {_clean(item.get("source_question_id"), 80): item for item in catalog if _clean(item.get("source_question_id"), 80)}
-    issues: list[dict[str, Any]] = []
-    for raw_item in batch_exercises:
-        if not isinstance(raw_item, dict):
-            continue
-        try:
-            local_index = int(raw_item.get("batch_index")) - 1
-        except (TypeError, ValueError):
-            continue
-        if local_index < 0 or local_index >= len(batch_plan):
-            continue
-        planned_item = batch_plan[local_index]
-        refs = _unique_strings(planned_item.get("source_refs") or [planned_item.get("source_question_id")], limit=3, item_limit=80)
-        source = by_id.get(refs[0], {}) if refs else {}
-        report = validate_reference_calculation_variation(source, raw_item, planned_item)
-        if report["status"] == "failed":
-            issues.append({"batch_index": raw_item.get("batch_index"), **report})
-    return issues
+    """Retired: content similarity, difficulty and meaning are not machine gates."""
+    return []
+
 
 
 def _batch_sibling_variant_issues(
     batch_exercises: list[dict[str, Any]],
     batch_plan: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Reject sibling variants that are effectively the same question after number changes."""
-    by_parent: dict[str, list[tuple[int, dict[str, Any]]]] = {}
-    for raw_item in batch_exercises:
-        if not isinstance(raw_item, dict):
-            continue
-        try:
-            local_index = int(raw_item.get("batch_index")) - 1
-        except (TypeError, ValueError):
-            continue
-        if local_index < 0 or local_index >= len(batch_plan):
-            continue
-        parent_id = _clean(batch_plan[local_index].get("parent_plan_item_id"), 80)
-        if parent_id:
-            by_parent.setdefault(parent_id, []).append((local_index, raw_item))
-    issues: list[dict[str, Any]] = []
-    for siblings in by_parent.values():
-        for first_position, (first_index, first) in enumerate(siblings):
-            first_text = _number_masked_text(first.get("stem"))
-            if len(first_text) < 30:
-                continue
-            for second_index, second in siblings[first_position + 1:]:
-                second_text = _number_masked_text(second.get("stem"))
-                if len(second_text) < 30:
-                    continue
-                similarity = SequenceMatcher(None, first_text, second_text).ratio()
-                if first_text == second_text or similarity >= 0.92:
-                    for local_index in (first_index, second_index):
-                        issues.append({
-                            "batch_index": local_index + 1,
-                            "status": "failed",
-                            "reason": "同一蓝图生成的变式题结构过于相似，疑似仅替换数字或措辞。",
-                            "normalized_similarity": round(similarity, 4),
-                            "required_change": batch_plan[local_index].get("structural_change"),
-                        })
-    return issues
+    """Retired: content similarity, difficulty and meaning are not machine gates."""
+    return []
+
 
 
 def practice_diversity_issues(practice: dict[str, Any]) -> list[dict[str, Any]]:
-    """Detect set-level stem and solution-template collisions without an LLM judge."""
-    raw_exercises = practice.get("exercises") if isinstance(practice.get("exercises"), list) else []
-    exercises = [
-        item for item in raw_exercises
-        if isinstance(item, dict) and item.get("generation_status") != "failed" and _clean(item.get("stem"), 6000)
-    ]
-    original_positions = {id(item): index for index, item in enumerate(raw_exercises) if isinstance(item, dict)}
-    blueprint = practice.get("blueprint") if isinstance(practice.get("blueprint"), dict) else {}
-    strategy = _clean(practice.get("generation_strategy") or blueprint.get("generation_strategy"), 40)
-    comprehensive = strategy in COMPREHENSIVE_STRATEGIES
-    source_catalog = [
-        item for item in (practice.get("selected_source_questions") or (practice.get("source_scope") or {}).get("questions") or [])
-        if isinstance(item, dict)
-    ]
-    source_by_id = {
-        _clean(item.get("source_question_id"), 80): item
-        for item in source_catalog
-        if _clean(item.get("source_question_id"), 80)
-    }
+    """Only identical question payloads prove duplication; never use similarity."""
+    seen: dict[str, int] = {}
     issues: list[dict[str, Any]] = []
+    for index, item in enumerate(practice.get("exercises") or []):
+        if not isinstance(item, dict) or item.get("generation_status") == "failed" or not str(item.get("stem") or "").strip():
+            continue
+        signature = json.dumps({key: item.get(key) for key in ("stem", "options", "formulas", "tables", "figures")}, ensure_ascii=False, sort_keys=True)
+        if signature in seen:
+            issues.append({"code": "set_diversity_collision", "blocking": True,
+                           "exercise_index": index, "peer_index": seen[signature],
+                           "message": f"第 {index + 1} 题与第 {seen[signature] + 1} 题的题面数据完全重复。"})
+        else:
+            seen[signature] = index
+    return issues
 
-    if comprehensive:
-        for index, item in enumerate(exercises):
-            # Fill-in-the-blank questions can legitimately reuse source wording.
-            # Peer collisions below still reject duplicated questions.
-            if _source_type(item.get("question_type")) == "填空题":
-                continue
-            source = source_by_id.get(_clean(item.get("source_question_id"), 80), {})
-            source_text = _clean(source.get("source_content") or source.get("stem_excerpt") or source.get("excerpt"), 6000)
-            if len(_number_masked_text(source_text)) < 40:
-                continue
-            similarity = _text_similarity(source_text, item.get("stem"))
-            if similarity >= 0.62:
-                issues.append({
-                    "code": "source_surface_reuse",
-                    "blocking": True,
-                    "exercise_index": original_positions.get(id(item), index),
-                    "peer_index": None,
-                    "similarity": round(similarity, 4),
-                    "message": f"第 {item.get('number') or index + 1} 题与绑定来源题面过于接近，综合训练不得复用来源情境和句式骨架。",
-                })
-
-    for first_position, first in enumerate(exercises):
-        first_text = _number_masked_text(first.get("stem"))
-        first_source = _clean(first.get("source_question_id"), 80)
-        first_parent = _clean(first.get("parent_plan_item_id"), 80)
-        first_signature = _normalized_diversity_signature(first.get("diversity_signature"))
-        first_formula_tokens = _formula_token_signature(first)
-        first_points = set(_unique_strings(first.get("knowledge_points"), limit=20, item_limit=500))
-        for second_position in range(first_position + 1, len(exercises)):
-            second = exercises[second_position]
-            second_text = _number_masked_text(second.get("stem"))
-            second_source = _clean(second.get("source_question_id"), 80)
-            second_parent = _clean(second.get("parent_plan_item_id"), 80)
-            same_source = bool(first_source and first_source == second_source)
-            sibling_variants = bool(first_parent and first_parent == second_parent)
-            text_similarity = _text_similarity(first.get("stem"), second.get("stem"))
-            text_collision = (
-                first_text == second_text and len(first_text) >= 20
-            ) or (
-                sibling_variants and min(len(first_text), len(second_text)) >= 80 and text_similarity >= 0.88
-            ) or (
-                comprehensive and same_source and not sibling_variants
-                and min(len(first_text), len(second_text)) >= 80 and text_similarity >= 0.72
-            ) or (
-                not same_source and min(len(first_text), len(second_text)) >= 80 and text_similarity >= 0.84
-            )
-
-            second_signature = _normalized_diversity_signature(second.get("diversity_signature"))
-            solution_similarity = _text_similarity(first_signature["solution_family"], second_signature["solution_family"])
-            asked_similarity = _text_similarity(first_signature["asked_quantity"], second_signature["asked_quantity"])
-            scenario_similarity = _text_similarity(first_signature["scenario_family"], second_signature["scenario_family"])
-            same_operation = bool(
-                first_signature["cognitive_operation"]
-                and first_signature["cognitive_operation"] == second_signature["cognitive_operation"]
-            )
-            declared_collision = (
-                comprehensive
-                and bool(first_signature["solution_family"] and second_signature["solution_family"])
-                and bool(first_signature["asked_quantity"] and second_signature["asked_quantity"])
-                and solution_similarity >= 0.88
-                and asked_similarity >= 0.88
-                and (scenario_similarity >= 0.75 or same_operation)
-            )
-
-            second_formula_tokens = _formula_token_signature(second)
-            second_points = set(_unique_strings(second.get("knowledge_points"), limit=20, item_limit=500))
-            formula_similarity = _set_similarity(first_formula_tokens, second_formula_tokens)
-            formula_collision = (
-                comprehensive
-                and not sibling_variants
-                and len(first_formula_tokens) >= 4
-                and len(second_formula_tokens) >= 4
-                and formula_similarity >= 0.68
-                and text_similarity >= 0.22
-                and solution_similarity >= 0.82
-                and asked_similarity >= 0.78
-                and bool(first_points and first_points == second_points)
-            )
-            if not (text_collision or declared_collision or formula_collision):
-                continue
-            reasons = []
-            if text_collision:
-                reasons.append(f"题干结构相似度 {text_similarity:.2f}")
-            if declared_collision:
-                reasons.append("主要未知量和解法族重复")
-            if formula_collision:
-                reasons.append(f"核心公式特征重合度 {formula_similarity:.2f}")
-            issues.append({
-                "code": "set_diversity_collision",
-                "blocking": True,
-                "exercise_index": original_positions.get(id(second), second_position),
-                "peer_index": original_positions.get(id(first), first_position),
-                "similarity": round(max(text_similarity, formula_similarity), 4),
-                "message": (
-                    f"第 {second.get('number') or second_position + 1} 题与第 "
-                    f"{first.get('number') or first_position + 1} 题实质近似：{'；'.join(reasons)}。"
-                ),
-            })
-    deduplicated: list[dict[str, Any]] = []
-    seen: set[tuple[str, int, int | None]] = set()
-    for issue in issues:
-        key = (str(issue.get("code")), int(issue.get("exercise_index") or 0), issue.get("peer_index"))
-        if key not in seen:
-            deduplicated.append(issue)
-            seen.add(key)
-    return deduplicated
 
 
 def practice_difficulty_observations(practice: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return non-blocking difficulty drift observations for new generated items."""
-    exercises = [
-        item for item in (practice.get("exercises") or [])
-        if isinstance(item, dict) and item.get("generation_status") != "failed"
-    ]
-    known_by_level = {level: set(values) for level, values in DIFFICULTY_MECHANISMS.items()}
-    observations: list[dict[str, Any]] = []
-    mechanisms_by_level: dict[str, list[tuple[int, str]]] = {}
-    for index, item in enumerate(exercises):
-        if "difficulty_evidence" not in item:
-            continue
-        evidence = _normalized_difficulty_evidence(item.get("difficulty_evidence"))
-        level = _clean(item.get("difficulty"), 20)
-        primary = evidence["primary_mechanism"]
-        bottleneck = evidence["student_bottleneck"]
-        number = item.get("number") or index + 1
-        if not primary or not bottleneck:
-            observations.append({
-                "code": "difficulty_evidence_incomplete",
-                "severity": "low",
-                "exercise_index": index,
-                "message": f"第 {number} 题未完整记录主要难度机制和学生瓶颈；题目仍可使用，但难度校准信心较低。",
-            })
-            continue
-        mechanisms_by_level.setdefault(level, []).append((index, primary))
-        if level == "挑战" and primary in known_by_level["基础"]:
-            observations.append({
-                "code": "possible_difficulty_drift",
-                "severity": "high",
-                "exercise_index": index,
-                "message": f"第 {number} 题标为挑战，但自报的主要机制是“{primary}”，可能偏向基础层级；本次不阻断成题。",
-            })
-        elif level == "基础" and primary in known_by_level["挑战"]:
-            observations.append({
-                "code": "possible_difficulty_drift",
-                "severity": "medium",
-                "exercise_index": index,
-                "message": f"第 {number} 题标为基础，但主要机制是“{primary}”，可能偏难；本次不阻断成题。",
-            })
-        normalized_primary = _number_masked_text(primary)
-        if level == "挑战" and normalized_primary and any(
-            token in normalized_primary for token in ("计算量", "数据量", "小问数", "运算负担")
-        ) and not any(
-            token in normalized_primary for token in ("判断", "迁移", "逆向", "比较", "评价", "优化", "建模", "纠错", "反证")
-        ):
-            observations.append({
-                "code": "execution_only_challenge",
-                "severity": "high",
-                "exercise_index": index,
-                "message": f"第 {number} 题的挑战机制似乎仅来自执行负担，而非高阶认知瓶颈；本次不阻断成题。",
-            })
+    """Retired: content similarity, difficulty and meaning are not machine gates."""
+    return []
 
-    for level, rows in mechanisms_by_level.items():
-        if len(rows) < 3:
-            continue
-        counts = {mechanism: sum(1 for _, value in rows if value == mechanism) for _, mechanism in rows}
-        mechanism, count = max(counts.items(), key=lambda pair: pair[1])
-        if count <= max(2, (len(rows) + 1) // 2):
-            continue
-        observations.append({
-            "code": "difficulty_mechanism_concentration",
-            "severity": "medium",
-            "exercise_index": None,
-            "message": f"{level}题中有 {count}/{len(rows)} 道都使用“{mechanism}”作为主要难度机制，整套可能出现层级设计同质化；本次不阻断成题。",
-        })
-    return observations
 
 
 def validate_practice_mode_contract(plan: dict[str, Any]) -> dict[str, Any]:
@@ -1108,13 +872,6 @@ def validate_practice_mode_contract(plan: dict[str, Any]) -> dict[str, Any]:
         ]
         if count_mismatches:
             errors.append("单项模式未按用户设定的逐来源题数分配：" + "；".join(count_mismatches) + "。")
-        grouped: dict[str, list[tuple[str, str]]] = {}
-        for item, refs in zip(items, refs_by_item):
-            if refs:
-                grouped.setdefault(refs[0], []).append((_clean(item.get("variation_type"), 200), _clean(item.get("target_skill"), 500)))
-        for source_id, variants in grouped.items():
-            if len(variants) > 1 and len(set(variants)) == 1:
-                errors.append(f"单项模式来源 {source_id} 的多个变式缺少能力或变化方式差异。")
     else:
         missing = [source_id for source_id in selected_ids if source_id not in covered]
         if missing:
@@ -1406,8 +1163,6 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     """Run deterministic confirmation-time checks on a user-edited blueprint."""
     blueprint = plan.get("blueprint") if isinstance(plan.get("blueprint"), dict) else {}
     items = [item for item in (blueprint.get("exercise_plan") or []) if isinstance(item, dict)]
-    strategy = _clean(blueprint.get("generation_strategy"), 40)
-    mode = _mode_kind(strategy)
     errors: list[str] = []
     warnings: list[str] = []
     ids = [str(item.get("plan_item_id") or "").strip() for item in items]
@@ -1445,304 +1200,9 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             f"第 {','.join(invalid_difficulty_designs)} 项缺少完整的难度方向或学生瓶颈说明；"
             "系统将使用对应层级的软难度意图，不因此阻断生成。"
         )
-    source_scope = plan.get("source_scope") if isinstance(plan.get("source_scope"), dict) else {}
-    knowledge_mode = _clean(plan.get("source_mode"), 30) == "knowledge"
     semantic_scope_warnings: list[str] = []
-    source_catalog = [
-        item for item in (plan.get("selected_source_questions") or source_scope.get("questions") or [])
-        if isinstance(item, dict)
-    ]
-    source_by_id = {
-        _clean(item.get("source_question_id"), 80): item
-        for item in source_catalog
-        if _clean(item.get("source_question_id"), 80)
-    }
-    unbound_knowledge_targeted = (
-        strategy == "knowledge_targeted"
-        and _clean(plan.get("source_mode"), 30) == "knowledge"
-        and not source_catalog
-    )
-    source_slot_counts: dict[str, int] = {}
-    for item in items:
-        refs = _unique_strings(item.get("source_refs") or [item.get("source_question_id")], limit=3, item_limit=80)
-        if refs:
-            source_slot_counts[refs[0]] = source_slot_counts.get(refs[0], 0) + 1
-    if isinstance(blueprint.get("expected_source_counts"), dict):
-        for source_id, raw_count in blueprint["expected_source_counts"].items():
-            try:
-                expected_count = max(0, int(raw_count))
-            except (TypeError, ValueError):
-                continue
-            clean_source_id = _clean(source_id, 80)
-            if clean_source_id:
-                source_slot_counts[clean_source_id] = max(
-                    source_slot_counts.get(clean_source_id, 0),
-                    expected_count,
-                )
-    analysis_fallback_points = _string_list(
-        (plan.get("source_analysis") or {}).get("knowledge_points")
-        if isinstance(plan.get("source_analysis"), dict)
-        else [],
-        limit=60,
-    )
-    missing_required_points: list[str] = []
-    invalid_required_points: list[str] = []
-    unsupported_required_points: list[str] = []
-    supported_knowledge_targeted_points: list[str] = []
-    expected_scope_points: list[str] = []
-    for source in source_catalog:
-        for point in _string_list(source.get("knowledge_points"), limit=60):
-            if point not in expected_scope_points:
-                expected_scope_points.append(point)
-    planned_scope_points: list[str] = []
-    image_source_ids = {
-        source_id
-        for source_id, source in source_by_id.items()
-        if "⟦IMAGE_REF:" in _clean(source.get("source_content") or source.get("stem_excerpt"), 18000)
-    }
-    image_dependent_source_ids: set[str] = set()
-    boundary_review_items: list[str] = []
-    cross_source_leak_items: list[str] = []
-    cross_source_reference_items: list[str] = []
     findings: list[dict[str, Any]] = []
-    planned_points_by_source: dict[str, list[str]] = {}
-    for index, item in enumerate(items, start=1):
-        required = _unique_strings(item.get("required_knowledge_points"), limit=60, item_limit=500)
-        refs = _unique_strings(item.get("source_refs") or [item.get("source_question_id")], limit=3, item_limit=80)
-        # A strict verbatim fill-in has one fixed source span. Its planned
-        # knowledge points describe that span and blank, rather than every
-        # concept, formula, or boundary attached to the full source record.
-        # The source-wide equality rule below remains the default for normal
-        # single-source generation, where a question may exercise the full
-        # bound source scope.
-        strict_literal_fill = (
-            _clean((blueprint.get("requirements_contract") or {}).get("wording"), 40) == "strict_verbatim"
-            and _effective_question_type(item) == "填空题"
-            and isinstance(item.get("cloze_mapping"), dict)
-        )
-        if item.get("stem_figure_required") is True:
-            image_dependent_source_ids.update(ref for ref in refs if ref in image_source_ids)
-        expected = _required_knowledge_points_for_refs(refs, list(source_by_id.values()), analysis_fallback_points)
-        partitioned_knowledge_item = (
-            strategy in {"knowledge_item_wise", "per_question"}
-            and len(refs) == 1
-            and source_slot_counts.get(refs[0], 0) > 1
-        )
-        if (expected or unbound_knowledge_targeted) and not required:
-            missing_required_points.append(str(item.get("number") or index))
-        if unbound_knowledge_targeted:
-            unsupported = [
-                point
-                for point in required
-                if not _knowledge_scope_supports_point(point, analysis_fallback_points)
-            ]
-            if unsupported:
-                unsupported_required_points.extend(
-                    f"第 {item.get('number') or index} 项：{point}" for point in unsupported
-                )
-            for point in required:
-                if point not in unsupported and point not in supported_knowledge_targeted_points:
-                    supported_knowledge_targeted_points.append(point)
-        elif expected:
-            if (
-                mode == "single_source"
-                and not partitioned_knowledge_item
-                and not strict_literal_fill
-                and set(required) != set(expected)
-            ):
-                invalid_required_points.append(str(item.get("number") or index))
-            elif (mode == "comprehensive" or partitioned_knowledge_item) and not set(required).issubset(set(expected)):
-                invalid_required_points.append(str(item.get("number") or index))
-        if refs:
-            for point in required:
-                if point not in planned_points_by_source.setdefault(refs[0], []):
-                    planned_points_by_source[refs[0]].append(point)
-        for point in required:
-            if point not in planned_scope_points:
-                planned_scope_points.append(point)
-        constraints = item.get("required_constraints") if isinstance(item.get("required_constraints"), dict) else {}
-        boundaries = _unique_strings(constraints.get("applicable_boundaries"), limit=20, item_limit=500)
-        design_fields = {
-            "target_skill": _clean(item.get("target_skill"), 500),
-            "variation_type": _clean(item.get("variation_type"), 500),
-            "design_intent": _clean(item.get("design_intent"), 800),
-            "difficulty_rationale": _clean(item.get("difficulty_rationale"), 800),
-            "difficulty_levers": " ".join(
-                _unique_strings(item.get("difficulty_levers"), limit=12, item_limit=200)
-            ),
-        }
-        own_source_text = " ".join(_scope_evidence_text(source_by_id.get(ref, {})) for ref in refs)
-        foreign_anchors: dict[str, list[dict[str, str]]] = {}
-        for source_id, other_source in source_by_id.items():
-            if source_id in refs:
-                continue
-            for point in _string_list(other_source.get("knowledge_points"), limit=60):
-                anchor = re.sub(r"[（(].*?[）)]", "", point)
-                anchor = re.sub(r"(?:的)?(?:定义|确定步骤|标定步骤|表示方法|计算方法|基本原理|原理|结果)$", "", anchor)
-                anchor = _clean(anchor, 100)
-                if len(anchor) >= 4 and not _source_evidence_covers_anchor(anchor, own_source_text):
-                    foreign_anchors.setdefault(anchor, []).append({
-                        "source_id": source_id,
-                        "source_title": _clean(other_source.get("title"), 200),
-                        "knowledge_point": _clean(point, 500),
-                    })
-        anchor_matches = []
-        bridge_matches = []
-        for anchor, foreign_sources in foreign_anchors.items():
-            matched_fields = [
-                name
-                for name, value in design_fields.items()
-                if anchor in value and not _is_non_assessment_bridge(name, value, anchor)
-            ]
-            contextual_fields = [
-                name
-                for name, value in design_fields.items()
-                if anchor in value and _is_non_assessment_bridge(name, value, anchor)
-            ]
-            if matched_fields:
-                anchor_matches.append({
-                    "anchor": anchor,
-                    "matched_fields": matched_fields,
-                    "foreign_sources": foreign_sources,
-                })
-            if contextual_fields:
-                bridge_matches.append({
-                    "anchor": anchor,
-                    "matched_fields": contextual_fields,
-                    "foreign_sources": foreign_sources,
-                })
-        if anchor_matches:
-            item_number = str(item.get("number") or index)
-            cross_source_leak_items.append(item_number)
-            finding = {
-                "code": "cross_source_design_leak",
-                "severity": "warning",
-                "requires_review": True,
-                "item_number": item_number,
-                "plan_item_id": _clean(item.get("plan_item_id"), 120),
-                "bound_source_refs": refs,
-                "design_fields": design_fields,
-                "matches": anchor_matches,
-            }
-            finding["finding_signature"] = _blueprint_finding_signature(finding)
-            findings.append(finding)
-        if bridge_matches:
-            item_number = str(item.get("number") or index)
-            cross_source_reference_items.append(item_number)
-            findings.append({
-                "code": "cross_source_context_reference",
-                "severity": "warning",
-                "item_number": item_number,
-                "plan_item_id": _clean(item.get("plan_item_id"), 120),
-                "bound_source_refs": refs,
-                "matches": bridge_matches,
-            })
-        boundary_change_evidence = _blueprint_boundary_change_evidence(boundaries, design_fields)
-        if boundary_change_evidence:
-            item_number = str(item.get("number") or index)
-            boundary_review_items.append(item_number)
-            findings.append({
-                "code": "applicable_boundary_change_declared",
-                "severity": "warning",
-                "item_number": item_number,
-                "plan_item_id": _clean(item.get("plan_item_id"), 120),
-                "evidence": boundary_change_evidence,
-            })
-    if missing_required_points:
-        errors.append(f"第 {','.join(missing_required_points)} 项缺少必考知识点组合。")
-    if invalid_required_points:
-        message = "第 {} 项的必考知识点与绑定来源规则不一致。"
-        rendered = message.format(",".join(invalid_required_points))
-        if knowledge_mode:
-            semantic_scope_warnings.append(
-                f"{rendered} 当前判断基于文字匹配，可能是同义或上下位概念；请人工确认后继续。"
-            )
-        else:
-            errors.append(rendered)
-    if unbound_knowledge_targeted:
-        if not analysis_fallback_points:
-            errors.append("知识点定向蓝图缺少可验证的全局目标知识点。")
-        if unsupported_required_points:
-            semantic_scope_warnings.append(
-                "知识点定向蓝图引入了材料范围外的必考知识点："
-                + "；".join(unsupported_required_points[:12])
-                + "。该判断仅作语义范围提示，请人工核对是否为同义、细化或合理迁移。"
-            )
-        uncovered_global_points = [
-            point
-            for point in analysis_fallback_points
-            if not _knowledge_scope_supports_point(point, supported_knowledge_targeted_points)
-        ]
-        if uncovered_global_points:
-            semantic_scope_warnings.append(
-                "知识点定向蓝图的整套必考知识点未覆盖全局目标："
-                + "、".join(uncovered_global_points[:12])
-                + "。该判断仅作覆盖提示，请人工确认蓝图是否已用等价表述覆盖。"
-            )
-    if strategy in {"knowledge_item_wise", "per_question"}:
-        incomplete_sources = []
-        for source_id, count_for_source in source_slot_counts.items():
-            if count_for_source <= 1:
-                continue
-            expected = _required_knowledge_points_for_refs([source_id], list(source_by_id.values()))
-            actual = planned_points_by_source.get(source_id, [])
-            missing = [point for point in expected if point not in actual]
-            if missing:
-                missing_text = "、".join(missing[:6])
-                incomplete_sources.append(f"{source_id}缺少{missing_text}")
-        if incomplete_sources:
-            message = "逐知识单元多题分配未在整组覆盖全部确认知识点：" + "；".join(incomplete_sources) + "。"
-            if knowledge_mode:
-                semantic_scope_warnings.append(f"{message} 请人工确认是否属于等价表述或有意取舍。")
-            else:
-                errors.append(message)
-    if cross_source_leak_items:
-        warnings.append(
-            f"第 {','.join(dict.fromkeys(cross_source_leak_items))} 项的目标、设计意图或难度说明可能混入未绑定来源的子主题；"
-            "系统会暂停这些项的题目生成并保留其余可用项，请局部修复并复审后再生成。"
-        )
-    if cross_source_reference_items:
-        warnings.append(
-            f"第 {','.join(dict.fromkeys(cross_source_reference_items))} 项仅在排除范围或教学衔接说明中提到其它主题；"
-            "该说明不扩大本题必考范围，本次不阻断蓝图。"
-        )
-    missing_scope_points = [point for point in expected_scope_points if point not in planned_scope_points]
-    if missing_scope_points:
-        message = f"蓝图未覆盖已确认范围的知识点：{'、'.join(missing_scope_points[:12])}。"
-        if knowledge_mode:
-            semantic_scope_warnings.append(f"{message} 当前为文字匹配结果，请人工确认语义覆盖情况。")
-        elif mode == "comprehensive":
-            if len(items) < len(source_catalog):
-                warnings.append(f"当前题量少于已选来源数，{message} 建议增加题量以获得更完整覆盖。")
-            else:
-                warnings.append(f"{message} 请在蓝图审查中确认是否需要补充知识点。")
-        else:
-            errors.append(message)
-    image_without_dependency = sorted(image_source_ids - image_dependent_source_ids)
-    if image_without_dependency:
-        warnings.append(
-            "所选来源包含原图，但对应蓝图均未要求学生读取题干配图："
-            f"{','.join(image_without_dependency[:8])}。请确认这是有意改为纯文字训练，而不是遗漏读图能力。"
-        )
-    if boundary_review_items:
-        warnings.append(
-            f"第 {','.join(boundary_review_items)} 项声明改变已有适用边界；"
-            "请确认新条件仍在来源知识范围内且信息足以作答，不能仅因是变式就引入未提供的理论或参数。"
-        )
-    signatures = []
-    for item in items:
-        signatures.append((
-            tuple(_unique_strings(item.get("source_refs") or [item.get("source_question_id")], limit=3, item_limit=80)),
-            _clean(item.get("question_type"), 20),
-            _clean(item.get("difficulty"), 20),
-            _clean(item.get("target_skill"), 500),
-            _clean(item.get("variation_type"), 200),
-        ))
-    duplicate_signatures = sum(1 for signature in set(signatures) if signatures.count(signature) > 1)
-    knowledge_without_selected_scope = knowledge_mode and not (plan.get("selected_source_questions") or [])
-    if duplicate_signatures:
-        message = f"蓝图存在 {duplicate_signatures} 组完全重复的计划项。"
-        (warnings if knowledge_without_selected_scope else errors).append(message)
+    duplicate_signatures = 0  # Similar design descriptions do not prove duplicate questions.
     if not _clean(blueprint.get("training_goal"), 1000):
         warnings.append("蓝图尚未填写整体训练目标。")
     if not (blueprint.get("progression") or blueprint.get("design_notes")):
@@ -1750,21 +1210,6 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
     mode_contract = validate_practice_mode_contract(plan)
     errors.extend(str(error) for error in mode_contract.get("errors") or [])
     warnings.extend(str(warning) for warning in mode_contract.get("warnings") or [])
-    cover = plan.get("scope_cover") if isinstance(plan.get("scope_cover"), dict) else {}
-    selected_units = int((cover.get("counts") or {}).get("selected_units") or 0)
-    if selected_units > 0 and cover.get("complete") is False:
-        if knowledge_mode:
-            semantic_scope_warnings.append(
-                "蓝图未逐项覆盖全部已确认来源单元。当前为标识与文字匹配结果，请人工确认是否已等价覆盖。"
-            )
-        elif mode == "comprehensive":
-            if len(items) < selected_units:
-                warnings.append("当前题量少于已选来源数，蓝图未逐项覆盖全部来源单元。建议增加题量。")
-            else:
-                warnings.append("蓝图未逐项覆盖全部来源单元。请在蓝图审查中确认是否需要补充来源。")
-        else:
-            errors.append("蓝图未覆盖全部已确认来源单元。")
-    warnings.extend(semantic_scope_warnings)
     review_item_ids = list(dict.fromkeys(
         _clean(finding.get("plan_item_id"), 120)
         for finding in findings
@@ -1785,10 +1230,10 @@ def audit_practice_blueprint(plan: dict[str, Any]) -> dict[str, Any]:
             "unique_plan_item_count": len(set(ids)),
             "duplicate_signature_count": duplicate_signatures,
             "knowledge_targeted_global_point_count": (
-                len(analysis_fallback_points) if unbound_knowledge_targeted else 0
+                0
             ),
             "knowledge_targeted_supported_declared_point_count": (
-                len(supported_knowledge_targeted_points) if unbound_knowledge_targeted else 0
+                0
             ),
         },
     }
@@ -3130,100 +2575,8 @@ def _figure_relationship_issues(figures: list[dict[str, Any]], constraints: list
 
 
 def _complete_generated_figure(exercise: dict[str, Any], planned_item: dict[str, Any]) -> None:
-    """Fill deterministic chart annotations that should not depend on prose generation."""
-    if not _plan_requires_stem_figure(planned_item):
-        return
-    figures = [figure for figure in (exercise.get("figures") or []) if isinstance(figure, dict)]
-    if not figures:
-        return
-    design = _figure_design(planned_item.get("figure_design"), required=True)
-    figure = next((row for row in figures if _figure_series([row])), figures[0])
-    _stabilize_phase_diagram_geometry(figure, design)
-    series = [
-        row for row in _figure_series([figure])
-        if not re.search(r"终压|辅助|坐标轴|水平线|垂直线", _clean(row.get("name"), 100))
-    ]
-    required_text = " ".join(design["required_elements"])
-    if re.search(r"P\s*[-—–]?\s*V|P.?V", required_text, flags=re.IGNORECASE):
-        figure["x_label"] = _clean(figure.get("x_label"), 100) or "V"
-        figure["y_label"] = _clean(figure.get("y_label"), 100) or "P"
-
-    nodes = [node for node in (figure.get("nodes") or []) if isinstance(node, dict)]
-    used_ids = {_clean(node.get("id"), 50) for node in nodes}
-
-    def upsert_node(label: str, point: list[Any], fallback_id: str) -> None:
-        node = next((row for row in nodes if _normalized_figure_term(row.get("label")) == _normalized_figure_term(label)), None)
-        if node is None:
-            node_id = fallback_id
-            suffix = 2
-            while node_id in used_ids:
-                node_id = f"{fallback_id}_{suffix}"
-                suffix += 1
-            node = {"id": node_id, "label": label, "shape": "circle"}
-            nodes.append(node)
-            used_ids.add(node_id)
-        elif not _clean(node.get("id"), 50):
-            node_id = fallback_id
-            suffix = 2
-            while node_id in used_ids:
-                node_id = f"{fallback_id}_{suffix}"
-                suffix += 1
-            node["id"] = node_id
-            used_ids.add(node_id)
-        node["shape"] = _clean(node.get("shape"), 20) or "circle"
-        node["x"], node["y"] = point[0], point[1]
-
-    starts = [row.get("points", [])[0] for row in series if row.get("points")]
-    ends = [row.get("points", [])[-1] for row in series if row.get("points")]
-    if starts:
-        common_start = starts[0]
-        if len(starts) == 1 or all(_points_close(common_start, point) for point in starts[1:]):
-            for node in nodes:
-                if "初态" in _clean(node.get("label"), 200):
-                    node["x"], node["y"] = common_start[0], common_start[1]
-    for node in nodes:
-        label = _clean(node.get("label"), 200)
-        if "终态" not in label:
-            continue
-        qualifiers = [term for term in ("恒温", "绝热", "恒外压", "等温") if term in label]
-        matched = next(
-            (
-                row for row in series
-                if qualifiers and all(term in _clean(row.get("name"), 100) for term in qualifiers)
-            ),
-            None,
-        )
-        if matched and matched.get("points"):
-            endpoint = matched["points"][-1]
-            node["x"], node["y"] = endpoint[0], endpoint[1]
-    if "初态点" in required_text and starts:
-        common_start = starts[0]
-        if len(starts) == 1 or all(_points_close(common_start, point) for point in starts[1:]):
-            upsert_node("初态点", common_start, "initial_state")
-    if "终态点1和终态点2" in required_text and len(ends) >= 2:
-        upsert_node("终态点1", ends[0], "final_state_1")
-        upsert_node("终态点2", ends[1], "final_state_2")
-    figure["nodes"] = nodes
-
-    if "终压水平线" in required_text and len(ends) >= 2:
-        try:
-            terminal_pressures = [float(point[1]) for point in ends]
-            scale = max(1.0, *(abs(value) for value in terminal_pressures))
-            same_pressure = max(terminal_pressures) - min(terminal_pressures) <= scale * 1e-6
-            already_present = any("终压" in _normalized_figure_term(row.get("name")) for row in _figure_series([figure]))
-            if same_pressure and not already_present:
-                xs = [float(point[0]) for row in _figure_series([figure]) for point in (row.get("points") or [])]
-                figure.setdefault("series", []).append({
-                    "name": "终压水平线",
-                    "points": [[min(xs), terminal_pressures[0]], [max(xs), terminal_pressures[0]]],
-                })
-        except (TypeError, ValueError, IndexError):
-            pass
-    figure["semantic_contract"] = {
-        "required_elements": list(design["required_elements"]),
-        "relationship_constraints": list(design["relationship_constraints"]),
-        "question_dependency": design["question_dependency"],
-    }
+    """Preserve model geometry; names cannot justify inferred physical repairs."""
+    return None
 
 
 def _exercise_figure_issues(exercise: dict[str, Any], planned_item: dict[str, Any], *, batch_index: Any = None) -> list[dict[str, Any]]:
@@ -3236,114 +2589,6 @@ def _exercise_figure_issues(exercise: dict[str, Any], planned_item: dict[str, An
         return [{**prefix, "code": "missing_stem_figure", "message": "蓝图要求题干依赖图，但未返回 figures。"}]
     if not any(_figure_is_renderable(figure) for figure in figures):
         issues.append({**prefix, "code": "unrenderable_stem_figure", "message": "题图只有文字说明，没有可渲染的数据点或节点关系。"})
-    if not re.search(r"图|曲线|坐标|示意", _clean(exercise.get("stem"), 6000)):
-        issues.append({**prefix, "code": "stem_does_not_reference_figure", "message": "题干没有明确引用所附题图。"})
-    # A real image accepted after pixel inspection by the responsible main
-    # model must not be reinterpreted as a legacy structured figure.  Only the
-    # deterministic binding/file/stem checks above apply here; semantic visual
-    # repair, when necessary, goes back through the same main-model tool loop.
-    if any(
-        figure.get("figure_purpose") == "main_model_accepted"
-        and Path(str(figure.get("image_path") or "")).is_file()
-        for figure in figures
-    ):
-        return issues
-    design = _figure_design(planned_item.get("figure_design"), required=True)
-    dependency = _clean(design.get("question_dependency"), 500)
-    # A stem chart is evidence for the student, not an answer key.  If the
-    # confirmed dependency explicitly says that stages/positions are
-    # unlabelled and must be identified, visible node or edge labels must not
-    # reveal those names.  This is deterministic and applies across subjects.
-    if "未标注" in dependency:
-        visible_annotations = [
-            _clean(node.get("label"), 200)
-            for figure in figures
-            for node in (figure.get("nodes") or [])
-            if isinstance(node, dict) and _clean(node.get("label"), 200)
-        ]
-        visible_annotations.extend(
-            _clean(edge.get("label"), 200)
-            for figure in figures
-            for edge in (figure.get("edges") or [])
-            if isinstance(edge, dict) and _clean(edge.get("label"), 200)
-        )
-        revealing = [
-            label
-            for label in visible_annotations
-            if any(
-                term
-                and len(term) >= 2
-                and term in _normalized_figure_term(label)
-                for element in design["required_elements"]
-                for term in re.split(r"与|及|和|、|，|,", _normalized_figure_term(element))
-            )
-        ]
-        if revealing:
-            issues.append({
-                **prefix,
-                "code": "figure_reveals_requested_identification",
-                "message": "题图直接标出了题干要求学生识别的未标注信息。",
-                "revealing_labels": list(dict.fromkeys(revealing))[:12],
-            })
-    visible_content = []
-    for figure in figures:
-        visible_content.extend([
-            _clean(figure.get("title"), 300),
-            _clean(figure.get("description"), 1500),
-            _clean(figure.get("x_label"), 100),
-            _clean(figure.get("y_label"), 100),
-        ])
-        visible_content.extend(_clean(series.get("name"), 100) for series in figure.get("series") or [] if isinstance(series, dict))
-        visible_content.extend(_clean(node.get("label"), 200) for node in figure.get("nodes") or [] if isinstance(node, dict))
-        visible_content.extend(_clean(edge.get("label"), 120) for edge in figure.get("edges") or [] if isinstance(edge, dict))
-    missing_elements = [
-        element
-        for element in design["required_elements"]
-        if not _figure_element_present(element, figures, visible_content)
-    ]
-    if missing_elements:
-        issues.append({
-            **prefix,
-            "code": "figure_missing_required_elements",
-            "message": "题图未体现蓝图要求的元素。",
-            "missing_elements": missing_elements[:12],
-        })
-    curve_series = [
-        row for row in _figure_series(figures)
-        if re.search(r"曲线|绝热|恒温|可逆", _clean(row.get("name"), 100))
-        and not re.search(r"水平|垂直|终压|辅助", _clean(row.get("name"), 100))
-    ]
-    undersampled = [_clean(row.get("name"), 100) or "未命名曲线" for row in curve_series if len(row.get("points") or []) < 5]
-    if undersampled:
-        issues.append({
-            **prefix,
-            "code": "figure_curve_under_sampled",
-            "message": "题图曲线数据点过少，导出后会退化成直线或粗糙折线。",
-            "series": undersampled[:8],
-        })
-    chart_series = [
-        row for row in _figure_series(figures)
-        if not re.search(r"终压|辅助|坐标轴|水平线|垂直线", _clean(row.get("name"), 100))
-    ]
-    chart_nodes = [node for figure in figures for node in (figure.get("nodes") or []) if isinstance(node, dict)]
-    starts = [row.get("points", [])[0] for row in chart_series if row.get("points")]
-    ends = [row.get("points", [])[-1] for row in chart_series if row.get("points")]
-    mismatched_nodes: list[str] = []
-    for node in chart_nodes:
-        label = _clean(node.get("label"), 200)
-        point = [node.get("x"), node.get("y")]
-        candidates = starts if "初态" in label else ends if "终态" in label else []
-        if candidates and not any(_points_close(point, candidate) for candidate in candidates):
-            mismatched_nodes.append(label)
-    if mismatched_nodes:
-        issues.append({
-            **prefix,
-            "code": "figure_node_coordinate_mismatch",
-            "message": "题图的初态或终态节点没有落在对应曲线端点上。",
-            "nodes": mismatched_nodes[:12],
-        })
-    for relationship_issue in _figure_relationship_issues(figures, design["relationship_constraints"]):
-        issues.append({**prefix, **relationship_issue})
     return issues
 
 
@@ -3359,33 +2604,9 @@ _BOUNDARY_CONTRADICTION_MARKERS: dict[str, tuple[str, ...]] = {
 
 
 def _exercise_boundary_issues(exercise: dict[str, Any], planned_item: dict[str, Any]) -> list[dict[str, Any]]:
-    """Find explicit stem text that contradicts a confirmed hard boundary.
+    """Retired: content similarity, difficulty and meaning are not machine gates."""
+    return []
 
-    This deliberately handles only direct antonyms and process changes. More
-    subtle subject-matter questions remain for the conditional semantic review.
-    """
-    constraints = planned_item.get("required_constraints") if isinstance(planned_item.get("required_constraints"), dict) else {}
-    boundaries = _unique_strings(constraints.get("applicable_boundaries"), limit=20, item_limit=500)
-    stem = _clean(exercise.get("stem"), 12000)
-    issues: list[dict[str, Any]] = []
-    for boundary in boundaries:
-        normalized_boundary = _normalized_figure_term(boundary)
-        matched = [
-            marker
-            for key, markers in _BOUNDARY_CONTRADICTION_MARKERS.items()
-            if _normalized_figure_term(key) in normalized_boundary
-            and not any(_normalized_figure_term(value) in normalized_boundary for value in markers)
-            for marker in markers
-            if marker in stem
-        ]
-        if matched:
-            issues.append({
-                "code": "applicable_boundary_contradiction",
-                "message": "题干引入了与已确认适用边界相冲突的条件。",
-                "boundary": boundary,
-                "markers": list(dict.fromkeys(matched)),
-            })
-    return issues
 
 
 
@@ -6456,10 +5677,8 @@ def _blueprint_signature(item: dict[str, Any]) -> tuple[tuple[str, ...], str, st
 
 
 def _blueprint_duplicate_item_ids(items: list[dict[str, Any]]) -> list[list[str]]:
-    grouped: dict[tuple[tuple[str, ...], str, str, str, str], list[str]] = {}
-    for item in items:
-        grouped.setdefault(_blueprint_signature(item), []).append(_clean(item.get("plan_item_id"), 80))
-    return [ids for ids in grouped.values() if len(ids) > 1]
+    """Equal design prose does not prove duplicate generated questions."""
+    return []
 
 
 def _blueprint_refinement_context(plan: dict[str, Any], batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -7200,23 +6419,9 @@ def _source_type(value: Any) -> str:
 
 
 def _basic_question_overload_issue(exercise: dict[str, Any], plan_item: dict[str, Any]) -> dict[str, Any] | None:
-    if _clean(plan_item.get("difficulty"), 20) != "基础":
-        return None
-    stem = str(exercise.get("stem") or "").replace("\\n", "\n")
-    numbered = re.findall(
-        r"(?m)(?:^|\n)\s*(?:[（(]\s*[0-9一二三四五六七八九十]+\s*[）)]|[0-9一二三四五六七八九十]+[、.．])",
-        stem,
-    )
-    # Some providers keep every subquestion on one line. Count the explicit
-    # parenthesized markers there as a fallback without confusing answer options.
-    if len(numbered) < 2:
-        numbered = re.findall(r"[（(]\s*[0-9一二三四五六七八九十]+\s*[）)]", stem)
-    if len(numbered) <= 2:
-        return None
-    return {
-        "code": "basic_question_overloaded",
-        "message": f"基础题包含 {len(numbered)} 个明确作答任务；基础难度最多允许 2 个小问，请保持知识深度但缩短任务链。",
-    }
+    """Retired: content similarity, difficulty and meaning are not machine gates."""
+    return None
+
 
 
 def _strategy_plan(

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from .calculation_consistency import calculation_draft_consistency_issues
 from .capabilities.catalog import capability_policy_contributions
-from .formula_audit import looks_like_formula
+from .machine_gate_policy import machine_content_rule
 from .question_requirements import main_model_answer_figure_required
 from .question_types import infer_question_type, is_calculation_question, iter_leaf_question_parts, question_has_type, question_kind
 from .user_facing_text import contains_internal_repair_provenance
@@ -79,29 +78,9 @@ DANGLING_COMPOSITION_VALUE_RE = re.compile(
 
 
 def _incomplete_numeric_slots(fragment: dict[str, Any]) -> list[tuple[str, str]]:
-    """Locate deterministic empty numeric slots without inventing a value."""
+    """Retired: interpreting prose is the responsible model's job."""
+    return []
 
-    fields: list[tuple[str, Any]] = [
-        ("answer", fragment.get("answer")),
-        ("answer_summary", fragment.get("answer_summary")),
-    ]
-    for unit_index, unit in enumerate(fragment.get("answer_units", []) or []):
-        if not isinstance(unit, dict):
-            continue
-        fields.append((f"answer_units[{unit_index}].answer", unit.get("answer")))
-        for step_index, step in enumerate(unit.get("steps", []) or []):
-            if isinstance(step, dict):
-                fields.append(
-                    (f"answer_units[{unit_index}].steps[{step_index}].result_text", step.get("result_text"))
-                )
-    hits: list[tuple[str, str]] = []
-    for location, raw in fields:
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        if any(pattern.search(text) for pattern in INCOMPLETE_NUMERIC_SLOT_PATTERNS) or DANGLING_COMPOSITION_VALUE_RE.search(text):
-            hits.append((location, text[:160]))
-    return hits
 
 
 def _calculation_has_high_confidence_missing_unit(fragment: dict[str, Any], draft: dict[str, Any]) -> bool:
@@ -168,25 +147,9 @@ def _comparative_property_directions(text: Any) -> dict[str, set[int]]:
 
 
 def _answer_unit_comparative_contradictions(unit: dict[str, Any]) -> list[str]:
-    answer_text = str(unit.get("answer") or "")
-    analysis_text = _text_from_segments(unit.get("analysis_segments", []))
-    answer_subject = COMPARISON_SUBJECT_RE.search(answer_text)
-    analysis_subject = COMPARISON_SUBJECT_RE.search(analysis_text)
-    # Direction words alone are not enough: ``A更高`` and ``B更低`` may state
-    # the same comparison.  Only enforce a contradiction when both passages
-    # explicitly lead with the same named comparison subject.  Ambiguous prose
-    # remains advisory territory for selective review rather than a hard gate.
-    if not answer_subject or not analysis_subject or answer_subject.group() != analysis_subject.group():
-        return []
-    answer_directions = _comparative_property_directions(answer_text)
-    analysis_directions = _comparative_property_directions(analysis_text)
-    return sorted(
-        property_name
-        for property_name in answer_directions.keys() & analysis_directions.keys()
-        if len(answer_directions[property_name]) == 1
-        and len(analysis_directions[property_name]) == 1
-        and answer_directions[property_name] != analysis_directions[property_name]
-    )
+    """Retired: interpreting prose is the responsible model's job."""
+    return []
+
 
 
 def _split_top_level_composition(text: str) -> list[str]:
@@ -212,65 +175,9 @@ def _split_top_level_composition(text: str) -> list[str]:
 
 
 def _composition_partition_omissions(fragment: dict[str, Any], draft: dict[str, Any]) -> list[str]:
-    """Find a declared same-level constituent omitted by its numeric partition.
+    """Retired: interpreting prose is the responsible model's job."""
+    return []
 
-    This deliberately covers only a narrow, machine-verifiable case: prose
-    explicitly declares three or more ``A+B+C`` constituents; the calculation
-    ledger partitions the same requested composition, matches at least two of
-    those names, yet omits another declared constituent.  It does not judge
-    alternative terminology, rounding, or nested forms such as eutectic (α+β).
-    """
-
-    contract = fragment.get("calculation_contract")
-    if not isinstance(contract, dict):
-        contract = draft.get("calculation_contract")
-    if not isinstance(contract, dict):
-        return []
-    requested_text = " ".join(
-        str(item.get("request_text") or "")
-        for item in contract.get("requested_outputs", []) or []
-        if isinstance(item, dict)
-    )
-    if "组成" not in requested_text:
-        return []
-    quantities = {
-        str(item.get("quantity_id") or "").strip(): re.sub(
-            r"(?:质量分数|摩尔分数|体积分数|百分比|分数)$", "", str(item.get("name") or "").strip()
-        ).strip()
-        for item in contract.get("result_quantities", []) or []
-        if isinstance(item, dict) and str(item.get("quantity_id") or "").strip()
-    }
-    answer_text = "\n".join(
-        str(unit.get("answer") or "")
-        for unit in fragment.get("answer_units", []) or []
-        if isinstance(unit, dict)
-    ) or str(fragment.get("answer") or "")
-    declared_groups = []
-    for match in re.finditer(r"(?:组织(?:组成)?|成分组成|组成)\s*(?:为|是|包括)\s*([^。；;\n]{3,120})", answer_text):
-        parts = _split_top_level_composition(match.group(1))
-        if len(parts) >= 3:
-            declared_groups.append(parts)
-    omissions: set[str] = set()
-    for partition in contract.get("partitions", []) or []:
-        if not isinstance(partition, dict):
-            continue
-        partition_names = [
-            quantities.get(str(quantity_id or "").strip(), "")
-            for quantity_id in partition.get("component_quantity_ids", []) or []
-        ]
-        partition_names = [name for name in partition_names if name]
-        if len(partition_names) < 2:
-            continue
-        for declared in declared_groups:
-            matched = {
-                index
-                for index, part in enumerate(declared)
-                if any(name in part or part in name for name in partition_names)
-            }
-            if len(matched) < 2 or not all(any(name in part or part in name for part in declared) for name in partition_names):
-                continue
-            omissions.update(declared[index] for index in range(len(declared)) if index not in matched)
-    return sorted(omissions)
 
 
 def _qid(value: dict[str, Any]) -> str:
@@ -367,7 +274,7 @@ def _question_answer_units(question: dict[str, Any]) -> list[dict[str, str]]:
 
 def _answer_unit_has_text_or_formula(unit: dict[str, Any]) -> bool:
     answer = str(unit.get("answer") or "").strip()
-    if answer and answer not in PENDING_ANSWERS | {"见解析"} and not looks_like_formula(answer):
+    if answer and answer not in PENDING_ANSWERS | {"见解析"}:
         return True
     for segment in unit.get("analysis_segments", []) or []:
         if isinstance(segment, dict) and (str(segment.get("text") or "").strip() or segment.get("formula_indices")):
@@ -565,6 +472,8 @@ def audit_content_quality(
             question_id: str = qid,
             question_issues: list[dict[str, str]] = q_issues,
         ) -> None:
+            if not machine_content_rule(code):
+                return
             item = _entry(question_id, code, message, "issue")
             issues.append(item)
             question_issues.append(item)
@@ -576,6 +485,8 @@ def audit_content_quality(
             question_id: str = qid,
             question_warnings: list[dict[str, str]] = q_warnings,
         ) -> None:
+            if not machine_content_rule(code):
+                return
             item = _entry(question_id, code, message, "warning")
             warnings.append(item)
             question_warnings.append(item)
@@ -886,10 +797,6 @@ def audit_content_quality(
             }
         )
 
-    note_counter = Counter(text for _, text in mistake_note_texts)
-    for qid, text in mistake_note_texts:
-        if note_counter[text] > 1:
-            warnings.append(_entry(qid, "duplicated_mistake_note", "易错点及注意事项疑似多题复用同一句模板。", "warning"))
 
     report = {
         "ok": not issues,

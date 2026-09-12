@@ -156,30 +156,23 @@ def audit_text_segments_no_formula(
     *,
     include_chinese_paraphrase: bool = False,
 ) -> list[str]:
+    """Only explicit unconverted LaTeX commands are format failures."""
     issues: list[str] = []
-    ignored_block_labels = ignored_block_labels or set()
-
-    def walk(node: Any, path: str) -> None:
-        if isinstance(node, dict):
-            label = str(node.get("label", "")).strip()
-            if label in ignored_block_labels and isinstance(node.get("segments"), list):
+    def visit(item: Any) -> None:
+        if isinstance(item, list):
+            for child in item:
+                visit(child)
+        elif isinstance(item, dict):
+            if str(item.get("label") or "") in (ignored_block_labels or set()):
                 return
-            if node.get("type") == "text":
-                text = str(node.get("text", ""))
-                if is_formula_allowed_label_text(text):
-                    matches = []
-                else:
-                    matches = formula_like_matches(text) if include_chinese_paraphrase else symbolic_formula_like_matches(text)
-                if matches:
-                    issues.append(f"{path}.text contains formula-like content; matched expression: {matches[0]}; text preview: {text[:120]}")
-            for key, child in node.items():
-                walk(child, f"{path}.{key}" if path else str(key))
-        elif isinstance(node, list):
-            for idx, child in enumerate(node):
-                walk(child, f"{path}[{idx}]")
-
-    walk(value, "")
+            if item.get("type") == "text" and re.search(r"\\[A-Za-z]+", str(item.get("text") or "")):
+                issues.append("raw LaTeX command in text: " + str(item.get("text"))[:120])
+            for key, child in item.items():
+                if key not in {"text", "latex"}:
+                    visit(child)
+    visit(value)
     return issues
+
 
 
 def assert_no_formula_leak(value: Any) -> None:

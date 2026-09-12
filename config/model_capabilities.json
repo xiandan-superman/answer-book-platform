@@ -898,6 +898,211 @@
         }
       }
     },
+    "lingsuan_domestic": {
+      "display_name": "灵算 · 国模分组",
+      "models": {
+        "deepseek-v4-flash": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "deepseek-v4-flash-0731": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "deepseek-v4-pro": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "deepseek-v4-pro-0813": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "glm-5.2": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "glm-5.3": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "glm-5.3-flash": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "kimi-k3": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "qwen3.7-max": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        },
+        "qwen3.8-max": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "auto",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-12"
+        }
+      }
+    },
     "lingsuan_google": {
       "display_name": "灵算 Google",
       "models": {

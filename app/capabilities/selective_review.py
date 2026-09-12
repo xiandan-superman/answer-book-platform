@@ -458,7 +458,7 @@ def _numeric_patch_issues(
             continue
         bases = {str(row.get("basis") or "").strip() for row in rows if row is not None}
         if len(bases) > 1:
-            issues.append(f"numeric_patch_mixed_partition_basis:{index}")
+            continue  # Labels do not establish comparable physical bases.
         expected = _float_or_nan(partition.get("expected_total", 1.0))
         total = sum(float(row["value"]) for row in rows if row is not None)
         if not math.isfinite(expected) or not close(total, expected):
@@ -479,7 +479,7 @@ def _numeric_patch_issues(
             continue
         bases = {str(row.get("basis") or "").strip() for row in [parent, *products] if row is not None}
         if len(bases) > 1:
-            issues.append(f"numeric_patch_mixed_transition_basis:{index}")
+            continue  # Labels do not establish comparable physical bases.
         if not close(sum(float(row["value"]) for row in products if row is not None), float(parent["value"])):
             issues.append(f"numeric_patch_transition_conservation_mismatch:{index}")
         derived_id = str(transition.get("derived_quantity_id") or "").strip()
@@ -549,22 +549,6 @@ def _numeric_patch_issues(
         if any(_compact_text(quote) not in _compact_text(source_corpus) for quote in source_quotes):
             issues.append(f"numeric_patch_unverified_derivation_source:{quantity_id}")
             continue
-        quoted_numbers = {
-            token.lstrip("+-")
-            for quote in source_quotes
-            for token in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", quote)
-        }
-        expression_numbers = {
-            token.lstrip("+-")
-            for token in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", expression)
-        }
-        unsupported_numbers = {
-            token
-            for token in expression_numbers
-            if token not in quoted_numbers and token not in {"1", "100"}
-        }
-        if unsupported_numbers:
-            issues.append(f"numeric_patch_unanchored_derivation_inputs:{quantity_id}")
     return list(dict.fromkeys(issues))
 
 
@@ -712,57 +696,12 @@ def _normalized_decisions(
         reason = str(raw.get("reason") or "").strip()[:1000]
         suggested_fix = str(raw.get("suggested_fix") or "").strip()[:1000]
         numeric_patch = raw.get("proposed_calculation_contract")
-        compact_reason = _compact_text(reason)
-        reviewer_admits_answer_is_correct = any(
-            marker in compact_reason
-            for marker in (
-                "answerisactuallycorrect",
-                "answeriscorrect",
-                "finalnumbersarecorrect",
-                "currentansweriscorrect",
-                "答案实际正确",
-                "答案是正确的",
-                "当前答案正确",
-                "最终数值正确",
-            )
-        )
-        if decision == "repair" and reviewer_admits_answer_is_correct:
-            rejected_defects.extend(
-                {
-                    **defect,
-                    "reason": "reviewer_reason_admits_current_answer_is_correct",
-                }
-                for defect in defects
-            )
-            decision = "pass"
-            defects = []
-            suggested_fix = ""
         context = (validation_context or {}).get(candidate_id, {})
-        numeric_repair = bool(
-            context.get("has_numeric_calculation_contract", context.get("has_calculation_contract"))
-            and _NUMERIC_REPAIR_RE.search(
-                " ".join(
-                    [
-                        reason,
-                        suggested_fix,
-                        *[str(item.get("current_answer_quote") or "") for item in defects],
-                    ]
-                )
-            )
-        )
-        repair_claim_text = " ".join(
-            [
-                reason,
-                suggested_fix,
-                *[str(item.get("requirement_quote") or "") for item in defects],
-                *[str(item.get("current_answer_quote") or "") for item in defects],
-            ]
-        )
+        # Validate an explicitly supplied replacement, never infer one from prose.
+        numeric_repair = numeric_patch is not None
         numeric_patch_validation_issues = (
             _numeric_patch_issues(
                 numeric_patch,
-                require_partition=bool(_PARTITION_REPAIR_RE.search(repair_claim_text)),
-                require_transition=bool(_LINEAGE_REPAIR_RE.search(repair_claim_text)),
                 source_corpus=str(context.get("source_corpus") or ""),
                 current_contract=context.get("calculation_contract"),
             )

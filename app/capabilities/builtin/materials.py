@@ -640,73 +640,9 @@ def _xrd_hkl_labels(value: Any) -> set[str]:
 
 
 def materials_content_quality_policy(context: Mapping[str, Any]) -> dict[str, Any]:
-    """Cross-check user-visible XRD claims against the active final figure.
+    """Subject-matter and prose-to-figure interpretation belong to the main model."""
+    return {"issues": []}
 
-    The final programmatic spec may supersede a model-authored draft spec.  A
-    raster-only visual reviewer cannot reliably compare every crystallographic
-    label, so this capability performs the comparison on structured data.
-    """
-
-    question_value = context.get("question")
-    fragment_value = context.get("fragment")
-    question: Mapping[str, Any] = question_value if isinstance(question_value, Mapping) else {}
-    fragment: Mapping[str, Any] = fragment_value if isinstance(fragment_value, Mapping) else {}
-    text = _policy_text({"question": question})
-    if not any(token in text for token in ("xrd", "x射线", "粉末衍射", "衍射峰")):
-        return {"issues": []}
-
-    visible_parts = [str(fragment.get("answer") or ""), str(fragment.get("answer_summary") or "")]
-    for unit in fragment.get("answer_units", []) or []:
-        if not isinstance(unit, Mapping):
-            continue
-        visible_parts.append(str(unit.get("answer") or ""))
-        visible_parts.extend(
-            str(segment.get("text") or "")
-            for segment in unit.get("analysis_segments", []) or []
-            if isinstance(segment, Mapping)
-        )
-    for block in fragment.get("blocks", []) or []:
-        if not isinstance(block, Mapping) or str(block.get("label") or "").strip() == "教材依据":
-            continue
-        visible_parts.extend(
-            str(segment.get("text") or "")
-            for segment in block.get("segments", []) or []
-            if isinstance(segment, Mapping) and segment.get("type") == "text"
-        )
-    visible_text = "\n".join(visible_parts)
-
-    active_specs = [
-        spec
-        for spec in context.get("active_figure_specs", []) or []
-        if isinstance(spec, Mapping) and str(spec.get("kind") or "") == "xrd_pattern"
-    ]
-    active_labels = {
-        label
-        for spec in active_specs
-        for peak in spec.get("peaks", []) or []
-        if isinstance(peak, Mapping)
-        for label in _xrd_hkl_labels(peak.get("label"))
-    }
-    declared_labels = _xrd_hkl_labels(visible_text)
-    missing_labels = sorted(declared_labels - active_labels) if active_specs else []
-    issues: list[dict[str, str]] = []
-    if missing_labels:
-        issues.append(
-            {
-                "code": "xrd_figure_text_label_mismatch",
-                "message": "解析正文声明的衍射峰未全部出现在最终有效图中："
-                + "、".join(f"({label})" for label in missing_labels)
-                + "。应统一最终图与文字的峰表范围。",
-            }
-        )
-    if re.search(r"峰间距[^\u3002；;\n]{0,18}(?:逐渐|随)[^\u3002；;\n]{0,12}(?:增大|减小|变大|变小)", visible_text):
-        issues.append(
-            {
-                "code": "xrd_unsupported_peak_spacing_trend",
-                "message": "题目未给出波长与点阵常数时，只能稳健给出 N=h²+k²+l² 或 sin²θ 的相对次序；不应额外声明 2θ 峰间距必然单调变大或变小。",
-            }
-        )
-    return {"issues": issues}
 
 
 def materials_visual_understanding_policy(context: Mapping[str, Any]) -> dict[str, Any]:

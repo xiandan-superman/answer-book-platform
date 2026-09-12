@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import tempfile
 import threading
 import time
@@ -39,6 +38,7 @@ from .answer_generation import (
     semantic_generation_issues,
     write_demo_fragments,
 )
+from .artifact_store import atomic_write_json
 from .audit_model_repair import fill_missing_fragments_locally, repair_fragments_with_model_for_audit
 from .audit_review_gate import enforce_unattended_audit_report
 from .capabilities.academic_expressions import audit_academic_expressions
@@ -46,6 +46,7 @@ from .capabilities.quality_budget import QualityExecutionBudget
 from .capabilities.quality_governance import ActionCeiling, governance_for
 from .capabilities.selective_review import review_selective_quality
 from .capabilities.shadow_quality import build_shadow_quality_report
+from .concurrency import ModelRequestAborted, _provider_key, background_model_requests
 from .content_quality_audit import audit_content_quality
 from .content_quality_repair import repair_content_quality_locally
 from .document_tool import DocumentToolFailure, DocumentToolSession
@@ -256,6 +257,7 @@ TRANSIENT_PROGRESS_FILES = (
     "knowledge_planning_progress.json",
     "evidence_selection_progress.json",
     "answer_generation_progress.json",
+    "answer_generation_parallel_progress.json",
     "figure_progress.json",
 )
 
@@ -1131,7 +1133,54 @@ def _parallel_answer_draft_eligible(
     questions = [item for item in structured_exam.get("items", []) or [] if isinstance(item, dict)]
     if not questions:
         return False
-    return not any(question.get("image_refs") or answer_figure_required(question) for question in questions)
+    return bool(questions)
+
+
+def _parallel_answer_questions(structured_exam: dict[str, Any], provider: Any, model: str) -> list[dict[str, Any]]:
+    """Only defer the affected question, never the entire mixed paper."""
+    from .question_understanding import has_question_snapshot, needs_vision_model
+
+    return [copy.deepcopy(question) for question in structured_exam.get("items", [])
+            if isinstance(question, dict)
+            and (not needs_vision_model(question)
+                 or (provider_model_supports_vision(provider, model) and has_question_snapshot(question)))]
+
+
+def _generate_parallel_answer_draft(
+    structured_exam: dict[str, Any], provider: Any, model: str, output: Path,
+    foreground_done: threading.Event, stopped: threading.Event, *, shared_pool: bool,
+    progress_json: Path, schema_future: Future | None = None,
+    schema_plan: dict | None = None,
+    image_provider: Any = None, image_model: str = "",
+):
+    def wait_for_evidence() -> None:
+        while not foreground_done.wait(0.25):
+            if stopped.is_set():
+                raise ModelRequestAborted("Evidence stage stopped before image generation")
+        if stopped.is_set():
+            raise ModelRequestAborted("Parallel answer draft stopped")
+
+    # Do not drop a drawing contract to start a speculative request earlier.
+    if schema_plan is not None:
+        structured_exam = attach_figure_schema_plans(structured_exam, schema_plan)
+    elif schema_future is not None:
+        atomic_write_json(progress_json, {"status": "waiting_dependencies", "completed": 0,
+                                         "total": len(structured_exam.get("items", []))})
+        while not schema_future.done():
+            if stopped.wait(0.25):
+                raise ModelRequestAborted("Parallel answer draft stopped")
+        structured_exam = attach_figure_schema_plans(structured_exam, schema_future.result())
+    # Independent suppliers must not lose one of their own concurrency slots.
+    priority_done = foreground_done if shared_pool else threading.Event()
+    if not shared_pool:
+        priority_done.set()
+    with background_model_requests(priority_done, stopped):
+        return generate_answer_fragments(
+            structured_exam, [], provider, model, output, progress_json=progress_json,
+            evidence_selections={}, reusable_fragments={}, include_textbook_evidence=False,
+            image_provider=image_provider, image_model=image_model,
+            before_image_generation=wait_for_evidence,
+        )
 
 
 def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, run_id: str = "") -> dict:
@@ -1163,6 +1212,8 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
     schema_checkpoint_reused = False
     answer_draft_executor: ThreadPoolExecutor | None = None
     answer_draft_future: Future | None = None
+    answer_foreground_done = threading.Event()
+    answer_draft_stopped = threading.Event()
     answer_draft_path = sdir / "answer_fragments.parallel_draft.json"
     mark = telemetry.mark
 
@@ -1579,8 +1630,11 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                 },
             )
 
-        if _parallel_answer_draft_eligible(
-            structured_exam,
+        parallel_questions = _parallel_answer_questions(structured_exam, answer_provider, answer_model)
+        if schema_future is None and figure_schema_plan is None:
+            parallel_questions = [question for question in parallel_questions if not answer_figure_required(question)]
+        if textbook_evidence_enabled and parallel_questions and _parallel_answer_draft_eligible(
+            {"items": parallel_questions},
             textbook_evidence_only=textbook_evidence_only,
             use_model=options.use_model,
             reuse_fragments=options.reuse_fragments,
@@ -1589,22 +1643,28 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             answer_draft_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="answer-draft-background")
             answer_draft_future = answer_draft_executor.submit(
                 copy_context().run,
-                generate_answer_fragments,
-                copy.deepcopy(structured_exam),
-                [],
+                _generate_parallel_answer_draft,
+                {**copy.deepcopy(structured_exam), "items": parallel_questions},
                 answer_provider,
                 answer_model,
                 answer_draft_path,
+                answer_foreground_done,
+                answer_draft_stopped,
+                shared_pool=_provider_key(answer_provider) == _provider_key(reasoning_provider),
                 progress_json=sdir / "answer_generation_parallel_progress.json",
-                evidence_selections={},
-                reusable_fragments={},
-                include_textbook_evidence=False,
+                schema_future=schema_future,
+                schema_plan=figure_schema_plan,
+                image_provider=answer_image_provider,
+                image_model=answer_image_model,
             )
             mark(
                 "answer_generation_parallel",
                 "started",
                 {
-                    "mode": "text_only_speculative_draft",
+                    "mode": "dependency_ready_speculative_draft",
+                    "question_count": len(parallel_questions),
+                    "deferred_question_count": len(structured_exam.get("items", [])) - len(parallel_questions),
+                    "scheduling": "evidence_first_spare_capacity",
                     "quality_contract": "confirmed evidence binding plus existing content-quality audit and repair",
                 },
             )
@@ -1861,6 +1921,7 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
             else {}
         )
         parallel_draft_result = None
+        answer_foreground_done.set()
         if answer_draft_future is not None:
             try:
                 parallel_draft_result = answer_draft_future.result()
@@ -1871,9 +1932,22 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
                     answer_draft_executor.shutdown(wait=True)
                     answer_draft_executor = None
                 answer_draft_future = None
-        if parallel_draft_result is not None and parallel_draft_result.ok and answer_draft_path.exists():
-            shutil.copyfile(answer_draft_path, fragments_json)
-            generation_detail = asdict(parallel_draft_result)
+        if parallel_draft_result is not None and answer_draft_path.exists():
+            draft_data = json.loads(answer_draft_path.read_text(encoding="utf-8"))
+            draft_questions = {str(q.get("question_id") or ""): q for q in structured_exam.get("items", [])}
+            ready_fragments = {str(row.get("question_id") or ""): row for row in draft_data.get("fragments", [])
+                               if isinstance(row, dict) and str(row.get("question_id") or "") in draft_questions
+                               and not row.get("_review_flags") and not row.get("_review_candidate_issues")
+                               and not validate_v4_answer_fragment(row)
+                               and not semantic_generation_issues(draft_questions[str(row["question_id"])], row)}
+            generation = generate_answer_fragments(
+                structured_exam, candidates, answer_provider, answer_model, fragments_json,
+                progress_json=sdir / "answer_generation_progress.json",
+                evidence_selections=evidence_selections, reusable_fragments=ready_fragments,
+                image_provider=answer_image_provider, image_model=answer_image_model,
+                include_textbook_evidence=textbook_evidence_enabled,
+            )
+            generation_detail = asdict(generation)
             generation_detail["parallel_draft"] = True
             generation_detail["evidence_reconciliation_required"] = True
             mark(
@@ -3215,11 +3289,15 @@ def _run_pipeline_impl(task_id: str, options: PipelineOptions | None = None, *, 
         mark("pipeline", "failed", {"error": str(exc)})
         raise
     finally:
+        answer_draft_stopped.set()
+        answer_foreground_done.set()
         telemetry.stop()
         if schema_executor is not None:
             schema_executor.shutdown(wait=False, cancel_futures=True)
         if answer_draft_executor is not None:
-            answer_draft_executor.shutdown(wait=False, cancel_futures=True)
+            # Drain already-admitted calls before a later run can reuse this
+            # task's draft/checkpoint paths. Queued calls observe stopped.
+            answer_draft_executor.shutdown(wait=True, cancel_futures=True)
 
 
 def run_pipeline(task_id: str, options: PipelineOptions | None = None) -> dict:

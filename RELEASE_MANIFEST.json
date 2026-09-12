@@ -1,19 +1,17 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.52",
+  "version": "0.9.53",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.52",
+  "source_revision": "release-v0.9.53",
   "build_kind": "stable-source-release",
-  "created_at": "2026-09-11T23:06:52+08:00",
+  "created_at": "2026-09-12T19:02:00+08:00",
   "validation": {
-    "release_readiness": "Locked Python 3.11 full quality gate passed after fixing the download-ledger ordering race found by the first GitHub release-candidate run: 2332 passed, 17 deselected, 12 warnings; coverage 72%, PyCompile, version consistency, formula, license, completeness, Ruff and Mypy checks passed. GitHub independently re-runs the locked Python 3.11 and cross-platform release matrix.",
-    "real_task_scope": "A lightweight one-question exam-analysis task and one-question practice-generation task completed end to end with passed quality status. A separate two-question exam-analysis task completed without pipeline blockage and was correctly downgraded because the model omitted a calculation substitution step.",
-    "paid_model_regression": "Real Gemini 3.6 Flash calls were made through the configured Lingsuan route for the lightweight exam-analysis and practice-generation acceptance tasks; final release gates themselves do not call paid models.",
-    "staged_secret_scan": "All staged release candidates were scanned for high-risk credentials and private keys. Two controlled fake Ark-like tokens in redaction tests were reviewed; no user API Key, private key or new credential is included, and no task, textbook, log, output or cache path is staged.",
-    "source_package": "Git-index source package contained 413 allowlisted files and was reverse-verified locally with zero forbidden user-data or credential issues.",
-    "browser_regression": "Frontend behavior is covered by the deterministic contract and responsive-layout regression suite; GitHub independently runs the Chromium release gate.",
-    "isolated_startup": "Extracted source candidate started with an isolated data directory; /api/version reported 0.9.52 with matching APP_VERSION, platform version and release manifest, and the home page returned HTTP 200.",
+    "release_readiness": "Locked Python 3.11 scripts/run_quality_gates.py --full passed: 2412 passed, 17 deselected, 12 warnings; coverage 70%; PyCompile, version, formula, license, completeness, Ruff and Mypy passed.",
+    "browser_regression": "Isolated Chromium pytest -m e2e tests/e2e/test_platform_smoke.py: 14 passed twice consecutively. Node syntax passed.",
+    "paid_model_regression": "Prior integration: all 10 Lingsuan domestic models returned minimal JSON through edge.lingsuan.org/v1. No paid calls during release gates; not full-task, vision, image or capacity acceptance.",
+    "unverified_scope": "Historical audit cases requiring missing original DOCX, Windows manual scenarios, complex real Word/PDF and storage quota remain unverified.",
+    "source_package": "Git-index candidate: 420 files, reverse verification passed with zero issues. Extracted source started with isolated data; home HTTP 200 and /api/version 0.9.53 matched manifest. Automatic release repeats verification on exact commit.",
     "local_credentials_included": false,
     "runtime_user_data_included": false
   }

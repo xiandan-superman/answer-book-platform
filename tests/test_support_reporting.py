@@ -209,11 +209,15 @@ def test_failed_generation_report_contains_request_model_result_and_batch_lifecy
                     "scope": "task",
                     "page": "tasks",
                     "task_id": first["job_id"],
+                    "public_task_id": "RW-AAAA-BBBB-CCCC-DDDD",
+                    "stable_task_id": "batch-stable",
                     "task_kind": "practice",
                     "report_group_id": "group-1",
                     "events": [],
                 })
         assert manifest["context"]["report_group_id"] == "group-1"
+        assert manifest["context"]["public_task_id"] == "RW-AAAA-BBBB-CCCC-DDDD"
+        assert manifest["context"]["stable_task_id"] == "batch-stable"
         with zipfile.ZipFile(path) as zf:
             content = json.loads(zf.read("related_content.json"))
             failure_context = json.loads(zf.read("failure_context.json"))

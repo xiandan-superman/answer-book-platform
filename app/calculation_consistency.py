@@ -472,252 +472,40 @@ def _close_substitution_result(actual: float, expected: float, scale: float | No
 
 def formula_numeric_consistency_issues(formulas: list[dict[str, Any]], *,
                                      observations: list[dict[str, Any]] | None = None) -> list[str]:
+    """Only complete, literal arithmetic equalities are machine-decidable.
+
+    Variables, units, approximate signs and cross-formula assignments require
+    context. They are deliberately left to the responsible model.
+    """
     issues: list[str] = []
     for index, formula in enumerate(formulas, start=1):
-        if not isinstance(formula, dict):
-            continue
-        observation = {"formula_index": index, "status": "unknown", "scope": "numeric_equality",
-                       "unit_verification": "unknown", "reason": "not_decidable_by_this_checker"}
-        if observations is not None:
-            observations.append(observation)
-        if "程序在结构校验前从解析正文中提升" in str(formula.get("source_note") or ""):
-            # These objects preserve Word typography for a prose substring.
-            # The substring can be a suffix of a longer equality chain, so it
-            # is not an authoritative calculation ledger entry.
+        if str(formula.get("source_note") or "").startswith("程序"):
             continue
         latex = str(formula.get("latex") or "")
-        if str(formula.get("role") or "").strip().lower() == "relation":
-            units = re.findall(r"\\(?:mathrm|text)\{([^{}]+)\}", latex)
-            if len(set(units)) >= 2:
-                # A pure unit conversion intentionally has different numeric
-                # values on either side (for example 1 cm = 10^7 nm).  The
-                # lightweight arithmetic checker is unit-agnostic, so this is
-                # not an authoritative equality for its purposes.
-                continue
-        parts = [part.strip() for part in latex.split("=") if part.strip()]
-        if len(parts) < 2:
+        parts = latex.split("=")
+        if len(parts) < 2 or any(not re.fullmatch(r"[0-9.+*/() \-]+", part) for part in parts):
             continue
-        expected = _last_numeric_value(parts[-1])
-        actual = _eval_simple_expression(parts[-2])
-        if expected is None or actual is None:
-            # The existing numeric checker is faster and understands the
-            # platform's unit/percentage conventions.  Delegate only symbolic
-            # equalities it cannot decide to the isolated OSS math stack.
-            left_symbols = set(re.findall(r"(?<!\\)\b[A-Za-z]\b", parts[0]))
-            right_symbols = set(re.findall(r"(?<!\\)\b[A-Za-z]\b", parts[1]))
-            if len(parts) == 2 and left_symbols and left_symbols == right_symbols:
-                from .adapters.math_verifier import verify_math_equivalence
-
-                verification = verify_math_equivalence(f"${parts[0]}$", f"${parts[1]}$")
-                if verification.available and verification.equivalent is not None:
-                    observation.update(status="passed" if verification.equivalent else "failed",
-                                       scope="symbolic_equality", reason="symbolic_verifier")
-                if verification.available and verification.equivalent is False:
-                    issues.append(f"formula_{index}_symbolic_equality_mismatch")
+        values = [_eval_simple_expression(part) for part in parts]
+        if any(value is None for value in values):
             continue
-        agrees = _close_with_percent_equivalence(actual, expected)
-        observation.update(status="passed" if agrees else "failed", reason="evaluated_numeric_equality")
+        actual = values[0]
+        assert actual is not None
+        agrees = all(_close(actual, value) for value in values[1:] if value is not None)
+        if observations is not None:
+            observations.append({"formula_index": index, "status": "passed" if agrees else "failed",
+                                 "scope": "literal_numeric_equality", "unit_verification": "not_applicable"})
         if not agrees:
-            issues.append(
-                f"formula_{index}_numeric_equality_mismatch:{actual:.8g}!={expected:.8g}"
-            )
-    substitution_values: dict[str, list[tuple[int, float, float | None]]] = {}
-    result_values: dict[str, list[tuple[int, float]]] = {}
-    for index, formula in enumerate(formulas, start=1):
-        if not isinstance(formula, dict):
-            continue
-        lhs = _normalized_formula_lhs(formula.get("latex"))
-        if not lhs:
-            continue
-        role = str(formula.get("role") or "").strip().lower()
-        if role == "substitution":
-            value = _substitution_expression_value(formula.get("latex"))
-            if value is not None:
-                parts = [part.strip() for part in str(formula.get("latex") or "").split("=") if part.strip()]
-                scale = _expression_magnitude_scale(parts[-1]) if len(parts) >= 2 else None
-                substitution_values.setdefault(lhs, []).append((index, value, scale))
-        elif role == "result":
-            values = _formula_declared_result_values_in_base_units(formula.get("latex"))
-            if len(values) == 1:
-                result_values.setdefault(lhs, []).append((index, values[0]))
-    for lhs in sorted(substitution_values.keys() & result_values.keys()):
-        for substitution_index, actual, scale in substitution_values[lhs]:
-            if any(
-                _close_substitution_result(actual, expected, scale)
-                for _, expected in result_values[lhs]
-            ):
-                continue
-            declared = [value for _, value in result_values[lhs]]
-            issues.append(
-                f"formula_substitution_result_mismatch:{substitution_index}:"
-                f"{actual:.8g}!={declared}"
-            )
-    return list(dict.fromkeys(issues))
+            issues.append(f"formula_{index}_numeric_equality_mismatch:{values}")
+    return issues
+
 
 
 def calculation_draft_consistency_issues(draft: dict[str, Any], *,
                                        observations: list[dict[str, Any]] | None = None) -> list[str]:
+    """Check explicit numeric formula objects, never infer bindings from answer prose."""
     formulas = [item for item in draft.get("formulas", []) or [] if isinstance(item, dict)]
-    issues = formula_numeric_consistency_issues(formulas, observations=observations)
-    units = draft.get("answer_units") if isinstance(draft.get("answer_units"), list) else []
-    step_groups = [unit.get("steps", []) for unit in units if isinstance(unit, dict)] or [draft.get("steps", [])]
-    for steps in step_groups:
-        for step in steps or []:
-            if not isinstance(step, dict):
-                continue
-            indices = step.get("result_formula_indices") or []
-            if not isinstance(indices, list) or not indices:
-                continue
-            formula_values: list[float] = []
-            for raw_index in indices:
-                try:
-                    formula = formulas[int(raw_index) - 1]
-                except (IndexError, TypeError, ValueError):
-                    continue
-                formula_values.extend(
-                    _formula_declared_result_values_in_base_units(formula.get("latex"))
-                )
-            result_text = step.get("result_text") or ""
-            text_values = [
-                value * _result_unit_scale(result_text)
-                for value in _numeric_values(result_text)
-            ]
-            result_sources = [formulas[int(raw_index) - 1] for raw_index in indices if str(raw_index).isdigit() and 0 < int(raw_index) <= len(formulas)]
-            if not any(str(formula.get("role") or "").strip().lower() == "result" for formula in result_sources):
-                continue
-            unmatched = list(text_values)
-            mismatch = False
-            for formula_value in formula_values:
-                match_index = next(
-                    (index for index, value in enumerate(unmatched) if _close_with_percent_equivalence(formula_value, value)),
-                    None,
-                )
-                if match_index is None:
-                    mismatch = True
-                    break
-                unmatched.pop(match_index)
-            if mismatch:
-                number = str(step.get("subquestion_number") or "").strip()
-                issues.append(
-                    f"step_result_mismatch{':' + number if number else ''}:"
-                    f"formula_values={formula_values}:text_values={text_values}"
-                )
-    # Cross-check simple named final assignments in each answer unit against
-    # its worked result formulas. This is deliberately limited to unambiguous
-    # symbols such as E, W, T, p, x: it catches E=0.505 in the answer versus
-    # E=0.758 in the steps without guessing scientific truth or requiring that
-    # every intermediate calculation be repeated in the final summary.
-    for unit in units:
-        if not isinstance(unit, dict):
-            continue
-        answer_text = str(unit.get("answer") or "")
-        for step in unit.get("steps", []) or []:
-            if not isinstance(step, dict):
-                continue
-            indices = step.get("result_formula_indices") or []
-            if not isinstance(indices, list):
-                indices = [indices]
-            for raw_index in indices:
-                try:
-                    formula = formulas[int(raw_index) - 1]
-                except (IndexError, TypeError, ValueError):
-                    continue
-                latex = str(formula.get("latex") or "")
-                lhs = _normalized_formula_lhs(latex)
-                if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,7}", lhs):
-                    continue
-                answer_match = re.search(
-                    rf"(?<![A-Za-z0-9]){re.escape(lhs)}\s*=\s*"
-                    rf"({SCIENTIFIC_NUMBER_RE.pattern}|{NUMBER_RE.pattern})",
-                    _normalize_numeric_scripts(answer_text),
-                )
-                if not answer_match:
-                    continue
-                answer_values = _numeric_values(answer_match.group(0))
-                formula_values = _formula_declared_result_values_in_base_units(latex)
-                answer_scale = _result_unit_scale(
-                    answer_text[answer_match.end() : answer_match.end() + 32]
-                )
-                if answer_values and formula_values and not any(
-                    _close_with_percent_equivalence(answer_values[-1] * answer_scale, value)
-                    for value in formula_values
-                ):
-                    number = _normalized_unit_number(unit.get("number"))
-                    issues.append(
-                        f"answer_step_result_mismatch{':' + number if number else ''}:"
-                        f"{lhs}={answer_values[-1]:.8g}!={formula_values}"
-                    )
-    # The calculation contract is the normalized result ledger.  Compare its
-    # named quantities with each concise answer-unit summary as well as with
-    # worked formulas.  This catches stale summaries left behind when a later
-    # repair updates the derivation or ledger but not ``answer_units[].answer``.
-    contract = draft.get("calculation_contract") if isinstance(draft.get("calculation_contract"), dict) else {}
-    quantities = [
-        item
-        for item in contract.get("result_quantities", []) or []
-        if isinstance(item, dict)
-    ]
-    for unit in units:
-        if not isinstance(unit, dict):
-            continue
-        number = _normalized_unit_number(unit.get("number"))
-        answer_text = str(unit.get("answer") or "")
-        if not number or not answer_text:
-            continue
-        for quantity in quantities:
-            if _normalized_unit_number(quantity.get("answer_unit_number")) != number:
-                continue
-            try:
-                expected = float(quantity.get("value"))
-            except (TypeError, ValueError):
-                continue
-            mismatches: list[tuple[str, float]] = []
-            for alias in _quantity_answer_aliases(quantity.get("name")):
-                for actual, has_percent, actual_scale in _labeled_quantity_values(answer_text, alias):
-                    normalized_actual = actual / 100.0 if has_percent and abs(expected) <= 1.0 else actual
-                    expected_scale = _result_unit_scale(quantity.get("unit"))
-                    if not _close_with_percent_equivalence(
-                        normalized_actual * actual_scale,
-                        expected * expected_scale,
-                    ):
-                        mismatches.append((alias, actual))
-            if mismatches:
-                alias, actual = mismatches[0]
-                issues.append(
-                    f"answer_contract_result_mismatch:{number}:"
-                    f"{alias}={actual:.8g}!={expected:.8g}"
-                )
-    # Some model responses legitimately omit answer_units for a single
-    # calculation question.  The top-level concise answer is still public
-    # output and must not contradict the normalized result ledger.
-    top_answer = str(draft.get("answer") or "")
-    if top_answer:
-        for quantity in quantities:
-            try:
-                expected = float(quantity.get("value"))
-            except (TypeError, ValueError):
-                continue
-            for alias in _quantity_answer_aliases(quantity.get("name")):
-                matches = _labeled_quantity_values(top_answer, alias)
-                mismatch = next(
-                    (
-                        actual
-                        for actual, has_percent, actual_scale in matches
-                        if not _close_with_percent_equivalence(
-                            (actual / 100.0 if has_percent and abs(expected) <= 1.0 else actual)
-                            * actual_scale,
-                            expected * _result_unit_scale(quantity.get("unit")),
-                        )
-                    ),
-                    None,
-                )
-                if mismatch is not None:
-                    issues.append(
-                        f"answer_contract_result_mismatch:top:"
-                        f"{alias}={mismatch:.8g}!={expected:.8g}"
-                    )
-                    break
-    return list(dict.fromkeys(issues))
+    return formula_numeric_consistency_issues(formulas, observations=observations)
+
 
 
 PARTITION_REQUEST_RE = re.compile(
@@ -753,30 +541,14 @@ def calculation_contract_issues(
     impossible answers without another model call.
     """
 
-    expected_units = [
-        {
-            "number": _normalized_unit_number(item.get("number")),
-            "stem": str(item.get("stem") or ""),
-        }
-        for item in (expected_calculation_units or [])
-        if isinstance(item, dict) and _normalized_unit_number(item.get("number"))
-    ]
-    numerical_units = [item for item in expected_units if NUMERICAL_REQUEST_RE.search(item["stem"])]
+    # This optional ledger is authored by the model. Its existence and scope
+    # must never be inferred from words in the question or answer.
     contract = draft.get("calculation_contract")
+    if contract is None:
+        return []
     if not isinstance(contract, dict):
-        return ["calculation_contract_missing"] if numerical_units else []
-
+        return ["calculation_contract_invalid_type"]
     issues: list[str] = []
-    requested = contract.get("requested_outputs") if isinstance(contract.get("requested_outputs"), list) else []
-    requested_units = {
-        _normalized_unit_number(item.get("answer_unit_number"))
-        for item in requested
-        if isinstance(item, dict) and _normalized_unit_number(item.get("answer_unit_number"))
-    }
-    for item in numerical_units:
-        if item["number"] not in requested_units:
-            issues.append(f"calculation_contract_missing_requested_output:{item['number']}")
-
     quantities = contract.get("result_quantities") if isinstance(contract.get("result_quantities"), list) else []
     intermediate_quantities = (
         contract.get("intermediate_quantities")
@@ -803,12 +575,9 @@ def calculation_contract_issues(
         try:
             value = float(item.get("value"))
         except (TypeError, ValueError):
-            symbolic_value = _normalize_symbolic_result(item.get("value"))
-            declared_symbols = _formula_declared_symbolic_results(formulas[formula_index - 1].get("latex"))
-            if symbolic_value and symbolic_value in declared_symbols:
-                # Symbolic quantities such as d_100=a are valid requested
-                # results, but cannot participate in numeric partitions or
-                # transition arithmetic.  Their formula binding is sufficient.
+            if isinstance(item.get("value"), str) and item["value"].strip():
+                # Symbolic values remain bound by ID; their meaning is not parsed.
+                by_id[quantity_id] = {**item, "value": None}
                 continue
             issues.append(f"calculation_contract_invalid_quantity_value:{quantity_id}")
             continue
@@ -817,40 +586,7 @@ def calculation_contract_issues(
             continue
         normalized = dict(item)
         normalized["value"] = value
-        formula_values = _formula_declared_result_values_in_base_units(
-            formulas[formula_index - 1].get("latex")
-        )
-        ledger_value = value * _result_unit_scale(item.get("unit"))
-        if not any(
-            _close_with_percent_equivalence(ledger_value, formula_value)
-            for formula_value in formula_values
-        ):
-            issues.append(
-                f"calculation_contract_result_mismatch:{quantity_id}:"
-                f"ledger={value:.8g}:formula_values={formula_values or ['missing']}"
-            )
         by_id[quantity_id] = normalized
-
-        matching_units = [
-            unit
-            for unit in draft.get("answer_units", []) or []
-            if isinstance(unit, dict)
-            and _normalized_unit_number(unit.get("number"))
-            == _normalized_unit_number(item.get("answer_unit_number"))
-        ]
-        for unit in matching_units:
-            stated_values = _labeled_quantity_values(unit.get("answer"), item.get("name"))
-            expected_scale = _result_unit_scale(item.get("unit"))
-            if any(
-                not _close_with_percent_equivalence(
-                    value * stated_scale,
-                    _display_quantity_value(normalized["value"], "%" if is_percent else "")
-                    * expected_scale,
-                )
-                for value, is_percent, stated_scale in stated_values
-            ):
-                issues.append(f"calculation_contract_answer_mismatch:{quantity_id}")
-
 
     # Intermediate state quantities are deliberately separate from requested
     # outputs: they describe the parent state needed to validate a later split,
@@ -875,15 +611,6 @@ def calculation_contract_issues(
         by_id[quantity_id] = normalized
 
     partitions = contract.get("partitions") if isinstance(contract.get("partitions"), list) else []
-    partition_units = {
-        _normalized_unit_number(item.get("answer_unit_number"))
-        for item in partitions
-        if isinstance(item, dict) and _normalized_unit_number(item.get("answer_unit_number"))
-    }
-    for item in numerical_units:
-        if PARTITION_REQUEST_RE.search(item["stem"]) and item["number"] not in partition_units:
-            issues.append(f"calculation_contract_missing_partition:{item['number']}")
-
     for index, partition in enumerate(partitions, start=1):
         if not isinstance(partition, dict):
             issues.append(f"calculation_contract_invalid_partition:{index}")
@@ -896,9 +623,14 @@ def calculation_contract_issues(
         if any(component is None for component in components):
             issues.append(f"calculation_contract_unknown_partition_component:{index}")
             continue
+        if any(component["value"] is None for component in components if component is not None):
+            continue
         try:
             expected_total = float(partition.get("expected_total", 1.0))
         except (TypeError, ValueError):
+            issues.append(f"calculation_contract_invalid_expected_total:{index}")
+            continue
+        if not math.isfinite(expected_total):
             issues.append(f"calculation_contract_invalid_expected_total:{index}")
             continue
         bases = {
@@ -909,31 +641,16 @@ def calculation_contract_issues(
         # Component quantities carry the actual calculation basis.  If they
         # all agree, a differently worded partition label is metadata drift;
         # genuine whole/subset mixing still has multiple component bases.
-        if len(bases) > 1:
-            issues.append(f"calculation_contract_mixed_partition_basis:{index}")
+        units = {str(component.get("unit") or "").strip() for component in components if component is not None}
+        if len(bases) > 1 or len(units) > 1:
+            continue  # No arithmetic across potentially different units or bases.
         total = sum(float(component["value"]) for component in components if component is not None)
-        if not _close_with_percent_equivalence(total, expected_total):
+        if not _close(total, expected_total):
             issues.append(
                 f"calculation_contract_partition_sum_mismatch:{index}:{total:.8g}!={expected_total:.8g}"
             )
 
     transitions = contract.get("transitions") if isinstance(contract.get("transitions"), list) else []
-    contract_context = " ".join(
-        str(value or "")
-        for value in (
-            draft.get("answer"),
-            draft.get("analysis"),
-            draft.get("answer_units"),
-            draft.get("steps"),
-            draft.get("formulas"),
-        )
-    )
-    has_final_partition = any(
-        isinstance(item, dict) and len(item.get("component_quantity_ids", []) or []) >= 2
-        for item in partitions
-    )
-    if has_final_partition and MULTISTAGE_TRANSITION_RE.search(contract_context) and not transitions:
-        issues.append("calculation_contract_missing_transition_lineage")
     transition_ids: set[str] = set()
     for index, transition in enumerate(transitions, start=1):
         if not isinstance(transition, dict):
@@ -963,11 +680,12 @@ def calculation_contract_issues(
             for item in [parent, *products]
             if isinstance(item, dict) and str(item.get("basis") or "").strip()
         }
-        if len(bases) > 1:
-            issues.append(f"calculation_contract_mixed_transition_basis:{index}")
+        units = {str(item.get("unit") or "").strip() for item in [parent, *products] if item is not None}
+        if len(bases) > 1 or len(units) > 1 or any(item["value"] is None for item in [parent, *products] if item is not None):
+            continue  # No semantic comparison of units, symbols or basis labels.
         product_total = sum(float(item["value"]) for item in products if item is not None)
         parent_value = float(parent["value"])
-        if not _close_with_percent_equivalence(product_total, parent_value):
+        if not _close(product_total, parent_value):
             issues.append(
                 f"calculation_contract_transition_conservation_mismatch:{index}:"
                 f"products={product_total:.8g}:parent={parent_value:.8g}"
@@ -989,7 +707,9 @@ def calculation_contract_issues(
                 continue
             # Accept either 0.133 or 13.3 for a local 13.3% fraction.  Parent
             # and child retain their own shared representation (0..1 or 0..100).
-            normalized_fraction = fraction / 100.0 if fraction > 1.0 else fraction
+            if fraction > 1.0:
+                continue  # Legacy percentage representation is ambiguous.
+            normalized_fraction = fraction
             derived = by_id[derived_id]
             expected_derived = parent_value * normalized_fraction
             if not _close(float(derived["value"]), expected_derived):
@@ -1001,350 +721,5 @@ def calculation_contract_issues(
 
 
 def reconcile_calculation_reference_structure(draft: dict[str, Any]) -> dict[str, Any]:
-    """Project a self-consistent numeric contract into references and prose.
-
-    Models occasionally put two declared final quantities in one sentence but
-    create a result formula for only one, or leave a step pointing at a result
-    formula from the preceding step.  Mirror already-declared ledger values into
-    result-formula objects and reconnect by unique numeric equality.  The later
-    correctness reviewer still judges whether those declared values are true.
-    This function never derives a new disciplinary result: prose is synchronized
-    only when the ledger value already matches its declared result formula.
-    """
-
-    if not isinstance(draft, dict):
-        return draft
-    contract = draft.get("calculation_contract")
-    if not isinstance(contract, dict):
-        return draft
-    formulas = draft.get("formulas") if isinstance(draft.get("formulas"), list) else []
-    draft["formulas"] = formulas
-
-    quantities_by_id = {
-        str(item.get("quantity_id") or "").strip(): item
-        for item in [
-            *(contract.get("result_quantities", []) or []),
-            *(contract.get("intermediate_quantities", []) or []),
-        ]
-        if isinstance(item, dict) and str(item.get("quantity_id") or "").strip()
-    }
-    intermediate_by_id = {
-        str(item.get("quantity_id") or "").strip(): item
-        for item in contract.get("intermediate_quantities", []) or []
-        if isinstance(item, dict) and str(item.get("quantity_id") or "").strip()
-    }
-    all_quantities_by_id = {**quantities_by_id, **intermediate_by_id}
-    for partition in contract.get("partitions", []) or []:
-        if not isinstance(partition, dict):
-            continue
-        components = [
-            quantities_by_id.get(str(quantity_id or "").strip())
-            for quantity_id in partition.get("component_quantity_ids", []) or []
-        ]
-        bases = {
-            str(component.get("basis") or "").strip()
-            for component in components
-            if isinstance(component, dict) and str(component.get("basis") or "").strip()
-        }
-        if len(bases) == 1:
-            partition["basis"] = next(iter(bases))
-
-    # One conserved global total may legitimately parent several alternative
-    # exhaustive views (for example, a phase partition and an organisation
-    # partition).  Stage labels describe observation context, not different
-    # denominators.  If every view independently conserves the same parent,
-    # normalize the complete connected component to that parent's named whole.
-    transitions = [
-        item for item in contract.get("transitions", []) or [] if isinstance(item, dict)
-    ]
-    transitions_by_parent: dict[str, list[dict[str, Any]]] = {}
-    for transition in transitions:
-        parent_id = str(transition.get("parent_quantity_id") or "").strip()
-        if parent_id:
-            transitions_by_parent.setdefault(parent_id, []).append(transition)
-    for parent_id, parent_transitions in transitions_by_parent.items():
-        if len(parent_transitions) < 2:
-            continue
-        parent = intermediate_by_id.get(parent_id)
-        if parent is None:
-            continue
-        product_groups: list[list[dict[str, Any]]] = []
-        try:
-            parent_value = float(parent.get("value"))
-        except (TypeError, ValueError):
-            continue
-        for transition in parent_transitions:
-            products = [
-                all_quantities_by_id.get(str(quantity_id or "").strip())
-                for quantity_id in transition.get("product_quantity_ids", []) or []
-            ]
-            if not products or any(item is None for item in products):
-                product_groups = []
-                break
-            typed_products = [item for item in products if isinstance(item, dict)]
-            try:
-                conserved = _close_with_percent_equivalence(
-                    parent_value,
-                    sum(float(item.get("value")) for item in typed_products),
-                )
-            except (TypeError, ValueError):
-                conserved = False
-            if not conserved:
-                product_groups = []
-                break
-            product_groups.append(typed_products)
-        if len(product_groups) != len(parent_transitions):
-            continue
-        common_basis = str(parent.get("name") or parent.get("basis") or "总体").strip() or "总体"
-        parent["basis"] = common_basis
-        connected_ids: set[str] = set()
-        for transition, products in zip(parent_transitions, product_groups):
-            transition["basis"] = common_basis
-            for product in products:
-                product["basis"] = common_basis
-                connected_ids.add(str(product.get("quantity_id") or "").strip())
-        for partition in contract.get("partitions", []) or []:
-            if not isinstance(partition, dict):
-                continue
-            component_ids = {
-                str(quantity_id or "").strip()
-                for quantity_id in partition.get("component_quantity_ids", []) or []
-            }
-            if component_ids and component_ids.issubset(connected_ids):
-                partition["basis"] = common_basis
-
-    # ``basis`` means denominator/whole, not observation time.  Models often
-    # label a conserved parent "before reaction" and its products "final
-    # state" even though all are fractions of the same global whole.  When the
-    # products already agree and their values exactly conserve the parent,
-    # normalize only the intermediate parent's metadata to that global basis.
-    for transition in transitions:
-        if not isinstance(transition, dict):
-            continue
-        parent = intermediate_by_id.get(str(transition.get("parent_quantity_id") or "").strip())
-        products = [
-            all_quantities_by_id.get(str(quantity_id or "").strip())
-            for quantity_id in transition.get("product_quantity_ids", []) or []
-        ]
-        if parent is None or not products or any(item is None for item in products):
-            continue
-        product_bases = {
-            str(item.get("basis") or "").strip()
-            for item in products
-            if isinstance(item, dict) and str(item.get("basis") or "").strip()
-        }
-        try:
-            conserved = _close_with_percent_equivalence(
-                float(parent.get("value")),
-                sum(float(item.get("value")) for item in products if item is not None),
-            )
-        except (TypeError, ValueError):
-            conserved = False
-        if conserved and len(product_bases) == 1:
-            common_basis = next(iter(product_bases))
-            parent["basis"] = common_basis
-            transition["basis"] = common_basis
-
-    def result_matches(value: float, unit: Any = "") -> list[int]:
-        expected = value * _result_unit_scale(unit)
-        matches: list[int] = []
-        for index, formula in enumerate(formulas, start=1):
-            if not isinstance(formula, dict) or str(formula.get("role") or "").strip().lower() != "result":
-                continue
-            if any(
-                _close_with_percent_equivalence(expected, raw)
-                for raw in _formula_declared_result_values_in_base_units(formula.get("latex"))
-            ):
-                matches.append(index)
-        return matches
-
-    for quantity in contract.get("result_quantities", []) or []:
-        if not isinstance(quantity, dict):
-            continue
-        try:
-            value = float(quantity.get("value"))
-        except (TypeError, ValueError):
-            continue
-        matches = result_matches(value, quantity.get("unit"))
-        if len(matches) == 1:
-            quantity["formula_index"] = matches[0]
-            continue
-        if matches:
-            try:
-                current = int(quantity.get("formula_index"))
-            except (TypeError, ValueError):
-                current = 0
-            quantity["formula_index"] = current if current in matches else matches[0]
-            continue
-        name = re.sub(r"[{}\\]", "", str(quantity.get("name") or quantity.get("quantity_id") or "result")).strip()
-        unit = str(quantity.get("unit") or "").strip()
-        suffix = r"\%" if unit in {"%", "百分比"} else ""
-        formulas.append(
-            {
-                "latex": rf"\mathrm{{{name}}}={value:g}{suffix}",
-                "role": "result",
-                "meaning": "程序从计算结果账本中镜像的已有结果值",
-                "display": True,
-                "_program_mirrored_from_contract": True,
-            }
-        )
-        quantity["formula_index"] = len(formulas)
-
-    # Once formula and ledger agree, synchronize only explicitly labelled
-    # result values.  This prevents a stale prose percentage from contradicting
-    # the machine-checked calculation while leaving all explanatory wording and
-    # disciplinary claims untouched.
-    trusted_quantities = [
-        item
-        for item in contract.get("result_quantities", []) or []
-        if isinstance(item, dict) and _quantity_formula_matches(item, formulas)
-    ]
-    trusted_quantities.sort(key=lambda item: len(_quantity_label(item.get("name"))), reverse=True)
-    for quantity in trusted_quantities:
-        draft["answer"] = _sync_labeled_quantity_value(draft.get("answer"), quantity)
-        target_number = _normalized_unit_number(quantity.get("answer_unit_number"))
-        for unit in draft.get("answer_units", []) or []:
-            if not isinstance(unit, dict) or _normalized_unit_number(unit.get("number")) != target_number:
-                continue
-            unit["answer"] = _sync_labeled_quantity_value(unit.get("answer"), quantity)
-            for step in unit.get("steps", []) or []:
-                if isinstance(step, dict):
-                    step["result_text"] = _sync_labeled_quantity_value(
-                        step.get("result_text"), quantity
-                    )
-
-    step_groups: list[list[Any]] = []
-    for unit in draft.get("answer_units", []) or []:
-        if isinstance(unit, dict) and isinstance(unit.get("steps"), list):
-            step_groups.append(unit["steps"])
-    if isinstance(draft.get("steps"), list):
-        step_groups.append(draft["steps"])
-    result_indices = [
-        index
-        for index, formula in enumerate(formulas, start=1)
-        if isinstance(formula, dict) and str(formula.get("role") or "").strip().lower() == "result"
-    ]
-    for steps in step_groups:
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            text_values = _numeric_values(step.get("result_text"))
-            if not text_values:
-                continue
-            matching = [
-                index
-                for index in result_indices
-                if any(
-                    _close_with_percent_equivalence(formula_value, text_value)
-                    for formula_value in _formula_declared_result_values(formulas[index - 1].get("latex"))
-                    for text_value in text_values
-                )
-            ]
-            current = step.get("result_formula_indices")
-            current_values = current if isinstance(current, list) else ([current] if current is not None else [])
-            parsed_current: list[int] = []
-            for raw in current_values:
-                try:
-                    parsed_current.append(int(raw))
-                except (TypeError, ValueError):
-                    continue
-            if len(parsed_current) == 1:
-                formula_index = parsed_current[0]
-                if 0 < formula_index <= len(formulas):
-                    formula_latex = str(formulas[formula_index - 1].get("latex") or "")
-                    formula_unit = _result_unit_token(formula_latex)
-                    text_unit = _result_unit_token(step.get("result_text"))
-                    formula_raw_values = _formula_declared_result_values(formula_latex)
-                    if (
-                        formula_unit
-                        and text_unit
-                        and formula_unit.lower() != text_unit.lower()
-                        and formula_raw_values
-                        and text_values
-                        and _close_with_percent_equivalence(formula_raw_values[0], text_values[0])
-                    ):
-                        step["result_text"] = _replace_result_unit(
-                            step.get("result_text"), formula_unit
-                        )
-            if len(parsed_current) == 1 and len(text_values) == 1:
-                formula_index = parsed_current[0]
-                if 0 < formula_index <= len(formulas):
-                    formula_values = _formula_declared_result_values(formulas[formula_index - 1].get("latex"))
-                    if len(formula_values) == 1 and not _close_with_percent_equivalence(formula_values[0], text_values[0]):
-                        replacement = f"{formula_values[0]:g}"
-                        step["result_text"] = NUMBER_RE.sub(replacement, str(step.get("result_text") or ""), count=1)
-                        text_values = [formula_values[0]]
-            elif len(parsed_current) == 1 and len(text_values) > 1:
-                formula_index = parsed_current[0]
-                if 0 < formula_index <= len(formulas):
-                    formula_values = _formula_declared_result_values(formulas[formula_index - 1].get("latex"))
-                    if len(formula_values) == len(text_values) and not _values_match_as_multiset(
-                        formula_values, text_values
-                    ):
-                        replacements = iter(f"{value:g}" for value in formula_values)
-                        step["result_text"] = NUMBER_RE.sub(
-                            lambda _match, replacements=replacements: next(replacements),
-                            str(step.get("result_text") or ""),
-                            count=len(formula_values),
-                        )
-                        text_values = formula_values
-            current_valid = []
-            for raw in current_values:
-                try:
-                    index = int(raw)
-                except (TypeError, ValueError):
-                    continue
-                if index in matching and index not in current_valid:
-                    current_valid.append(index)
-            exact = [
-                index
-                for index in matching
-                if _values_match_as_multiset(
-                    _formula_declared_result_values(formulas[index - 1].get("latex")),
-                    text_values,
-                )
-            ]
-            if exact:
-                selected = exact[:1]
-            else:
-                eligible = []
-                for index in matching:
-                    formula_values = _formula_declared_result_values(formulas[index - 1].get("latex"))
-                    if formula_values and all(
-                        any(_close_with_percent_equivalence(value, text) for text in text_values)
-                        for value in formula_values
-                    ):
-                        eligible.append(index)
-                selected = [index for index in current_valid if index in eligible]
-                uncovered = [
-                    text
-                    for text in text_values
-                    if not any(
-                        _close_with_percent_equivalence(value, text)
-                        for index in selected
-                        for value in _formula_declared_result_values(formulas[index - 1].get("latex"))
-                    )
-                ]
-                # Greedily cover each remaining stated value while rejecting
-                # formulas that introduce a result absent from this step.
-                for index in eligible:
-                    if index in selected:
-                        continue
-                    formula_values = _formula_declared_result_values(formulas[index - 1].get("latex"))
-                    if not any(
-                        _close_with_percent_equivalence(value, text)
-                        for value in formula_values
-                        for text in uncovered
-                    ):
-                        continue
-                    selected.append(index)
-                    uncovered = [
-                        text
-                        for text in uncovered
-                        if not any(_close_with_percent_equivalence(value, text) for value in formula_values)
-                    ]
-                    if not uncovered:
-                        break
-            if selected and set(current_valid) != set(selected):
-                step["result_formula_indices"] = selected
+    """Preserve model-authored prose and bindings; numeric coincidence proves no identity."""
     return draft

@@ -37,7 +37,7 @@ def test_shipped_catalog_contains_only_approved_verified_channels() -> None:
     providers = _providers()["providers"]
     assert set(providers) == {
         "ark", "ark_image", "bailian", "deepseek",
-        "lingsuan_openai", "lingsuan_google", "lingsuan_image",
+        "lingsuan_openai", "lingsuan_google", "lingsuan_image", "lingsuan_domestic",
         "wawapi_openai", "wawapi_google", "wawapi_xai",
         "wawapi_image_openai", "wawapi_image_google", "wawapi_image_xai",
     }
@@ -133,7 +133,7 @@ def test_new_model_with_only_failed_probe_is_rejected_before_launch() -> None:
     assert "模型 bailian/new-failed-model 没有通过任何协议，禁止作为新模型上线" in errors
 
 
-def test_public_tool_profile_cannot_drift_from_verified_registry() -> None:
+def test_public_tool_profile_is_not_gated_by_historical_tool_registry() -> None:
     providers = _providers()
     providers["providers"]["bailian"]["model_profiles"]["qwen-vl-max"][
         "supports_tool_calls"
@@ -141,7 +141,7 @@ def test_public_tool_profile_cannot_drift_from_verified_registry() -> None:
 
     errors = validate_provider_registry_sync(providers)
 
-    assert any("公开配置误声明工具能力" in error and "qwen-vl-max" in error for error in errors)
+    assert not any("工具能力" in error and "qwen-vl-max" in error for error in errors)
 
 
 def test_generated_markdown_matches_registry() -> None:

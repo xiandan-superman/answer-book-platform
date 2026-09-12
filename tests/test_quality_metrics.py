@@ -142,8 +142,8 @@ class QualityMetricsTests(unittest.TestCase):
         rule = report["rules"][0]
         self.assertEqual(12, rule["occurrence_count"])
         self.assertEqual("heuristic", rule["evidence_class"])
-        self.assertEqual("warn_only", rule["action_ceiling"])
-        self.assertEqual("advisory_only", rule["unattended_status"])
+        self.assertEqual("observe_only", rule["action_ceiling"])
+        self.assertEqual("observation_only", rule["unattended_status"])
 
     def test_unknown_rule_defaults_to_observation_only(self) -> None:
         from app.capabilities.quality_metrics import build_quality_metrics_report

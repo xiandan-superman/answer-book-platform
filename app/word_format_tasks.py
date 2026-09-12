@@ -20,6 +20,7 @@ from standalone_word_format_reviewer.format_engine import (
 )
 
 from .paths import CONFIG_DIR, TASKS_DIR
+from .task_identity import public_task_number
 from .task_titles import build_display_task_title, friendly_material_title
 
 SETTINGS_FILE = CONFIG_DIR / "word_format_reviewer_settings.json"
@@ -160,6 +161,7 @@ def _task_row(record: dict) -> dict:
         }
     return {
         "task_id": task_id,
+        "public_task_id": public_task_number(record),
         "task_kind": "format",
         "workflow_type": "word_format_review",
         "is_format_task": True,

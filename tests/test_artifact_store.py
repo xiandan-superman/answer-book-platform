@@ -61,6 +61,7 @@ def test_atomic_json_write_uses_short_temp_leaf_and_adapts_low_level_paths(
     prefixes: list[str] = []
     adapted: list[str] = []
     real_mkstemp = artifact_store.tempfile.mkstemp
+    real_long_path = artifact_store.long_path
 
     def recording_mkstemp(*, prefix: str, dir: str):
         prefixes.append(prefix)
@@ -68,7 +69,7 @@ def test_atomic_json_write_uses_short_temp_leaf_and_adapts_low_level_paths(
 
     def recording_long_path(value: Path | str) -> str:
         adapted.append(str(value))
-        return str(value)
+        return real_long_path(value)
 
     monkeypatch.setattr(artifact_store.tempfile, "mkstemp", recording_mkstemp)
     monkeypatch.setattr(artifact_store, "long_path", recording_long_path)
@@ -78,7 +79,7 @@ def test_atomic_json_write_uses_short_temp_leaf_and_adapts_low_level_paths(
     assert prefixes == [".tmp-"]
     assert str(target.parent) in adapted
     assert str(target) in adapted
-    assert target.read_text(encoding="utf-8").strip().startswith("{")
+    assert read_text(target).strip().startswith("{")
 
 
 def test_image_artifact_is_verified_on_write_read_and_adoption(tmp_path) -> None:

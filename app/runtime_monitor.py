@@ -1354,7 +1354,6 @@ def track_model_call(
                 required = set(selected.get("required_capabilities") or [])
                 capability = (
                     "image_generation" if "image_generation" in required else
-                    "tool_call" if "native_tool_calls" in required else
                     "vision" if "image_input" in required else "text"
                 )
                 configured_provider = get_provider(str(provider or "").strip())
@@ -1560,7 +1559,7 @@ def _task_health(
     elif status == "running":
         if heartbeat_age is None:
             health_status = "unknown"
-        elif heartbeat_age > HEARTBEAT_ERROR_SECONDS:
+        elif heartbeat_age > HEARTBEAT_ERROR_SECONDS and (progress_age is None or progress_age > PROGRESS_WARNING_SECONDS):
             health_status = "warning"
             warning_reason = "后台较长时间没有新心跳，可能正在等待模型或耗时处理返回。"
             suggested_action = "任务仍在运行，建议继续等待。"

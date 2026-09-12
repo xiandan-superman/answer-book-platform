@@ -120,6 +120,7 @@ from .process_lock import platform_process_lock
 from .prompt_registry import build_prompt_registry_report, prompt_contract
 from .provider_control import (
     explicit_probe_source,
+    probe_model_onboarding,
     probe_next_due_route,
     probe_route,
     provider_control_snapshot,
@@ -154,6 +155,7 @@ from .task_cleanup import build_cleanup_recommendation, forget_deleted_tasks, ma
 from .task_contracts import present_error, public_support_id
 from .task_control import delete_task
 from .task_diagnostics import build_task_diagnostics
+from .task_identity import public_task_number, resolve_task_number
 from .task_read_model import build_exam_run, build_practice_runs, practice_network_statistics
 from .task_result_view import build_task_result_view
 from .task_runner import control_exam_task, start_exam_task
@@ -280,12 +282,14 @@ def _task_model_token_feedback(task_id: str) -> list[dict]:
 
 def _task_current_progress(task_id: str, current_stage: str | None = None):
     sdir = stage_dir(task_id)
+    if current_stage in {"textbook_index", "knowledge_planning", "retrieval", "evidence_selection"}:
+        progress = _read_json_if_exists(sdir / f"{current_stage}_progress.json") or {}
+        parallel = _read_json_if_exists(sdir / "answer_generation_parallel_progress.json")
+        if parallel:
+            progress = {**progress, "parallel_answer": parallel}
+        return progress
     if current_stage == "question_understanding":
         return _read_json_if_exists(sdir / "question_understanding_progress.json")
-    if current_stage == "knowledge_planning":
-        return _read_json_if_exists(sdir / "knowledge_planning_progress.json")
-    if current_stage == "evidence_selection":
-        return _read_json_if_exists(sdir / "evidence_selection_progress.json")
     if current_stage == "answer_generation":
         return _read_json_if_exists(sdir / "answer_generation_progress.json")
     if current_stage == "figures":
@@ -672,6 +676,7 @@ def _practice_job_api_payload(record: dict) -> dict:
     )
     payload = {
         **record,
+        "public_task_id": public_task_number(record),
         **practice_network_statistics(record),
         "error": presentation.message if presentation else "",
         "support_id": support_id if presentation else "",
@@ -1556,6 +1561,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/tasks":
             self.send_json(READ_SNAPSHOTS.get("task_list", _build_task_list_payload))
             return
+        if parsed.path == "/api/tasks/resolve-number":
+            try:
+                self.send_json(resolve_task_number(parse_qs(parsed.query).get("number", [""])[0]))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+            return
         if parsed.path == "/api/tasks/cleanup-recommendation":
             self.send_json(build_cleanup_recommendation(_build_task_list_payload()["tasks"]))
             return
@@ -2428,7 +2439,7 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     )
                     if selected_dir is not None:
                         record = load_task(record.task_id)
-                self.send_json({"task": record.__dict__})
+                self.send_json({"task": {**record.__dict__, "public_task_id": public_task_number(record.__dict__)}})
                 return
             if parsed.path == "/api/library-upload":
                 query = parse_qs(parsed.query)
@@ -2654,9 +2665,10 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 requested_capability = str(body.get("capability") or "text").strip()
                 if requested_capability in {"vision", "tool_call"}:
                     model = resolve_provider_model(provider, body.get("model"))
-                    result = probe_route(
+                    result = (probe_model_onboarding if requested_capability == "vision" and probe_source == "connection_test" else probe_route)(
                         provider_name=provider.name, model=model, protocol=provider.api_protocol,
                         capability=requested_capability, source=probe_source, api_key=provider.api_key,
+                        provider_config=provider,
                     )
                     self.send_json(result, status=200 if result.get("ok") else 400)
                     return
@@ -2664,6 +2676,18 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     not getattr(provider, "supports_text_generation", True) and provider_supports_image_generation(provider)
                 ):
                     image_model = str(body.get("model") or provider.image_model or "").strip()
+                    if probe_source == "connection_test":
+                        onboarding = probe_model_onboarding(
+                            provider_name=provider.name, model=image_model, protocol=provider.api_protocol,
+                            capability="image_generation", api_key=provider.api_key, provider_config=provider,
+                        )
+                        if not onboarding.get("skipped"):
+                            self.send_json(
+                                {"ok": True, "provider": provider.name, "model": image_model, "capability": "image_generation"}
+                                if onboarding.get("ok") else onboarding,
+                                status=200 if onboarding.get("ok") else 400,
+                            )
+                            return
                     probe_started = time.monotonic()
                     try:
                         with explicit_probe_source(probe_source):
@@ -2699,6 +2723,17 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     )
                     return
                 model = resolve_provider_model(provider, body.get("model"))
+                if probe_source == "connection_test":
+                    result = probe_model_onboarding(
+                        provider_name=provider.name, model=model, protocol=provider.api_protocol,
+                        capability="text", api_key=provider.api_key, thinking_mode=provider.thinking_mode,
+                        provider_config=provider,
+                    )
+                    if not result.get("skipped"):
+                        if protocol_overridden:
+                            result.update(_provider_test_protocol_summary(result.get("retry_report", {}), provider.api_protocol))
+                        self.send_json({**result, "provider": provider.name, "model": model}, status=200 if result.get("ok") else 400)
+                        return
                 messages = [
                     {"role": "system", "content": "Return exactly this JSON object and no other text: {\"ping\":\"pong\"}"},
                     {"role": "user", "content": "Return the JSON object now."},

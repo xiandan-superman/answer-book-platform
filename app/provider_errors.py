@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class ProbeValidationError(RuntimeError):
+    """A successful request did not satisfy the local probe contract."""
+
+
 class ProviderRouteDegradedError(RuntimeError):
     """A bounded recovery probe confirmed a sustained provider-route outage."""
 
@@ -15,7 +19,7 @@ class ProviderRouteDegradedError(RuntimeError):
         self.last_error = str(last_error or "").strip()
         detail = f"；最近错误：{self.last_error}" if self.last_error else ""
         super().__init__(
-            f"供应商模型路由持续异常，任务已停止以避免继续等待和消耗。"
+            f"当前模型不能用了，任务已停止以避免继续等待和消耗。"
             f"供应商：{self.provider}；模型：{self.model}；"
             f"有限重试及恢复探测后仍连续失败 {self.failures} 次{detail}。"
         )
@@ -102,6 +106,13 @@ def classify_provider_error(
             retryable=retryable,
             requires_configuration=requires_configuration,
             failure_state=failure_state,
+        )
+
+    if isinstance(error, ProbeValidationError):
+        return result(
+            "probe_validation_failed", "测试内容校验未通过",
+            "接口已返回内容，但未通过探针的本地内容校验；这不等于模型不支持该能力，也不计入供应商连续故障。",
+            "请查看接入测试诊断，核对测试图片与原始回答；已登记能力保持不变。",
         )
 
     if isinstance(error, RequiredImageGenerationError):

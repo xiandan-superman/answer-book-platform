@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .library_files import scan_library_files
-from .paths import CACHE_DIR, ensure_project_dirs
+from .paths import ensure_project_dirs
 from .textbook_index_cache import TEXTBOOK_INDEX_CACHE_DIR, validated_textbook_index_cache
 from .textbook_package import PACKAGE_CACHE_DIR
 
@@ -130,6 +130,7 @@ def storage_overview() -> dict[str, Any]:
             "source_still_in_library": bool(source) and source in referenced_sources,
             "size_bytes": _dir_size(root),
             "age_days": round(age_days, 1),
+            "updated_at": _dir_mtime(root),
             "deletable": True,
         })
 
@@ -148,6 +149,8 @@ def storage_overview() -> dict[str, Any]:
             "key": root.name,
             "file_count": len(file_names),
             "file_names": file_names[:20],
+            "updated_at": _dir_mtime(root),
+            "age_days": round(max(0.0, (now - _dir_mtime(root)) / 86400), 1),
             "block_count": int(status.get("block_count") or 0) if coherent else 0,
             "coherent": coherent,
             "in_use": root.name in index_cache_in_use,
@@ -198,7 +201,7 @@ def cleanup_storage(kind: str, ids: list[str] | None = None) -> dict[str, Any]:
     area = areas.get(kind)
     if area is None:
         raise ValueError(f"未知的清理类别：{kind}")
-    requested = {str(item) for item in ids} if ids else None
+    requested = None if ids is None else {str(item) for item in ids}
     deleted: list[str] = []
     skipped: list[dict[str, Any]] = []
     freed_bytes = 0

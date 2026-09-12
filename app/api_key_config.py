@@ -13,6 +13,7 @@ from typing import Any
 from .paths import DATA_ROOT, LOCAL_CONFIG_DIR, ensure_project_dirs
 
 ALLOWED_API_KEY_NAMES = {
+    "LINGSUAN_DOMESTIC_API_KEY",
     "ARK_API_KEY",
     "DASHSCOPE_API_KEY",
     "DEEPSEEK_API_KEY",

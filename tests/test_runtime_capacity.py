@@ -68,10 +68,10 @@ def test_lingsuan_variants_share_eight_slots_and_respect_emergency_cap() -> None
     ):
         assert provider_request_max_concurrency(google) == 1
     google_with_url = type(
-        "Provider", (), {"name": "lingsuan_google", "base_url": "https://lingsuan.org/v1"}
+        "Provider", (), {"name": "lingsuan_google", "base_url": "https://edge.lingsuan.org/v1"}
     )()
     openai_with_url = type(
-        "Provider", (), {"name": "lingsuan_openai", "base_url": "https://lingsuan.org/v1"}
+        "Provider", (), {"name": "lingsuan_openai", "base_url": "https://edge.lingsuan.org/v1"}
     )()
     assert _provider_key(google_with_url) == _provider_key(openai_with_url)
 

@@ -392,7 +392,7 @@ def _open_provider_response(
             ]
             host = str(urllib.parse.urlparse(request.full_url).hostname or "").lower()
             allow_proxy = str(os.environ.get("ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY") or "").strip().lower()
-            if host in {"lingsuan.top", "lingsuan.org"} and allow_proxy not in {"1", "true", "yes"}:
+            if host in {"lingsuan.top", "lingsuan.org", "edge.lingsuan.org"} and allow_proxy not in {"1", "true", "yes"}:
                 # Local proxy interception has caused TLS EOFs and misleading
                 # gateway 502s. TUN/fake-IP routing still belongs to the OS, but
                 # urllib must not add a second configured proxy hop by default.
@@ -573,19 +573,9 @@ def _structured_schema_name(value: str | None) -> str:
 
 
 def _model_supports_registered_tool_calls(config: ProviderConfig, model: str) -> bool:
-    from .model_capability_registry import (
-        get_native_tool_route,
-        provider_has_capability_registry,
-    )
-
-    selected = str(model or "").strip()
-    if _model_profile(config, selected).get("supports_tool_calls") is not True:
-        return False
-    provider_name = str(getattr(config, "name", "") or "").strip()
-    route = get_native_tool_route(provider_name, selected)
-    if route is None:
-        return not provider_has_capability_registry(provider_name)
-    return str(route.get("protocol") or "").strip().lower() == _model_api_protocol(config, selected)
+    # Main-model tool use is a product-level capability.  The provider/model
+    # registry no longer acts as an allowlist and no probe record is required.
+    return bool(str(model or "").strip())
 
 
 def _model_omitted_parameters(config: ProviderConfig, model: str) -> set[str]:
@@ -919,6 +909,7 @@ class OpenAICompatibleClient:
         thinking: str | None = None,
         timeout: int = 120,
         json_object: bool = True,
+        allow_unregistered_probe: bool = False,
     ) -> dict[str, Any]:
         """Return a native Chat Completions tool-call response.
 
@@ -934,7 +925,7 @@ class OpenAICompatibleClient:
         if protocol not in {"chat_completions", "openai_compatible", ""}:
             raise LLMError("tool calls require a Chat Completions model")
         if not _model_supports_registered_tool_calls(self.config, target_model):
-            raise LLMError("the selected Chat Completions model is not registered for native tool calls")
+            raise LLMError("a model is required for native tool calls")
 
         thinking_mode = _model_thinking_mode(
             self.config,
@@ -1933,6 +1924,7 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         thinking: str | None = None,
         timeout: int = 120,
         json_object: bool = True,
+        allow_unregistered_probe: bool = False,
     ) -> dict[str, Any]:
         """Return the complete Responses payload so an agent loop can execute calls."""
 
@@ -1940,7 +1932,7 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         if _model_api_protocol(self.config, target_model) not in {"responses", "responses_api"}:
             raise LLMError("tool calls require a Responses API model")
         if not _model_supports_registered_tool_calls(self.config, target_model):
-            raise LLMError("the selected Responses model is not registered for native tool calls")
+            raise LLMError("a model is required for native tool calls")
         thinking_mode = _model_thinking_mode(
             self.config,
             target_model,

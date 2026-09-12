@@ -14,6 +14,7 @@ pytestmark = pytest.mark.e2e
 def partial_package_server():
     import io
     import threading
+    import urllib.error
     import urllib.request
     import zipfile
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +26,15 @@ def partial_package_server():
     class DownloadHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if "/unit-package?" not in self.path:
-                with urllib.request.urlopen(os.environ["ANSWER_BOOK_E2E_URL"].rstrip("/") + self.path) as response:
+                request = urllib.request.Request(
+                    os.environ["ANSWER_BOOK_E2E_URL"].rstrip("/") + self.path,
+                    headers={"X-Answer-Book-Local-Token": self.headers.get("X-Answer-Book-Local-Token", "")},
+                )
+                try:
+                    response = urllib.request.urlopen(request)
+                except urllib.error.HTTPError as error:
+                    response = error
+                with response:
                     body = response.read()
                     self.send_response(response.status)
                     self.send_header("Content-Type", response.headers.get("Content-Type", "text/plain"))
@@ -70,6 +79,7 @@ def test_partial_delivery_pins_download_and_isolates_task_switches(partial_packa
         page.evaluate("""async () => {
             document.querySelector('.page.active').classList.remove('active');
             document.getElementById('page-task').classList.add('active');
+            document.getElementById('page-task').dataset.taskState = 'running';
             activeTaskId = 'partial-test';
             await refreshTaskUnitDelivery(activeTaskId);
         }""")
@@ -371,6 +381,7 @@ def test_word_export_recovery_keeps_multiple_filenames_and_requires_explicit_dow
         )
         page.reload(wait_until="networkidle")
         page.locator("#practiceWordRecoveryNotice:not(.hidden)").wait_for(timeout=4000)
+        page.locator("#practiceWordRecoveryNotice > summary").click()
         page.locator(".practice-word-recovery-item").filter(has_text="独立文件A.docx").wait_for()
         page.locator(".practice-word-recovery-item").filter(has_text="独立文件B.docx").wait_for()
 
@@ -524,6 +535,7 @@ def test_word_export_recovery_cleans_stale_jobs_sanitizes_failures_and_retries()
         page.evaluate("(jobId) => rememberPracticeWordExportPointer('retry', jobId, '失败后重试.docx')", job_id)
         page.evaluate("resumeRememberedPracticeWordExports()")
         failed_item = page.locator(".practice-word-recovery-item").filter(has_text="失败后重试.docx")
+        page.locator("#practiceWordRecoveryNotice > summary").click()
         failed_item.get_by_role("button", name="重新生成").wait_for(timeout=4000)
         assert "SECRET-123" not in failed_item.inner_text()
         assert "Word 生成未完成" in failed_item.inner_text()
@@ -611,6 +623,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
         page.evaluate("(jobId) => rememberPracticeWordExportPointer('desktop-save', jobId, '桌面保存.docx')", job_id)
         page.evaluate("resumeRememberedPracticeWordExports()")
         item = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        page.locator("#practiceWordRecoveryNotice > summary").click()
         item.get_by_role("button", name="保存 Word").wait_for(timeout=4000)
 
         item.get_by_role("button", name="保存 Word").click()
@@ -643,6 +656,7 @@ def test_desktop_word_bridge_preserves_pointer_on_cancel_and_shows_verified_path
 
         page.reload(wait_until="networkidle")
         restored = page.locator(".practice-word-recovery-item").filter(has_text="桌面保存.docx")
+        page.locator("#practiceWordRecoveryNotice > summary").click()
         restored.get_by_role("button", name="重新保存").wait_for(timeout=4000)
         assert "已保存到：C:\\Users\\Charlotte\\Downloads\\桌面保存.docx" in restored.inner_text()
         browser.close()
@@ -1225,7 +1239,7 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         recovery_copy = page.locator("#practiceRecoveryNotice").inner_text()
         assert presentation["message"] in recovery_copy
         assert presentation["retry_hint"] in recovery_copy
-        assert presentation["support_id"] in recovery_copy
+        assert presentation["support_id"] not in recovery_copy
         assert "InvalidEndpointOrModel" not in recovery_copy
         assert "req-must-not-be-visible" not in recovery_copy
         assert page.locator("#page-home.active").is_visible()
@@ -1236,7 +1250,7 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         detail_copy = page.locator("#knowledgeError").inner_text()
         assert presentation["message"] in detail_copy
         assert presentation["retry_hint"] in detail_copy
-        assert presentation["support_id"] in detail_copy
+        assert presentation["support_id"] not in detail_copy
         assert "InvalidEndpointOrModel" not in detail_copy
         assert page.locator("#knowledgeConfigurationAction").is_hidden()
 
@@ -1248,7 +1262,7 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         task_copy = card.inner_text()
         assert presentation["message"] in task_copy
         assert presentation["retry_hint"] in task_copy
-        assert presentation["support_id"] in task_copy
+        assert presentation["support_id"] not in task_copy
         assert "InvalidEndpointOrModel" not in task_copy
         card.locator(".task-card-more > summary").click()
         assert card.locator('[data-action="job-config"]').is_visible()
@@ -1448,7 +1462,6 @@ def test_task_manager_tolerates_mixed_error_presentations_and_keeps_terminal_act
         page.locator("#taskManagerList .task-manager-item").filter(has_text="已取消记录").wait_for(state="detached", timeout=4000)
         assert page.locator("#taskManagerList .task-manager-item").count() == 4
         config_card = page.locator("#taskManagerList .task-manager-item").filter(has_text="配置错误记录")
-        config_card.scroll_into_view_if_needed()
         config_card.wait_for(state="visible")
         config_card.locator(".task-card-more > summary").click()
         assert config_card.locator('[data-action="job-config"]').is_visible()

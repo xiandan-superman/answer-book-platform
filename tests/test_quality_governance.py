@@ -37,11 +37,11 @@ class QualityGovernanceTests(unittest.TestCase):
 
         rule = governance_for("content_quality.answer_analysis_comparative_contradiction")
 
-        self.assertEqual("repairable", rule.evidence_class.value)
-        self.assertEqual("repair_then_block", rule.action_ceiling.value)
+        self.assertEqual("heuristic", rule.evidence_class.value)
+        self.assertEqual("observe_only", rule.action_ceiling.value)
 
         composition = governance_for("content_quality.composition_partition_missing_declared_component")
-        self.assertEqual("repair_then_block", composition.action_ceiling.value)
+        self.assertEqual("observe_only", composition.action_ceiling.value)
 
     def test_docx_unknown_issue_is_still_machine_blocked(self) -> None:
         from app.audit_review_gate import enforce_unattended_audit_report

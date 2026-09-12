@@ -16,7 +16,7 @@ def _image_provider() -> ProviderConfig:
     return ProviderConfig(
         name="lingsuan_image",
         type="openai_compatible",
-        base_url="https://lingsuan.org/v1",
+        base_url="https://edge.lingsuan.org/v1",
         api_key="test-image-key",
         api_key_env="LINGSUAN_IMAGE_API_KEY",
         default_model="gpt-image-2",
@@ -49,7 +49,7 @@ def test_lingsuan_image_client_uses_openai_compatible_image_endpoint(tmp_path, m
 
     assert result.model == "gpt-image-2"
     assert output.read_bytes() == b"png-bytes"
-    assert requests[0][0] == "https://lingsuan.org/v1/images/generations"
+    assert requests[0][0] == "https://edge.lingsuan.org/v1/images/generations"
     assert requests[0][1]["model"] == "gpt-image-2"
     assert requests[0][1]["size"] == "1024x1024"
 
@@ -92,7 +92,7 @@ def test_lingsuan_image_client_uses_edit_endpoint_with_original_reference_bytes(
     assert result.model == "gpt-image-2"
     assert output.read_bytes() == b"edited-bytes"
     request = requests[0][0]
-    assert request.full_url == "https://lingsuan.org/v1/images/edits"
+    assert request.full_url == "https://edge.lingsuan.org/v1/images/edits"
     assert request.get_header("Content-type").startswith("multipart/form-data; boundary=")
     assert request.data.count(b'name="image[]"') == 2
     assert all(raw in request.data for raw in expected)

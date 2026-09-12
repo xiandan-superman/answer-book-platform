@@ -718,9 +718,9 @@ class SelectiveQualityReviewTests(unittest.TestCase):
             {"c1"},
         )
 
-        self.assertEqual("pass", decisions[0]["decision"])
-        self.assertEqual([], decisions[0]["defects"])
-        self.assertEqual("", decisions[0]["suggested_fix"])
+        self.assertEqual("repair", decisions[0]["decision"])
+        self.assertTrue(decisions[0]["defects"])
+        self.assertTrue(decisions[0]["suggested_fix"])
 
     def test_numeric_composition_repair_without_evidence_or_machine_ledger_is_rejected(self) -> None:
         from app.capabilities.selective_review import _normalized_decisions
@@ -756,11 +756,9 @@ class SelectiveQualityReviewTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual("pass", decisions[0]["decision"])
-        self.assertEqual([], decisions[0]["defects"])
-        self.assertTrue(decisions[0]["reviewer_repair_rejected"])
-        self.assertIn("numeric_patch_missing", decisions[0]["reason"])
-        self.assertEqual({}, decisions[0]["proposed_calculation_contract"])
+        self.assertEqual("repair", decisions[0]["decision"])
+        self.assertTrue(decisions[0]["defects"])
+        self.assertTrue(decisions[0]["suggested_fix"])
 
     def test_conservative_numeric_composition_patch_retains_repair_authority(self) -> None:
         from app.capabilities.selective_review import _normalized_decisions

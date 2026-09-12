@@ -406,6 +406,7 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
             "后台生成中" if engine_status in {"queued", "running"}
             else "已暂停" if engine_status == "paused"
             else "生成失败" if engine_status == "failed"
+            else "已取消" if engine_status == "cancelled"
             else "等待下一步确认"
         ),
         "progress_percent": 15 if engine_status == "queued" else (running_progress if engine_status in {"running", "paused"} else 100),

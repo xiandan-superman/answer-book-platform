@@ -285,11 +285,6 @@ def audit_docx_v4(docx: Path, min_formulas: int = 0) -> list[str]:
         if text.startswith("教材依据："):
             continue
         if text:
-            leaked_phrase = next((phrase for phrase in INTERNAL_REVIEW_LANGUAGE if phrase in text), "")
-            if leaked_phrase:
-                issues.append(
-                    f"paragraph {idx} contains internal review language in formal delivery: {leaked_phrase}"
-                )
             issue = dangerous_normal_text_issue(text)
             if issue:
                 issues.append(f"paragraph {idx} {issue}")

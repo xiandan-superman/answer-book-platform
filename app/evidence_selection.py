@@ -390,6 +390,20 @@ def _candidate_visual_parts(candidates: list[dict[str, Any]], limit: int = 8) ->
         if not path_text or path_text in seen:
             continue
         path = Path(path_text)
+        source_path = str(raw.get("source_file") or "")
+        if "content_list" in Path(source_path).name:
+            # Revalidate persisted indexes too: old indexes may predate the
+            # package import boundary check.
+            from .textbook_package import PACKAGE_CACHE_DIR, resolve_package_asset
+
+            source = Path(source_path).resolve()
+            package_root = source.parent
+            try:
+                relative = source.relative_to(PACKAGE_CACHE_DIR.resolve())
+                package_root = PACKAGE_CACHE_DIR / relative.parts[0]
+            except ValueError:
+                pass
+            path = resolve_package_asset(package_root, source, None, path_text)
         if not path.exists() or not path.is_file():
             continue
         seen.add(path_text)

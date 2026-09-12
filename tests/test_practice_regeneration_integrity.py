@@ -351,7 +351,8 @@ def test_frontend_regeneration_payload_omits_removed_review_switch() -> None:
     batch_start = APP_JS.index("async function regenerateSelectedPracticeQuestions(button)")
     batch_end = APP_JS.index("async function undoPracticeChange()", batch_start)
     batch_source = APP_JS[batch_start:batch_end]
-    assert "const response = await regeneratePracticeExercise(index, instruction);" in batch_source
+    assert "const response = await regeneratePracticeExercise(index, instruction, payloads.get(index));" in batch_source
+    assert "structuredClone(practiceRegenerationPayload(index, instruction))" in batch_source
     assert "response.semantic_review" not in batch_source
 
 

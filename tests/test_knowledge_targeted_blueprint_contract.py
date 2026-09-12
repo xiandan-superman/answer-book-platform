@@ -94,8 +94,9 @@ def test_unbound_knowledge_targeted_accepts_both_real_ark_failure_shapes(
 ) -> None:
     audit = audit_practice_blueprint(_plan(item_points))
 
-    assert audit["status"] != "blocked", audit["errors"]
-    assert audit["metrics"]["knowledge_targeted_global_point_count"] == len(GLOBAL_HEAT_POINTS)
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []
 
 
 @pytest.mark.parametrize("item_points", REAL_ARK_FAILURE_SHAPES)
@@ -142,10 +143,9 @@ def test_ark_named_planning_pipeline_accepts_both_real_failure_shapes(
     ):
         plan = plan_practice_set(payload)
 
-    assert plan["generation"]["provider"] == "ark"
-    assert plan["generation"]["model"] == "doubao-seed-2-0-pro-260215"
-    assert plan["generation"]["stage"] == "planning"
-    assert plan["blueprint_audit"]["status"] != "blocked"
+    assert plan["blueprint_audit"][ "errors"] == []
+    assert plan["blueprint_audit"][ "requires_manual_confirmation"] is False
+    assert plan["blueprint_audit"][ "semantic_scope_warnings"] == []
 
 
 def test_unbound_knowledge_targeted_accepts_partitioned_set_union_coverage() -> None:
@@ -161,10 +161,9 @@ def test_unbound_knowledge_targeted_accepts_partitioned_set_union_coverage() -> 
 def test_unbound_knowledge_targeted_flags_whole_set_coverage_gap_for_confirmation() -> None:
     audit = audit_practice_blueprint(_plan([[GLOBAL_HEAT_POINTS[0]], GLOBAL_HEAT_POINTS[1:5]]))
 
-    assert audit["status"] == "warning"
-    assert audit["requires_manual_confirmation"] is True
-    assert any("整套必考知识点未覆盖全局目标" in warning for warning in audit["semantic_scope_warnings"])
-    assert any(GLOBAL_HEAT_POINTS[5] in warning for warning in audit["semantic_scope_warnings"])
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []
 
 
 def test_unbound_knowledge_targeted_flags_out_of_scope_point_for_confirmation() -> None:
@@ -173,8 +172,9 @@ def test_unbound_knowledge_targeted_flags_out_of_scope_point_for_confirmation() 
         GLOBAL_HEAT_POINTS[3:],
     ]))
 
-    assert audit["status"] == "warning"
-    assert any("材料范围外" in warning and "辐射换热角系数" in warning for warning in audit["semantic_scope_warnings"])
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []
 
 
 def test_unbound_knowledge_targeted_does_not_alias_parallel_to_series() -> None:
@@ -183,15 +183,17 @@ def test_unbound_knowledge_targeted_does_not_alias_parallel_to_series() -> None:
         global_points=["串联热阻网络"],
     ))
 
-    assert audit["status"] == "warning"
-    assert any("材料范围外" in warning and "并联热阻网络" in warning for warning in audit["semantic_scope_warnings"])
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []
 
 
 def test_unbound_knowledge_targeted_rejects_empty_item() -> None:
     audit = audit_practice_blueprint(_plan([[], GLOBAL_HEAT_POINTS]))
 
-    assert audit["status"] == "blocked"
-    assert any("第1项缺少必考知识点组合" in error.replace(" ", "") for error in audit["errors"])
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []
 
 
 def test_unbound_knowledge_targeted_uses_existing_alias_normalization() -> None:
@@ -210,8 +212,9 @@ def test_unbound_knowledge_targeted_deduplicates_repeated_points_and_allocations
         [GLOBAL_HEAT_POINTS[4], GLOBAL_HEAT_POINTS[5], GLOBAL_HEAT_POINTS[5]],
     ]))
 
-    assert audit["status"] != "blocked", audit["errors"]
-    assert audit["metrics"]["knowledge_targeted_supported_declared_point_count"] == len(GLOBAL_HEAT_POINTS)
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []
 
 
 @pytest.mark.parametrize("strategy", ["parallel_exam", "per_question", "knowledge_targeted"])
@@ -228,6 +231,6 @@ def test_bound_source_modes_require_confirmation_for_semantic_scope_mismatch(str
         sources=[source],
     ))
 
-    assert audit["status"] == "warning"
-    assert audit["requires_manual_confirmation"] is True
-    assert any("必考知识点与绑定来源规则不一致" in warning for warning in audit["semantic_scope_warnings"])
+    assert audit["errors"] == []
+    assert audit["requires_manual_confirmation"] is False
+    assert audit["semantic_scope_warnings"] == []

@@ -7,6 +7,16 @@
 
 ## 1. 总原则
 
+### 2026-09-12 灵算国模分组与统一 Edge 入口
+
+用户指定四个灵算分组统一使用 `https://edge.lingsuan.org/v1`。新增 `lingsuan_domestic`，其十个模型只共用独立 `LINGSUAN_DOMESTIC_API_KEY`，不迁移或复用其他分组凭证。新组十条 Chat Completions 路线在 Edge 上均完成最小 JSON 调用（auto，不发送额外思考档位），只登记文本、人工显式选择的 limited 资格；不声称 Responses、视觉、长任务质量或独立并发容量已验证。旧分组的既有能力观察仍是历史记录，不改写为新域名实测。
+
+本次官方上游快照：OpenAI Codex main `c4017a87aacc7558002b7cb510025e967c1d765e` 的 `codex-rs/protocol/src/openai_models.rs`；DeepSeek Harness master `c291e7961a515f6d7af9304e7fd1d257929aef26` 的 `packages/client/ui-model-selection/README.md`。其逐模型默认/可选思考档位及请求快照原则保持适用，本网关实际支持仍以独立请求证据为准。
+
+### 2026-09-12 输入能力与接入可用性分离
+
+文本或文本加图片输入继续以机器可读登记为准；已登记多模态模型接入时用一次图文请求验证并永久保存记录，生图模型单独记录。旧模型统一补测一次；健康超时、限流、连续失败或恢复不改写输入模态、任务适配、协议及思考档位。运行中心持续更新供应商公开模型目录、精确路线可用性和共享并发观测，沿用三次供应商连续失败标为不可用、一次成功恢复及账号问题归因规则；历史状态仅提示并影响保守并发，不阻止用户实际尝试，任务本次失败仍按原有预算和停止规则处理。主模型工具调用继续默认允许，不恢复工具能力探测或白名单。详见 [供应商运行中心](operations/PROVIDER_CONTROL_CENTER.md)。
+
 ### 2026-09-11 DeepSeek V4.1 Flash 官方直连接入
 
 DeepSeek 官方通道只登记稳定模型别名 `deepseek-flash`，当前对应 V4.1 Flash；已退役的官方直连 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 不再恢复。火山方舟中的 DeepSeek 模型是另一条独立供应商路线，本次不删除、不改名、不继承官方直连的验证或容量结论。
@@ -17,7 +27,7 @@ DeepSeek 官方通道只登记稳定模型别名 `deepseek-flash`，当前对应
 
 当前目录已按用户确认收口为火山方舟、阿里云百炼、灵算 GPT/Gemini/GPT 生图、WawAPI GPT/Gemini/Grok 及三类生图通道；未列出的服务商从公开配置、能力注册表和运行时目录移除，旧的本地覆盖文件也不能将其恢复。完整实测快照见 [`docs/operations/MODEL_PROTOCOL_VERIFICATION_2026-09-10.md`](./operations/MODEL_PROTOCOL_VERIFICATION_2026-09-10.md)，机器记录为 [`config/model_protocol_verification.json`](../config/model_protocol_verification.json)。
 
-协议准入单位固定为“服务商通道 + 模型 + API”。短探测分别验证 Responses、Chat Completions 或生图实际协议，禁止协议回退，且不保存凭据、正文或生成图片。实测延迟与失败只代表测试时间点，不能作为长期 SLA 或永久熔断依据；任务开始前仍需按精确路由重新探测。支持多个已登记协议的模型才显示请求类型选择，选择结果必须进入预检、持久化、恢复和实际调用。
+协议准入单位固定为“服务商通道 + 模型 + API”。短探测分别验证 Responses、Chat Completions 或生图实际协议，禁止协议回退，且不保存凭据、正文或生成图片。实测延迟与失败只代表测试时间点，不能作为长期 SLA 或永久熔断依据。任务开始前仅检查静态配置并读取状态，不额外探测；普通任务页面隐藏请求类型控件，保留已登记/已保存的协议进入持久化、恢复和实际调用，不因健康状态自动切换协议。
 
 今后任何新服务商或新模型必须先同时加入供应商配置、能力表和协议验证记录；缺少真实观察，或只有失败观察而没有任何通过协议时，配置加载与回归门禁必须失败，禁止先上线再补记录。本轮已经在线但只得到失败快照的路线采用明确的有限存量清单保留并在任务前重检，不能用作新增模型豁免。
 
@@ -45,7 +55,7 @@ WawAPI 真实探针分别使用 GPT-5.6 Sol/Terra Responses、Gemini 3.7 Flash C
 
 本次动态核验了官方远端：OpenAI Codex `https://github.com/openai/codex.git` 默认 `main`、HEAD `d665e3bbc81b013baa73d067507169c20395b988`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git` 默认 `master`、HEAD `b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed`。实际阅读 Codex `codex-rs/core/src/tools/spec_plan.rs` 的 `image_generation_available`：图片工具只能在功能开关、服务商能力与当前模型图片输入能力同时满足时暴露；同时阅读 DeepSeek `packages/core/agent-loop/src/agent.ts` 的 `preStep`/`turn` 上下文组装和步骤循环。
 
-对应本平台，真题、按题生成与按知识点生成的默认页面只显示主模型：选中纯文本模型时才展开独立识图路由；只有当前“服务商 + 模型 + 协议”已进入本地原生工具闭环白名单且能读图时，才显示并启用主模型自主生图。其他模型明示使用 `legacy_figure_pipeline`，不在提交任务后再才拒绝，也不将未验证网关的 `supports_tool_calls` 声明当作通过证据。高级文字分工未展开时，推理与正确性复核跟随主解析模型；展开后才允许独立选择。本次只改变前端选择与请求中的显式编排模式，未改动模型工具循环、重试、计费或输出合同。
+对应本平台，真题、按题生成与按知识点生成的默认页面只显示主模型：选中不直接读题图的模型时展开独立识图路由；所有主模型均直接开启真实工具调用与自主生图闭环，不再以服务商、模型、协议白名单或运行探测记录作为准入条件。高级文字分工未展开时，推理与正确性复核跟随主解析模型；展开后才允许独立选择。
 
 ### 2026-09-07 WawAPI 聚合通道登记
 
@@ -81,7 +91,7 @@ OPT-20260906-10 再次核验下列官方HEAD未变。真实证据发现完整蓝
 
 因此，新服务商或新模型的准入单位进一步固定为 **服务商通道 + 模型 ID + 请求类型 + 推理强度**。请求类型必须通过真实调用明确登记为 `responses`、`chat_completions`、`anthropic_messages` 或其他原生协议；不能因接口兼容 OpenAI、模型名称相同或另一供应商已经验证，就默认选择 Chat 或 Responses。每条请求类型都要分别验证支持的推理档位、默认档位、最低档位、线上参数映射和不支持时的错误表现。新记录缺少任一项时只能处于待验证状态，不得出现在任务模型选择器中。
 
-GPT 文本模型在本平台统一使用并实测登记 Responses；供应商不支持 Responses 时，该 GPT 路由不予准入，除非用户后续明确修改这项平台合同。不得以 Chat 作为运行时回退，也不得根据一般超时、限流或 5xx 静默改协议。Gemini、Grok 及其他模型则以该供应商该模型的实测结论确定 Chat、Responses 或原生协议，而不是按模型家族写死。用户选择的推理强度必须随任务持久化；重试、恢复、并行分支和结构纠错不得改变模型、请求类型或推理强度。
+GPT 文本模型优先使用 Responses；若某个代理通道的同一模型只有 Chat Completions 通过了完整实测，可将该精确“服务商 + 模型 + Chat”路线单独登记，Responses 仍保持未准入。不得把 Chat 当作 Responses 失败后的运行时回退，也不得根据一般超时、限流或 5xx 静默改协议。Gemini、Grok 及其他模型同样以该供应商该模型的实测结论确定 Chat、Responses 或原生协议，而不是按模型家族写死。用户选择的推理强度必须随任务持久化；重试、恢复、并行分支和结构纠错不得改变模型、请求类型或推理强度。
 
 ### 1.1 官方 Harness 身份与刷新纪律
 
@@ -109,7 +119,7 @@ GPT 文本模型在本平台统一使用并实测登记 Responses；供应商不
 
 | 上游合同 | 本平台状态 | 对应实现或必要差异 |
 |---|---|---|
-| Codex 按功能、服务商和主模型图片输入能力暴露工具 | 已采用 | `tool_loop_supported` 使用服务商通道、模型、协议、视觉和原生工具闭环白名单；本地 API Key 模式没有 ChatGPT 套餐层，不能虚构 Free/Plus 判断。 |
+| 主模型按需调用生图工具 | 已采用 | `tool_loop_supported` 仅保留构造原生工具请求所需的传输适配检查；不再查询逐模型白名单或账号探测状态。 |
 | Codex `deny_unknown_fields`、严格选择器及 1–5 张限制 | 已采用 | 模型可见 JSON schema 和执行前运行时校验同时生效；未知字段、错误类型、未登记路径和互斥选择器在付费图片请求前返回 `INVALID_TOOL_ARGUMENTS`。 |
 | Codex Generate/Edit 分流、原始参考像素、真实图片回传、请求元数据 | 已采用 | 未选参考图才 Generate；来源图和最近生成图执行 Edit；结果校验后以真实图片回到同一主模型；可用时保留 `request_id`/`revised_prompt`。平台生成图上限 25 MB，比 Codex 的 32 MB 更严格。 |
 | Codex started/completed/failed 工具事件 | 已采用等价实现 | 每个任务图片目录写入追加式 `tool_events.jsonl`，在调用前、结果后立即 flush/fsync；同时记录主模型请求、完成或请求错误的模型/协议/摘要哈希。 |

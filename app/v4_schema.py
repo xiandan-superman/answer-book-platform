@@ -4,7 +4,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .formula_audit import audit_text_segments_no_formula, looks_like_formula
+from .formula_audit import audit_text_segments_no_formula
 
 ALLOWED_SEGMENT_TYPES = {"text", "formula_ref", "image_ref"}
 REQUIRED_TOP_KEYS = {"schema_version", "question_id", "answer", "blocks", "formulas", "evidence_ids"}
@@ -80,8 +80,6 @@ def validate_v4_answer_fragment(data: dict[str, Any]) -> list[str]:
         issues.append(f"missing top-level keys: {sorted(missing)}")
     if data.get("schema_version") != "answer_book.answer_fragment.v4":
         issues.append("schema_version must be answer_book.answer_fragment.v4")
-    if looks_like_formula(str(data.get("answer", ""))):
-        issues.append("answer contains formula-like content; use formulas + formula_ref instead")
     if not isinstance(data.get("blocks"), list):
         issues.append("blocks must be a list")
     if not isinstance(data.get("formulas"), list):

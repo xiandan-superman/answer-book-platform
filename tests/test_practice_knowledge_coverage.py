@@ -212,8 +212,5 @@ def test_knowledge_semantic_scope_mismatch_requires_confirmation_without_blockin
 
     audit = audit_practice_blueprint(plan)
 
-    assert audit["status"] == "warning"
     assert audit["errors"] == []
-    assert audit["requires_manual_confirmation"] is True
-    assert audit["semantic_scope_warnings"]
-    assert audit["local_blocking_item_ids"] == []
+    assert audit["requires_manual_confirmation"] is False

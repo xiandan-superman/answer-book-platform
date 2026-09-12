@@ -32,6 +32,304 @@
 
 ## 变更记录（最新在上）
 
+### OPT-20260912-29｜0.9.53 源码发布候选
+- status: implementing
+- scope: 版本元数据、变更说明、源码制品与自动发布。
+- changed: 同步 0.9.53，纳入本阶段模型配置、调度与交互修复，明确未验证范围。
+- trigger: 用户要求推送新版本。
+- invariants: 只推送 main，由自动门禁创建正式标签；不含凭证或用户数据，不另发桌面包。
+- do_not_regress: 本地 ZIP 不等于公开发布；公开附件与稳定源必须核验。
+- verification: 锁定 Python 3.11 完整门禁 2412 passed、17 deselected、70% coverage；Chromium 14 项连续两轮通过；发布合同13项通过；420文件源码ZIP反向验证零问题，解压后独立数据启动，首页200、版本0.9.53一致。暂存凭证扫描无匹配，diff检查通过。GitHub发布与稳定源验证待自动流程，不将本地候选当作公开版。
+
+### OPT-20260912-28｜发布阻断项修复与真实浏览器门禁
+- status: verified
+- scope: 按题/知识点共用编辑器、Word 导出恢复、浏览器夹具与发布 CI。
+- changed: 用户明确进入受控手工合并后，保存使用所加载最新服务端版本，持久旧稿仍保留旧基线；恢复栏优先显示每条导出记录的文件名，不被共享任务默认名覆盖。测试同步不显示内部 PJ 编号、折叠栏展开、任务状态及重绘后 locator 操作。CI 启动独立数据服务并显式设置 E2E URL，防止整组跳过。
+- trigger: 发布实测发现手工合并仍提交旧版本、多个命名记录被展示成同名；旧夹具和权限代理不符合现行合同。
+- invariants: 未明确合并的过期稿不得保存；合并期间的新写入仍由服务端版本比较拒绝；不改 Word 文件内容、后台任务ID或用户数据，不新增模型请求，不绕过安全权限。
+- impact_matrix: 按题/知识点编辑共用修复并由跨页冲突测试覆盖，历史恢复保留草稿；Word 导出记录共用显示/下载合同；真题编辑和 Word/PDF 构建不消费这两个前端函数；CI 独立目录不读生产数据。
+- do_not_regress: 旧稿基线不得在合并成功前回写为新版本；同一导出 job 的不同文件名必须可区分，显示名与实际下载名一致；CI 浏览器不得因缺 URL 静默跳过。
+- verification: 锁定 Python 3.11 scripts/run_quality_gates.py --full：2412 passed、17 deselected、覆盖率70%，Ruff/Mypy等均通过；完整 E2E 14 项连续两轮通过，Node语法通过。受控合并新版本与旧稿基线行为回归通过。OPT-20260912-27 四个阻断项已在本条关闭，保留首次失败历史。正式发布见29。
+
+### OPT-20260912-27｜发布浏览器冒烟适配与未关闭问题
+- status: implementing
+- scope: tests/e2e/test_platform_smoke.py 的隔离代理、Word 恢复栏、任务页面及错误编号断言。
+- changed: 测试代理透传本机权限头并保留 HTTP 错误响应；部分交付夹具设定实际运行页面状态；Word 恢复测试通过 summary 展开；错误摘要不再要求已移除的 PJ 内部编号。
+- trigger: 真正设置 ANSWER_BOOK_E2E_URL 后发现旧测试与新页面合同不一致，不可把未设 URL 的 skip 当作发布通过。
+- invariants: 不修改生产权限检查、不强制点击隐藏元素、不降低交付或版本冲突保护。
+- do_not_regress: 正式发布必须完成浏览器测试，不得只引用 Python 完整门禁。
+- verification: 隔离服务 pytest -q -m e2e tests/e2e/test_platform_smoke.py --tb=short：最新 10 passed、4 failed。未关闭：多文件 Word 恢复可见性、受控合并保存后编辑器未关闭、详情仍断言 PJ 编号、任务卡重绘导致 scroll 元素脱离；需继续逐项定位。Ruff 与 diff --check 通过。版本未增加、未推送或发布。
+
+### OPT-20260912-26｜灵算国模独立密钥分组与 Edge 统一入口
+- status: verified
+- scope: 三条业务线共享供应商配置、历史恢复、运行中心测试、文本与图片客户端。
+- changed: 新增国模 10 模型与独立 LINGSUAN_DOMESTIC_API_KEY；仅开放实测 Chat Completions/auto 文本路线，未知视觉与额外思考档位不开放。四个灵算分组统一 edge.lingsuan.org/v1，旧本地覆盖不能恢复旧域名，保留代理显式开关。
+- trigger: 用户新增共用一把 Key 的国模组，并要求所有灵算访问迁移到 Edge。
+- invariants: 不改现有默认模型、协议、Key、任务内容或 Word/PDF 交付；不自动升级未知能力；继续使用既有灵算共享并发池，不增加并行额度。已运行进程持有旧配置，须安全重启后生效。
+- do_not_regress: 国模 Key 不继承其他分组或旧共享 Key；Responses 不因 OpenAI 兼容而开放。历史实测记录保留原时间点，不伪造新域名下旧模型实测。
+- verification: 新域名 10/10 最小 JSON 实测通过，auto、8192 输出预算；旧域名首轮 9/10 JSON 通过，Qwen3.7 JSON 解码失败。不是长任务/并发/图片质量验收。34 项定向通过；Python 3.11 scripts/run_quality_gates.py --full 通过，2412 passed、17 deselected。Playwright API 页面确认独立国模栏与十模型目录；安全重启后生产 /api/providers 确认四组 Edge 地址及各组 Key 已配置。正式发布仍待独立浏览器冒烟失败处理，不等于已发布。
+- impact_matrix: 真题、按题、知识点入口均消费 list_providers；恢复仍按保存 provider/model 读取当前地址；Word/PDF 本地交付不使用供应商地址，未改。共享配置、密钥隔离、图片请求路径和代理策略回归覆盖。
+- upstream: 2026-09-12 核验 OpenAI Codex https://github.com/openai/codex.git main c4017a87aacc7558002b7cb510025e967c1d765e，阅读 codex-rs/protocol/src/openai_models.rs 的逐模型默认/可选 reasoning；DeepSeek Harness https://github.com/deepseek-ai/deepseek-harness.git master c291e7961a515f6d7af9304e7fd1d257929aef26，阅读 packages/client/ui-model-selection/README.md 的 provider/model/effort 目录及运行请求快照。未复制其运行时，不以其行为证明本网关能力。
+
+### OPT-20260912-25｜统一用户任务编号与反馈反查
+- status: verified
+- scope: 真题/题目解析/教材定位、按题与知识点出题、格式审查的任务展示和反馈定位。
+- changed: 统一稳定 RW 编号（固定 v1 哈希规则，16 位十六进制分组），完整显示复制并支持搜索；生题不再另显执行 ID，普通错误不再混用内部诊断号，详情显示同一编号。生题阶段与结果基于批次共享编号。反馈保留公开编号、稳定内部 ID、实际 job/history；修正生题卡片将批次当作执行/历史 ID 的映射错误及跨页反馈残留任务。新增只读 resolve-number API/CLI，扫描全部历史而非最近 100 项，返回所有相关执行供排查。窄屏卡片上下排布，修复操作区遮挡运行详情。
+- trigger: 用户侧 ID 格式各异、截短及任务/执行并列混乱，且稳定批次号不能直接当作具体诊断资源采集。
+- invariants: 不改内部存储/API资源路径、不重命名/迁移任务，不修改任务状态或发起模型请求；编号不是权限凭证；未保留数据不能凭编号恢复；AB 反馈单号保留为反馈追踪用途。历史无批次的独立任务不猜测合并；算法与稳定键顺序不可随意变更。
+- do_not_regress: 显示与复制必须是同一完整编号；同批次更新/重试编号不变；诊断使用真实 job_id/history_id，不能将 RW 编号拼成文件路径；反查不可截断最近 100 项或盲选第一条。
+- impact_matrix: 三条核心业务及辅助题目解析/教材定位复用 enrich_contract，格式审查单独补字段；历史读取确定性计算无需迁移；生题 loading/失败提示统一，原内部动作参数保持不变；反馈生产/ZIP manifest/排查脚本保留对应关系；Word/PDF生成与下载路径不变。跨业务合同、历史、反馈、格式审查及前端回归覆盖。
+- verification: 最终 `.venv/bin/python -m pytest tests/test_task_identity.py tests/test_task_read_model_lifecycle.py tests/test_task_contracts.py tests/test_audit_async_20260912.py tests/test_support_reporting.py tests/test_frontend_contract_guards.py tests/test_word_format_tasks.py tests/test_practice_trust.py -q --tb=short`：266 passed；修改模块 Ruff、Node 语法、diff 检查通过。Playwright 模拟任务在 480px 展开运行详情并截图查看，完整编号显示，scrollWidth=innerWidth=480；修复窄屏按钮遮挡后点击成功，已移除模拟路由。`.venv/bin/python scripts/run_quality_gates.py --full` 通过：2408 passed、17 deselected、覆盖率70%，Ruff/Mypy/版本/公式/许可证/完整性均通过。没有真实反馈、模型调用、用户数据写入或服务重启；未提交推送、未发布。
+
+### OPT-20260912-24｜答案汇总保留展示编号并去除重复题干
+- status: verified
+- scope: 真题解析答案单元汇总、Word 输出及用户下载副本的离线修正。
+- changed: 汇总依据 synthetic_flattened/display_number 判断展示层级，稳定 ID 含点不再强制视作嵌套；程序汇总仅拼接编号和原答案，保留真实嵌套、模型显式汇总及单答案行为。另生成修正版 Word 副本，仅替换对应错误汇总段落。
+- trigger: 合成父题已展平，但旧汇总按带点 ID 分组，空父编号产生空括号且重新拼入整段题干。责任层为 deterministic_postprocess，原模型答案未包含该重复。
+- invariants: 不改变稳定题号、原答案、真实嵌套层级、明确模型汇总、证据与质量门；不调用模型、不改历史任务状态及原文件、不将候选件冒充正式通过。
+- do_not_regress: 展平小问不得因内部 ID 含点恢复为父子分组；程序生成答案汇总不得插入题干或空编号。
+- impact_matrix: 真题汇总修复并以实际任务离线验证；按题/知识点出题不消费该私有汇总函数，其生成与合同回归通过；历史恢复重生成片段使用修复函数，已有存储成果不自动迁移；Word 构建集成通过，副本 20 页渲染及逐页概览检查完成；PDF 渲染器与共享模型设施未改，渲染仅供验证。
+- verification: `.venv/bin/python -m pytest tests/test_answer_summary_hierarchy.py tests/test_answer_units.py tests/test_graphic_docx_order.py tests/test_pipeline_checkpoint_recovery.py tests/test_practice_export_gate.py tests/test_practice_regeneration_integrity.py tests/test_docx_contracts.py -q --tb=short`：110 passed；`.venv/bin/python -m pytest tests/test_practice_generation_batching.py tests/test_knowledge_targeted_blueprint_contract.py tests/test_answer_summary_hierarchy.py -q --tb=short`：46 passed；定向 Ruff 与 git diff --check 通过。修正版 ZIP 成员一致，除目标 document.xml 外全部逐字节一致；实际 Word 渲染检查通过。未重启服务、未提交/推送/发布，未做 Windows 实机与完整模型任务重跑，本轮为确定性汇总修复与离线文档验证。
+
+### OPT-20260912-23｜教材优先的跨阶段并行与逐题多模态准入
+- status: verified
+- scope: 真题解析教材依据/答案草稿交叠、共享供应商准入、作图工具依赖等待、阶段进度。
+- changed: 不再因整卷含图/作图关闭并行，按题检查视觉输入与模型能力；作图计划就绪后可推理，实际生图等待教材阶段结束。相同实际供应商池中前台请求优先，草稿最多占 limit-1；独立池不保留额外名额，继续遵守自身上限与冷却。等待依赖不消耗题目执行预算；合并成功草稿并生成未就绪/失败题，保持证据重绑定和质量流程。失败/取消关闭后续草稿准入并排空已发请求，避免恢复时迟到写入；并行进度独立展示且恢复清空。
+- trigger: 全卷多模态排除过宽；阶段串行闲置独立供应商，简单并行又会挤占教材请求；等待生图依赖可能耗尽题目预算。
+- invariants: 不取消已发模型请求、不超供应商上限、不跳过图片资产回灌/主模型采用和最终交付合同；图像输入不足只延后相关题；不自动重跑用户任务、不付费探测、不重启服务、不改历史确认结果。提前草稿仍可能因后续证据核对而修正，不承诺零额外 Token。
+- do_not_regress: 同池 limit=1 必须先教材后草稿；异池 limit=1 仍可独立运行；作图调用必须等依赖而非直接抛弃工具；未知/缺失视觉输入不得冒充已读图；失败题不得使已成功草稿整批重做。
+- impact_matrix: 真题含教材流程启用逐题草稿；题目解析无教材无需交叠、教材定位不生成答案；按题/知识点出题未开启后台优先上下文，继续原任务公平排队，共享并发/生题回归覆盖；历史恢复清理瞬态进度并复用有效作图计划，已有片段恢复不重复投机生成；Word/PDF仍经原证据、内容、图件与交付检查，工具 callback 默认空不改变其他入口。
+- verification: 定向调度/恢复/供应商与异步前端 61 passed；最终调度/工具/恢复回归 63 passed，修改模块 Ruff 与 Node 语法通过。`.venv/bin/python scripts/run_quality_gates.py --full` 最终通过：2404 passed、17 deselected，覆盖率 69%，Ruff/Mypy/公式/版本/许可证/项目完整性通过。首轮旧 Node 沙箱缺少上传状态已修复；中途并行工作树快照 3 项失败单独复验通过后，全量重跑通过。未真实调用模型、未实际重新生成 Word/PDF、未重启本地服务、未提交推送或发布。
+
+### OPT-20260912-22｜真题自动上传原页继续与分值预填
+- status: verified
+- scope: 真题材料上传、选择与删除，以及结构确认分值输入。
+- changed: 选取/拖入 DOCX 自动上传，移除手动上传按钮，原页展示字节进度和完成行；成功绑定返回路径，上传/删除时阻止创建，失败不使用旧选择，迟到结果不覆盖后续选择或导航。上传结果可复用既有确认删除入口；删除成功后刷新失败仍如实显示已删除。分值跳过空 confirmed_score 后读取已有识别值，未知留空；整题/小问/二级要求增加 5/10/20 分快捷按钮。
+- trigger: 用户要求上传后原页开始且可删除；空字符串遮蔽实际识别分值造成重复填写。浏览器复验还发现首次文件库加载会抢回已有列表，已保护上传中的标签。
+- invariants: 不自动开始模型任务、不猜分值、不删除用户原始本地文件；复用服务器上传重名保护与受管库删除边界；不改分值确认提交、任务内容、模型预算和历史成果。
+- do_not_regress: 自动上传不得切回列表；上传失败/未完成不得使用旧文件创建；用户后选文件优先；空确认值不能遮蔽识别分值，明确的 0 分必须保留；快捷按钮不提交弹窗。
+- impact_matrix: 真题、无教材题目解析和教材定位共用材料页与结构确认；按题/知识点上传仍走各自 UploadFileSelection，教材上传保持手动；历史确认复用预填，已确认分值优先；Word/PDF/后端任务执行与共享模型设施未改。相关前端、生题、文件安全和分值流程回归覆盖。
+- verification: `.venv/bin/python -m pytest tests/test_exam_auto_upload.py tests/test_exam_score_prefill.py tests/test_library_upload_safety.py tests/test_library_files.py tests/test_frontend_contract_guards.py tests/test_upload_file_selection.py tests/test_score_review_flow.py tests/test_practice_redesign.py tests/test_practice_trust.py -q`：268 passed；新增测试 Ruff、Node 语法及本次文件 diff 检查通过。Playwright 拦截上传响应验证进度、处理中禁用、原页保留、新路径自动选中与下一步可用；实际弹窗验证 10 分预填与 20 分快捷修改，截图已查看。未真实上传/删除用户文件、未提交生成、未调用模型、未重启服务、未提交推送或发布；Windows 和真实 Word/PDF 重生成不在本轮范围。
+
+### OPT-20260912-21｜程序只校验客观合同，停止内容语义拦截
+- status: verified
+- scope: 真题解析、按题/知识点出题、历史恢复、内容修复与 Word 交付。
+- changed: 停用关键词/相似度/专业含义判断及对应自动内容改写；保留结构、覆盖、引用、资产、公式转换与明确同基准数值关系。旧规则在当前验收中退役，未知错误不静默放行；既有模型审查保留，程序不从审查措辞推断额外合同或覆盖模型决策。
+- trigger: 正确液固分区答案仅因“剩余”触发转变账本必填，导致格式门误拦截；用户批准按客观检查与语义判断分类调整。
+- invariants: 无新增模型审查/付费重跑；题面完全重复、漏题、未知引用、缺图、坏公式/XML仍检查；不修改用户历史文件、已确认来源及模型原文，不增加后台调用。
+- do_not_regress: 不再从析出/剩余等词推断必填转变表；不以同数值或同符号重绑公式；不删除被认为“像公式/流程话术”的正常原文；不得将普通局部测试称为已发布。
+- impact_matrix: 三类业务、恢复、交付与共享审查逐项记录于 MACHINE_GATE_BOUNDARY_20260912.md，均有对应回归；PDF沿用 Word/渲染交付检查，不改渲染器。
+- verification: 普通全量 pytest 2383 passed/17 deselected/12 warnings；后续模型/历史保留专项43 passed；原失败第六题只读回放数值表问题0且原文不变；最终 `.venv/bin/python scripts/run_quality_gates.py --full` 全部通过：2385 passed/17 deselected/12 warnings，分支覆盖率70%，Ruff/Mypy/公式等通过；`git diff --check`通过。未重启服务、未提交/推送/发布，无真实付费重跑和Windows实机验收。
+
+### OPT-20260912-20｜完成反馈7秒与新建任务模型入口
+- status: verified
+- scope: 测试完成动画、真题新建默认角色、生题新建导航。
+- changed: 跑马灯进入可视区后保留7秒；真题质量预设与新建入口的教材/主解析角色使用灵算GPT-5.6 Sol；生题首页及新建按钮先进入模型页，下一步才初始化并进入原题/知识材料提交页。
+- trigger: 用户指定更长完成提示、新真题两个默认模型及生题先选模型的顺序。
+- invariants: 历史任务模型与恢复配置不改；进入模型页不清空已有输入，草稿恢复和历史复用内部入口不改；不修改实际调用预算、模型能力或文档内容。
+- do_not_regress: 7秒从用户可见开始计时；返回同一真题环境页不得再次重置选择；新建生题入口不得绕过模型页，历史恢复不得被迫重新初始化模型。
+- impact_matrix: 真题新建改默认角色；按题/知识点新建改导航；历史恢复及复用保留原函数；Word/PDF和共享后端未改。
+- verification: 定向前端/协议/生题/恢复/反馈计时229 passed；Node语法、修改测试Ruff及本次文件diff检查通过。Playwright实际点击确认新真题两个角色均为lingsuan_openai/gpt-5.6-sol，以及按题出题入口→模型选择→提交原题跳转正确；未提交生成、无真实模型调用、未重启后端、未发布。
+
+### OPT-20260912-19｜恢复请求方式并分层排列模型参数
+- status: verified
+- scope: 模型请求协议控件、真题模型卡布局和旧任务默认配置入口。
+- changed: 已登记协议恢复可见，唯一协议固定显示、多协议可选且保留合法原选择；真题模型卡供应商/模型一行，协议/思考强度一行，状态单独展示，窄屏继续堆叠。删除右上角重复按钮，底部折叠项改名默认模型（兼容设置），保留旧路由控件。
+- trigger: 用户需要选择已登记请求方式，且指出全局设置名不副实与参数拥挤。
+- invariants: 不新增协议、不改模型/协议持久化、任务请求或能力登记；旧任务兼容默认路由仍存在。
+- do_not_regress: 不得把协议可用性隐藏扩大成隐藏协议选择；不以恢复控件为由挤窄供应商/模型；无多协议时不得允许任意填写。
+- impact_matrix: 真题解析两角色卡分行；按题/知识点共用协议控件同步可见；历史任务恢复/默认路由保留；Word/PDF、任务执行与并发未变。
+- verification: 前端合同/协议/生题回归209 passed；新增原函数显示及兼容入口测试2 passed；`node --check web/app.js`、新增测试Ruff及本次文件diff检查通过。Playwright验证1300/900/390px下协议可见且无横向溢出；截图output/playwright/protocol-model-layout.png已视觉复核。真实付费模型、任务、后端服务与发布未操作。
+
+### OPT-20260912-18｜模型手动测试与逐行完成反馈
+- status: verified
+- scope: 运行中心模型行与供应商栏的手动状态测试、局部请求去重与完成动画。
+- changed: 模型行测试固定供应商/账号/模型/协议，供应商批量覆盖全部已接入文本与生图路线；复用健康探针逐项回读记录。去重按目标路线而非全局锁，独立模型可同时测试；完成行显示绿/橙色边框跑马灯和通过/未通过文字，进入可视区后约3秒恢复，减少动态效果时使用静态边框。
+- trigger: 用户要求手动测试模型及供应商全模型，并指出全局禁用其他模型不合理；希望行级完成反馈可见后恢复。
+- invariants: 不改能力登记、连续失败阈值、任务模型选择、共享并发上限或用户数据；批量明确提示真实生图费用；同一路线不重复派发，刷新失败不重新发起付费请求。
+- do_not_regress: 一条模型测试不得锁住其他供应商/模型；未通过不得显示绿色成功；后台或屏幕外完成反馈不能在用户看到前过期；按钮点击不得折叠模型行。
+- impact_matrix: 真题解析、按题出题、知识点出题与历史恢复继续消费既有健康记录与供应商并发机制，执行代码未改；Word/PDF无内容或交付改动；监控前端复用已存在的本机特权探测API，无后端接口或服务重启。
+- verification: `pytest tests/test_provider_manual_tests.py tests/test_provider_control.py tests/test_frontend_contract_guards.py tests/test_runtime_monitor_frontend.py -q` 169 passed（含原函数并发隔离/同路去重/离屏反馈计时）；前轮连同答案路由及生题回归232 passed；`node --check web/app.js`、`git diff --check`、新增测试Ruff通过。浏览器拦截请求确认单模型只派发一次且不折叠；实页断言边框动画 probe-border-lap 生效且可见后自动恢复，截图 output/playwright/provider-test-border.png。未由代理发起真实付费探测、未重启服务、未提交或发布。
+
+### OPT-20260912-17｜跨任务异步结果与审查整改收口
+- status: implementing
+- scope: 按题/知识点重生成、真题创建快照、模型状态摘要、编辑器、缓存与教材图片边界、任务迟到响应
+- changed: 固定原任务上下文和模型请求快照；整批重生成继续写回原历史并隔离新页面；冲突候选保留本地草稿；结构化编辑无损往返；统一供应商协议/健康口径；缓存显示身份/来源/更新时间；教材包资产越界拒绝；清理空选择不删除；取消状态类型收口。
+- trigger: 审查报告确认跨任务串写、配置混用、编辑无损、资产越界、状态口径和清理合同风险。
+- invariants: 不覆盖新任务页面或服务器新版本；不新增模型调用；失败仍可解释；用户缓存、任务和已确认内容不被删除或静默丢失。
+- do_not_regress: 迟到响应只能更新其原会话；原编辑版本必须参与保存；模型状态只作参考且不阻断用户尝试；Windows 路径测试不得通过削弱适配器。
+- verification: `node --check web/app.js` 和 `git diff --check` 通过；定向原函数/边界/前端/取消组合 138+58 passed；浏览器状态页冒烟无 console error，恢复入口折叠实测通过；`python scripts/run_quality_gates.py --full` 2371 passed/17 deselected/12 warnings，覆盖率72%，Ruff/Mypy等全部通过。随后终态观察指针收紧同一会话检查，另行定向回归。跨场景矩阵及未覆盖项见 AUDIT_REMEDIATION_20260912.md，Windows和缺失DOCX未验收。
+
+### OPT-20260912-16｜等待范围与蓝图确认时可取消任务
+- status: verified
+- scope: 按题出题、知识点出题的任务管理与耐久取消状态。
+- changed: 等待范围/蓝图确认的任务公开取消能力，复用任务卡更多菜单的取消入口；显式取消可结束已完成的分析/规划阶段并保留 payload/result。重复取消幂等，普通终止态更新仍不可变；取消后列表不再显示等待确认，前端展示拒绝和网络失败。
+- trigger: 阶段 completed 投影为 needs_input，但前后端都拒绝取消，用户无法结束等待确认的任务。
+- invariants: 只取消、不删除任务和中间产物；不修改模型、预算、质量门、正式生成结果与历史文件；无真实付费调用，不部署远程用户机。
+- do_not_regress: 不得开放正式生成完成态取消；迟到回调和恢复不得复活已取消记录或覆盖原蓝图；取消失败不得静默视为成功。
+- impact_matrix: 按题/知识点各覆盖 analyze/plan 的真实磁盘取消、幂等、迟到回调及恢复投影；真题使用独立控制，原控制和生命周期回归通过；历史恢复/清理回归通过；Word 导出和部分生成回归通过，Word/PDF 构建实现未改；共享普通终止态写保护保持原样，Node 实际执行前端按钮与确认/拒绝/网络失败分支。
+- verification: `.venv/bin/python -m pytest tests/test_practice_confirmation_cancel.py tests/test_practice_jobs.py tests/test_task_contracts.py tests/test_practice_task_grouping.py tests/test_task_control_contract.py tests/test_task_read_model_lifecycle.py -q`：92 passed；历史清理/部分生成/Word导出/恢复与两组前端回归：200 passed。受影响 Python Ruff、`node --check web/app.js`、`git diff --check` 通过。未做真实浏览器或 Windows 实机验收，未重启运行服务；未提交、推送、发布源码或桌面包。
+
+### OPT-20260912-15｜题干预览与编辑互斥显示
+- status: verified
+- scope: 真题结构确认中的整题、小问及二级要求。
+- changed: 统一题干编辑组件，默认预览，点击编辑切换文本框，完成编辑恢复并重新渲染公式；隐藏输入仍保留原提交字段和值，新增行复用同一逻辑。
+- trigger: 预览和文本框同时占据页面造成题干重复显示。
+- invariants: 不改结构、分值、模型输入或持久化；正在编辑时直接提交仍读取最新文本。
+- do_not_regress: 预览与输入不得同时可见；切换不得丢失内容或公式源码。
+- impact_matrix: 真题解析及历史结构确认共用修复；按题出题、知识点出题不使用此编辑器；Word/PDF 及共享后端无变化。
+- verification: `pytest tests/test_frontend_contract_guards.py tests/test_runtime_monitor_frontend.py -q`：141 passed（含 Node 执行三类编辑器及互斥切换、保留输入回归）；`node --check web/app.js` 和 `git diff --check` 通过；8766 已提供新前端。未做浏览器视觉验收、未提交真实任务，未发布。
+
+### OPT-20260912-14｜任务详情 health 作用域修复
+- status: verified
+- scope: 真题解析任务详情阶段渲染。
+- changed: 将 health 局部变量从未使用它的 executionStageProgress 移入实际引用它的 buildTaskExecutionDetail；缺失 health 时使用空对象。新增 Node VM 执行真实渲染数据函数的持久回归。
+- trigger: ReferenceError 中断任务详情渲染，后续确认弹窗及轮询无法触发。
+- invariants: 不改任务状态、分值、模型调用、付费请求及仅详情页弹窗规则。
+- do_not_regress: 运行/等待确认阶段均不得依赖全局 health，服务端省略 health 时仍可展示。
+- impact_matrix: 真题解析及历史任务详情共用函数已覆盖；按题出题、知识点出题不使用该函数；Word/PDF 和共享后端基础设施未改动。
+- verification: `pytest tests/test_runtime_monitor_frontend.py tests/test_frontend_contract_guards.py tests/test_runtime_monitor.py -q`：153 passed（含实际 JS 函数执行）；`node --check web/app.js`、`git diff --check` 通过；HTTP 读取确认 8766 服务已提供修复后的 app.js。未触发真实任务执行、未做浏览器端到端验证，未发布。
+
+### OPT-20260912-13｜真题结构确认重复弹窗与赋分提交
+- status: verified
+- scope: 真题解析任务详情的结构、题型与分值确认弹窗。
+- changed: 保持仅任务详情弹窗；增加任务级请求锁和已提交 request_id，避免轮询旧状态重复打开；分值校验失败不再提前结束弹窗；提交失败保留填写内容并可重试。
+- trigger: 赋分弹窗重复出现、需填写两次；确认失败后无法继续。
+- invariants: 任务列表及其他页面仍只显示待人工确认，不主动弹窗；服务端单 request_id 幂等语义、结构确认与后续三类任务流程不变。
+- do_not_regress: 轮询不得重复弹窗；缺分值时不得丢失用户输入；确认提交成功后不得再次要求赋分。
+- impact_matrix: 真题解析修复；按题出题、知识点出题不使用该弹窗；历史恢复继续依据已确认结构；Word/PDF 交付与共享基础设施不变。
+- verification: `node --check web/app.js` 通过；`pytest tests/test_frontend_contract_guards.py tests/test_runtime_monitor.py -q`：150 passed；Node VM 执行真实检查函数验证重叠轮询、提交后旧 pending、任务列表不弹及请求锁释放通过。未修改后端、未重启服务，未做真实任务重跑。
+
+### OPT-20260912-12｜图文探针误判与能力状态分层
+- status: verified
+- scope: 接入探针、运行中心、共享选模提示。
+- changed: 视觉探针改用纯色避免黄橙歧义，允许大小写/空白/额外字段规范化；本地探针校验失败单独归因。图片能力登记不因健康证据过期而参与模型待确认汇总，真实图片路线故障仍展示；外侧区分等待更新与尚无有效验证。
+- trigger: DeepSeek 图文调用完成并返回左右颜色 JSON，原黄橙色块与严格比较造成误判。
+- invariants: 一次图文请求、连续失败阈值、任务流程、能力登记和费用预算不变；不自动重测、删除或改写历史接入记录。
+- do_not_regress: 不接受错误颜色、左右互换、缺失回答；不把探针内容校验失败计为供应商连续故障。
+- impact_matrix: 真题解析、按题出题、知识点出题共用选模健康提示；历史恢复持久化合同不变；Word/PDF 交付及共享并发不变，未修改其调用链。
+- verification: Python 3.11 `pytest tests/test_provider_control.py tests/test_frontend_contract_guards.py tests/test_answer_model_routing.py tests/test_audit_model_repair_regression.py tests/test_practice_redesign.py -q`：244 passed；`node --check web/app.js`、`git diff --check` 通过。未付费复测、未发布；运行服务尚未重启，未做浏览器视觉验收或真实 Word/PDF 重生成。
+
+### OPT-20260912-11｜折叠异常摘要与能力状态标签
+
+- status: verified
+- scope: 供应商总览及模型行。
+- changed: 初次所有供应商折叠，摘要列出异常模型名；增加列名，模型行用独立文本/图片/生图状态标签代替重复供应商、类型和单一状态；展开后的红色供应商边线只标头部，正常行绿色、待确认灰色、故障黄红；模型汇总考虑全部主要能力而非只取文本，参考图编辑仍独立放详情。
+- trigger: 用户要求折叠时直接定位异常模型、补列名并避免供应商红色延伸到正常模型。
+- invariants: 后端健康判定、能力登记、调度和任务执行不变；刷新继续保留用户展开状态。
+- do_not_regress: 证据过期不标红；单模型异常不得染红其它正常模型；首次异常供应商也不得自动展开。
+- impact_matrix: 三类任务共享监控展示调整；真题解析、按题出题、知识点出题调用与历史恢复、Word/PDF 交付无变化。
+- verification: 前端合同 137 passed；`node --check web/app.js`、`git diff --check` 通过；Chromium 核验初次折叠、异常名称、列名、能力状态标签与无横向溢出。无新增 API 探测或服务重启，未发布。
+
+### OPT-20260912-10｜供应商总览与三级模型详情
+
+- status: verified
+- scope: 模型运行中心视觉层级。
+- changed: 五家供应商按品牌聚合，摘要显示接入数、可用/异常/待确认数量及黄红状态；异常供应商优先并初次展开，正常默认收起；内部按纯文本、图文输入、生图分组，模型详情保留原证据及检测操作。
+- trigger: 用户认为跨供应商平铺模型不利于先看整体、再定位问题。
+- invariants: 红色文案限定为旗下模型不可用，不把局部错误扩大为整家不可用；不改任务执行、健康阈值、并发或能力登记。
+- do_not_regress: 用户主动展开/收起优先于默认策略，刷新后保持；模型数据不得因概览折叠丢失。
+- impact_matrix: 三类任务共享监控展示；真题解析、按题出题、知识点出题、历史恢复和 Word/PDF 交付逻辑不变。
+- verification: Chromium 验证 5 家供应商、42 条模型、正常收起/异常展开、刷新保持收起及无横向溢出；截图 `output/playwright/supplier-overview.png`；前端合同 137 passed，`node --check web/app.js`、`git diff --check` 通过。未重启服务或发布。
+
+### OPT-20260912-09｜模型状态前置与紧凑列表
+
+- status: verified
+- scope: 运行监控的模型状态展示。
+- changed: 模型区域前置于服务概况；大卡片收进逐模型详情，列表摘要显示模型、供应商、输入类型、主要调用状态、延迟及异常原因，异常优先排列；保留技术详情与检测入口及刷新阅读状态。
+- trigger: 用户无法在首屏发现模型区域，且大卡片信息密集、页面过长。
+- invariants: 仅改变展示，不更改登记、健康阈值、调度、付费调用或任务执行；生图编辑及视觉精确状态仍在详情保留，摘要采用文本或生图主要路线。
+- do_not_regress: 模型必须有独立可见行；刷新不得收起已展开详情或改变阅读位置。
+- impact_matrix: 三种任务共享运行监控页面受益；真题解析、按题出题、知识点出题实际调用、历史恢复和 Word/PDF 交付代码未变。
+- verification: `node --check web/app.js`、`git diff --check` 通过；前端合同 137 passed。浏览器核验模型前置、列表渲染、详情展开刷新保持与横向溢出。未重启服务、提交或发布。
+
+### OPT-20260912-08｜监控刷新保留展开与阅读位置
+
+- status: verified
+- scope: 模型运行中心的供应商分组、模型详情、能力详情和公开目录。
+- changed: 为动态节点建立稳定身份，重绘前保存展开/收起状态、阅读锚点与摘要焦点，同步恢复；保留自动刷新和最新状态。
+- trigger: 用户阅读下方模型时周期重绘导致详情收起、分组重新展开和页面跳动。
+- invariants: 不增加模型调用，不改变健康判定、检测调度、并发、任务参数或持久化数据。
+- do_not_regress: 状态刷新不得重置用户展开/收起的详情；不得用关闭轮询代替修复。
+- impact_matrix: 三类任务共享的监控页面统一修复；真题解析、按题出题、知识点出题的实际执行、历史恢复及 Word/PDF 交付均无逻辑变更；仅浏览器展示状态受影响。
+- verification: Chromium 实页展开第三组模型的登记与能力详情、收起第一组、滚动至目标卡后连续重绘五次，展开状态及位置断言通过；前端合同回归 136 passed，新增防回退合同后结果见本轮测试；`node --check web/app.js`、`git diff --check` 通过。无服务重启、提交或发布。
+
+### OPT-20260912-07｜运行策略文档收口与获准启动补测
+
+- status: verified
+- scope: 供应商运行中心操作规范、模型接入合同及本机服务核验。
+- changed: 消除旧文档中历史健康硬阻断、任务前额外探测和一次成功恢复满并发的矛盾描述；注明动态并发的进程内生命周期与未设上限边界。
+- trigger: 七点方案实施后的最终一致性检查；用户明确要求启动正式服务并自动补测存量模型。
+- invariants: 不改变能力登记、任务重试预算、质量门或用户所选模型/协议；失败接入记录不自动重测或降格模态。
+- do_not_regress: 历史不可用仅提示与保守调度；健康恢复与共享并发恢复不得混为一谈。
+- impact_matrix: 真题解析、按题出题、知识点出题与历史恢复统一遵循同一状态建议合同；Word/PDF 交付未改动，沿用上一条全量回归证据；共享状态服务与一次性补测已用正式用户数据启动，未额外创建教学任务。
+- verification: `git diff --check`、`node --check web/app.js` 通过；隔离浏览器 DOM 已核对模型卡、证据、异常提示与技术详情折叠，未完成截图和异常选项点击验收。Python 3.11 `scripts/start_platform.py --host 127.0.0.1 --port 8766` 启动成功，状态 API 返回 200；补测中间快照为 24 passed、1 failed、1 started、16 pending，共 42 条通道，后台继续执行。临时预览服务已停止，正式服务保持运行。未提交、推送或发布；上一条“未启动/未补测”为当时阶段状态，本条更新之。
+
+### OPT-20260912-06｜健康建议选模与动态调度
+
+- status: verified
+- scope: 真题解析、按题出题、知识点出题及重试入口，共享供应商健康、并发门和模型运行中心。
+- changed: 创建任务取消付费连通性预检和历史健康硬阻断；环境检查保留本机依赖/能力/Key 门禁，网络及历史调用失败作为提示。模型列表保留异常项、优先近期可用项且保留用户选中值。文本健康按失败指数退避与恢复观察动态计算下次检查，新增近 24 小时证据量/成功率/可信度；真实主模型工具请求反馈文本/视觉健康。共享并发池限流减半，稳定成功分级回升到原配置安全上限。运行中心改为按供应商分组的模型卡，突出输入能力、延迟、证据和风险；协议/账户信息收进详情，普通任务协议字段隐藏但持久化值不改。
+- trigger: 用户批准七点方案，要求状态帮助选择且允许强行执行，并发实际参与跨任务调度。
+- invariants: 固定能力不因健康修改；不自动更换模型/协议/思考档位；任务阶段并行依赖、内容质量门、有限重试、实际失败停止及恢复检查点保留；并发只在安全上限内回升，单模型过载不扩大成供应商整池限流；生图/编辑无周期付费探针。
+- do_not_regress: 历史失败不得删除模型选项或阻止实际任务尝试；可信度为证据充足度而非成功保证；未配置安全上限的供应商仍明确显示未设上限，不伪称已自动测得最大容量。
+- impact_matrix: 真题解析及两类生题共享状态建议选模，重试和恢复保留固定任务配置；全量回归覆盖三条业务链、历史恢复和 Word/PDF 交付；并发门统一限制全部已配置限额供应商的阶段请求，保持阶段内部预算；监控与目录状态存储独立于任务数据，未执行真实付费任务或存量补测。
+- verification: Python 3.11 `scripts/run_quality_gates.py --full` 通过（2346 passed、17 deselected）；最终状态汇总/前端调整后定向 `test_provider_control test_runtime_monitor test_frontend_contract_guards test_practice_redesign` 230 passed。Ruff、供应商控制/并发模块 Mypy、`node --check web/app.js` 和 `git diff --check` 通过。未提交、推送、发布或启动正式服务；UI 使用隔离数据服务验证。
+
+### OPT-20260912-05｜一次接入验证与持续健康观测分离
+
+- status: verified
+- scope: 供应商运行中心、接入测试、后台补测和共享并发观测。
+- changed: 按供应商、Key 指纹、模型、协议保存一次接入尝试；已登记多模态模型一次图文请求同时验证文字指令和图片输入，生图单独处理，存量模型后台逐个补测。后续健康状态不覆盖接入记录，不再定期复验图片输入能力。目录失败保留上次结果；页面按模型显示故障原因，供应商行显示需处理模型数。并发按真实共享门去重，持续保存请求成功并发和限流观测，未设上限单独标示。
+- trigger: 用户明确要求固定模型输入能力、持续确认目录/接入可用性/并行能力，沿用现有连续失败规则；原页面误将单模型错误显示为供应商不可用，并重复累加共享额度。
+- invariants: 输入类型、任务适配、协议、思考档位及工具默认允许策略不变；精确路线连续三次供应商失败停用、一次成功恢复、账号异常和平台错误归因不变；记录失败或中断不能把多模态降成纯文本。请求前落盘避免重复接入测试；参考图编辑与后续生图主动复测保持手动，不增加后台压力测试或自动提高生产并发。
+- do_not_regress: 不得按短请求成功峰值宣称供应商最大容量；不再按模型数重复相加共享并发；不恢复工具能力探测、白名单或过期门槛。
+- impact_matrix: 真题解析、按题出题、知识点出题继续使用原登记决定输入与原共享门执行，定向模型路由/生题/运行监控回归通过；历史恢复不迁移或改写任务模型配置，任务恢复合同和检查点回归通过；Word/PDF 生成及质量门无实现修改，完整回归覆盖原交付合同；共享基础设施新增可观测持久化，存储异常不影响模型请求结果。
+- verification: Python 3.11 `scripts/run_quality_gates.py --full` 最终通过；首次运行 API 配置并发 GET 用例超时，单独复核通过，独立测试数据目录完整重跑通过。定向两组 178 + 142 项通过，最终接入/API 兼容回归 24 项通过；`ruff check app/provider_control.py app/concurrency.py`、两模块 Mypy、`node --check web/app.js`、`git diff --check` 通过。隔离服务浏览器验证单 WawAPI 生图模型不可用、其它模型可用、供应商显示 1 个模型需处理、输入类型和共享并发文案正确。未启动正式服务或真实付费存量补测，补测将在新代码启动时执行；未提交、推送、发布源码或桌面包。
+
+### OPT-20260912-04｜主模型生图工具闭环改为默认开启
+
+- status: verified
+- scope: 真题解析、按题生题、知识点生题的主模型工具循环，供应商运行中心，模型能力展示与任务预检。
+- changed: 所有已选为主模型的文字模型直接允许发起真实原生工具调用并进入自主生图闭环；移除逐模型白名单、Key 指纹能力探测、过期复验和任务预检中的工具能力请求。运行中心完全不展示“工具调用”能力卡、状态或检测入口；启动时对已有 Key 但未测试的文字供应商只测默认文本连通路线。
+- trigger: 用户明确规定所有主模型具有相同的生图闭环能力，不再对此能力测试、验证或开白。
+- invariants: 生图模型和 API Key 仍必须完整配置；工具循环仍发送真实工具定义、执行真实生图、回灌结果并遵守调用次数、计费、失败归因和输出质量合同；连通性测试只判断 Key/接口可用性，不再决定工具闭环资格。
+- do_not_regress: 不得恢复“工具调用”运行中心卡片、“已开启 / 待验证 / 待审核”类似提示、逐 Key/模型/协议工具能力登记、工具能力定期探测或因能力表未登记而拒绝主模型；真实任务中的供应商错误必须原样进入任务失败处理，不伪装成“待开白”。
+- verification: 锁定 Python 3.11 完整 `scripts/run_quality_gates.py --full` 通过：2340 passed、17 deselected、12 warnings，覆盖率 72%，PyCompile、版本一致性、公式、第三方许可、项目完整性、Ruff 与 Mypy 均通过；`node --check web/app.js`、能力文档同步和 `git diff --check` 通过。隔离启动后 `/api/providers` 与 `/api/provider-control/status` 均 HTTP 200，运行中心返回工具能力路线 0 条；重启当前 8766 服务并在 Chrome 实页确认“工具调用”卡片、筛选项和类似提示均为 0。未发起付费模型或生图请求，未提交、推送、发布或部署。
+
+### OPT-20260912-03｜模型能力探测补全与账号协议级准入
+
+- status: verified
+- scope: 平台启动、供应商运行中心、文字/视觉/工具调用/生图/编辑探测、任务模型能力准入和前端配置刷新。
+- changed: 视觉探针改用答案不在提示中的随机双色图；工具探针必须完成结构化调用、参数与 call_id 校验、结果回灌、真实图片回看和最终 JSON。文本按 5 小时、视觉及工具按 24 小时复核；账号级运行时工具能力 7 天无成功复核即失效，且任一次完整探针失败立即撤销。工具准入精确匹配 Key 指纹、服务商、模型与协议，候选完整成功只开放当前账号精确路线，不改写静态全局能力表。首次启动检测从未测试账号的一条默认最高覆盖路线，纯图片供应商只产生一次测试图，参考图编辑保持手动。WawAPI GPT-5.6 Sol 的静态发布能力只登记真实通过完整闭环的 Chat Completions 路线，Responses 本次超时且保持未准入。
+- trigger: 原定期任务只检测文本；旧视觉提示泄露预期答案；旧工具探针只搜索工具名，未验证调用参数、结果续轮和图片回灌；通用 `supports_tool_calls` 会把一个协议的能力错误继承给另一协议。
+- invariants: 启动探测在后台执行，不阻塞服务、任务恢复或页面；能力与健康只对精确 Key 指纹、供应商、模型和协议生效，不跨账号或同名模型继承；不自动新增/删除全局模型目录、改写静态能力表或切换协议，不保存 Key、提示词、响应正文或测试图片；同一 Key 指纹的首次检测无论成功失败都不在每次重启重复计费。
+- do_not_regress: 不得仅凭 Key 存在、模型名称、视觉能力、工具名文本或一次普通文本成功开放工具闭环；运行时工具登记必须匹配账号和协议、在 7 天有效期内，且探针必须包含真实 tool call、call_id、工具结果和像素回看；失败探针不得保留旧登记；参考图编辑不得在启动时自动调用。
+- impact_matrix: 真题解析、按题出题和知识点出题共享主模型工具准入；历史任务继续使用其固定供应商、模型和协议，但按当前账号精确能力状态准入；Word/PDF 内容与质量门不变；API 配置、任务、教材和输出不迁移不覆盖。
+- verification: WawAPI `gpt-5.6-sol` 真实完整探针按协议复测：`chat_completions` 通过原生工具调用、参数/call_id、结果回灌与回灌图片识别，`responses` 在本次探测中供应商响应超时并保持未准入；脱敏证据见 `docs/operations/PROVIDER_CAPABILITY_REVERIFICATION_2026-09-12.md`。定向能力、协议、工具循环、三条业务路由与前端合同回归通过；最终完整 `scripts/run_quality_gates.py --full` 通过：2345 passed、17 deselected、12 warnings，覆盖率 72%，PyCompile、版本一致性、公式、第三方许可、项目完整性、Ruff 与 Mypy 均通过；能力文档同步检查、`node --check web/app.js` 与 `git diff --check` 通过。真实复测只调用文字/视觉/工具闭环，未调用生图或参考图编辑，未提交、推送、发布或部署。
+
+### OPT-20260912-02｜生图行无效参数占位移除
+
+- status: verified
+- scope: 真题解析环境页的作图题生图模型配置行。
+- changed: 删除生图模型不适用的“按需调用”和“—”参数占位，只展示供应商、模型与实际路线状态，并让供应商/模型选择区使用整行剩余宽度。
+- trigger: 用户指出两个不可操作占位块占据大面积空间且没有信息价值。
+- invariants: 生图调用仍由主模型按题目需要触发；不修改供应商、模型、API Key、能力记录、有限重试、失败归因和任务质量门。
+- do_not_regress: 生图行不得重新显示虚假的协议、思考强度或其他不可操作占位；生图供应商、模型与真实验证状态必须继续可见。
+- impact_matrix: 仅真题解析模型配置页展示受影响；实际生图调用、按题出题、知识点出题、任务数据和文档交付未改。
+- verification: `node --check web/app.js`、前端合同与相关页面回归通过；Chrome 实页确认生图行无静态占位、控制区单列宽 679 px、页面无横向溢出且控制台无 error/warning；视觉复核记录于 `design-qa.md`，结果 passed。未发起模型请求，未提交、推送、发布或部署。
+
+### OPT-20260912-01｜模型方案页参考图融合与状态表达修正
+
+- status: verified
+- scope: 真题解析环境自检、模型方案选择、请求协议、思考强度、自定义下拉与生图供应商入口。
+- changed: 按用户选定的两张参考图融合重构首屏模型方案：保留左侧自检，右侧使用宽横向任务卡，供应商和模型占主要选择区，请求方式与思考强度作为次级参数，状态独立到第二行；默认思考强度统一为中，协议由模型能力记录选择，唯一协议仍可见但不可改；完成态改用静态完成标记；自定义下拉仅选中项显示对勾；生图选择过滤重复的火山方舟入口并加宽模型菜单。
+- trigger: 原模型卡字段过密、五列压缩实现与参考图信息架构不一致；环境检查通过后仍像加载中；下拉每项对勾造成误导；火山方舟重复显示。
+- invariants: 不改 API Key、供应商能力记录、任务数据、模型调用与质量门；保留用户明确保存的模型、协议和思考强度选择；火山方舟后端配置与能力不删除，只合并重复展示入口。
+- do_not_regress: 不得恢复双栏拥挤模型卡或五列压缩状态；成功自检不得显示旋转加载；下拉未选项不得显示对勾；GPT/兼容模型与 Gemini 的协议必须继续服从能力记录，默认思考强度为中；生图供应商不得出现两个同名火山方舟。
+- impact_matrix: 真题解析环境页与共享模型选择控件受影响；按题出题、知识点出题继续复用正确的单选标记和模型能力记录；后端任务执行、预算、供应商监控、答案内容、Word/PDF 交付与用户数据未改。
+- verification: `node --check web/app.js` 通过；定向回归 `265 passed`，覆盖前端合同、真题/生题模型界面、仅题目解析、火山方舟、生图、协议适配与能力注册；`git diff --check` 通过。Chrome 1470×742 实页验收无横向溢出，默认思考强度均为 medium，当前兼容路线协议为 responses，生图供应商只有一个火山方舟，自定义下拉只有选中项一个对勾，控制台无 error/warning；视觉对照见 `design-qa.md`，结果 passed。未发起模型请求，未提交、推送、发布或部署。
+
 ### OPT-20260911-14｜分题成果下载记录时序确定化
 
 - status: verified

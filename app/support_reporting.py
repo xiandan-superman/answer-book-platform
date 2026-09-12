@@ -723,6 +723,8 @@ def _build_report(context: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
         "context": {
             "session_id": _redact(context.get("session_id"), 120), "page": _redact(context.get("page"), 80),
             "task_id": task_id, "question_id": question_id, "history_id": history_id,
+            "public_task_id": _redact(context.get("public_task_id"), 40),
+            "stable_task_id": _redact(context.get("stable_task_id"), 160),
             "exercise_index": context.get("exercise_index"), "selected_text": _redact(selection, 2000),
             "task_kind": _redact(context.get("task_kind"), 40), "task_status": _redact(context.get("task_status"), 40),
             "task_stage": _redact(context.get("task_stage"), 120), "operation": _redact(context.get("operation"), 80),

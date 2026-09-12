@@ -72,6 +72,9 @@ def test_quality_matrix_covers_supported_python_profiles_and_browser_smoke() -> 
     assert "constraints-py311.txt" in QUALITY
     assert "playwright install --with-deps chromium" in QUALITY
     assert "tests/e2e/test_platform_smoke.py" in QUALITY
+    assert 'export ANSWER_BOOK_E2E_URL="http://127.0.0.1:8873"' in QUALITY
+    assert 'export ANSWER_BOOK_DATA_DIR="$(mktemp -d)"' in QUALITY
+    assert "python scripts/start_platform.py --port 8873" in QUALITY
     assert "source-dependency-locks:" in QUALITY
     assert "constraints-source-macos-py39.txt" not in QUALITY
     assert "constraints-source-macos-py311.txt" in QUALITY

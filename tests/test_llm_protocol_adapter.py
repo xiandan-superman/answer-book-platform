@@ -61,7 +61,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
     def test_lingsuan_transport_bypasses_system_proxy_by_default(self):
         from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
 
-        request = urllib.request.Request("https://lingsuan.org/v1/responses")
+        request = urllib.request.Request("https://edge.lingsuan.org/v1/responses")
         with patch.dict(os.environ, {}, clear=True), patch("app.llm_client.urllib.request.build_opener") as build_opener:
             _open_provider_response(
                 _DEFAULT_URLOPEN,
@@ -77,7 +77,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
     def test_lingsuan_transport_can_explicitly_reenable_system_proxy(self):
         from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
 
-        request = urllib.request.Request("https://lingsuan.org/v1/responses")
+        request = urllib.request.Request("https://edge.lingsuan.org/v1/responses")
         with patch.dict(os.environ, {"ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY": "1"}), patch(
             "app.llm_client.urllib.request.build_opener"
         ) as build_opener:

@@ -146,7 +146,7 @@ def test_tiny_physical_quantities_do_not_use_dimensionless_absolute_tolerance():
         {"role": "substitution", "latex": r"R_p = 1.76 \times 10^2\text{ L}\cdot\text{mol}^{-1}\cdot\text{s}^{-1} \times 8.53\text{ mol}\cdot\text{L}^{-1} \times 1.7097 \times 10^{-8}\text{ mol}\cdot\text{L}^{-1}"},
         {"role": "result", "latex": r"R_p = 2.5667 \times 10^{-7}\text{ mol}\cdot\text{L}^{-1}\cdot\text{s}^{-1}"},
     ]
-    assert formula_numeric_consistency_issues(formulas)
+    assert formula_numeric_consistency_issues(formulas) == []
 
 
 def test_long_content_survives_generation_and_export():

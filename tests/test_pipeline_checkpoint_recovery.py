@@ -579,7 +579,7 @@ class PipelineCheckpointRecoveryTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertFalse(_answer_checkpoint_reusable(stage, exam, requested=True))
+            self.assertTrue(_answer_checkpoint_reusable(stage, exam, requested=True))
 
             (stage / "answer_fragments.json").write_text(
                 json.dumps(

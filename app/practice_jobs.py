@@ -373,10 +373,16 @@ def cancel_practice_job(job_id: str, reason: str = "用户取消出题任务") -
     """Mark a durable generation job cancelled; late provider responses are ignored."""
     with _LOCK:
         record = load_practice_job(job_id)
-        if record.get("status") not in {"queued", "running", "paused"}:
+        awaiting_confirmation = (
+            record.get("status") == "completed"
+            and record.get("operation") in {"analyze", "plan"}
+            and not record.get("history_id")
+        )
+        if record.get("status") == "cancelled":
+            return {"ok": True, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "status": "cancelled", "message": "任务已取消，已完成的中间结果仍保留。"}
+        if record.get("status") not in {"queued", "running", "paused"} and not awaiting_confirmation:
             return {"ok": False, "task_id": record["task_id"], "run_id": record["run_id"], "job_id": job_id, "message": "当前出题任务已经结束，不能取消。", "status": record.get("status")}
-        updated = update_practice_job(
-            job_id,
+        cancellation: dict[str, Any] = dict(
             status="cancelled",
             current_stage="cancelled",
             error=reason,
@@ -389,6 +395,16 @@ def cancel_practice_job(job_id: str, reason: str = "用户取消出题任务") -
             control_epoch=int(record.get("control_epoch") or 0) + 1,
             completed_at=_now(),
         )
+        if awaiting_confirmation:
+            # Only an explicit user cancellation may end a completed input
+            # stage. Keep ordinary terminal updates immutable so late worker
+            # callbacks cannot overwrite the saved analysis/blueprint.
+            record.update(cancellation)
+            record["updated_at"] = _now()
+            _write(record)
+            updated = record
+        else:
+            updated = update_practice_job(job_id, **cancellation)
     return {"ok": True, "task_id": updated["task_id"], "run_id": updated["run_id"], "job_id": job_id, "status": updated.get("status"), "message": reason}
 
 

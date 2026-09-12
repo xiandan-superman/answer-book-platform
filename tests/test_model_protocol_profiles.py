@@ -92,44 +92,32 @@ def test_provider_model_profiles_keep_supported_models_on_responses():
     ]
 
 
-def test_main_model_image_tool_allowlist_is_per_provider_model_and_protocol():
+def test_all_main_models_are_enabled_for_image_tool_loop_without_allowlist():
     from app.model_tool_loop import tool_loop_supported
 
     providers = list_providers()
-    expected = {
-        "bailian": {
-            "qwen3.7-plus",
-            "qwen3.7-flash",
-            "qwen3.6-plus",
-            "qwen3.6-flash",
-            "qwen3-vl-flash",
-            "qwen-vl-ocr",
-        },
-        "lingsuan_openai": {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"},
-        "lingsuan_google": {
-            "gemini-3.8-flash-medium",
-            "gemini-3.7-flash-medium",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-        },
-    }
     for provider_name, provider in providers.items():
         enabled = {
             model
             for model in provider.model_options
             if tool_loop_supported(OpenAICompatibleClient(provider), provider, model)
         }
-        assert enabled == expected.get(provider_name, set())
+        assert enabled == set(provider.model_options)
 
-    # These are all vision models, but live probing did not prove a usable
-    # native call for them. They must not inherit capability by family/name.
-    assert not tool_loop_supported(
+    assert tool_loop_supported(
         OpenAICompatibleClient(providers["bailian"]), providers["bailian"], "qwen-vl-max"
     )
-    assert not tool_loop_supported(
+    assert tool_loop_supported(
         OpenAICompatibleClient(providers["lingsuan_openai"]),
         providers["lingsuan_openai"],
         "gpt-5.6-luna",
+    )
+    wawapi = providers["wawapi_openai"]
+    response_profiles = {key: dict(value) for key, value in wawapi.model_profiles.items()}
+    response_profiles["gpt-5.6-sol"]["api_protocol"] = "responses"
+    wawapi_responses = replace(wawapi, api_protocol="responses", model_profiles=response_profiles)
+    assert tool_loop_supported(
+        OpenAICompatibleClient(wawapi_responses), wawapi_responses, "gpt-5.6-sol"
     )
 
 
@@ -234,7 +222,7 @@ def test_anthropic_messages_separates_system_thought_and_final_text():
     )
 
     payload = json.loads(requests[0].data)
-    assert requests[0].full_url == "https://lingsuan.org/v1/messages"
+    assert requests[0].full_url == "https://edge.lingsuan.org/v1/messages"
     assert requests[0].get_header("Anthropic-version") == "2023-06-01"
     assert payload["system"].startswith("Be accurate")
     assert all(message["role"] != "system" for message in payload["messages"])
@@ -256,7 +244,7 @@ def test_anthropic_messages_fall_back_only_when_gateway_endpoint_is_missing():
     client._urlopen = request
     result = client.chat_json([{"role": "user", "content": "Return JSON"}], model="claude-opus-5")
 
-    assert urls == ["https://lingsuan.org/v1/messages", "https://lingsuan.org/v1/chat/completions"]
+    assert urls == ["https://edge.lingsuan.org/v1/messages", "https://edge.lingsuan.org/v1/chat/completions"]
     assert result.raw["_request"]["protocol_requested"] == "anthropic_messages"
 
 

@@ -32,10 +32,10 @@ class PracticeTrustTests(unittest.TestCase):
         js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("按复核建议修复本题", js)
         self.assertNotIn("data-practice-semantic-fix", js)
-        self.assertIn("<span>任务</span>", js)
-        self.assertIn("<span>执行</span>", js)
+        self.assertIn("<span>任务编号</span>", js)
+        self.assertNotIn("<span>执行</span>", js)
         self.assertIn("function taskResourceId(task = {})", js)
-        self.assertIn("button?.dataset.taskId || task?.task_id", js)
+        self.assertIn("button?.dataset.taskId || task?.public_task_id", js)
 
     def test_figure_ids_are_namespaced_and_unique_across_exercises(self) -> None:
         exercises = [
@@ -122,7 +122,8 @@ class PracticeTrustTests(unittest.TestCase):
         self.assertIn("latestPracticeRequest?.blueprint_review_enabled !== false && savedData.blueprint ?", js)
         self.assertIn('"generate_from_contract"', js)
         self.assertIn("source_scope_checkpoint", js)
-        self.assertIn('await saveRegeneratedPracticeExercise(practiceEditingIndex, editedExercise, "manual_edit")', js)
+        self.assertIn('await saveRegeneratedPracticeExercise(practiceEditingIndex, editedExercise, "manual_edit", null, null,', js)
+        self.assertIn('{ ...editContext, version: practiceEditorMergeInProgress ? practiceEditorServerVersion : practiceEditorDraftBaseVersion }', js)
         self.assertNotIn('saveCurrentPractice(false, "manual_edit").catch(() => {})', js)
         self.assertIn("修改未保存，原题已保留", js)
         self.assertIn("split(/\\s+\\|\\s+/)", js)

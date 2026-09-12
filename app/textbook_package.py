@@ -10,7 +10,6 @@ from typing import Any
 
 from .paths import CACHE_DIR
 
-
 PACKAGE_CACHE_DIR = CACHE_DIR / "textbook_packages"
 PACKAGE_SCHEMA_VERSION = "answer_book.textbook_package.v1"
 
@@ -109,9 +108,19 @@ def resolve_package_asset(root: Path, content_list: Path | None, images_root: Pa
     text = str(raw or "").strip()
     if not text:
         return Path()
-    path = Path(text)
+    package_root = root.resolve()
+    # Treat separators uniformly, including packages created on Windows.
+    normalized = text.replace("\\", "/")
+    if ".." in normalized.split("/") or (len(normalized) > 1 and normalized[1] == ":" and not Path(normalized).is_absolute()):
+        raise ValueError("教材包资产路径越界")
+    path = Path(normalized)
     if path.is_absolute():
-        return path
+        candidate = path.resolve()
+        try:
+            candidate.relative_to(package_root)
+        except ValueError as exc:
+            raise ValueError("教材包资产路径越界") from exc
+        return candidate
     candidates = [root / path]
     if content_list is not None:
         candidates.append(content_list.parent / path)
@@ -119,8 +128,16 @@ def resolve_package_asset(root: Path, content_list: Path | None, images_root: Pa
         candidates.append(images_root / path.name)
     for candidate in candidates:
         if candidate.exists():
-            return candidate.resolve()
-    return candidates[0].resolve()
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(package_root)
+            except ValueError as exc:
+                raise ValueError("教材包资产路径越界") from exc
+            return resolved
+    resolved = candidates[0].resolve()
+    if not resolved.is_relative_to(package_root):
+        raise ValueError("教材包资产路径越界")
+    return resolved
 
 
 def _asset_references(content_list: Path | None) -> list[str]:
@@ -164,8 +181,12 @@ def _audit_package(package: TextbookPackage, zip_path: Path) -> dict[str, Any]:
     refs = _asset_references(package.content_list)
     missing_refs: list[str] = []
     for ref in refs:
-        path = resolve_package_asset(package.root, package.content_list, package.images_root, ref)
-        if not path.exists():
+        try:
+            path = resolve_package_asset(package.root, package.content_list, package.images_root, ref)
+        except ValueError:
+            issues.append({"code": "unsafe_asset_path", "message": "教材包包含越界资产引用，已拒绝使用。"})
+            continue
+        if not path.is_file():
             missing_refs.append(ref)
     if missing_refs:
         issues.append(

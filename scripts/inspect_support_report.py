@@ -113,7 +113,7 @@ def inspect_report(report_id: str, *, root: Path, destination: Path | None = Non
         "task": {
             key: context.get(key)
             for key in (
-                "task_id", "task_kind", "task_title", "task_model", "task_model_label",
+                "task_id", "public_task_id", "stable_task_id", "task_kind", "task_title", "task_model", "task_model_label",
                 "task_status", "task_stage", "operation", "practice_batch_id", "report_group_id",
             )
         },

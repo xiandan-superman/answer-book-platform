@@ -18,9 +18,9 @@ def test_plain_text_exam_can_overlap_answer_draft_and_evidence() -> None:
     assert _eligible({"items": [{"question_id": "q1", "stem": "解释扩散。"}]})
 
 
-def test_parallel_draft_is_disabled_for_risky_or_reusable_paths() -> None:
-    assert not _eligible({"items": [{"question_id": "q1", "image_refs": ["figure.png"]}]})
-    assert not _eligible({"items": [{"question_id": "q1", "question_type": "作图题"}]})
+def test_parallel_draft_uses_per_question_dependencies_not_paper_wide_image_gate() -> None:
+    assert _eligible({"items": [{"question_id": "q1", "image_refs": ["figure.png"]}]})
+    assert _eligible({"items": [{"question_id": "q1", "question_type": "作图题"}]})
     assert not _eligible({"items": [{"question_id": "q1"}]}, textbook_evidence_only=True)
     assert not _eligible({"items": [{"question_id": "q1"}]}, reuse_fragments=True)
     assert not _eligible({"items": [{"question_id": "q1"}]}, answer_key_available=False)

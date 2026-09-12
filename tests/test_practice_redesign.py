@@ -447,6 +447,9 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn(".platform-select-trigger", self.platform_theme)
         self.assertIn(".platform-select-menu", self.platform_theme)
         self.assertIn('role="option"', self.js)
+        self.assertIn("option.selected ? '<i class=\"fas fa-check\"", self.js)
+        self.assertIn('platform-select-option-spacer', self.js)
+        self.assertNotIn('<i class="fas fa-check"></i>\n    </button>', self.js)
 
     def test_number_inputs_do_not_show_browser_spinner_controls(self) -> None:
         self.assertIn('input[type="number"]::-webkit-inner-spin-button', self.platform_theme)
