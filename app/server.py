@@ -916,7 +916,7 @@ def _inject_index_version(html: str, *, local_privilege_token: str = "") -> str:
     return html
 
 
-def _render_word_format_page() -> bytes:
+def _render_word_format_page(*, script_nonce: str = "") -> bytes:
     template = PROJECT_ROOT / "standalone_word_format_reviewer" / "web" / "index.html"
     settings_json = json.dumps(word_format_settings_payload(), ensure_ascii=False, separators=(",", ":"))
     settings_json = settings_json.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
@@ -932,6 +932,8 @@ def _render_word_format_page() -> bytes:
     html = html.replace("__INITIAL_SETTINGS_JSON__", settings_json)
     html = html.replace("__API_ROUTES_JSON__", routes_json)
     html = html.replace("__PLATFORM_HOSTED_JSON__", "true")
+    if script_nonce:
+        html = html.replace("  <script>\n    const $", f'  <script nonce="{script_nonce}">\n    const $', 1)
     return html.encode("utf-8")
 
 
@@ -1170,14 +1172,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
             raise ValueError("请求体必须是 JSON 对象。")
         return value
 
-    def send_security_headers(self) -> None:
+    def send_security_headers(self, *, script_nonce: str = "") -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        nonce_source = f" 'nonce-{script_nonce}'" if script_nonce else ""
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; script-src-elem 'self'; script-src-attr 'unsafe-inline'; "
+            f"default-src 'self'; script-src 'self'{nonce_source}; script-src-elem 'self'{nonce_source}; script-src-attr 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; "
             "base-uri 'self'; frame-ancestors 'none'",
@@ -1311,12 +1314,13 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_json(info)
             return
         if parsed.path == "/word-format":
-            data = _render_word_format_page()
+            script_nonce = secrets.token_urlsafe(24)
+            data = _render_word_format_page(script_nonce=script_nonce)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-            self.send_security_headers()
+            self.send_security_headers(script_nonce=script_nonce)
             self.end_headers()
             self.wfile.write(data)
             return
@@ -2644,6 +2648,11 @@ class PlatformHandler(BaseHTTPRequestHandler):
                     stage_dir(task_id),
                     output_dir(task_id),
                 )
+                if result.get("ok") and result.get("zip"):
+                    package_path = Path(str(result["zip"]))
+                    resource_id = _task_file_reference(task_id, package_path)
+                    result["download_url"] = f"/api/tasks/{quote(task_id)}/download?file={quote(resource_id, safe='')}"
+                    result["filename"] = package_path.name
                 status = 200 if result.get("ok") else 400
                 self.send_json(result, status=status)
                 return
@@ -2782,12 +2791,14 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 if not self.require_local_privilege("主动检测仅允许在用户机本地发起；局域网页面仍可查看状态。"):
                     return
                 body = self.read_json()
+                probe_source = "task_preflight" if str(body.get("source") or "").strip() == "task_preflight" else "manual_probe"
                 result = probe_route(
                     provider_name=str(body.get("provider") or "").strip(),
                     model=str(body.get("model") or "").strip(),
                     protocol=str(body.get("protocol") or "").strip(),
                     capability=str(body.get("capability") or "text").strip(),
-                    source="manual_probe",
+                    source=probe_source,
+                    thinking_mode=str(body.get("thinking_mode") or "").strip(),
                 )
                 self.send_json(result, status=200 if result.get("ok") else 400)
                 return

@@ -352,10 +352,11 @@ class PracticeRedesignTests(unittest.TestCase):
         self.assertIn('el.classList.remove("reveal", "reveal-left", "reveal-right", "reveal-scale")', self.js)
         self.assertIn(".sticky-page-actions {\n  bottom: 16px;\n  opacity: 1;", self.platform_theme)
 
-    def test_model_controls_remain_readable_in_ultrawide_chrome_viewports(self) -> None:
+    def test_model_controls_remain_compact_and_readable_in_ultrawide_chrome_viewports(self) -> None:
         self.assertIn("@media (min-width: 1900px)", self.platform_theme)
         self.assertIn(".task-model-grid select,\n  .task-model-grid input", self.platform_theme)
-        self.assertIn("min-height: 56px;\n    font-size: 17px;", self.platform_theme)
+        self.assertIn("min-height: 44px;\n    font-size: 15px;", self.platform_theme)
+        self.assertNotIn("min-height: 56px;\n    font-size: 17px;", self.platform_theme)
         self.assertIn("#page-practice-models .reference-medium", self.platform_theme)
         self.assertIn("#page-knowledge-models .reference-medium", self.platform_theme)
         self.assertIn("max-width: 2320px;", self.platform_theme)

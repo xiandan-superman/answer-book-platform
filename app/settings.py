@@ -204,7 +204,23 @@ def load_provider_config_file() -> dict[str, Any]:
     example = CONFIG_DIR / "providers.example.json"
     base = _read_json(example)
     ensure_provider_registry_sync(base)
-    return _merge_config(base, _read_json(local)) if local.exists() else base
+    merged = _merge_config(base, _read_json(local)) if local.exists() else base
+    # Retired routes must not be restored by a copied local configuration.
+    for name, public in base.get("providers", {}).items():
+        retired = set(public.get("retired_models", []))
+        if not retired:
+            continue
+        item = merged["providers"][name]
+        for key, value in list(item.items()):
+            if key == "retired_models":
+                continue
+            if isinstance(value, list):
+                item[key] = [model for model in value if model not in retired]
+            elif isinstance(value, dict):
+                item[key] = {model: profile for model, profile in value.items() if model not in retired}
+            elif isinstance(value, str) and value in retired:
+                item[key] = public.get(key, "")
+    return merged
 
 
 def load_dotenv() -> None:

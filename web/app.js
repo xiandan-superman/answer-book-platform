@@ -5,6 +5,7 @@ let platformUpdateInProgress = false;
 let platformUpdateReconnectStartedAt = 0;
 let taskManagerPollTimer = null;
 let taskManagerPollInFlight = false;
+let taskManagerRenderedDataSignature = "";
 let systemMonitorPollTimer = null;
 let systemMonitorPollInFlight = false;
 let taskBulkMode = false;
@@ -25,7 +26,6 @@ let examLibrarySearchQuery = "";
 let examLibraryExpanded = false;
 let libraryTabsInitialized = false;
 const EXAM_LIBRARY_PREVIEW_LIMIT = 8;
-let latestEnvironmentStatus = null;
 let activeTaskId = "";
 let currentPage = "home";
 let currentExamAnalysisProfile = "evidence_backed";
@@ -329,12 +329,6 @@ function setText(id, value) {
 
 function startWizard() {
   currentExamAnalysisProfile = "evidence_backed";
-  for (const role of ["reasoning", "answer"]) {
-    setExamTextRoleRoute(role, ["lingsuan_openai", "gpt-5.6-sol"]);
-    syncPlatformSelectElement($(textModelRoles[role].providerId));
-    syncPlatformSelectElement($(textModelRoles[role].modelSelectId));
-  }
-  updateModelRoleCards();
   goToPage("env");
 }
 
@@ -355,7 +349,7 @@ function syncEnvironmentAnalysisMode() {
   $("answerModelRoleCard")?.classList.toggle("hidden", evidenceOnly);
   $("correctnessModelRoleCard")?.classList.toggle("hidden", evidenceOnly);
   $("imageModelRoleCard")?.classList.toggle("hidden", evidenceOnly);
-  setText("environmentPageTitle", evidenceOnly ? "教材引用定位模型" : questionOnly ? "题目解析模型选择" : "环境配置");
+  setText("environmentPageTitle", evidenceOnly ? "教材引用定位模型" : questionOnly ? "题目解析模型选择" : "选择真题解析模型");
   setText(
     "environmentPageDescription",
     evidenceOnly
@@ -370,8 +364,8 @@ function syncEnvironmentAnalysisMode() {
     evidenceOnly
       ? "只显示已配置的题目识别和教材依据模型；有图试题时再配置读图模型，不需要生图。"
       : questionOnly
-      ? "选择题目解析模型和思考深度；需要时再配置读图、生图和高风险复核。"
-      : "教材依据与题目解析分别选择模型和思考深度；需要时再配置读图、生图和高风险复核。"
+      ? "选择解析模型与生图模型；正确性复核跟随解析模型。"
+      : "教材引用与真题解析分别选择模型；生图模型用于生成题图。"
   );
   setText(
     "examModelTestHint",
@@ -383,7 +377,7 @@ function syncEnvironmentAnalysisMode() {
   );
   const nextButton = $("envNextBtn");
   if (nextButton) nextButton.innerHTML = `下一步：选择${evidenceOnly ? "试题与教材" : questionOnly ? "题目" : "真题"}<i class="fas fa-arrow-right"></i>`;
-  if (latestEnvironmentStatus) updateEnvironmentSummary(latestEnvironmentStatus);
+  syncExamModelSelectionAvailability();
   updateModelCapabilityRisk();
 }
 
@@ -458,12 +452,6 @@ function goToPage(page) {
   const indicator = $("stepIndicator");
   if (indicator) indicator.classList.toggle("hidden", !workflowStepPages.includes(page));
   updateStepIndicator(page);
-  if (page === "env") {
-    loadEnvironmentStatus().catch((err) => {
-      $("environmentBox").textContent = String(err);
-      setEnvironmentChecking("环境检查失败，请查看技术详情。", "error");
-    });
-  }
   if (page === "task") {
     renderTaskStepList();
     loadTasks().catch(() => {});
@@ -1706,100 +1694,49 @@ function displayProviderName(name) {
   return labels[String(name || "").toLowerCase()] || name;
 }
 
-function setCheckState(iconId, statusId, ok, successText = "通过", failText = "需要处理") {
-  const icon = $(iconId);
-  if (icon) {
-    icon.className = ok ? "fas fa-check-circle" : "fas fa-exclamation-circle";
-    icon.style.color = ok ? "#22c55e" : "#f97316";
-  }
-  const status = $(statusId);
-  if (status) {
-    status.textContent = ok ? successText : failText;
-    status.classList.toggle("passed", Boolean(ok));
-    status.classList.toggle("failed", !ok);
-    status.classList.remove("unknown");
-  }
-}
-
-function setCheckUnknown(iconId, statusId, text = "未检查") {
-  const icon = $(iconId);
-  if (icon) {
-    icon.className = "fas fa-minus-circle";
-    icon.style.color = "#94a3b8";
-  }
-  const status = $(statusId);
-  if (status) {
-    status.textContent = text;
-    status.classList.remove("passed", "failed");
-    status.classList.add("unknown");
-  }
-}
-
-function setEnvironmentChecking(message = "正在检查运行环境...", kind = "info") {
-  setEnvNextEnabled(false);
-  $("environmentRepairBox")?.classList.add("hidden");
-  const checks = [
-    ["runtimeCheckIcon", "environmentSummary"],
-    ["toolsCheckIcon", "environmentHint"],
-    ["networkCheckIcon", "networkSummary"]
-  ];
-  for (const [iconId, textId] of checks) {
-    const icon = $(iconId);
-    if (icon) {
-      icon.className = "fas fa-circle-notch fa-spin";
-      icon.style.color = "#94a3b8";
-    }
-    const status = $(textId);
-    if (status) {
-      status.textContent = "检测中...";
-      status.classList.remove("passed", "failed", "unknown");
-    }
-  }
-  const visual = $("environmentVisualResult");
-  if (visual) {
-    visual.className = `status-result result-${kind}`;
-    const icon = kind === "error" ? "fas fa-exclamation-circle" : "fas fa-circle-notch fa-spin";
-    visual.innerHTML = `<i class="${icon}"></i><strong>${escapeHtml(message)}</strong>`;
-  }
-}
-
 function setEnvNextEnabled(enabled, hint = "") {
   const button = $("envNextBtn");
   if (!button) return;
   button.disabled = !enabled;
   button.classList.toggle("disabled", !enabled);
   const materialLabel = currentExamAnalysisProfile === "question_only" ? "题目" : currentExamAnalysisProfile === "textbook_evidence_only" ? "试题与教材" : "真题";
-  setText("envNextHint", hint || (enabled ? `环境已就绪，可以继续选择${materialLabel}` : "环境检查通过后即可继续"));
+  setText("envNextHint", hint || (enabled ? `模型已选择，可以继续选择${materialLabel}` : "请先完成本次任务的模型选择"));
 }
 
 function examRequiredTextRoutes() {
   if (currentExamAnalysisProfile === "textbook_evidence_only") {
-    const primaryCfg = currentProviderConfig();
-    return [
-      {
-        label: "题目识别",
-        provider: primaryCfg.name || $("providerSelect")?.value || "",
-        model: selectedModel() || primaryCfg.default_model || "",
-        api_protocol: modelRequestProtocol(primaryCfg, selectedModel() || primaryCfg.default_model || ""),
-        tone: "purple",
-        capabilityOk: Boolean(selectedModel() || primaryCfg.default_model),
-        keySaved: Boolean(primaryCfg.api_key_set)
-      },
-      textRoleRoute("reasoning", "知识点与教材依据")
-    ];
+    return [textRoleRoute("reasoning", "教材引用")];
   }
   const routes = [textRoleRoute("answer", "结构化解析")];
   if (currentExamAnalysisProfile !== "question_only") routes.unshift(textRoleRoute("reasoning", "知识识别"));
   return routes;
 }
 
+function syncExamModelSelectionAvailability() {
+  const textReady = examRequiredTextRoutes().every((route) => route.provider && route.model && route.keySaved && route.capabilityOk);
+  const image = imageRoute();
+  const imageReady = currentExamAnalysisProfile === "textbook_evidence_only"
+    || Boolean(image.provider && image.model && image.keySaved && image.capabilityOk);
+  const ready = textReady && imageReady;
+  const missing = !textReady
+    ? "请选择已配置的主模型"
+    : !imageReady
+      ? "请选择已配置的生图模型"
+      : "";
+  setEnvNextEnabled(
+    ready,
+    ready ? "本次任务模型已选择；开始任务时会验证实际连接" : missing
+  );
+  return ready;
+}
+
 function examTaskPreflightRoutes() {
   const routes = [...examRequiredTextRoutes()];
   if (currentExamAnalysisProfile === "evidence_backed") {
-    routes.push(textRoleRoute("correctness", "高风险正确性复核"));
+    routes.push(textRoleRoute("answer", "高风险正确性复核"));
   }
-  const vision = visionRoute();
-  if (vision.provider && vision.model) routes.push(vision);
+  const vision = textRoleRoute(currentExamAnalysisProfile === "textbook_evidence_only" ? "reasoning" : "answer", "图片理解");
+  if (modelLooksVisionCapable(vision.model, providerConfigs[vision.provider] || {})) routes.push({ ...vision, capability: "vision" });
   const image = imageRoute();
   if (currentExamAnalysisProfile === "evidence_backed" && image.provider && image.model) {
     routes.push({ ...image, capability: "image_generation" });
@@ -1883,86 +1820,6 @@ function renderTaskStepList(currentStage = "", status = "") {
   }
 }
 
-function updateEnvironmentSummary(env) {
-  const formulaReady = Boolean(env?.formula_conversion?.preferred_chain_ready);
-  const packages = env?.python_packages || {};
-  const dependencyDriftCount = Number(env?.dependency_versions?.mismatch_count || 0);
-  const dependencyReadyLabel = dependencyDriftCount > 0
-    ? `通过 · ${dependencyDriftCount} 项版本偏差（不阻断）`
-    : "通过";
-  const packageReady = ["python-docx", "lxml", "latex2mathml", "Pillow", "matplotlib", "numpy"].every((name) => Boolean(packages[name]));
-  const renderReady = Boolean(env?.document_tools?.pdf_render_available);
-  const drawingRuntimeReady = Boolean(env?.drawing_runtime?.ok);
-  const runtimeReady = Boolean(env?.python_supported && Object.keys(packages).length);
-  const toolsReady = formulaReady && packageReady && renderReady && drawingRuntimeReady;
-  const hasNetworkCheck = Boolean(env && Object.prototype.hasOwnProperty.call(env, "network"));
-  const requiredRoutes = examRequiredTextRoutes();
-  const providerNetwork = env?.network?.by_provider || {};
-  const routesConfigured = requiredRoutes.every((route) => route.keySaved && route.capabilityOk);
-  syncExamModelTestAvailability();
-  const networkReady = hasNetworkCheck && requiredRoutes.every((route) => providerNetwork[route.provider] === true);
-  const routeTests = requiredRoutes
-    .map((route) => {
-      const state = routeConnectionStatus(route);
-      return state.tone === "ok" ? { ok: true } : state.tone === "warn" ? { ok: false } : null;
-    })
-    .filter(Boolean);
-  const routeTestFailed = routeTests.some((test) => test.ok === false);
-  const allRoutesTested = routeTests.length === requiredRoutes.length && routeTests.every((test) => test.ok === true);
-  const ready = runtimeReady && toolsReady && routesConfigured;
-  const readyHint = allRoutesTested
-    ? `当前解析模型已测试，可以继续选择${currentExamAnalysisProfile === "question_only" ? "题目" : currentExamAnalysisProfile === "textbook_evidence_only" ? "试题与教材" : "真题"}`
-    : ready
-      ? (routeTestFailed || !networkReady ? "近期连接异常，仍可继续；任务会实际调用并报告结果" : "模型已配置，可以继续选择材料")
-      : !routesConfigured
-        ? (currentExamAnalysisProfile === "question_only" ? "请先为结构化解析选择模型并配置 Key" : currentExamAnalysisProfile === "textbook_evidence_only" ? "请先配置题目识别和教材依据模型与 Key" : "请先为知识识别和结构化解析配置模型与 Key")
-        : !networkReady
-          ? "当前选用的模型服务网络不可达"
-          : routeTestFailed
-            ? "当前模型连接测试失败，请修复后继续"
-            : !runtimeReady
-              ? `当前 Python ${env?.python || "未知版本"} 不兼容，要求 ${env?.python_requirement || "3.11.x"}；不会创建任务或调用模型`
-              : "环境检查通过后即可继续";
-  setEnvNextEnabled(ready, readyHint);
-  setCheckState(
-    "runtimeCheckIcon",
-    "environmentSummary",
-    runtimeReady,
-    `Python ${env?.python || "3.11"}`,
-    env?.python_supported === false ? `需要 Python ${env?.python_requirement || "3.11.x"}` : "运行环境不可用"
-  );
-  setCheckState(
-    "toolsCheckIcon",
-    "environmentHint",
-    toolsReady,
-    dependencyReadyLabel,
-    !drawingRuntimeReady ? "绘图运行异常" : renderReady ? "依赖不完整" : "渲染工具缺失"
-  );
-  if (hasNetworkCheck) setCheckState("networkCheckIcon", "networkSummary", networkReady);
-  else setCheckUnknown("networkCheckIcon", "networkSummary");
-  setCheckState("modelConfigCheckIcon", "modelConfigSummary", routesConfigured, "已配置", "缺少配置");
-  if (allRoutesTested) {
-    setCheckState("modelCallCheckIcon", "modelCallSummary", true, "调用通过", "调用失败");
-  } else if (routeTestFailed) {
-    setCheckState("modelCallCheckIcon", "modelCallSummary", false, "调用通过", "调用失败");
-  } else {
-    setCheckUnknown("modelCallCheckIcon", "modelCallSummary");
-    setText("modelCallSummary", routesConfigured ? "尚未测试" : "等待配置");
-  }
-  const visual = $("environmentVisualResult");
-  if (visual) {
-    visual.className = `status-result ${ready ? "result-ok" : (!runtimeReady ? "result-error" : "result-warn")}`;
-    visual.innerHTML = ready
-      ? allRoutesTested
-        ? '<i class="fas fa-check-circle"></i><strong>环境已就绪，当前解析模型已测试通过</strong>'
-        : '<i class="fas fa-check-circle"></i><strong>环境已就绪；当前模型网络可达，连接调用待验证</strong>'
-      : hasNetworkCheck
-        ? `<i class="fas fa-exclamation-circle"></i><strong>${escapeHtml(readyHint)}</strong>`
-        : '<i class="fas fa-minus-circle"></i><strong>网络连通性尚未检查，请重启本地服务后重试</strong>';
-  }
-  renderEnvironmentRepairs(env);
-}
-
 function syncExamModelTestAvailability() {
   const button = $("testExamModelRoutesBtn");
   if (!button) return false;
@@ -2006,7 +1863,7 @@ async function testExamModelRoutes() {
       }
     }));
     await loadProviderControl();
-    updateEnvironmentSummary(latestEnvironmentStatus || {});
+    syncExamModelSelectionAvailability();
     updateModelRoleCards();
     const failed = results.filter((item) => !item.ok);
     if (failed.length) {
@@ -2020,71 +1877,6 @@ async function testExamModelRoutes() {
       button.innerHTML = '<i class="fas fa-plug"></i>重新测试当前模型组合';
       syncExamModelTestAvailability();
     }
-  }
-}
-
-function renderEnvironmentRepairs(env) {
-  const box = $("environmentRepairBox");
-  if (!box) return;
-  const actions = Array.isArray(env?.repair_actions) ? env.repair_actions : [];
-  if (!actions.length) {
-    box.classList.add("hidden");
-    box.innerHTML = "";
-    return;
-  }
-  box.classList.remove("hidden");
-  box.innerHTML = `
-    <div class="env-repair-head">
-      <span><i class="fas fa-wrench"></i></span>
-      <div>
-        <strong>发现可主动修复项</strong>
-        <p>修复前会再次确认，执行结果会写入运行监控日志。</p>
-      </div>
-    </div>
-    <div class="env-repair-actions">
-      ${actions.map((action) => `
-        <button class="env-repair-action" type="button" data-action="${escapeHtml(action.id)}">
-          <span>
-            <strong>${escapeHtml(action.title || "环境修复")}</strong>
-            <small>${escapeHtml(action.description || action.impact || "")}</small>
-          </span>
-          <em>${escapeHtml(action.button || "修复")}</em>
-        </button>
-      `).join("")}
-    </div>
-  `;
-  box.querySelectorAll("[data-action]").forEach((button) => {
-    button.addEventListener("click", () => runEnvironmentRepair(actions.find((item) => item.id === button.dataset.action)));
-  });
-}
-
-async function runEnvironmentRepair(action) {
-  if (!action?.id) return;
-  const ok = await platformConfirm({
-    eyebrow: "环境修复",
-    title: `执行“${action.title}”`,
-    message: [action.description, action.impact].filter(Boolean).join("\n\n"),
-    confirmText: action.button || "确认修复",
-    tone: "warning"
-  });
-  if (!ok) return;
-  const box = $("environmentRepairBox");
-  if (box) {
-    box.classList.remove("hidden");
-    box.innerHTML = `<div class="env-repair-head"><span><i class="fas fa-circle-notch fa-spin"></i></span><div><strong>正在执行修复</strong><p>${escapeHtml(action.title)}，请不要关闭服务窗口。</p></div></div>`;
-  }
-  try {
-    const result = await api("/api/environment/repair", {
-      method: "POST",
-      body: JSON.stringify({ action: action.id })
-    });
-    $("environmentBox").textContent = pretty(result.environment || result);
-    updateEnvironmentSummary(result.environment || {});
-  } catch (err) {
-    if (box) {
-      box.innerHTML = `<div class="env-repair-head env-repair-error"><span><i class="fas fa-exclamation-circle"></i></span><div><strong>修复失败</strong><p>${escapeHtml(String(err).replace(/^Error:\s*/, ""))}</p></div></div>`;
-    }
-    await loadEnvironmentStatus().catch(() => {});
   }
 }
 
@@ -2770,15 +2562,13 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
       message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 缺少 ${providerLabel} API Key。请前往 API 配置填写并验证后重试；当前材料已保留。`,
     };
   }
-  if (practiceRequestRequiresImageTools(request) && String(request.image_orchestration || "") === "main_model_tool_loop") {
-    const imageProvider = String(request.image_provider || "").trim();
-    const imageModel = String(request.image_model || "").trim();
-    if (!imageProvider || !imageModel || providerConfigs?.[imageProvider]?.api_key_set !== true) {
-      return {
-        provider: imageProvider,
-        message: `无法开始${workflowLabel}：默认生图流程尚未完整配置。请配置生图服务商、模型和 API Key；当前材料已保留。`,
-      };
-    }
+  const imageProvider = String(request.image_provider || "").trim();
+  const imageModel = String(request.image_model || "").trim();
+  if (!imageProvider || !imageModel || providerConfigs?.[imageProvider]?.api_key_set !== true) {
+    return {
+      provider: imageProvider,
+      message: `无法开始${workflowLabel}：生图模型是任务必选项。请完成生图服务商、模型和 API Key 配置；当前材料已保留。`,
+    };
   }
   return null;
 }
@@ -3086,7 +2876,9 @@ async function submitPracticeJob(operation, payload) {
   const batchId = payload?.practice_batch_id || practiceBatchId || newPracticeBatchId();
   practiceBatchId = batchId;
   const queuedPayload = { ...(payload || {}), practice_batch_id: batchId };
-  await preflightTaskModelRoutes(practiceTaskPreflightRoutes(operation, queuedPayload), "出题任务");
+  if (!await preflightTaskModelRoutes(practiceTaskPreflightRoutes(operation, queuedPayload), "出题任务")) {
+    throw new Error("所需模型测试未全部通过，任务未开始。");
+  }
   const queued = await api("/api/practice/jobs", {
     method: "POST",
     body: JSON.stringify({ operation, payload: queuedPayload })
@@ -3114,12 +2906,37 @@ function uniqueTaskModelRoutes(routes) {
 }
 
 async function preflightTaskModelRoutes(routes, workflowLabel) {
-  // Health is advice, not admission. Actual task calls retain their own
-  // bounded retries, failure reporting and durable recovery checkpoints.
+  const requiredRoutes = uniqueTaskModelRoutes(routes);
+  if (!requiredRoutes.length) return true;
+  const failed = [];
+  for (const route of requiredRoutes) {
+    try {
+      await api("/api/provider-control/probe", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: route.provider,
+          model: route.model,
+          protocol: route.api_protocol,
+          capability: route.capability || "text",
+          thinking_mode: route.thinking || "auto",
+          source: "task_preflight",
+        }),
+      });
+    } catch (error) {
+      const advice = providerErrorAdvice(error);
+      failed.push({ route, message: advice.body || advice.title });
+    }
+  }
   await loadProviderControl().catch(() => {});
-  return uniqueTaskModelRoutes(routes).map((route) => ({
-    ...route, health: taskModelHealth(route.provider, route.model, route.api_protocol),
-  }));
+  if (!failed.length) return true;
+  const details = failed.map(({ route, message }) =>
+    `${route.label || "所需模型"}（${displayProviderName(route.provider)} / ${route.model}）：${message}`
+  ).join("\n");
+  await platformAlert(details, {
+    title: `${workflowLabel}未开始：所需模型不可用`,
+    tone: "danger",
+  });
+  return false;
 }
 
 function practiceTaskPreflightRoutes(operation, payload) {
@@ -8298,33 +8115,6 @@ function setPracticeExportButtonsEnabled(enabled, data = latestPracticeSet) {
   updatePracticeSelectionActions();
 }
 
-async function loadEnvironmentStatus() {
-  setEnvironmentChecking();
-  $("environmentBox").textContent = "环境检查中...";
-  const [env, shadow] = await Promise.all([
-    api("/api/environment"),
-    api("/api/quality/pydantic-shadow").catch(() => null),
-    new Promise((resolve) => setTimeout(resolve, 500))
-  ]);
-  latestEnvironmentStatus = env;
-  updateEnvironmentSummary(env);
-  $("environmentBox").textContent = pretty(env);
-  const shadowSummary = $("pydanticShadowSummary");
-  const shadowReport = $("pydanticShadowReport");
-  if (shadowSummary) {
-    if (!shadow) {
-      shadowSummary.textContent = "报告暂不可用（不影响任务）";
-    } else if (!Number(shadow.sample_count || 0)) {
-      shadowSummary.textContent = "尚无样本 · 0 额外模型调用";
-    } else {
-      const readiness = shadow.review_readiness?.ready ? "待人工评审" : "观察中";
-      shadowSummary.textContent = `${readiness} · ${Number(shadow.sample_count || 0)} 个样本 · 0 额外模型调用`;
-    }
-  }
-  if (shadowReport) shadowReport.textContent = shadow ? pretty(shadow) : "影子报告读取失败；任务主流程不受影响。";
-  return env;
-}
-
 async function loadLibraryFiles() {
   libraryFiles = await api("/api/library-files");
   renderLibraryFiles();
@@ -9403,59 +9193,24 @@ function modelSupportsMainToolLoop(model, cfg = currentProviderConfig(), protoco
 }
 
 function initializeExamProgressiveLayout() {
-  const primaryMount = $("examPrimaryModelMount");
-  const conditionalMount = $("examConditionalModelMount");
-  const reasoningCard = $("reasoningModelRoleCard");
-  const answerCard = $("answerModelRoleCard");
-  const visionCard = $("visionModelRoleCard");
-  const imageCard = $("imageModelRoleCard");
-  const advancedDetails = $("examModelRoleDetails");
-  if (primaryMount && reasoningCard && reasoningCard.parentElement !== primaryMount) primaryMount.appendChild(reasoningCard);
-  if (primaryMount && answerCard && answerCard.parentElement !== primaryMount) primaryMount.appendChild(answerCard);
-  if (conditionalMount && visionCard && visionCard.parentElement !== conditionalMount) conditionalMount.appendChild(visionCard);
-  if (conditionalMount && imageCard && imageCard.parentElement !== conditionalMount) conditionalMount.appendChild(imageCard);
-  if (advancedDetails && advancedDetails.dataset.progressiveBound !== "true") {
-    advancedDetails.dataset.progressiveBound = "true";
-    advancedDetails.addEventListener("toggle", () => {
-      if (!advancedDetails.open) syncExamFollowerRolesFromAnswer();
-    });
+  const mount = $("examPrimaryModelMount");
+  for (const id of ["reasoningModelRoleCard", "answerModelRoleCard", "imageModelRoleCard"]) {
+    const card = $(id);
+    if (mount && card) mount.appendChild(card);
   }
   syncExamProgressiveModelUi();
 }
 
 function syncExamProgressiveModelUi() {
-  const cfg = selectedTextRoleProviderConfig("answer");
-  const model = selectedTextRoleModel("answer") || cfg.default_model || "";
-  const readsImages = modelLooksVisionCapable(model, cfg);
-  const supportsImageTools = modelSupportsMainToolLoop(model, cfg, selectedRoleProtocol("answer"));
-  const answerCard = $("answerModelRoleCard");
-  const visionCard = $("visionModelRoleCard");
-  const imageCard = $("imageModelRoleCard");
-  if (currentExamAnalysisProfile === "textbook_evidence_only") {
-    if (answerCard) answerCard.classList.add("hidden");
-    if (visionCard) visionCard.classList.remove("hidden");
-    if (imageCard) imageCard.classList.add("hidden");
-    const notice = $("examCapabilityNotice");
-    if (notice) {
-      notice.className = "model-progressive-notice info";
-      notice.innerHTML = '<i class="fas fa-book-bookmark"></i><span><strong>只执行教材引用定位</strong>主模型用于题目识别，教材依据模型用于知识点和页码审定；不需要答案或生图模型。</span>';
-    }
-    return;
-  }
-  if (visionCard) visionCard.classList.toggle("hidden", readsImages);
-  if (imageCard) imageCard.classList.toggle("hidden", !supportsImageTools);
+  $("reasoningModelRoleCard")?.classList.toggle("hidden", currentExamAnalysisProfile === "question_only");
+  $("answerModelRoleCard")?.classList.toggle("hidden", currentExamAnalysisProfile === "textbook_evidence_only");
+  $("imageModelRoleCard")?.classList.toggle("hidden", currentExamAnalysisProfile === "textbook_evidence_only");
   const notice = $("examCapabilityNotice");
-  if (!notice) return;
-  if (!model) {
-    notice.className = "model-progressive-notice warn";
-    notice.innerHTML = '<i class="fas fa-key"></i><span><strong>暂无可用主模型</strong>请先到 API 配置页面保存一个具备当前任务能力的供应商 Key。</span><button class="text-button" type="button" onclick="goToPage(\'keys\')">前往配置</button>';
-    return;
+  if (notice) {
+    notice.className = "model-progressive-notice info";
+    notice.textContent = "有图材料需选择支持图片理解的模型；高风险正确性复核跟随真题解析模型。";
   }
-  const label = readableModelLabel(model, cfg);
-  notice.className = "model-progressive-notice ok";
-  notice.innerHTML = readsImages
-    ? `<i class="fas fa-circle-check"></i><span><strong>${escapeHtml(label)} 可直接读图并自主生图</strong>需要生成新图时才调用下方生图模型。</span>`
-    : `<i class="fas fa-circle-check"></i><span><strong>${escapeHtml(label)} 已开启自主生图闭环</strong>题图由独立识图模型处理；需要生成新图时，主模型可直接调用生图模型并继续任务。</span>`;
+  renderExamModelRoutePickers();
 }
 
 function populateProviderSelect(selectId, kind, preferredName, purpose = "") {
@@ -9683,7 +9438,7 @@ function updateModelRoleCards() {
   setModelRoleStatus("imageRoleStatus", routeConnectionStatus(imageRoute()));
   syncExamProgressiveModelUi();
   syncExamModelTestAvailability();
-  if (latestEnvironmentStatus) updateEnvironmentSummary(latestEnvironmentStatus);
+  syncExamModelSelectionAvailability();
 }
 
 function questionTypeModelCards() {
@@ -9817,14 +9572,7 @@ function examPresetRequiredProviders(preset) {
 }
 
 function recommendedExamModelPreset() {
-  const saved = localStorage.getItem(EXAM_MODEL_PRESET_STORAGE_KEY) || "";
-  if (saved === "balanced") return "quality";
-  if (saved === "custom" || examModelPresets[saved]) return saved;
-  for (const key of ["quality", "economy"]) {
-    const preset = examModelPresets[key];
-    if (examPresetRequiredProviders(preset).every((name) => providerConfigs[name]?.api_key_set)) return key;
-  }
-  return "quality";
+  return "custom";
 }
 
 function selectHasValue(select, value) {
@@ -9845,8 +9593,6 @@ function setExamTextRoleRoute(roleKey, route) {
 }
 
 function syncExamFollowerRolesFromAnswer() {
-  const details = $("examModelRoleDetails");
-  if (details?.open) return;
   const answerCfg = selectedTextRoleProviderConfig("answer");
   const providerName = answerCfg.name || $("answerProviderSelect")?.value || "";
   const modelName = selectedTextRoleModel("answer") || answerCfg.default_model || "";
@@ -9920,7 +9666,7 @@ function applyExamModelPreset(key, { persist = true } = {}) {
 
 function initializeExamModelPreset() {
   const key = recommendedExamModelPreset();
-  applyExamModelPreset(key, { persist: true });
+  applyExamModelPreset(key, { persist: false });
 }
 
 function markExamModelPresetCustom() {
@@ -10614,6 +10360,176 @@ function taskModelOptions(kind, cfg, purpose = "") {
     .filter((model) => registeredModelSupportsKind(cfg, model, kind, purpose));
 }
 
+function modelFamilyName(model, kind = "text") {
+  const value = String(model || "").toLowerCase();
+  if (kind === "image") {
+    if (value.includes("gpt-image")) return "GPT Image";
+    if (value.includes("seedream")) return "Seedream";
+    if (value.includes("qwen-image")) return "Qwen Image";
+    if (value.includes("gemini") || value.includes("nano-banana")) return "Gemini Image";
+    if (value.includes("grok-imagine")) return "Grok Image";
+    if (value.includes("sensenova")) return "SenseNova";
+  }
+  if (value.includes("deepseek")) return "DeepSeek";
+  if (value.includes("gpt")) return "GPT";
+  if (value.includes("gemini")) return "Gemini";
+  if (value.includes("claude")) return "Claude";
+  if (value.includes("glm")) return "GLM";
+  if (value.includes("qwen")) return "Qwen";
+  if (value.includes("doubao")) return "Doubao";
+  if (value.includes("kimi") || value.includes("moonshot")) return "Kimi";
+  if (value.includes("mimo")) return "MiMo";
+  if (value.includes("hunyuan") || /^hy[-_]/.test(value)) return "Hunyuan";
+  return "其他";
+}
+
+function configuredModelRoutes(kind, purpose = "") {
+  return configuredTaskProviderEntries(kind, purpose).flatMap(([provider, cfg]) => {
+    const labels = kind === "image" ? (cfg.image_model_option_labels || {}) : (cfg.model_option_labels || {});
+    return taskModelOptions(kind, cfg, purpose).map((model) => ({
+      provider,
+      model,
+      cfg,
+      family: modelFamilyName(model, kind),
+      label: String(labels[model] || shortTaskModelName(model, provider)),
+    }));
+  });
+}
+
+function modelRouteStatus(provider, model, protocol = "") {
+  const health = taskModelHealth(provider, model, protocol);
+  if (["unavailable", "configuration_error", "degraded"].includes(health.status)) return { label: "近期波动", tone: "warn" };
+  if (health.status === "available" && health.confidence !== "expired") return { label: "近期正常", tone: "ok" };
+  return { label: "状态待更新", tone: "neutral" };
+}
+
+function renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, selectedModel, onChoose }) {
+  const mount = $(mountId);
+  if (!mount) return;
+  const routes = configuredModelRoutes(kind, purpose);
+  if (!routes.length) {
+    mount.innerHTML = '<div class="model-route-picker-empty"><strong>暂无可用模型</strong><span>请先前往 API 配置保存并验证相应模型服务。</span></div>';
+    return;
+  }
+  const familyOrder = kind === "image"
+    ? ["GPT Image", "Seedream", "Qwen Image", "Gemini Image", "Grok Image", "SenseNova", "其他"]
+    : ["DeepSeek", "GPT", "Gemini", "Claude", "GLM", "Qwen", "Doubao", "Kimi", "MiMo", "Hunyuan", "其他"];
+  const familyRank = (family) => {
+    const index = familyOrder.indexOf(family);
+    return index < 0 ? familyOrder.length : index;
+  };
+  const families = Array.from(new Set(routes.map((route) => route.family)))
+    .sort((left, right) => familyRank(left) - familyRank(right));
+  const selectedRoute = routes.find((route) => route.provider === selectedProvider && route.model === selectedModel);
+  const requestedFamily = String(mount.dataset.activeFamily || "");
+  const activeFamily = families.includes(requestedFamily)
+    ? requestedFamily
+    : (selectedRoute?.family || families[0]);
+  mount.dataset.activeFamily = activeFamily;
+  const visibleRoutes = routes.filter((route) => route.family === activeFamily);
+  mount.innerHTML = `
+    <div class="model-family-tabs" role="tablist" aria-label="模型家族">
+      ${families.map((family) => `<button type="button" role="tab" aria-selected="${family === activeFamily}" data-model-family="${escapeHtml(family)}">${escapeHtml(family)}</button>`).join("")}
+    </div>
+    <div class="model-route-options">
+      ${visibleRoutes.map((route) => {
+        const selected = route.provider === selectedProvider && route.model === selectedModel;
+        const protocol = kind === "image" ? "images" : modelRequestProtocol(route.cfg, route.model);
+        const status = modelRouteStatus(route.provider, route.model, protocol);
+        return `<button type="button" class="model-route-option${selected ? " selected" : ""}" data-route-provider="${escapeHtml(route.provider)}" data-route-model="${escapeHtml(route.model)}" aria-pressed="${selected}">
+          <span class="model-route-check"><i class="fas ${selected ? "fa-check" : "fa-circle"}"></i></span>
+          <span class="model-route-copy"><strong>${escapeHtml(route.label)}</strong><small>${escapeHtml(displayProviderName(route.provider))}</small></span>
+          <span class="model-route-health ${status.tone}">${escapeHtml(status.label)}</span>
+        </button>`;
+      }).join("")}
+    </div>`;
+  mount.querySelectorAll("[data-model-family]").forEach((button) => {
+    button.addEventListener("click", () => {
+      mount.dataset.activeFamily = button.dataset.modelFamily || "";
+      renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, selectedModel, onChoose });
+    });
+  });
+  mount.querySelectorAll("[data-route-provider]").forEach((button) => {
+    button.addEventListener("click", () => onChoose(button.dataset.routeProvider || "", button.dataset.routeModel || ""));
+  });
+}
+
+function applyTaskModelRoute(profile, kind, provider, model) {
+  const ids = taskModelControlIds(profile, kind);
+  const providerSelect = $(ids.provider);
+  const modelSelect = $(ids.model);
+  if (!providerSelect || !modelSelect || !selectHasValue(providerSelect, provider)) return;
+  providerSelect.value = provider;
+  syncPlatformSelectElement(providerSelect);
+  populateTaskModelControl(profile, kind, model);
+  if (selectHasValue(modelSelect, model)) modelSelect.value = model;
+  syncPlatformSelectElement(modelSelect);
+  saveTaskModelSetting(profile, kind);
+  updateTaskModelSummary(profile);
+  renderTaskModelRoutePickers(profile);
+}
+
+function renderTaskModelRoutePickers(profile) {
+  const prefix = profile === "knowledge" ? "knowledge" : "practice";
+  renderModelRoutePicker({
+    mountId: `${prefix}TextRoutePicker`, kind: "text", purpose: profile,
+    selectedProvider: taskProviderName(profile, "text"), selectedModel: selectedTaskModel(profile, "text"),
+    onChoose: (provider, model) => applyTaskModelRoute(profile, "text", provider, model),
+  });
+  renderModelRoutePicker({
+    mountId: `${prefix}ImageRoutePicker`, kind: "image", purpose: profile,
+    selectedProvider: taskProviderName(profile, "image"), selectedModel: selectedTaskModel(profile, "image"),
+    onChoose: (provider, model) => applyTaskModelRoute(profile, "image", provider, model),
+  });
+}
+
+function applyExamModelRoute(kind, provider, model) {
+  if (kind === "image") {
+    const providerSelect = $("imageProviderSelect");
+    if (!providerSelect || !selectHasValue(providerSelect, provider)) return;
+    providerSelect.value = provider;
+    syncPlatformSelectElement(providerSelect);
+    populateImageModelControls(model);
+    if (selectHasValue($("imageModelSelect"), model)) $("imageModelSelect").value = model;
+    syncPlatformSelectElement($("imageModelSelect"));
+    updateCapabilityModelHints();
+  } else {
+    const role = kind === "reasoning" ? "reasoning" : "answer";
+    const providerSelect = $(textModelRoles[role].providerId);
+    if (!providerSelect || !selectHasValue(providerSelect, provider)) return;
+    providerSelect.value = provider;
+    syncPlatformSelectElement(providerSelect);
+    populateTextRoleModelSelect(role, model);
+    if (selectHasValue($(textModelRoles[role].modelSelectId), model)) $(textModelRoles[role].modelSelectId).value = model;
+    syncPlatformSelectElement($(textModelRoles[role].modelSelectId));
+    populateRoleProtocol(role);
+    populateRoleThinkingMode(role);
+    syncExamFollowerRolesFromAnswer();
+  }
+  markExamModelPresetCustom();
+  updateModelCapabilityRisk();
+  updateModelRoleCards();
+  renderExamModelRoutePickers();
+}
+
+function renderExamModelRoutePickers() {
+  renderModelRoutePicker({
+    mountId: "examReasoningRoutePicker", kind: "text", purpose: "reasoning",
+    selectedProvider: $("reasoningProviderSelect")?.value || "", selectedModel: selectedTextRoleModel("reasoning"),
+    onChoose: (provider, model) => applyExamModelRoute("reasoning", provider, model),
+  });
+  renderModelRoutePicker({
+    mountId: "examTextRoutePicker", kind: "text", purpose: "answer",
+    selectedProvider: $("answerProviderSelect")?.value || "", selectedModel: selectedTextRoleModel("answer"),
+    onChoose: (provider, model) => applyExamModelRoute("text", provider, model),
+  });
+  renderModelRoutePicker({
+    mountId: "examImageRoutePicker", kind: "image", purpose: "image_generation",
+    selectedProvider: $("imageProviderSelect")?.value || "", selectedModel: selectedImageModel(),
+    onChoose: (provider, model) => applyExamModelRoute("image", provider, model),
+  });
+}
+
 function practiceModelOptions(kind, cfg, profile = "practice") {
   return taskModelOptions(kind, cfg, profile);
 }
@@ -10702,6 +10618,7 @@ function populateTaskModelSettings(profile) {
     saveTaskModelSetting(profile, kind);
   }
   updateTaskModelSummary(profile);
+  renderTaskModelRoutePickers(profile);
 }
 
 function populatePracticeModelControl(kind, preferredModel = "") {
@@ -10804,14 +10721,13 @@ function syncTaskProgressiveModelUi(profile, state = {}) {
   const textProvider = state.textProvider || providerConfigs[taskProviderName(profile, "text")] || {};
   const textModel = state.textModel || selectedTaskModel(profile, "text");
   const readsImages = state.primaryHandlesImages ?? modelLooksVisionCapable(textModel, textProvider);
-  const supportsImageTools = modelSupportsMainToolLoop(textModel, textProvider, selectedTaskProtocol(profile));
   const fallback = $(`${prefix}VisionFallbackDetails`);
   const imageCard = $(`${prefix}ImageModelCard`);
   if (fallback) {
     fallback.hidden = readsImages;
     fallback.open = !readsImages;
   }
-  if (imageCard) imageCard.hidden = !supportsImageTools;
+  if (imageCard) imageCard.hidden = false;
   const target = $(`${prefix}ModelCompatibility`);
   if (!target) return;
   if (!textModel) {
@@ -10819,11 +10735,18 @@ function syncTaskProgressiveModelUi(profile, state = {}) {
     target.innerHTML = '<i class="fas fa-key"></i><span><strong>暂无可用主模型</strong>请先配置供应商 Key，完成后这里会自动只列出适合本任务的模型。</span><button class="text-button" type="button" onclick="goToPage(\'keys\')">前往 API 配置</button>';
     return;
   }
+  const imageProvider = providerConfigs[taskProviderName(profile, "image")] || {};
+  const imageModel = selectedTaskModel(profile, "image");
+  if (!imageProvider.api_key_set || !imageModel) {
+    target.className = "task-model-compatibility warn";
+    target.innerHTML = '<i class="fas fa-key"></i><span><strong>还需要选择生图模型</strong>主模型与生图模型都是本次任务的必选配置。</span><button class="text-button" type="button" onclick="goToPage(\'keys\')">前往 API 配置</button>';
+    return;
+  }
   const modelLabel = readableModelLabel(textModel, textProvider);
   target.className = "task-model-compatibility ok";
   target.innerHTML = readsImages
-    ? `<i class="fas fa-circle-check"></i><span><strong>主模型可直接处理图文并自主生图</strong>${escapeHtml(modelLabel)} 会在确有需要时调用生图模型并回看结果。</span>`
-    : `<i class="fas fa-circle-check"></i><span><strong>主模型已开启自主生图</strong>${escapeHtml(modelLabel)} 可调用生图模型继续任务；原始题图仍由独立识图模型处理。</span>`;
+    ? `<i class="fas fa-circle-check"></i><span><strong>两个必选模型均已配置</strong>${escapeHtml(modelLabel)} 可直接处理图文，需要新图时调用已选择的生图模型。</span>`
+    : `<i class="fas fa-circle-check"></i><span><strong>两个必选模型均已配置</strong>原始题图由独立识图模型处理，需要新图时调用已选择的生图模型。</span>`;
 }
 
 function updatePracticeModelSummary() {
@@ -11062,13 +10985,15 @@ async function createTask() {
     const selectedBooks = selectedTextbooks();
     if (!questionOnly && !selectedBooks.length) throw new Error("请至少选择一本已建立索引的教材");
     const selectedBookNames = selectedTextbookNames();
-    const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel()) && !evidenceOnly;
-    if (!evidenceOnly && imageOrchestrationMode("exam") === "main_model_tool_loop" && !imageFallbackConfigured) {
-      throw new Error("请先配置并验证默认生图流程所需的生图模型。");
+    const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel());
+    if (!evidenceOnly && !imageFallbackConfigured) {
+      throw new Error("生图模型是任务必选项，请先完成生图服务商、模型和 API Key 配置。");
     }
     const answerProviderName = $("answerProviderSelect")?.value || $("providerSelect").value;
     const answerModelName = selectedTextRoleModel("answer") || requireSelectedModel();
     setVisual("taskVisualResult", "正在创建任务", "保留你选择的模型。运行状态仅作参考，任务将实际调用并反馈结果。", "info");
+    const directVisionRole = evidenceOnly ? "reasoning" : "answer";
+    const directVisionRoute = textRoleRoute(directVisionRole, "图片理解");
     const preflightRoutes = examTaskPreflightRoutes();
     const taskPayload = JSON.stringify({
         exam_path: examPath,
@@ -11085,11 +11010,11 @@ async function createTask() {
         answer_provider: $("answerProviderSelect")?.value || $("providerSelect").value,
         answer_model: selectedTextRoleModel("answer") || requireSelectedModel(),
         answer_protocol: selectedRoleProtocol("answer"),
-        correctness_provider: $("correctnessProviderSelect")?.value || $("answerProviderSelect")?.value || $("providerSelect").value,
-        correctness_model: selectedTextRoleModel("correctness") || selectedTextRoleModel("answer") || requireSelectedModel(),
-        correctness_protocol: selectedRoleProtocol("correctness"),
-        vision_provider: $("visionProviderSelect")?.value || "",
-        vision_model: selectedVisionModel(),
+        correctness_provider: answerProviderName,
+        correctness_model: answerModelName,
+        correctness_protocol: selectedRoleProtocol("answer"),
+        vision_provider: directVisionRoute.provider,
+        vision_model: directVisionRoute.model,
         image_provider: imageFallbackConfigured ? ($("imageProviderSelect")?.value || "") : "",
         image_model: imageFallbackConfigured ? selectedImageModel() : "",
         image_orchestration: imageOrchestrationMode("exam"),
@@ -11113,7 +11038,10 @@ async function createTask() {
       setVisual("taskVisualResult", "尚未开始", "你可以继续调整真题或教材范围。", "info");
       return;
     }
-    await preflightTaskModelRoutes(preflightRoutes, evidenceOnly ? "教材引用定位任务" : questionOnly ? "题目解析任务" : "真题解析任务");
+    if (!await preflightTaskModelRoutes(preflightRoutes, evidenceOnly ? "教材引用定位任务" : questionOnly ? "题目解析任务" : "真题解析任务")) {
+      setVisual("taskVisualResult", "任务未开始", "所需模型测试未全部通过，请处理后重新开始。", "error");
+      return;
+    }
     const data = await api("/api/tasks", { method: "POST", body: taskPayload });
     $("taskResult").textContent = data.task?.public_task_id ? `任务已创建：${data.task.public_task_id}` : "任务已创建";
     if (data.task && data.task.task_id) {
@@ -11532,6 +11460,22 @@ function taskResourceId(task = {}) {
   return String(task.task_id || "");
 }
 
+function taskManagerDataSignature(tasks = []) {
+  return JSON.stringify(tasks, (key, value) => (
+    key === "heartbeat_age_seconds" || key === "progress_age_seconds" ? undefined : value
+  ));
+}
+
+function taskManagerInteractionActive() {
+  const list = $("taskManagerList");
+  if (!list) return false;
+  return Boolean(
+    list.matches(":hover")
+    || list.contains(document.activeElement)
+    || list.querySelector(".task-card-more[open], .task-technical-details[open]")
+  );
+}
+
 function renderTaskManagerPagination(total) {
   const pagination = $("taskManagerPagination");
   if (!pagination) return;
@@ -11616,6 +11560,15 @@ function renderTaskManager(tasks = latestTasks) {
   const list = $("taskManagerList");
   const empty = $("taskManagerEmpty");
   if (!list) return;
+  const expandedTaskSections = new Map(
+    [...list.querySelectorAll(".task-manager-item")].map((item) => [
+      item.dataset.taskId,
+      {
+        technical: Boolean(item.querySelector(".task-technical-details[open]")),
+        more: Boolean(item.querySelector(".task-card-more[open]")),
+      },
+    ])
+  );
   updateTaskManagerStats(tasks);
   const filteredVisible = sortedTasks(tasks.filter((task) => {
     const statusMatch = taskMatchesManagerFilter(task, activeTaskFilter);
@@ -11826,6 +11779,9 @@ function renderTaskManager(tasks = latestTasks) {
         <p${displayProgressMessage !== progressMessage ? ` title="${escapeHtml(progressMessage)}"` : ""}>${escapeHtml(displayProgressMessage)}</p>
       </div>
     `;
+    const expandedSections = expandedTaskSections.get(resourceId);
+    if (expandedSections?.technical) item.querySelector(".task-technical-details")?.setAttribute("open", "");
+    if (expandedSections?.more) item.querySelector(".task-card-more")?.setAttribute("open", "");
     item.addEventListener("click", (event) => {
       if (
         (event.target.closest(".task-card-more") || event.target.closest(".task-technical-details"))
@@ -11880,6 +11836,7 @@ function renderTaskManager(tasks = latestTasks) {
     taskManagerMotionEntrancePending = false;
     window.PlatformMotion?.taskItemsChanged(animatedItems);
   }
+  taskManagerRenderedDataSignature = taskManagerDataSignature(tasks);
 }
 
 function updateTaskBulkControls() {
@@ -12077,6 +12034,34 @@ const PROVIDER_CAPABILITY_LABEL = {
   text: "文本", vision: "图片输入", image_generation: "生图", image_edit: "参考图编辑"
 };
 
+function formatFriendlyModelLatency(milliseconds) {
+  if (milliseconds == null || !Number.isFinite(Number(milliseconds)) || Number(milliseconds) <= 0) return "暂无记录";
+  const seconds = Number(milliseconds) / 1000;
+  if (seconds < 1) return "不到 1 秒";
+  if (seconds < 60) return `约 ${Math.max(1, Math.round(seconds))} 秒`;
+  const roundedSeconds = Math.round(seconds);
+  const minutes = Math.floor(roundedSeconds / 60);
+  const remainingSeconds = roundedSeconds % 60;
+  return remainingSeconds ? `约 ${minutes} 分 ${remainingSeconds} 秒` : `约 ${minutes} 分钟`;
+}
+
+function providerConnectionPresentation(row = {}) {
+  if (!row.configured || row.status === "not_configured") return { label: "未接入", tone: "pending" };
+  if (row.status === "configuration_error") return { label: "配置需检查", tone: "warning" };
+  const verification = row.input_verification || row.verification_status;
+  if (verification === "passed") return { label: row.confidence === "expired" ? "上次验证通过" : "连接已验证", tone: row.confidence === "expired" ? "pending" : "available" };
+  if (verification === "failed") {
+    const error = row.last_error || row.last_platform_or_request_error || {};
+    const errorKind = String(error.kind || error.failure_state || "").toLowerCase();
+    const errorText = `${error.title || ""} ${error.message || ""}`.toLowerCase();
+    if (errorKind.includes("timeout") || errorText.includes("超时") || errorText.includes("规定时间")) return { label: "连接超时", tone: "warning" };
+    if (errorKind === "probe_validation_failed") return { label: "返回内容未通过", tone: "warning" };
+    return { label: "连接未通过", tone: "warning" };
+  }
+  if (row.status === "available") return { label: row.confidence === "expired" ? "上次调用成功" : "近期调用成功", tone: row.confidence === "expired" ? "pending" : "available" };
+  return { label: "等待验证", tone: "pending" };
+}
+
 function providerResponsibilityLabel(value) {
   if (value === "provider_service") return "服务商侧异常";
   if (value === "user_or_account_configuration") return "需要用户检查账号、Key 或额度";
@@ -12258,24 +12243,23 @@ function compactProviderModels(box) {
     const mainRows = rows.filter((row) => row.capability !== "image_edit");
     const primary = modelHealthRows(rows).sort((a, b) => (severity[b.status] || 0) - (severity[a.status] || 0) || Number(b.confidence === "expired") - Number(a.confidence === "expired"))[0] || rows[0];
     const status = primary.status;
-    const label = status === "available" && primary.confidence === "expired" ? "待更新" : ({available:"可用",degraded:"不稳定",unavailable:"不可用",configuration_error:"账号异常",unverified:"待确认",not_configured:"未接入"})[status] || "待确认";
+    const label = status === "available" && primary.confidence === "expired" ? "待更新" : ({available:"连接正常",degraded:"连接不稳定",unavailable:"连接未通过",configuration_error:"配置需检查",unverified:"待验证",not_configured:"未接入"})[status] || "待验证";
     const error = primary.last_error || primary.last_platform_or_request_error || {};
     const warning = ["unavailable", "configuration_error", "degraded"].includes(status);
     const details = document.createElement("details");
-    details.className = `compact-model status-${status === "unavailable" ? "danger" : warning ? "warning" : label === "可用" ? "available" : "pending"}`;
+    details.className = `compact-model status-${status === "unavailable" ? "danger" : warning ? "warning" : label === "连接正常" ? "available" : "pending"}`;
     details.dataset.viewKey = `compact:${card.dataset.viewKey}`;
     const kind = rows.some((row) => row.capability === "image_generation") ? "生图" : rows.some((row) => row.capability === "vision") ? "文本 + 图片" : "纯文本";
     const capabilityBadges = mainRows.map((row) => {
-      const registeredVision = row.capability === "vision" && !["degraded", "unavailable", "configuration_error", "not_configured"].includes(row.status);
-      const badgeLabel = registeredVision ? (row.last_probe_success ? "已验证" : "已登记") : row.status === "available" && row.confidence === "expired" ? "上次可用 · 待更新" : ({available:"可用",degraded:"不稳定",unavailable:"不可用",configuration_error:"账号异常",unverified:"尚无有效验证",not_configured:"未接入"})[row.status] || "待确认";
-      const tone = row.status === "unavailable" ? "danger" : ["degraded", "configuration_error"].includes(row.status) ? "warning" : ["可用", "已验证"].includes(badgeLabel) ? "available" : "pending";
-      return `<span class="model-capability-badge tone-${tone}"><span>${escapeHtml(PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability)}</span><em>${badgeLabel}</em></span>`;
+      const registered = row.approved !== false;
+      const connection = providerConnectionPresentation(row);
+      return `<span class="model-capability-badge tone-${connection.tone}"><span>${escapeHtml(PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability)}</span><em>${registered ? "支持" : "待审核"}</em><small>${escapeHtml(connection.label)}</small></span>`;
     }).join("");
-    details.innerHTML = `<summary><strong>${escapeHtml(identity[2])}</strong><span class="model-capability-badges">${capabilityBadges}</span><span>${primary.p50_latency_ms == null ? "—" : `${(primary.p50_latency_ms / 1000).toFixed(1)} 秒`}</span><span class="compact-model-reason">${escapeHtml(warning ? error.message || error.title || "查看详情了解原因" : label === "待更新" ? "近期证据已过期" : "—")}</span><span class="compact-model-expand">详情</span></summary>`;
+    details.innerHTML = `<summary><strong>${escapeHtml(identity[2])}</strong><span class="model-capability-badges">${capabilityBadges}</span><span title="成功请求的历史中位耗时">${escapeHtml(formatFriendlyModelLatency(primary.p50_latency_ms))}</span><span class="compact-model-reason">${escapeHtml(warning ? error.message || error.title || "查看详情了解原因" : label === "待更新" ? "近期证据已过期" : "—")}</span><span class="compact-model-expand">详情</span></summary>`;
     const actions = details.querySelector(".compact-model-expand");
     actions.prepend(providerManualTestButton(providerManualTestRoutes(identity), "测试", `${providerControlFamily(identity[0])} / ${identity[2]}`));
     details.appendChild(card);
-    return {details, name: identity[2], rank: severity[status] || 0, family: providerControlFamily(identity[0]), kind, warning, unavailable: status === "unavailable", healthy: label === "可用", awaitingUpdate: label === "待更新", configured: primary.configured};
+    return {details, name: identity[2], rank: severity[status] || 0, family: providerControlFamily(identity[0]), kind, warning, unavailable: status === "unavailable", healthy: label === "连接正常", awaitingUpdate: label === "待更新", configured: primary.configured};
   });
   if (!entries.length) return;
   entries.sort((a, b) => b.rank - a.rank);
@@ -12292,7 +12276,7 @@ function compactProviderModels(box) {
     const tone = unavailable ? "danger" : failed ? "warning" : pending ? "pending" : "available";
     const awaitingUpdate = models.filter((model) => model.awaitingUpdate).length;
     const pendingSummary = [awaitingUpdate ? `${awaitingUpdate} 个上次可用，等待状态更新` : "", pending - awaitingUpdate ? `${pending - awaitingUpdate} 个尚无有效验证或未接入` : ""].filter(Boolean).join("；");
-    const statusLabel = unavailable ? `${unavailable} 个模型不可用` : failed ? `${failed} 个模型不稳定或账号异常` : pending ? pendingSummary : "近期全部可用";
+    const statusLabel = unavailable ? `${unavailable} 个模型连接未通过` : failed ? `${failed} 个模型连接或配置需检查` : pending ? pendingSummary : "近期连接正常";
     const group = document.createElement("details");
     group.className = `supplier-overview status-${tone}`;
     group.dataset.viewKey = `supplier-overview:${family}`;
@@ -12310,7 +12294,7 @@ function compactProviderModels(box) {
       if (!matching.length) continue;
       const section = document.createElement("section");
       section.className = "supplier-model-section";
-      section.innerHTML = `<h4>${kind}<span>${matching.length}</span></h4><div class="compact-model-columns" aria-hidden="true"><span>模型</span><span>能力 / 当前状态</span><span>响应中位</span><span>问题说明</span><span>操作</span></div>`;
+      section.innerHTML = `<h4>${kind}<span>${matching.length}</span></h4><div class="compact-model-columns" aria-hidden="true"><span>模型</span><span>已登记能力 / 最近验证</span><span>通常响应</span><span>问题说明</span><span>操作</span></div>`;
       section.append(...matching.map((model) => model.details));
       group.appendChild(section);
     }
@@ -12426,26 +12410,25 @@ function renderProviderControl() {
           const modelViewKey = escapeHtml(JSON.stringify([first.provider, first.account_fingerprint, first.model, first.protocol]));
           return `<div class="provider-model-row" data-view-key="model:${modelViewKey}">
             <div class="provider-model-name"><strong>${escapeHtml(first.model)}</strong><small>${inputLabel} · 平台已登记</small>
-              <div class="model-evidence-strip"><span>${({high:"高可信",medium:"中可信",low:"证据较少",expired:"证据已过期"})[first.confidence] || "暂无证据"}</span><span>响应中位 ${first.p50_latency_ms == null ? "—" : `${(first.p50_latency_ms / 1000).toFixed(1)} 秒`}</span><span>近 24 小时 ${Number(first.sample_count || 0)} 次</span></div>
+              <div class="model-evidence-strip"><span>${({high:"高可信",medium:"中可信",low:"证据较少",expired:"证据已过期"})[first.confidence] || "暂无证据"}</span><span>通常响应 ${escapeHtml(formatFriendlyModelLatency(first.p50_latency_ms))}</span><span>近 24 小时 ${Number(first.sample_count || 0)} 次</span></div>
               <small>${first.last_observed_at ? `最近证据 ${escapeHtml(formatLogTime(first.last_observed_at))}` : "尚无调用记录"} · ${first.confidence === "expired" ? "等待更新" : "状态仅作选择参考"}</small>
               <details data-view-key="registration:${modelViewKey}" class="model-registration-details"><summary>登记与技术详情</summary><small>${onboardingLabel} · ${escapeHtml(first.protocol)} · 账户 ${escapeHtml(first.account_fingerprint)}</small>${onboarding.error?.error ? `<small>${escapeHtml(onboarding.error.error)}</small>` : ""}</details>
               ${activityError ? `<small>${escapeHtml(PROVIDER_ROUTE_STATUS[activity.status]?.[0] || "最近请求未通过")}：${escapeHtml(activityError.message || activityError.title)}</small>` : ""}</div>
             <div class="provider-capability-grid">${modelRows.map((row) => {
-              let [statusLabelText, statusClass] = PROVIDER_ROUTE_STATUS[row.status] || PROVIDER_ROUTE_STATUS.unverified;
-              if (row.capability === "vision" && !["degraded", "unavailable", "configuration_error", "not_configured"].includes(row.status)) {
-                statusLabelText = row.last_probe_success || row.onboarding?.status === "passed" ? "图片输入已验证" : "图片输入已登记";
-                statusClass = row.last_probe_success || row.onboarding?.status === "passed" ? "available" : "pending";
-              }
+              const connection = providerConnectionPresentation(row);
+              const statusLabelText = connection.label;
+              const statusClass = connection.tone;
+              const capabilitySupport = row.approved === false ? "待审核" : "支持";
               const error = row.last_error || row.last_platform_or_request_error || {};
               const history = Array.isArray(row.history) ? row.history : [];
               const concurrency = row.effective_concurrency === 0 ? (row.effective_allowed ? "供应商默认" : "已阻止") : `${row.effective_concurrency} 路`;
               return `<details data-view-key="route:${escapeHtml(row.route_id)}" class="provider-capability-cell status-${statusClass}">
-                <summary><span>${escapeHtml(PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability)}</span><strong>${escapeHtml(statusLabelText)}</strong></summary>
+                <summary><span>${escapeHtml(PROVIDER_CAPABILITY_LABEL[row.capability] || row.capability)} · ${capabilitySupport}</span><strong>${escapeHtml(statusLabelText)}</strong></summary>
                 <div class="provider-capability-popover">
                   <p><strong>${escapeHtml(providerResponsibilityLabel(row.responsibility))}</strong>${error.title ? ` · ${escapeHtml(error.title)}` : ""}</p>
                   ${error.message ? `<p>${escapeHtml(error.message)}</p>` : ""}
                   <small>${row.effective_allowed ? "可选择并尝试执行，失败后由任务显示原因" : "请先完成配置与平台登记"} · ${row.last_observed_at ? `最近 ${escapeHtml(formatLogTime(row.last_observed_at))}` : "尚未验证"}</small>
-                  <small>近 24 小时成功率 ${row.success_rate == null ? "—" : `${row.success_rate}%`} · 较慢响应 P95 ${row.p95_latency_ms == null ? "—" : `${(row.p95_latency_ms / 1000).toFixed(1)} 秒`}</small>
+                  <small>近 24 小时成功率 ${row.success_rate == null ? "—" : `${row.success_rate}%`} · 较慢响应 ${escapeHtml(formatFriendlyModelLatency(row.p95_latency_ms))}</small>
                   <small>${row.capability === "text" ? `下次自动检测 ${row.next_check_at ? escapeHtml(formatLogTime(row.next_check_at)) : "待安排"}` : "由真实任务或手动检测更新"} · ${row.runtime_sample_count || 0} 次真实任务证据</small>
                   ${error.suggested_action ? `<small>${escapeHtml(error.suggested_action)}</small>` : ""}
                   <button class="task-card-button provider-route-probe" type="button" data-route-id="${escapeHtml(row.route_id)}" ${row.configured ? "" : 'disabled title="请先配置 API Key"'}><i class="fas fa-vial"></i>${row.configured ? "检测当前可用性" : "需先配置 Key"}</button>
@@ -13096,7 +13079,7 @@ async function retryExamTask(task, reopenReview = false) {
     tone: reopenReview ? "warning" : "primary"
   });
   if (!confirmed) return;
-  await preflightTaskModelRoutes(savedExamTaskPreflightRoutes(task), "真题解析重试");
+  if (!await preflightTaskModelRoutes(savedExamTaskPreflightRoutes(task), "真题解析重试")) return;
   await api(`/api/tasks/${encodeURIComponent(task.task_id)}/run`, {
     method: "POST",
     body: JSON.stringify({
@@ -13195,10 +13178,10 @@ async function continuePracticeHistory(historyId, button = null, taskKind = "") 
   if (button) button.disabled = true;
   try {
     const saved = await api(`/api/practice/history/${encodeURIComponent(targetHistoryId)}`);
-    await preflightTaskModelRoutes(
+    if (!await preflightTaskModelRoutes(
       practiceTaskPreflightRoutes("generate_from_plan", saved.request || {}),
       taskKind === "knowledge" ? "知识点出题继续任务" : "按题出题继续任务",
-    );
+    )) return;
     // This ID identifies one explicit user attempt. Replaying the same HTTP
     // request reuses its terminal result, while a new confirmed click after a
     // failure gets a fresh attempt. Server-side continuation_key still owns
@@ -13750,10 +13733,10 @@ function reviewStageText(stage) {
 }
 
 function questionTypeOptions(types = [], selected = "") {
-  const fallback = ["选择题", "判断题", "填空题", "名词解释", "简答题", "计算题", "作图题"];
-  const options = Array.from(new Set([...(types || []), ...fallback].filter(Boolean)));
+  const fallback = ["单选题", "多选题", "判断题", "填空题", "名词解释", "简答题", "计算题", "作图题"];
+  const options = Array.from(new Set([selected, ...(types || []), ...fallback].filter(Boolean)));
   return options
-    .map((type) => `<option value="${escapeHtml(type)}"${type === selected ? " selected" : ""}>${escapeHtml(type)}</option>`)
+    .map((type) => `<option value="${escapeHtml(type)}"${type === selected ? " selected" : ""}>${escapeHtml(type === "选择题" ? "选择题（请区分单选/多选）" : type)}</option>`)
     .join("");
 }
 
@@ -14246,6 +14229,17 @@ function showExamStructureReviewModal(request, submit = null) {
     const finish = async (decision) => {
       if (finished || submitting) return;
       if (decision === "confirm") {
+        const typeSelects = Array.from(modal.querySelectorAll('[data-question-type-select="parent"], [data-subquestion-type], [data-requirement-type]'));
+        const unresolvedChoice = typeSelects.find((select) => select.value === "选择题");
+        if (unresolvedChoice) {
+          unresolvedChoice.focus();
+          platformAlert("请将选择题确认为“单选题”或“多选题”，系统会按该题型约束答案数量。", {
+            eyebrow: "结构确认",
+            title: "选择题尚未区分",
+            tone: "warning"
+          });
+          return;
+        }
         const scoreInputs = Array.from(modal.querySelectorAll("[data-question-score], [data-subquestion-score], [data-requirement-score]"));
         scoreInputs.forEach((input) => input.classList.remove("invalid"));
         const invalid = scoreInputs.find((input) => {
@@ -14539,7 +14533,7 @@ async function loadTasks(options = {}) {
   const { silent = false, includeLiveDetails = false } = options;
   const requestVersion = ++taskLoadVersion;
   taskManagerLoading = true;
-  if (currentPage === "tasks") renderTaskManager(latestTasks);
+  if (currentPage === "tasks" && !silent) renderTaskManager(latestTasks);
   if (!silent && currentPage !== "task") $("runResult").textContent = "读取任务列表中...";
   try {
     const data = await api("/api/tasks");
@@ -14548,13 +14542,11 @@ async function loadTasks(options = {}) {
     latestTasks = loadedTasks;
     updateReviewNotificationBadges(latestTasks);
     renderTasks(latestTasks);
-    renderTaskManager(latestTasks);
     if (includeLiveDetails) {
       await hydrateLiveTaskDetails(latestTasks);
       if (requestVersion !== taskLoadVersion) return;
       updateReviewNotificationBadges(latestTasks);
       renderTasks(latestTasks);
-      renderTaskManager(latestTasks);
     }
     const activeTask = latestTasks.find((task) => task.task_id === activeTaskId);
     if (activeTask && ["task", "result"].includes(currentPage)) updateTaskSummary(activeTask);
@@ -14581,7 +14573,10 @@ async function loadTasks(options = {}) {
   } finally {
     if (requestVersion === taskLoadVersion) {
       taskManagerLoading = false;
-      if (currentPage === "tasks") renderTaskManager(latestTasks);
+      const taskDataChanged = taskManagerDataSignature(latestTasks) !== taskManagerRenderedDataSignature;
+      if (currentPage === "tasks" && (!silent || (taskDataChanged && !taskManagerInteractionActive()))) {
+        renderTaskManager(latestTasks);
+      }
     }
   }
 }
@@ -15587,6 +15582,9 @@ async function deliveryPackage() {
       data.ok ? (completedWithIssues ? "交付包已附带图片风险和验收报告；可下载复核，但不视为最终验收通过。" : "正式交付物已通过无人值守门禁，请在文件列表中下载。") : "请先处理验收问题。",
       data.ok ? (completedWithIssues ? "warn" : "ok") : "error"
     );
+    if (data.ok && data.download_url) {
+      downloadPracticeWord(data.download_url, data.filename || `${taskId}_delivery.zip`);
+    }
     await taskFiles();
   } catch (err) {
     $("runResult").textContent = String(err);
@@ -15834,7 +15832,7 @@ Object.assign(window, {
 
 $("refreshBtn")?.addEventListener("click", async () => {
   await refresh();
-  if (currentPage === "env") await loadEnvironmentStatus();
+  if (currentPage === "env") syncExamModelSelectionAvailability();
 });
 $("practiceRecoveryOpenBtn")?.addEventListener("click", async (event) => {
   const button = event.currentTarget;
@@ -16552,7 +16550,7 @@ wrapTechnicalDetails();
 renderTaskStepList();
 seedFragment();
 refresh().catch((err) => {
-  $("environmentBox").textContent = String(err);
+  window.SupportTelemetry?.record("refresh_failed", { message: String(err) });
 });
 loadTasks().catch(() => {});
 resumePlatformUpdateProgress();

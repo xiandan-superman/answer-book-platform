@@ -9,7 +9,14 @@ from .calculation_consistency import calculation_draft_consistency_issues
 from .capabilities.catalog import capability_policy_contributions
 from .machine_gate_policy import machine_content_rule
 from .question_requirements import main_model_answer_figure_required
-from .question_types import infer_question_type, is_calculation_question, iter_leaf_question_parts, question_has_type, question_kind
+from .question_types import (
+    infer_question_type,
+    is_calculation_question,
+    iter_leaf_question_parts,
+    normalize_question_type,
+    question_has_type,
+    question_kind,
+)
 from .user_facing_text import contains_internal_repair_provenance
 
 PENDING_ANSWERS = {"", "待复核", "待补充", "未完成", "未知"}
@@ -71,6 +78,18 @@ INCOMPLETE_NUMERIC_SLOT_PATTERNS = (
     re.compile(r"[:：]\s*/\s*[:：]"),
     re.compile(r"(?:^|[\s,，;；、])[%％](?:$|[\s,，;；、])"),
 )
+
+
+def _choice_answer_labels(value: Any) -> list[str]:
+    text = str(value or "").strip().upper()
+    if not text:
+        return []
+    compact = re.sub(r"(?:正确)?(?:答案|选项)?\s*(?:为|是)?\s*[:：]?", "", text)
+    compact = re.sub(r"[\s,，、;；/]+", "", compact)
+    if re.fullmatch(r"[A-H]+", compact):
+        return list(dict.fromkeys(compact))
+    labels = re.findall(r"(?<![A-Z0-9])[A-H](?![A-Z0-9])", text)
+    return list(dict.fromkeys(labels))
 DANGLING_COMPOSITION_VALUE_RE = re.compile(
     r"(?=.*(?:=|为)\s*[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*[%％])"
     r".*[，,；;、]\s*[A-Za-zΑ-ω\u3400-\u9fff]{1,24}(?:相|体|组织|奥氏体|铁素体|渗碳体)\s*$"
@@ -563,8 +582,34 @@ def audit_content_quality(
 
         answer = str(fragment.get("answer", "") or draft.get("answer", "")).strip()
         answer_summary = str(fragment.get("answer_summary", "") or draft.get("answer", "")).strip()
+        expected_units = _question_answer_units(question)
         if answer in PENDING_ANSWERS or (kind == "term_explanation" and answer == "见解析"):
             issue("missing_answer", "答案为空或仍为待复核状态。")
+        if not expected_units:
+            resolved_type = normalize_question_type(infer_question_type(question))
+            label_count = len(_choice_answer_labels(answer))
+            if resolved_type == "单选题" and label_count != 1:
+                issue("single_choice_answer_count_invalid", "单选题必须且只能输出一个正确选项。")
+            if resolved_type == "多选题" and label_count < 2:
+                issue("multiple_choice_answer_count_invalid", "多选题必须输出全部正确选项，且不得只有一项。")
+        else:
+            raw_choice_units = fragment.get("answer_units") if isinstance(fragment.get("answer_units"), list) else []
+            choice_units_by_number = {
+                _normalize_subquestion_number(unit.get("number")): unit
+                for unit in raw_choice_units
+                if isinstance(unit, dict) and _normalize_subquestion_number(unit.get("number"))
+            }
+            for expected in expected_units:
+                number = expected["number"]
+                unit = choice_units_by_number.get(number)
+                if not isinstance(unit, dict):
+                    continue
+                expected_type = normalize_question_type(expected.get("question_type"))
+                answer_label_count = len(_choice_answer_labels(unit.get("answer")))
+                if expected_type == "单选题" and answer_label_count != 1:
+                    issue("single_choice_answer_count_invalid", f"单选作答单元第{number}小问必须且只能输出一个正确选项。")
+                if expected_type == "多选题" and answer_label_count < 2:
+                    issue("multiple_choice_answer_count_invalid", f"多选作答单元第{number}小问必须输出全部正确选项。")
         incomplete_slots = _incomplete_numeric_slots(fragment)
         if incomplete_slots:
             locations = "；".join(f"{location}={snippet}" for location, snippet in incomplete_slots[:6])
@@ -594,7 +639,6 @@ def audit_content_quality(
             issue("missing_analysis", "缺少【解析】内容。")
         elif len(analysis_text.strip()) < 20:
             warning("short_analysis", "【解析】过短，可能没有说明本题推理过程。")
-        expected_units = _question_answer_units(question)
         if len(expected_units) >= 2:
             raw_units = fragment.get("answer_units") if isinstance(fragment.get("answer_units"), list) else []
             units_by_number = {

@@ -989,7 +989,7 @@ class ModelToolLoopTests(unittest.TestCase):
             store = ImageArtifactStore(Path(tmp))
             result = ModelToolLoop(client, [_FakeImageTool(store)], store).run_json(
                 [{"role": "user", "content": "generate if needed"}],
-                model="qwen3-vl-flash",
+                model="qwen-vl-ocr",
                 max_tokens=1000,
                 thinking="minimal",
                 timeout=30,
@@ -997,7 +997,7 @@ class ModelToolLoopTests(unittest.TestCase):
 
         self.assertEqual(1, result.tool_calls)
         self.assertTrue(all(url.endswith("/chat/completions") for url, _payload in requests))
-        self.assertEqual("qwen3-vl-flash", requests[0][1]["model"])
+        self.assertEqual("qwen-vl-ocr", requests[0][1]["model"])
 
     def test_chat_retry_transaction_redelivers_prior_pixels_in_chat_format(self):
         from app.image_artifacts import ImageArtifactStore

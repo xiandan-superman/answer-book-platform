@@ -34,8 +34,8 @@ def test_inspect_messages_counts_multimodal_inputs() -> None:
 def test_platform_context_plan_blocks_unsupported_image_input() -> None:
     plan = build_model_context_plan(
         stage="answer_generation",
-        provider_name="ark",
-        model_name="deepseek-v4-flash-ga-260731",
+        provider_name="lingsuan_domestic",
+        model_name="glm-5.2",
         messages=_image_message(1),
     )
 
@@ -107,5 +107,5 @@ def test_platform_context_plan_blocks_missing_required_evidence() -> None:
 
 
 def test_task_support_uses_platform_stage_aliases() -> None:
-    assert model_task_support("ark", "deepseek-v4-flash-ga-260731", "answer_generation") == "limited"
-    assert model_task_support("ark", "deepseek-v4-flash-ga-260731", "knowledge_planning") == "limited"
+    assert model_task_support("lingsuan_domestic", "glm-5.2", "answer_generation") == "limited"
+    assert model_task_support("lingsuan_domestic", "glm-5.2", "knowledge_planning") == "limited"

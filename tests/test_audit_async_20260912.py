@@ -104,10 +104,10 @@ vm.runInContext(slice('async function applyPracticeEditor(', 'function practiceR
  ctx.selectedImageProviderConfig=()=>({api_key_set:true});ctx.selectedImageModel=()=>selected;
  ctx.imageOrchestrationMode=()=> 'main_model_tool_loop';ctx.selectedTextRoleModel=()=>selected;
  ctx.selectedRoleProtocol=()=> selected==='A'?'chat_completions':'responses';ctx.selectedRoleThinkingMode=()=> 'auto';
- ctx.selectedVisionModel=()=>selected;ctx.examTaskPreflightRoutes=()=>[{model:selected}];ctx.shortName=x=>x;
+ ctx.textRoleRoute=()=>({provider:'test',model:selected});ctx.selectedVisionModel=()=>selected;ctx.examTaskPreflightRoutes=()=>[{model:selected}];ctx.shortName=x=>x;
  ctx.setVisual=()=>{};ctx.loadTasks=async()=>{};
  ctx.platformConfirm=async()=>{selected='B';return true};
- ctx.preflightTaskModelRoutes=async routes=>{assert.equal(routes[0].model,'A');selected='C'};
+ ctx.preflightTaskModelRoutes=async routes=>{assert.equal(routes[0].model,'A');selected='C';return true};
  ctx.api=async(url,options)=>{submitted=JSON.parse(options.body);return {}};
  await ctx.createTask();
  assert.equal(submitted.model,'A');assert.equal(submitted.answer_model,'A');assert.equal(submitted.reasoning_model,'A');

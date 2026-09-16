@@ -46,7 +46,7 @@
 
   <div id="stepIndicator" class="step-indicator hidden">
     <div class="step-track">
-      <button class="step-pill active" type="button" data-page="env" aria-current="step"><span>1</span>环境配置</button>
+      <button class="step-pill active" type="button" data-page="env" aria-current="step"><span>1</span>选择模型</button>
       <i></i>
       <button class="step-pill" type="button" data-page="exam" aria-disabled="true" disabled><span>2</span>选择真题</button>
       <i></i>
@@ -111,9 +111,6 @@
               <div class="domain-primary-actions">
                 <button class="home-primary-action" type="button" onclick="startWizard()">
                   <span>开始解析</span><i class="fas fa-arrow-right"></i>
-                </button>
-                <button class="home-model-link" type="button" onclick="goToPage('env')">
-                  高级模型设置<i class="fas fa-chevron-right"></i>
                 </button>
               </div>
             </div>
@@ -1202,15 +1199,19 @@
             <p>这里只显示已配置且适合按题出题的模型；不会修改真题解析或知识点出题的选择。</p>
           </div>
         </div>
-        <div class="task-model-grid task-model-grid-simplified">
-          <article class="practice-model-setting">
-            <span class="task-model-icon"><i class="fas fa-pen-ruler"></i></span>
-            <div><h3>主生成模型</h3><p>一个模型完成原题分析、考点提取、蓝图设计、题目生成和解析；支持多模态时也直接读图。</p></div>
-            <label>已配置供应商<select id="practiceTextProviderSelect"></select></label>
-            <label>可用模型<select id="practiceTextModelSelect"></select></label>
-            <input id="practiceTextModelInput" type="text" hidden placeholder="填写模型 ID">
-            <label id="practiceApiProtocolField" hidden>请求类型<select id="practiceApiProtocolSelect"></select></label>
-            <label>思考深度<select id="practiceThinkingModeSelect"></select></label>
+        <div class="task-model-grid task-model-grid-simplified task-model-required-grid">
+          <article class="practice-model-setting task-model-choice-card">
+            <div class="task-model-choice-heading"><span class="task-model-step">1</span><div><h3>主模型 <em>必选</em></h3><p>负责原题分析、考点提取、蓝图设计、题目生成和解析。</p></div></div>
+            <div id="practiceTextRoutePicker" class="model-route-picker" aria-label="选择按题出题主模型"></div>
+            <div class="model-route-native-controls" hidden>
+              <label>已配置供应商<select id="practiceTextProviderSelect"></select></label>
+              <label>可用模型<select id="practiceTextModelSelect"></select></label>
+              <input id="practiceTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            </div>
+            <div class="task-model-call-settings">
+              <label id="practiceApiProtocolField" hidden>请求方式<select id="practiceApiProtocolSelect"></select></label>
+              <label>思考深度<select id="practiceThinkingModeSelect"></select></label>
+            </div>
             <p id="practiceProtocolHint">请求类型和可选档位随模型更新。</p>
             <p id="practiceTextModelSummary">正在读取模型...</p>
           </article>
@@ -1224,12 +1225,15 @@
               <p id="practiceVisionModelSummary">正在读取模型...</p>
             </article>
           </details>
-          <article id="practiceImageModelCard" class="practice-model-setting">
-            <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>生图模型</h3><p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p></div>
-            <label>已配置供应商<select id="practiceImageProviderSelect"></select></label>
-            <label>可用生图模型<select id="practiceImageModelSelect"></select></label>
-            <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
+          <article id="practiceImageModelCard" class="practice-model-setting task-model-choice-card">
+            <div class="task-model-choice-heading"><span class="task-model-step">2</span><div><h3>生图模型 <em>必选</em></h3><p>负责生成任务中需要的题图和示意图，与主模型并列保存。</p></div></div>
+            <div id="practiceImageRoutePicker" class="model-route-picker" aria-label="选择按题出题生图模型"></div>
+            <div class="model-route-native-controls" hidden>
+              <label>已配置供应商<select id="practiceImageProviderSelect"></select></label>
+              <label>可用生图模型<select id="practiceImageModelSelect"></select></label>
+              <input id="practiceImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
+            </div>
+            <div class="task-model-call-settings single"><div class="model-request-static"><span>请求方式</span><strong>Images API</strong></div></div>
             <p id="practiceImageModelSummary">正在读取模型...</p>
           </article>
           <div id="practiceModelCompatibility" class="task-model-compatibility" aria-live="polite"></div>
@@ -1237,7 +1241,7 @@
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
           <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回业务首页</button>
-          <button class="primary-button" type="button" onclick="openPracticeEntry('exam')">下一步：提交原题<i class="fas fa-arrow-right"></i></button>
+          <button class="primary-button" type="button" onclick="openPracticeEntry('exam')">确认两个模型并提交原题<i class="fas fa-arrow-right"></i></button>
         </div>
       </div>
     </section>
@@ -1252,15 +1256,19 @@
             <p>这里只显示已配置且适合知识点出题的模型；不会修改真题解析或按题出题的选择。</p>
           </div>
         </div>
-        <div class="task-model-grid task-model-grid-simplified">
-          <article class="practice-model-setting">
-            <span class="task-model-icon"><i class="fas fa-brain"></i></span>
-            <div><h3>主生成模型</h3><p>一个模型完成材料理解、难度与题型规划、题目生成和完整解析；支持多模态时也直接读图。</p></div>
-            <label>已配置供应商<select id="knowledgeTextProviderSelect"></select></label>
-            <label>可用模型<select id="knowledgeTextModelSelect"></select></label>
-            <input id="knowledgeTextModelInput" type="text" hidden placeholder="填写模型 ID">
-            <label id="knowledgeApiProtocolField" hidden>请求类型<select id="knowledgeApiProtocolSelect"></select></label>
-            <label>思考深度<select id="knowledgeThinkingModeSelect"></select></label>
+        <div class="task-model-grid task-model-grid-simplified task-model-required-grid">
+          <article class="practice-model-setting task-model-choice-card">
+            <div class="task-model-choice-heading"><span class="task-model-step">1</span><div><h3>主模型 <em>必选</em></h3><p>负责材料理解、难度与题型规划、题目生成和完整解析。</p></div></div>
+            <div id="knowledgeTextRoutePicker" class="model-route-picker" aria-label="选择知识点出题主模型"></div>
+            <div class="model-route-native-controls" hidden>
+              <label>已配置供应商<select id="knowledgeTextProviderSelect"></select></label>
+              <label>可用模型<select id="knowledgeTextModelSelect"></select></label>
+              <input id="knowledgeTextModelInput" type="text" hidden placeholder="填写模型 ID">
+            </div>
+            <div class="task-model-call-settings">
+              <label id="knowledgeApiProtocolField" hidden>请求方式<select id="knowledgeApiProtocolSelect"></select></label>
+              <label>思考深度<select id="knowledgeThinkingModeSelect"></select></label>
+            </div>
             <p id="knowledgeProtocolHint">请求类型和可选档位随模型更新。</p>
             <p id="knowledgeTextModelDetail">正在读取模型...</p>
           </article>
@@ -1274,12 +1282,15 @@
               <p id="knowledgeVisionModelDetail">正在读取模型...</p>
             </article>
           </details>
-          <article id="knowledgeImageModelCard" class="practice-model-setting">
-            <span class="task-model-icon"><i class="fas fa-wand-magic-sparkles"></i></span>
-            <div><h3>生图模型</h3><p>仅在主模型能原生调用并回看图片时启用，由主模型决定是否生成。</p></div>
-            <label>已配置供应商<select id="knowledgeImageProviderSelect"></select></label>
-            <label>可用生图模型<select id="knowledgeImageModelSelect"></select></label>
-            <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
+          <article id="knowledgeImageModelCard" class="practice-model-setting task-model-choice-card">
+            <div class="task-model-choice-heading"><span class="task-model-step">2</span><div><h3>生图模型 <em>必选</em></h3><p>负责生成任务中需要的题图和示意图，与主模型并列保存。</p></div></div>
+            <div id="knowledgeImageRoutePicker" class="model-route-picker" aria-label="选择知识点出题生图模型"></div>
+            <div class="model-route-native-controls" hidden>
+              <label>已配置供应商<select id="knowledgeImageProviderSelect"></select></label>
+              <label>可用生图模型<select id="knowledgeImageModelSelect"></select></label>
+              <input id="knowledgeImageModelInput" type="text" hidden placeholder="填写生图模型 ID">
+            </div>
+            <div class="task-model-call-settings single"><div class="model-request-static"><span>请求方式</span><strong>Images API</strong></div></div>
             <p id="knowledgeImageModelDetail">正在读取模型...</p>
           </article>
           <div id="knowledgeModelCompatibility" class="task-model-compatibility" aria-live="polite"></div>
@@ -1287,7 +1298,7 @@
         <div class="task-model-save-note"><i class="fas fa-floppy-disk"></i><span>选择会自动保存到当前电脑，下次打开继续使用。</span></div>
         <div class="page-actions reference-actions">
           <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回业务首页</button>
-          <button class="primary-button" type="button" onclick="openKnowledgeEntry()">下一步：提交知识材料<i class="fas fa-arrow-right"></i></button>
+          <button class="primary-button" type="button" onclick="openKnowledgeEntry()">确认两个模型并提交知识材料<i class="fas fa-arrow-right"></i></button>
         </div>
       </div>
     </section>
@@ -1295,38 +1306,16 @@
     <section id="page-env" class="page">
       <div class="reference-narrow">
         <div class="page-title reference-title">
-          <h2 id="environmentPageTitle">环境配置</h2>
-          <p id="environmentPageDescription">检查运行环境并选择 AI 模型</p>
+          <h2 id="environmentPageTitle">选择任务模型</h2>
+          <p id="environmentPageDescription">选择本次任务使用的主模型和生图模型</p>
         </div>
 
         <div class="env-config-grid">
-        <article class="reference-card env-card">
-          <h3><i class="fas fa-server text-blue"></i>环境自检</h3>
-          <div class="check-list reference-check-list">
-            <div class="check-row"><span><i id="runtimeCheckIcon" class="fas fa-circle"></i>运行环境检测</span><strong id="environmentSummary">准备检查</strong></div>
-            <div class="check-row"><span><i id="toolsCheckIcon" class="fas fa-circle"></i>依赖工具完整性</span><strong id="environmentHint">准备检查</strong></div>
-            <div class="check-row"><span><i id="networkCheckIcon" class="fas fa-circle"></i>网络连通性</span><strong id="networkSummary">准备检查</strong></div>
-            <div class="check-row"><span><i id="modelConfigCheckIcon" class="fas fa-circle-question"></i>API Key 与模型配置</span><strong id="modelConfigSummary">检测中...</strong></div>
-            <div class="check-row"><span><i id="modelCallCheckIcon" class="fas fa-circle-question"></i>当前模型实际调用</span><strong id="modelCallSummary">尚未测试</strong></div>
-            <details class="technical-details env-observation-details">
-              <summary><i class="fas fa-chart-line"></i>运行质量观察</summary>
-              <div class="check-row"><span><i id="pydanticShadowCheckIcon" class="fas fa-eye"></i>数据兼容性观察（Pydantic）</span><strong id="pydanticShadowSummary">正在读取...</strong></div>
-              <pre id="pydanticShadowReport">加载中...</pre>
-            </details>
-          </div>
-          <div id="environmentVisualResult" class="status-result result-info"><i class="fas fa-circle-info"></i><strong>正在准备环境检查...</strong></div>
-          <div id="environmentRepairBox" class="env-repair-box hidden"></div>
-          <details class="technical-details reference-extra">
-            <summary>查看技术详情</summary>
-            <pre id="environmentBox">加载中...</pre>
-          </details>
-        </article>
-
         <article class="reference-card provider-card">
           <div class="model-config-header">
             <div>
               <h3 id="examModelSelectionTitle"><i class="fas fa-microchip text-purple"></i>本次任务使用的模型</h3>
-              <p id="examModelSelectionDescription">先选择供应商和模型；系统自动应用推荐的请求方式与中等思考强度，需要时可单独调整。</p>
+              <p id="examModelSelectionDescription">主模型和生图模型同为必选；按模型家族快速筛选，再选择具体型号与服务商路线。</p>
             </div>
           </div>
           <div class="reference-form-stack">
@@ -1358,19 +1347,20 @@
               <div id="examCapabilityNotice" class="model-progressive-notice" aria-live="polite"></div>
               <div id="examConditionalModelMount" class="model-progressive-conditional"></div>
             </section>
-            <details id="examModelRoleDetails" class="exam-model-role-details">
+            <details id="examModelRoleDetails" class="exam-model-role-details" hidden>
               <summary><i class="fas fa-sliders"></i>高级模型分工</summary>
               <div class="model-role-config-grid">
-              <section id="reasoningModelRoleCard" class="model-role-config-card">
+              <section id="reasoningModelRoleCard" class="model-role-config-card model-choice-card">
                 <div class="model-role-card-head">
-                  <span class="model-role-icon indigo"><i class="fas fa-magnifying-glass-chart"></i></span>
+                  <span class="task-model-step">1</span>
                   <div>
-                    <strong>知识点识别与证据确认</strong>
-                    <p>识别考查内容，并匹配教材证据。</p>
+                    <strong>教材引用 <em>必选</em></strong>
+                    <p>识别考点，查找并核验教材引用。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <div class="model-route-control">
+                  <div id="examReasoningRoutePicker" class="model-route-picker" aria-label="选择教材引用模型"></div>
+                  <div class="model-route-control model-route-native-controls" hidden>
                     <div class="model-role-field provider-field"><label for="reasoningProviderSelect"><i class="fas fa-cloud"></i>供应商</label><select id="reasoningProviderSelect"></select></div>
                     <div class="model-role-field model-field"><label for="reasoningModelSelect"><i class="fas fa-microchip"></i>模型</label><select id="reasoningModelSelect"></select></div>
                   </div>
@@ -1382,16 +1372,17 @@
                   <span id="reasoningRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-              <section id="answerModelRoleCard" class="model-role-config-card">
+              <section id="answerModelRoleCard" class="model-role-config-card model-choice-card">
                 <div class="model-role-card-head">
-                  <span class="model-role-icon blue"><i class="fas fa-file-lines"></i></span>
+                  <span class="task-model-step">2</span>
                   <div>
-                    <strong>主解析模型</strong>
-                    <p>负责答案生成、结构化解析，并默认承担其他文字阶段。</p>
+                    <strong>真题解析 <em>必选</em></strong>
+                    <p>生成答案与解析；高风险正确性复核使用同一模型。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <div class="model-route-control">
+                  <div id="examTextRoutePicker" class="model-route-picker" aria-label="选择真题解析主模型"></div>
+                  <div class="model-route-control model-route-native-controls" hidden>
                     <div class="model-role-field provider-field"><label for="answerProviderSelect"><i class="fas fa-cloud"></i>供应商</label><select id="answerProviderSelect"></select></div>
                     <div class="model-role-field model-field"><label for="answerModelSelect"><i class="fas fa-microchip"></i>模型</label><select id="answerModelSelect"></select></div>
                   </div>
@@ -1442,20 +1433,22 @@
                   <span id="visionRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
               </section>
-              <section id="imageModelRoleCard" class="model-role-config-card">
+              <section id="imageModelRoleCard" class="model-role-config-card model-choice-card">
                 <div class="model-role-card-head">
-                  <span class="model-role-icon orange"><i class="fas fa-wand-magic-sparkles"></i></span>
+                  <span class="task-model-step">3</span>
                   <div>
-                    <strong>作图题生图</strong>
-                    <p>由主模型判断是否需要图片、调用生图模型并回看生成结果。</p>
+                    <strong>生图模型 <em>必选</em></strong>
+                    <p>负责生成任务中需要的题图和示意图，与主模型并列保存。</p>
                   </div>
                 </div>
                 <div class="model-role-card-body">
-                  <div class="model-route-control">
+                  <div id="examImageRoutePicker" class="model-route-picker" aria-label="选择真题解析生图模型"></div>
+                  <div class="model-route-control model-route-native-controls" hidden>
                     <div class="model-role-field provider-field"><label for="imageProviderSelect"><i class="fas fa-cloud"></i>供应商</label><select id="imageProviderSelect"></select></div>
                     <div class="model-role-field model-field"><label for="imageModelSelect"><i class="fas fa-microchip"></i>模型</label><select id="imageModelSelect"></select></div>
                   </div>
                   <input id="imageModelInput" type="text" placeholder="填写 image model ID">
+                  <div class="model-request-static"><span>请求方式</span><strong>Images API</strong></div>
                   <p id="imageModelHint" class="safe-note"><i class="fas fa-image"></i>主模型在确有需要时调用该模型生图，并在采用前检查真实图片。</p>
                   <span id="imageRoleStatus" class="model-role-status ok"><i class="fas fa-circle"></i>已配置</span>
                 </div>
@@ -1495,7 +1488,7 @@
         <div class="page-actions reference-actions sticky-page-actions">
           <button class="text-button" type="button" onclick="goToPage('home')"><i class="fas fa-arrow-left"></i>返回首页</button>
           <div class="sticky-next-group">
-            <small id="envNextHint">环境检查通过后即可继续</small>
+            <small id="envNextHint">请选择主模型和生图模型</small>
             <button id="envNextBtn" class="primary-button" type="button" onclick="goToPage('exam')" disabled>下一步：选择真题<i class="fas fa-arrow-right"></i></button>
           </div>
         </div>
@@ -2241,7 +2234,7 @@
       </footer>
     </section>
   </div>
-    <link rel="stylesheet" href="/platform-theme.css?v=20260828-design-flow-4">
+  <link rel="stylesheet" href="/platform-theme.css?v=20260916-model-choice-3">
   <script src="/vendor/gsap.min.js"></script>
   <script src="/motion.js?v=20260823-motion-pilot-1"></script>
   <script src="/support-telemetry.js"></script>
@@ -2249,6 +2242,6 @@
   <script src="/task-contract-ui.js"></script>
   <script src="/upload-file-selection.js"></script>
   <script src="/update-notes.js?v=20260826-update-dialog-1"></script>
-    <script src="/app.js?v=20260828-design-flow-4"></script>
+  <script src="/app.js?v=20260916-model-choice-3"></script>
 </body>
 </html>

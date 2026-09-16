@@ -142,8 +142,4 @@ def test_shadow_report_api_and_frontend_are_observe_only(monkeypatch):
         httpd.server_close()
         worker.join(timeout=2)
 
-    index = (platform_server.WEB_DIR / "index.html").read_text(encoding="utf-8")
-    app_js = (platform_server.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    assert "pydanticShadowSummary" in index
-    assert "/api/quality/pydantic-shadow" in app_js
-    assert "0 额外模型调用" in app_js
+    assert payload["added_model_calls"] == 0

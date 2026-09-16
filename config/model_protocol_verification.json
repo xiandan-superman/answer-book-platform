@@ -13,10 +13,10 @@
   },
   "summary": {
     "providers": 14,
-    "models": 52,
-    "routes": 82,
-    "passed_routes": 71,
-    "failed_snapshot_routes": 11,
+    "models": 42,
+    "routes": 66,
+    "passed_routes": 59,
+    "failed_snapshot_routes": 7,
     "catalog_models_without_observation": []
   },
   "diagnostic_corrections": [
@@ -39,132 +39,6 @@
   "providers": {
     "ark": {
       "models": {
-        "deepseek-v4-flash-ga-260731": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "not_tested_missing_key",
-                  "elapsed_seconds": 0.0,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "user_or_account_configuration",
-                  "retryable": null,
-                  "http_status": null
-                },
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 2.43,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            },
-            "responses": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "not_tested_missing_key",
-                  "elapsed_seconds": 0.0,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "user_or_account_configuration",
-                  "retryable": null,
-                  "http_status": null
-                },
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 3.125,
-                  "structured_output": true,
-                  "streaming_complete": true,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "deepseek-v4-pro-ga-260813": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "not_tested_missing_key",
-                  "elapsed_seconds": 0.0,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "user_or_account_configuration",
-                  "retryable": null,
-                  "http_status": null
-                },
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 3.515,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            },
-            "responses": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "not_tested_missing_key",
-                  "elapsed_seconds": 0.0,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "user_or_account_configuration",
-                  "retryable": null,
-                  "http_status": null
-                },
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 5.163,
-                  "structured_output": true,
-                  "streaming_complete": true,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
         "doubao-seed-2-0-pro-260215": {
           "kind": "text_generation",
           "routes": {
@@ -449,45 +323,6 @@
             }
           }
         },
-        "qwen-vl-max": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "passed",
-                  "elapsed_seconds": 2.688,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            },
-            "responses": {
-              "status": "failed_snapshot",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "failed",
-                  "elapsed_seconds": 1.392,
-                  "structured_output": false,
-                  "streaming_complete": false,
-                  "error_kind": "provider_error",
-                  "error_title": "模型服务调用失败",
-                  "responsibility": "provider_service",
-                  "retryable": true,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
         "qwen-vl-ocr": {
           "kind": "text_generation",
           "routes": {
@@ -521,162 +356,6 @@
                   "error_title": "模型服务调用失败",
                   "responsibility": "provider_service",
                   "retryable": true,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen-vl-plus": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "failed_snapshot",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "failed",
-                  "elapsed_seconds": 1.534,
-                  "structured_output": false,
-                  "streaming_complete": null,
-                  "error_kind": "provider_invalid_request",
-                  "error_title": "模型请求参数不兼容",
-                  "responsibility": "platform_route_configuration",
-                  "retryable": false,
-                  "http_status": 400
-                }
-              ]
-            },
-            "responses": {
-              "status": "failed_snapshot",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "failed",
-                  "elapsed_seconds": 1.608,
-                  "structured_output": false,
-                  "streaming_complete": false,
-                  "error_kind": "provider_error",
-                  "error_title": "模型服务调用失败",
-                  "responsibility": "provider_service",
-                  "retryable": true,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen3-vl-flash": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "passed",
-                  "elapsed_seconds": 1.271,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            },
-            "responses": {
-              "status": "failed_snapshot",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "failed",
-                  "elapsed_seconds": 1.719,
-                  "structured_output": false,
-                  "streaming_complete": false,
-                  "error_kind": "provider_error",
-                  "error_title": "模型服务调用失败",
-                  "responsibility": "provider_service",
-                  "retryable": true,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen3.6-flash": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "passed",
-                  "elapsed_seconds": 3.819,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            },
-            "responses": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "passed",
-                  "elapsed_seconds": 3.331,
-                  "structured_output": true,
-                  "streaming_complete": true,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen3.6-plus": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "passed",
-                  "elapsed_seconds": 6.404,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            },
-            "responses": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": null,
-                  "status": "passed",
-                  "elapsed_seconds": 6.756,
-                  "structured_output": true,
-                  "streaming_complete": true,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
                   "http_status": null
                 }
               ]
@@ -804,90 +483,6 @@
     },
     "lingsuan_domestic": {
       "models": {
-        "deepseek-v4-flash": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 4.52,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "thinking_mode": "auto",
-                  "base_url": "https://edge.lingsuan.org/v1",
-                  "verified_at": "2026-09-12",
-                  "max_output_tokens": 8192
-                }
-              ]
-            }
-          }
-        },
-        "deepseek-v4-flash-0731": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 3.35,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "thinking_mode": "auto",
-                  "base_url": "https://edge.lingsuan.org/v1",
-                  "verified_at": "2026-09-12",
-                  "max_output_tokens": 8192
-                }
-              ]
-            }
-          }
-        },
-        "deepseek-v4-pro": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 3.48,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "thinking_mode": "auto",
-                  "base_url": "https://edge.lingsuan.org/v1",
-                  "verified_at": "2026-09-12",
-                  "max_output_tokens": 8192
-                }
-              ]
-            }
-          }
-        },
-        "deepseek-v4-pro-0813": {
-          "kind": "text_generation",
-          "routes": {
-            "chat_completions": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 3.15,
-                  "structured_output": true,
-                  "streaming_complete": null,
-                  "thinking_mode": "auto",
-                  "base_url": "https://edge.lingsuan.org/v1",
-                  "verified_at": "2026-09-12",
-                  "max_output_tokens": 8192
-                }
-              ]
-            }
-          }
-        },
         "glm-5.2": {
           "kind": "text_generation",
           "routes": {
@@ -1011,6 +606,49 @@
                   "max_output_tokens": 8192
                 }
               ]
+            }
+          }
+        },
+        "deepseek-v4.1-flash": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 3.44,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": 200
+                }
+              ],
+              "observed_at": "2026-09-16",
+              "image_input_observation": true
+            },
+            "responses": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": 5.7,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": 200
+                }
+              ],
+              "observed_at": "2026-09-16",
+              "image_input_observation": true
             }
           }
         }

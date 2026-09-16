@@ -405,11 +405,6 @@ def _provider_circuit_eligible(error: BaseException) -> bool:
         status_code=getattr(error, "status_code", None),
         transport_phase=str(getattr(error, "transport_phase", "") or ""),
     )
-    if info.kind == "provider_timeout":
-        return str(getattr(error, "transport_phase", "") or "") in {
-            "first_byte",
-            "read_idle",
-        } or info.status_code in {504, 522, 524}
     return info.kind in {
         "provider_concurrency_limit",
         "provider_rate_limit",
@@ -417,6 +412,8 @@ def _provider_circuit_eligible(error: BaseException) -> bool:
         "provider_overloaded",
         "provider_conflict",
         "provider_internal_error",
+        "provider_network",
+        "provider_timeout",
     }
 
 

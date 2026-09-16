@@ -3106,12 +3106,20 @@ def build_answer_batch_prompt(batch_items: list[dict[str, Any]]) -> list[dict[st
         for item in batch_items
     ]
     first = payloads[0] if payloads else {}
+    batch_hard_rules = list(
+        dict.fromkeys(
+            str(rule)
+            for payload in payloads
+            for rule in (payload.get("hard_rules") or [])
+            if str(rule).strip()
+        )
+    )
     batch_payload = {
         "task": "generate_question_analysis_draft_batch",
         "analysis_profile": first.get("analysis_profile", "evidence_backed"),
         "answer_content_quality_requirements": first.get("answer_content_quality_requirements", {}),
         "hard_rules": [
-            *(first.get("hard_rules") or []),
+            *batch_hard_rules,
             "Return exactly one valid JSON object with an items array.",
             "items must contain exactly one answer_draft object for each input question.",
             "Every item.question_id must exactly match one input question_id.",

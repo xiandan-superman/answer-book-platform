@@ -518,23 +518,32 @@ def test_unrelated_failure_does_not_erase_prior_provider_failures(tmp_path, monk
     assert state["provider_failures"]["wawapi_xai|grok|default"] == 2
 
 
-def test_local_connect_failures_do_not_trigger_supplier_route_attribution(tmp_path, monkeypatch) -> None:
+def test_repeated_connect_failures_stop_the_selected_route(tmp_path, monkeypatch) -> None:
     from app.llm_client import LLMError
+    from app.provider_errors import ProviderRouteDegradedError
 
     monkeypatch.setattr(runtime_monitor, "MODEL_CALL_LEDGER", tmp_path / "connect.jsonl")
     runtime_monitor._RUN_MODEL_BUDGETS.clear()
 
+    monkeypatch.setenv("QUALITY_PROVIDER_FAILURE_CIRCUIT_BREAKER", "2")
+    monkeypatch.setenv("PRACTICE_PROVIDER_CIRCUIT_COOLDOWN_SECONDS", "0")
+
     with runtime_monitor.model_call_context(task_id="connect-task", run_id="run"):
-        for _ in range(3):
+        for _ in range(2):
             with pytest.raises(LLMError):
                 with runtime_monitor.track_model_call(
                     provider="wawapi_xai", model="grok", purpose="connect", timeout=10
                 ):
                     raise LLMError("无法连接模型服务。", transport_phase="connect")
+        with pytest.raises(ProviderRouteDegradedError):
+            with runtime_monitor.track_model_call(
+                provider="wawapi_xai", model="grok", purpose="connect-probe", timeout=10
+            ):
+                raise LLMError("无法连接模型服务。", transport_phase="connect")
 
     state = runtime_monitor._RUN_MODEL_BUDGETS[("connect-task", "run")]
-    assert state["provider_failures"]["wawapi_xai|grok|default"] == 0
-    assert not state["provider_circuits"]
+    assert state["provider_failures"]["wawapi_xai|grok|default"] >= 3
+    assert state["provider_circuits"]["wawapi_xai|grok|default"]["terminal_failure"] is True
 
 
 def test_pre_answer_wall_reserve_interrupts_active_request_but_answer_stage_can_use_it(

@@ -5,11 +5,17 @@ from typing import Any
 
 from .text_utils import clean_text
 
-
-QUESTION_TYPES = ("选择题", "判断题", "填空题", "名词解释", "简答题", "计算题", "作图题")
+QUESTION_TYPES = ("选择题", "单选题", "多选题", "判断题", "填空题", "名词解释", "简答题", "计算题", "作图题")
+REVIEW_QUESTION_TYPES = ("单选题", "多选题", "判断题", "填空题", "名词解释", "简答题", "计算题", "作图题")
 
 _TYPE_ALIASES = {
     "选择": "选择题",
+    "单选": "单选题",
+    "单项选择": "单选题",
+    "单项选择题": "单选题",
+    "多选": "多选题",
+    "多项选择": "多选题",
+    "多项选择题": "多选题",
     "判断": "判断题",
     "正误题": "判断题",
     "正误": "判断题",
@@ -41,6 +47,8 @@ _TYPE_ALIASES = {
 
 _KIND_BY_TYPE = {
     "选择题": "choice",
+    "单选题": "choice",
+    "多选题": "choice",
     "判断题": "judge",
     "填空题": "fill",
     "名词解释": "term_explanation",
@@ -48,6 +56,17 @@ _KIND_BY_TYPE = {
     "计算题": "calculation",
     "作图题": "graphic",
 }
+
+CHOICE_QUESTION_TYPES = frozenset({"选择题", "单选题", "多选题"})
+
+
+def choice_subtype_from_text(*values: Any) -> str:
+    text = " ".join(clean_text(str(value or "")) for value in values)
+    if re.search(r"多选题|多项选择|两个或两个以上|两项或两项以上|多个正确|多项正确|不止一个", text):
+        return "多选题"
+    if re.search(r"单选题|单项选择|只有一个|仅有一个|唯一正确|最佳答案", text):
+        return "单选题"
+    return ""
 
 
 def normalize_question_type(value: Any) -> str:
@@ -58,6 +77,9 @@ def normalize_question_type(value: Any) -> str:
 
 
 def _type_from_text(text: str) -> str:
+    choice_subtype = choice_subtype_from_text(text)
+    if choice_subtype:
+        return choice_subtype
     if any(keyword in text for keyword in ("选择题", "选择")):
         return "选择题"
     if any(keyword in text for keyword in ("判断题", "正误题", "判断", "正误")):
@@ -116,10 +138,17 @@ def _mixed_section_short_answer_override(item: dict[str, Any]) -> bool:
 def infer_question_type(item: dict[str, Any]) -> str:
     if _mixed_section_short_answer_override(item):
         return "简答题"
-    for key in ("confirmed_question_type", "question_type"):
-        explicit = normalize_question_type(item.get(key))
-        if explicit:
-            return explicit
+    confirmed = normalize_question_type(item.get("confirmed_question_type"))
+    if confirmed:
+        return confirmed
+    explicit = normalize_question_type(item.get("question_type"))
+    if explicit and explicit != "选择题":
+        return explicit
+    if explicit == "选择题":
+        subtype = choice_subtype_from_text(
+            item.get("section"), item.get("section_raw"), item.get("stem")
+        )
+        return subtype or explicit
     section_text = " ".join(str(item.get(key) or "") for key in ("section", "section_raw"))
     from_section = _type_from_text(section_text)
     if from_section:
@@ -171,9 +200,18 @@ def question_has_type(item: dict[str, Any], question_type: str) -> bool:
             return True
         if normalized == "计算题":
             return False
-    if explicit_question_type(item) == normalized:
+    explicit = explicit_question_type(item)
+    if normalized == "选择题" and explicit in CHOICE_QUESTION_TYPES:
         return True
-    return any(isinstance(part, dict) and explicit_question_type(part) == normalized for part in iter_question_parts(item))
+    if explicit == normalized:
+        return True
+    for part in iter_question_parts(item):
+        if not isinstance(part, dict):
+            continue
+        part_type = explicit_question_type(part)
+        if part_type == normalized or (normalized == "选择题" and part_type in CHOICE_QUESTION_TYPES):
+            return True
+    return False
 
 
 def iter_question_parts(item: dict[str, Any]) -> list[dict[str, Any]]:

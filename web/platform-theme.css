@@ -60,6 +60,7 @@
 .model-capability-badges { display: flex; flex-wrap: wrap; gap: 6px; }
 .model-capability-badge { display: inline-flex; align-items: center; gap: 12px; border: 1px solid #d5dee8; background: #f5f7fa; border-radius: 9px; padding: 7px 9px; font-size: 12px; color: #52677f; }
 .model-capability-badge em { font-style: normal; font-weight: 600; }
+.model-capability-badge small { padding-left: 8px; border-left: 1px solid currentColor; opacity: .82; font-size: 11px; white-space: nowrap; }
 .model-capability-badge.tone-available { border-color: #b6dfcb; background: #f0faf5; color: #188354; }
 .model-capability-badge.tone-warning { border-color: #efdaa9; background: #fff8e9; color: #986717; }
 .model-capability-badge.tone-danger { border-color: #edbaba; background: #fff2f2; color: #b83737; }
@@ -618,11 +619,11 @@ body:not([data-active-page="home"]) .reference-title {
 .monitor-page-title,
 .task-manager-header {
   position: relative;
-  margin-bottom: 26px;
+  margin-bottom: 18px;
   border: 1px solid var(--platform-border);
   border-radius: var(--platform-radius);
   background: var(--platform-glass);
-  padding: 25px 28px;
+  padding: 20px 22px;
   box-shadow: var(--platform-shadow);
   backdrop-filter: blur(22px) saturate(135%);
   -webkit-backdrop-filter: blur(22px) saturate(135%);
@@ -674,15 +675,15 @@ body:not([data-active-page="home"]) .reference-title {
 .task-model-title > span,
 .monitor-page-title h2 i {
   display: grid;
-  width: 50px;
-  height: 50px;
-  flex: 0 0 50px;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
   place-items: center;
-  border-radius: 15px;
+  border-radius: 13px;
   background: linear-gradient(145deg, #2476e7, #4d67d9);
   color: #fff;
   box-shadow: 0 10px 22px rgba(44, 102, 199, .2);
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .key-config-title,
@@ -742,8 +743,10 @@ body:not([data-active-page="home"]) .reference-title {
 .panel-card,
 .progress-card,
 .system-monitor-panel {
-  padding: 25px;
+  padding: 20px;
 }
+
+.reference-card { margin-bottom: 18px; }
 
 .reference-card:hover,
 .panel-card:hover,
@@ -759,6 +762,7 @@ body:not([data-active-page="home"]) .reference-title {
 .reference-card h3,
 .panel-card h3,
 .system-monitor-panel h3 {
+  margin-bottom: 12px;
   color: var(--platform-ink);
   font-size: 18px;
   font-weight: 800;
@@ -780,14 +784,15 @@ body:not([data-active-page="home"]) .reference-title {
 input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
-  min-height: 46px;
+  min-height: 44px;
   border: 1px solid rgba(144, 163, 194, .44);
   border-radius: 12px;
+  padding: 9px 12px;
   background: rgba(255, 255, 255, .82);
   color: var(--platform-text);
 }
 
-textarea { min-height: 110px; }
+textarea { min-height: 96px; }
 
 input:not([type="checkbox"]):not([type="radio"]):focus,
 select:focus,
@@ -846,11 +851,11 @@ textarea:focus {
 .page-actions,
 .sticky-page-actions {
   max-width: none;
-  margin-top: 24px;
+  margin-top: 18px;
   border: 1px solid var(--platform-border);
   border-radius: 17px;
   background: rgba(255, 255, 255, .78);
-  padding: 12px 14px;
+  padding: 10px 12px;
   box-shadow: 0 13px 32px rgba(43, 69, 112, .09);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -894,7 +899,7 @@ textarea:focus {
 }
 
 .key-provider-card {
-  padding: 22px;
+  padding: 18px;
   transition: transform .28s cubic-bezier(.22, 1, .36, 1), box-shadow .28s ease, border-color .28s ease;
 }
 
@@ -919,23 +924,31 @@ textarea:focus {
 
 /* 真题解析流程。 */
 .env-config-grid {
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+#page-env .provider-card {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+#page-env .model-config-header {
+  gap: 14px;
+  margin-bottom: 14px;
 }
 
 #page-env .reference-title { display: none; }
 
-.env-card {
-  position: sticky;
-  top: 192px;
-  align-self: start;
-}
-
 .check-row {
-  min-height: 50px;
+  min-height: 44px;
   border: 1px solid rgba(158, 177, 207, .24);
   border-radius: 13px;
   background: rgba(249, 251, 255, .72);
-  padding: 0 14px;
+  padding: 0 12px;
 }
 
 .model-role-config-grid {
@@ -970,13 +983,13 @@ textarea:focus {
 .model-progressive-primary > .model-role-config-card {
   display: grid;
   grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
-  gap: 28px;
+  gap: 20px;
   align-items: center;
   max-width: none;
   min-height: 0;
   border: 1px solid rgba(128, 153, 193, .2);
   border-radius: 16px;
-  padding: 24px 20px;
+  padding: 18px;
   background: rgba(249, 251, 255, .68);
   box-shadow: none;
   transform: none;
@@ -1149,7 +1162,7 @@ textarea:focus {
   border: 1px solid rgba(91, 118, 164, .22);
   border-radius: 13px;
   background: rgba(247, 249, 253, .92);
-  padding: 12px 14px;
+  padding: 10px 12px;
   color: var(--platform-text);
   line-height: 1.5;
 }
@@ -1379,12 +1392,12 @@ textarea:focus {
 }
 
 .metric-grid > article {
-  padding: 22px;
+  padding: 18px;
 }
 
 .metric-grid strong {
   color: var(--platform-ink);
-  font-size: 32px;
+  font-size: 28px;
 }
 
 .result-panel {
@@ -1399,12 +1412,12 @@ textarea:focus {
 /* 知识点出题与两套独立模型配置。 */
 .knowledge-mode-guide {
   gap: 15px;
-  margin: 20px 0;
+  margin: 16px 0;
 }
 
 .knowledge-mode-guide article {
-  min-height: 98px;
-  padding: 18px;
+  min-height: 82px;
+  padding: 14px;
   transition: transform .28s cubic-bezier(.22, 1, .36, 1), box-shadow .28s ease, border-color .28s ease;
 }
 
@@ -1424,13 +1437,13 @@ textarea:focus {
 }
 
 .knowledge-form {
-  gap: 20px;
+  gap: 16px;
 }
 
 .knowledge-input-card,
 .knowledge-config-card {
   border-radius: var(--platform-radius);
-  padding: 24px;
+  padding: 18px;
 }
 
 .knowledge-card-heading > span,
@@ -1444,7 +1457,7 @@ textarea:focus {
 }
 
 .knowledge-file-drop {
-  min-height: 130px;
+  min-height: 110px;
   border-color: rgba(112, 89, 222, .5);
   border-radius: 17px;
   background: rgba(247, 244, 255, .72);
@@ -1464,71 +1477,71 @@ textarea:focus {
 }
 
 .knowledge-model-note {
-  min-height: 72px;
+  min-height: 56px;
   border: 1px solid rgba(114, 131, 213, .34);
   border-radius: 15px;
   background: linear-gradient(135deg, rgba(236, 242, 255, .9), rgba(244, 241, 255, .82));
-  padding: 14px 16px;
+  padding: 11px 13px;
 }
 
 .task-model-grid {
-  gap: 20px;
+  gap: 16px;
 }
 
 .task-model-grid .practice-model-setting {
-  gap: 15px;
+  gap: 12px;
   border-radius: var(--platform-radius);
-  padding: 25px;
+  padding: 18px;
 }
 
 .task-model-grid .practice-model-setting h3 {
-  margin: 0 0 5px;
+  margin: 0 0 3px;
   color: var(--platform-ink);
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 800;
   line-height: 1.35;
 }
 
 .task-model-grid .practice-model-setting > div > p {
   color: var(--platform-muted);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 1.65;
+  line-height: 1.5;
 }
 
 .task-model-grid .practice-model-setting label {
-  gap: 8px;
+  gap: 6px;
   color: #3f4f69;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
 }
 
 .task-model-grid select,
 .task-model-grid input {
-  min-height: 50px;
+  min-height: 44px;
   border-radius: 12px;
-  padding: 0 14px;
+  padding: 0 12px;
   color: #1d2b44;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 650;
 }
 
 .task-model-grid .practice-model-setting > p {
-  min-height: 48px;
-  border-radius: 12px;
-  padding: 13px 14px;
+  min-height: 40px;
+  border-radius: 10px;
+  padding: 10px 12px;
   color: #425575;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
-  line-height: 1.55;
+  line-height: 1.45;
 }
 
 .task-model-save-note {
   border: 1px solid rgba(70, 170, 132, .22);
   border-radius: 14px;
   background: rgba(237, 251, 245, .78);
-  padding: 14px 16px;
-  font-size: 14px;
+  padding: 10px 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -1864,7 +1877,7 @@ body[data-active-page="result"] .step-track {
 
 #page-task .task-grid > .panel-card {
   border-radius: 19px;
-  padding: 24px;
+  padding: 18px;
   background: rgba(255, 255, 255, .7);
 }
 
@@ -1890,10 +1903,10 @@ body[data-active-page="result"] .step-track {
 }
 
 #page-task .task-step-item {
-  min-height: 62px;
+  min-height: 54px;
   border: 1px solid transparent;
   border-radius: 11px;
-  padding: 11px 12px;
+  padding: 9px 10px;
 }
 
 #page-task .task-step-item.active {
@@ -2784,46 +2797,46 @@ body[data-active-page="result"] .step-track {
   body:not([data-active-page="home"]) .reference-title h2,
   body:not([data-active-page="home"]) .monitor-page-title h2,
   body:not([data-active-page="home"]) .task-manager-header h2 {
-    font-size: 36px;
+    font-size: 32px;
   }
 
   body:not([data-active-page="home"]) .page-title p,
   body:not([data-active-page="home"]) .reference-title p,
   body:not([data-active-page="home"]) .monitor-page-title p,
   body:not([data-active-page="home"]) .task-manager-header p {
-    font-size: 17px;
+    font-size: 15px;
   }
 
   body:not([data-active-page="home"]) input:not([type="checkbox"]):not([type="radio"]),
   body:not([data-active-page="home"]) select,
   body:not([data-active-page="home"]) textarea {
-    font-size: 17px;
+    font-size: 15px;
   }
 
   body:not([data-active-page="home"]) label,
   body:not([data-active-page="home"]) legend {
-    font-size: 15px;
+    font-size: 14px;
   }
 
   .task-model-grid .practice-model-setting {
-    padding: 32px;
+    padding: 20px;
   }
 
   .task-model-grid .practice-model-setting h3 {
-    font-size: 22px;
+    font-size: 18px;
   }
 
   .task-model-grid .practice-model-setting > div > p,
   .task-model-grid .practice-model-setting label,
   .task-model-grid .practice-model-setting > p,
   .task-model-save-note {
-    font-size: 16px;
+    font-size: 14px;
   }
 
   .task-model-grid select,
   .task-model-grid input {
-    min-height: 56px;
-    font-size: 17px;
+    min-height: 44px;
+    font-size: 15px;
   }
 
   #page-task #runTaskBtn {
@@ -2871,9 +2884,6 @@ body[data-active-page="result"] .step-track {
     padding-left: 20px;
   }
 
-  .env-card {
-    position: static;
-  }
 }
 
 .practice-generation-error__details {
@@ -3017,7 +3027,7 @@ body[data-active-page="result"] .step-track {
     .knowledge-input-card,
   .knowledge-config-card,
   .task-model-grid .practice-model-setting {
-    padding: 19px;
+    padding: 16px;
   }
 
   .page-actions,
@@ -3294,15 +3304,15 @@ body.platform-dialog-open {
   gap: 12px;
   align-items: center;
   width: 100% !important;
-  min-height: 50px !important;
+  min-height: 44px !important;
   border: 1px solid rgba(151, 174, 211, .45) !important;
   border-radius: 12px !important;
-  padding: 0 14px !important;
+  padding: 0 12px !important;
   background: rgba(252, 253, 255, .92) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .96) !important;
   color: var(--platform-text) !important;
   font-family: "PingFang SC", "Microsoft YaHei", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-  font-size: 15px !important;
+  font-size: 14px !important;
   font-weight: 650 !important;
   line-height: 1.35 !important;
   text-align: left !important;
@@ -3429,8 +3439,8 @@ body.platform-dialog-open {
 .model-role-card .platform-select-trigger,
 .knowledge-config-card .platform-select-trigger,
 .practice-config-grid .platform-select-trigger {
-  min-height: 54px !important;
-  font-size: 16px !important;
+  min-height: 44px !important;
+  font-size: 14px !important;
 }
 
 @media (min-width: 1900px) {
@@ -3438,13 +3448,13 @@ body.platform-dialog-open {
   .model-role-card .platform-select-trigger,
   .knowledge-config-card .platform-select-trigger,
   .practice-config-grid .platform-select-trigger {
-    min-height: 56px !important;
-    font-size: 17px !important;
+    min-height: 44px !important;
+    font-size: 15px !important;
   }
 
   .platform-select-menu button {
-    min-height: 46px !important;
-    font-size: 16px !important;
+    min-height: 42px !important;
+    font-size: 15px !important;
   }
 }
 
@@ -7126,6 +7136,278 @@ body[data-active-page="practice"] .app-shell {
 
 #page-env .exam-model-test-row button { flex: 0 0 auto; }
 
+/* 任务开始前模型选择：主模型与生图模型同级、同为必选。 */
+.task-model-required-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 16px;
+}
+
+.task-model-required-grid > .task-model-choice-card {
+  grid-column: auto !important;
+  min-width: 0;
+  height: 100%;
+}
+
+.task-model-choice-heading {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.task-model-step {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #e9f0ff;
+  color: #2563eb;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.task-model-choice-heading h3 em,
+.model-choice-card .model-role-card-head strong em {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 7px;
+  border-radius: 999px;
+  background: #e9f0ff;
+  padding: 4px 9px;
+  color: #2563eb;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+  vertical-align: 2px;
+}
+
+.model-route-picker {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.model-family-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 1px 1px 3px;
+  scrollbar-width: thin;
+}
+
+.model-family-tabs button {
+  min-height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid #d8e1ed;
+  border-radius: 9px;
+  background: #fff !important;
+  padding: 0 12px;
+  color: #52657c !important;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.model-family-tabs button:hover {
+  border-color: #9bb9eb;
+  background: #f6f9ff !important;
+  color: #2457a7 !important;
+}
+
+.model-family-tabs button[aria-selected="true"] {
+  border-color: #2563eb;
+  background: #2563eb !important;
+  color: #fff !important;
+  box-shadow: 0 7px 18px rgba(37, 99, 235, .18);
+}
+
+.model-route-options {
+  display: grid;
+  gap: 6px;
+  max-height: 214px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.model-route-option {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 50px;
+  border: 1px solid #dce4ed;
+  border-radius: 11px;
+  background: #fff !important;
+  padding: 7px 10px;
+  color: #1d2b40 !important;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-route-option:hover {
+  border-color: #9bb9eb;
+  background: #f8fbff !important;
+}
+
+.model-route-option.selected {
+  border-color: #6d9cf7;
+  background: #f1f6ff !important;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .08);
+}
+
+.model-route-check {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  color: #b2bfce;
+  font-size: 9px;
+}
+
+.model-route-option.selected .model-route-check {
+  border-radius: 50%;
+  background: #2563eb;
+  color: #fff;
+}
+
+.model-route-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.model-route-copy strong {
+  overflow: hidden;
+  color: #1d2b40;
+  font-size: 14px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-route-copy small {
+  overflow: hidden;
+  color: #718198;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-route-health {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eef1f5;
+  color: #68788e;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.model-route-health.ok { background: #e7f7ef; color: #178057; }
+.model-route-health.warn { background: #fff3d8; color: #986717; }
+.model-route-picker-empty { display: grid; gap: 5px; border: 1px dashed #cdd8e5; border-radius: 11px; padding: 18px; color: #68798f; }
+.model-route-picker-empty strong { color: #2f4058; }
+
+.task-model-call-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.task-model-call-settings.single { grid-template-columns: 1fr; }
+
+.model-request-static {
+  display: grid;
+  gap: 6px;
+  color: #3f4f69;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.model-request-static strong {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  border: 1px solid #dce2ec;
+  border-radius: 12px;
+  background: #f6f8fb;
+  padding: 0 12px;
+  color: #52657c;
+  font-size: 14px;
+}
+
+.model-route-native-controls[hidden],
+.model-route-native-controls[hidden] .platform-select { display: none !important; }
+
+#page-env .model-progressive-primary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 12px;
+}
+
+#page-env .model-progressive-primary > .model-choice-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+  border: 1px solid #dce4ed;
+  padding: 16px;
+  background: #fbfcfe;
+}
+
+#page-env .model-choice-card .model-role-card-head {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+}
+
+#page-env .model-choice-card .model-role-card-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+#page-env .model-choice-card .model-route-picker,
+#page-env .model-choice-card .model-role-status,
+#page-env .model-choice-card .safe-note {
+  grid-column: 1 / -1;
+}
+
+#page-env .model-choice-card .protocol-field { grid-column: 1; }
+#page-env .model-choice-card .thinking-field { grid-column: 2; }
+#page-env #imageModelRoleCard .model-role-card-body { grid-template-columns: 1fr; }
+#page-env #imageModelRoleCard .model-request-static { grid-column: 1; }
+#page-env .model-choice-card .model-role-status { grid-row: auto; }
+#page-env .model-progressive-conditional:empty { display: none; }
+
+@media (max-width: 1180px) {
+  .task-model-required-grid,
+  #page-env .model-progressive-primary { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  .task-model-title {
+    flex-direction: row;
+    gap: 12px;
+    padding: 16px;
+  }
+  .task-model-call-settings,
+  #page-env .model-choice-card .model-role-card-body { grid-template-columns: 1fr; }
+  #page-env .model-choice-card .protocol-field,
+  #page-env .model-choice-card .thinking-field { grid-column: 1; }
+  .model-route-option { grid-template-columns: 20px minmax(0, 1fr) auto; }
+  .model-route-health { grid-column: 3; justify-self: end; }
+  .model-family-tabs button { min-height: 40px; padding-inline: 12px; }
+}
+
 /* Shared desktop accessibility polish. */
 :where(button, input, select, summary, [tabindex]):focus-visible {
   outline: 3px solid rgba(37, 99, 235, .42) !important;
@@ -7646,4 +7928,18 @@ option[data-health="warning"], button[role="option"][data-health="warning"] { co
     width: 100%;
   }
   #page-tasks .task-manager-copy { min-width: 0; }
+}
+
+/* Three explicit task roles; evidence and answers share equal visual weight. */
+#page-env .model-progressive-primary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#page-env #examModelRoleDetails[hidden] { display: none !important; }
+#page-env .model-choice-card.hidden { display: none !important; }
+#page-env .model-family-tabs { flex-wrap: wrap; overflow: visible; }
+#page-env .model-config-header p { max-width: none; }
+@media (max-width: 1100px) {
+  #page-env .model-progressive-primary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #page-env #imageModelRoleCard { grid-column: 1 / -1; }
+}
+@media (max-width: 720px) {
+  #page-env .model-progressive-primary { grid-template-columns: minmax(0, 1fr); }
 }

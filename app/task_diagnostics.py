@@ -7,6 +7,7 @@ from typing import Any
 
 from .pipeline import output_dir, stage_dir
 from .provider_errors import classify_provider_error
+from .task_failure_summary import exam_failure_summary
 from .task_store import load_task, task_dir
 
 STAGE_LABELS = {
@@ -382,6 +383,7 @@ def build_task_diagnostics(task_id: str) -> dict[str, Any]:
         or actionable_failed_stages
         or review_stages
     )
+    failure = exam_failure_summary(record.__dict__)
     return {
         "task_id": task_id,
         "task": record.__dict__,
@@ -390,9 +392,9 @@ def build_task_diagnostics(task_id: str) -> dict[str, Any]:
         "primary_stage": stage,
         "primary_stage_label": _stage_label(stage),
         "needs_attention": needs_attention,
-        "error": error,
+        "error": failure["message"] if failure else error,
         "summary": {
-            "title": "任务需要排查" if needs_attention else "任务日志摘要",
+            "title": failure["title"] if failure else "任务需要排查" if needs_attention else "任务日志摘要",
             "stage": _stage_label(stage),
             "issue_count": issue_count,
             "warning_count": warning_count,
@@ -401,7 +403,7 @@ def build_task_diagnostics(task_id: str) -> dict[str, Any]:
         },
         "issues": issues,
         "question_summary": _question_summary(issues),
-        "recommendations": _recommendations(stage, error, issues),
+        "recommendations": [failure["retry_hint"]] if failure else _recommendations(stage, error, issues),
         "related_files": _related_files(sdir, odir, stage),
         "recent_events": events[-12:],
         "pipeline_error": pipeline_error,

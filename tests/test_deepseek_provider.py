@@ -116,3 +116,56 @@ def test_responses_uses_verified_deepseek_disabled_thinking_envelope() -> None:
     payload = json.loads(requests[0].data)
     assert payload["thinking"] == {"type": "disabled"}
     assert "reasoning" not in payload
+
+
+def test_retired_text_routes_cannot_be_restored_by_local_config(tmp_path) -> None:
+    from app.settings import load_provider_config_file
+
+    public = json.loads((ROOT / "config" / "providers.example.json").read_text())
+    overrides = {"providers": {}}
+    for name in ("ark", "lingsuan_domestic"):
+        retired = public["providers"][name]["retired_models"]
+        overrides["providers"][name] = {
+            "model_options": retired,
+            "default_model": retired[0],
+            "model_profiles": {model: {"kind": "text_generation"} for model in retired},
+        }
+    (tmp_path / "providers.local.json").write_text(json.dumps(overrides))
+    with patch("app.settings.LOCAL_CONFIG_DIR", tmp_path):
+        config = load_provider_config_file()["providers"]
+    for name in overrides["providers"]:
+        retired = set(public["providers"][name]["retired_models"])
+        assert not retired.intersection(config[name]["model_options"])
+        assert not retired.intersection(config[name]["model_profiles"])
+        assert config[name]["default_model"] not in retired
+    assert "deepseek-flash" in config["deepseek"]["model_options"]
+
+
+def test_lingsuan_v41_uses_official_multimodal_capabilities() -> None:
+    from app.model_capability_registry import get_model_capability
+    from app.settings import list_providers, provider_model_supports_vision
+
+    provider = list_providers()["lingsuan_domestic"]
+    model = "deepseek-v4.1-flash"
+    assert model in provider.model_options
+    assert provider_model_supports_vision(provider, model)
+    assert set(provider.model_profiles[model]["supported_api_protocols"]) == {"responses", "chat_completions"}
+    capability = get_model_capability(provider.name, model)
+    assert capability["capability_source"] == "https://api-docs.deepseek.com/guides/vision"
+    assert capability["native_inputs"] == ["text", "image"]
+
+
+def test_removed_bailian_models_stay_removed_with_stale_override(tmp_path) -> None:
+    from app.settings import load_provider_config_file
+
+    retired = ["qwen3.6-plus", "qwen3.6-flash", "qwen3-vl-flash", "qwen-vl-max", "qwen-vl-plus"]
+    (tmp_path / "providers.local.json").write_text(json.dumps({"providers": {"bailian": {
+        "model_options": retired + ["qwen3.7-plus"], "vision_model": "qwen-vl-max",
+        "model_profiles": {model: {} for model in retired},
+    }}}))
+    with patch("app.settings.LOCAL_CONFIG_DIR", tmp_path):
+        provider = load_provider_config_file()["providers"]["bailian"]
+    assert not set(retired).intersection(provider["model_options"])
+    assert not set(retired).intersection(provider["model_profiles"])
+    assert provider["vision_model"] not in retired
+    assert "qwen3.7-plus" in provider["model_options"]

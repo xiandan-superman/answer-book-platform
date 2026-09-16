@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -280,6 +281,62 @@ def test_static_woff_uses_explicit_font_mime_type(tmp_path, monkeypatch) -> None
             policy = response.headers["Content-Security-Policy"]
             assert "script-src 'self';" in policy
             assert "script-src 'self' 'unsafe-inline'" not in policy
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        worker.join(timeout=2)
+
+
+def test_hosted_word_format_page_uses_csp_nonce() -> None:
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), platform_server.PlatformHandler)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_port}/word-format") as response:
+            html = response.read().decode("utf-8")
+            policy = response.headers["Content-Security-Policy"]
+            nonce = re.search(r"'nonce-([^']+)'", policy)
+            assert nonce is not None
+            assert f'<script nonce="{nonce.group(1)}">' in html
+            assert "script-src 'self' 'unsafe-inline'" not in policy
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        worker.join(timeout=2)
+
+
+def test_delivery_package_response_returns_a_real_download_url(tmp_path, monkeypatch) -> None:
+    task_id = "delivery-download-test"
+    output_root = tmp_path / "output"
+    package = output_root / "delivery" / "delivery-download-test_delivery.zip"
+    package.parent.mkdir(parents=True)
+    package.write_bytes(b"PK\x03\x04verified-package")
+    monkeypatch.setattr(platform_server, "output_dir", lambda _task_id: output_root)
+    monkeypatch.setattr(platform_server, "stage_dir", lambda _task_id: tmp_path / "stage")
+    monkeypatch.setattr(
+        platform_server,
+        "build_task_delivery_package",
+        lambda *_args: {"ok": True, "status": "completed", "zip": str(package)},
+    )
+    monkeypatch.setattr(platform_server, "mark_task_downloaded", lambda _task_id: None)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), platform_server.PlatformHandler)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        request = urllib.request.Request(
+            f"{base}/api/tasks/{task_id}/delivery-package",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        assert payload["filename"] == package.name
+        assert payload["download_url"].startswith(f"/api/tasks/{task_id}/download?file=")
+        with urllib.request.urlopen(base + payload["download_url"]) as response:
+            assert response.read() == package.read_bytes()
+            assert response.headers.get_filename() == package.name
     finally:
         httpd.shutdown()
         httpd.server_close()

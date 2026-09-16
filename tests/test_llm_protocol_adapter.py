@@ -215,7 +215,7 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         provider = list_providers()["ark"]
         self.assertEqual(
-            ("doubao-seed-2-0-pro-260215", "deepseek-v4-pro-ga-260813", "deepseek-v4-flash-ga-260731"),
+            ("doubao-seed-2-0-pro-260215",),
             provider.model_options,
         )
         self.assertEqual("doubao-seed-2-0-pro-260215", provider.vision_model)

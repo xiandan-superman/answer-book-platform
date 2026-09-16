@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -92,7 +93,18 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(raw_tmp, long_path(target))
+        # Windows readers (including indexers/virus scanners) can briefly hold
+        # the destination without FILE_SHARE_DELETE. Keep the old checkpoint
+        # intact and retry the same fully flushed temporary file, never unlink
+        # the destination or fall back to a non-atomic overwrite.
+        for attempt in range(7):
+            try:
+                os.replace(raw_tmp, long_path(target))
+                break
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 6:
+                    raise
+                time.sleep(min(0.05 * (2 ** attempt), 0.5))
         fsync_directory_best_effort(parent)
     finally:
         try:

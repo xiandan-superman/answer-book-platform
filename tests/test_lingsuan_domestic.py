@@ -8,9 +8,8 @@ from app.settings import list_providers, provider_model_supports_vision
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = (
-    "deepseek-v4-flash", "deepseek-v4-flash-0731", "deepseek-v4-pro",
-    "deepseek-v4-pro-0813", "glm-5.2", "glm-5.3", "glm-5.3-flash",
-    "kimi-k3", "qwen3.7-max", "qwen3.8-max",
+    "glm-5.2", "glm-5.3", "glm-5.3-flash",
+    "kimi-k3", "qwen3.7-max", "qwen3.8-max", "deepseek-v4.1-flash",
 )
 
 
@@ -23,9 +22,9 @@ def test_domestic_catalog_has_one_separate_key_and_only_verified_choices():
     assert not provider.supports_image_generation
     assert not provider.allow_custom_model
     for model in MODELS:
-        assert not provider_model_supports_vision(provider, model)
+        assert provider_model_supports_vision(provider, model) == (model == "deepseek-v4.1-flash")
         profile = provider.model_profiles[model]
-        assert profile["supported_api_protocols"] == ["chat_completions"]
+        assert profile["supported_api_protocols"] == (["responses", "chat_completions"] if model == "deepseek-v4.1-flash" else ["chat_completions"])
         assert profile["supported_thinking_modes"] == ["auto"]
 
 

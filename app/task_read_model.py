@@ -19,6 +19,7 @@ from .task_contracts import (
     quality_from_summary,
     workflow_for_kind,
 )
+from .task_failure_summary import exam_failure_summary
 from .task_titles import build_display_task_title, friendly_material_title, short_model_label, title_matches_material_name
 
 
@@ -248,6 +249,12 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
         support_id=public_support_id(str(row.get("support_id") or ""), task_id=str(row.get("task_id") or "")),
         final_acceptance=final_acceptance,
     )
+    failure = exam_failure_summary(row)
+    if failure:
+        enriched["error_presentation"] = {**failure, "support_id": enriched["public_task_id"]}
+        enriched["error"] = failure["message"]
+        enriched["warning_reason"] = failure["message"]
+        enriched["suggested_action"] = failure["retry_hint"]
     enriched["task_kind"] = "exam"
     enriched["analysis_profile"] = row.get("analysis_profile") or "evidence_backed"
     enriched["quality_summary"] = quality_summary

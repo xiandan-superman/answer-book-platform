@@ -1264,15 +1264,18 @@ def test_provider_configuration_failure_has_safe_consistent_copy_and_recovery_ac
         assert presentation["retry_hint"] in task_copy
         assert presentation["support_id"] not in task_copy
         assert "InvalidEndpointOrModel" not in task_copy
-        card.locator(".task-card-more > summary").click()
+        if not card.locator(".task-card-more").get_attribute("open") == "":
+            card.locator(".task-card-more > summary").click()
         assert card.locator('[data-action="job-config"]').is_visible()
         assert card.locator('[data-action="job-retry"]').count() == 0
 
         card.locator('[data-action="job-config"]').click()
         page.locator("#page-keys.active").wait_for(timeout=4000)
         page.evaluate("openTaskManager('knowledge')")
+        page.wait_for_function("() => !taskManagerLoading")
         card = page.locator("#taskManagerList .task-manager-item").filter(has_text="配置恢复测试")
-        card.locator(".task-card-more > summary").click()
+        if not card.locator(".task-card-more").get_attribute("open") == "":
+            card.locator(".task-card-more > summary").click()
         assert card.locator('[data-action="job-config"]').is_visible()
         assert card.locator('[data-action="job-retry"]').count() == 0
 

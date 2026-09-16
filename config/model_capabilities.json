@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-11",
+  "updated_at": "2026-09-16",
   "task_labels": {
     "source_analysis": "材料理解",
     "knowledge_planning": "考查内容规划",
@@ -26,21 +26,6 @@
       },
       "qwen3.7-flash": {
         "protocol": "responses",
-        "evidence": "live_native_tool_probe",
-        "last_verified_at": "2026-08-29"
-      },
-      "qwen3.6-plus": {
-        "protocol": "responses",
-        "evidence": "live_native_tool_probe",
-        "last_verified_at": "2026-08-29"
-      },
-      "qwen3.6-flash": {
-        "protocol": "responses",
-        "evidence": "live_native_tool_probe",
-        "last_verified_at": "2026-08-29"
-      },
-      "qwen3-vl-flash": {
-        "protocol": "chat_completions",
         "evidence": "live_native_tool_probe",
         "last_verified_at": "2026-08-29"
       },
@@ -113,46 +98,6 @@
           "thinking": "unknown",
           "task_support": {
             "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "2026-09-10"
-        },
-        "deepseek-v4-pro-ga-260813": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "platform_verified_json",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "forbidden",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "2026-09-10"
-        },
-        "deepseek-v4-flash-ga-260731": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "platform_verified_json",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "forbidden",
             "blueprint": "limited",
             "generation": "limited",
             "answer": "limited",
@@ -292,111 +237,6 @@
           "last_verified_at": "unknown"
         },
         "qwen3.7-flash": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text",
-            "image"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "unknown",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen3.6-plus": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text",
-            "image"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "unknown",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen3.6-flash": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text",
-            "image"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "unknown",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen3-vl-flash": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text",
-            "image"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "unknown",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen-vl-max": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text",
-            "image"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "unknown",
-          "thinking": "unknown",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen-vl-plus": {
           "kind": "text_generation",
           "evidence_grade": "C",
           "native_inputs": [
@@ -901,86 +741,6 @@
     "lingsuan_domestic": {
       "display_name": "灵算 · 国模分组",
       "models": {
-        "deepseek-v4-flash": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "platform_verified_json",
-          "thinking": "auto",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "2026-09-12"
-        },
-        "deepseek-v4-flash-0731": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "platform_verified_json",
-          "thinking": "auto",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "2026-09-12"
-        },
-        "deepseek-v4-pro": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "platform_verified_json",
-          "thinking": "auto",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "2026-09-12"
-        },
-        "deepseek-v4-pro-0813": {
-          "kind": "text_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "text"
-          ],
-          "structured_output": "platform_verified_json",
-          "thinking": "auto",
-          "task_support": {
-            "source_analysis": "limited",
-            "blueprint": "limited",
-            "generation": "limited",
-            "answer": "limited",
-            "review": "unknown"
-          },
-          "last_verified_at": "2026-09-12"
-        },
         "glm-5.2": {
           "kind": "text_generation",
           "evidence_grade": "C",
@@ -1100,6 +860,34 @@
             "review": "unknown"
           },
           "last_verified_at": "2026-09-12"
+        },
+        "deepseek-v4.1-flash": {
+          "kind": "text_generation",
+          "evidence_grade": "B",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "platform_verified_json",
+          "thinking": "supported",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "limited",
+            "format_repair": "limited"
+          },
+          "last_verified_at": "2026-09-16",
+          "limits": {
+            "input_tokens": 1000000,
+            "output_tokens": 384000
+          },
+          "capability_source": "https://api-docs.deepseek.com/guides/vision",
+          "model_identity_source": "https://api-docs.deepseek.com/"
         }
       }
     },

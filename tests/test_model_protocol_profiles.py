@@ -84,9 +84,9 @@ def test_provider_model_profiles_keep_supported_models_on_responses():
     providers = list_providers()
 
     assert providers["bailian"].api_protocol == "responses"
-    assert providers["bailian"].model_profiles["qwen-vl-max"]["api_protocol"] == "chat_completions"
+    assert providers["bailian"].model_profiles["qwen-vl-ocr"]["api_protocol"] == "chat_completions"
     assert providers["bailian"].model_profiles["qwen3.7-plus"]["supports_tool_calls"] is True
-    assert providers["ark"].model_profiles["deepseek-v4-pro-ga-260813"]["supported_api_protocols"] == [
+    assert providers["deepseek"].model_profiles["deepseek-flash"]["supported_api_protocols"] == [
         "responses",
         "chat_completions",
     ]
@@ -105,7 +105,7 @@ def test_all_main_models_are_enabled_for_image_tool_loop_without_allowlist():
         assert enabled == set(provider.model_options)
 
     assert tool_loop_supported(
-        OpenAICompatibleClient(providers["bailian"]), providers["bailian"], "qwen-vl-max"
+        OpenAICompatibleClient(providers["bailian"]), providers["bailian"], "qwen-vl-ocr"
     )
     assert tool_loop_supported(
         OpenAICompatibleClient(providers["lingsuan_openai"]),
@@ -121,7 +121,7 @@ def test_all_main_models_are_enabled_for_image_tool_loop_without_allowlist():
     )
 
 
-@pytest.mark.parametrize("model", ["qwen3-vl-flash", "qwen-vl-max", "qwen-vl-plus", "qwen-vl-ocr"])
+@pytest.mark.parametrize("model", ["qwen-vl-ocr"])
 def test_legacy_bailian_vision_models_use_chat_completions(model: str):
     requests = []
     client = OpenAICompatibleClient(_provider("bailian"))

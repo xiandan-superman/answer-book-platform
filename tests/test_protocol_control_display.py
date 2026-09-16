@@ -40,11 +40,11 @@ def test_new_generation_entry_chooses_models_before_submitting_materials() -> No
     assert 'class="generation-entry-link" type="button" onclick="goToPage(\'knowledge-models\')"' in html
     assert html.count('onclick="openPracticeEntry(\'exam\')"') == 1
     assert html.count('onclick="openKnowledgeEntry()"') == 1
-    assert "下一步：提交原题" in html
-    assert "下一步：提交知识材料" in html
+    assert "确认两个模型并提交原题" in html
+    assert "确认两个模型并提交知识材料" in html
 
 
-def test_new_exam_default_only_sets_the_two_requested_roles() -> None:
+def test_new_exam_entry_preserves_the_users_existing_model_choices() -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node unavailable")
@@ -55,6 +55,6 @@ const ctx={setExamTextRoleRoute:(role,route)=>calls.push([role,...route]),syncPl
 textModelRoles:{reasoning:{},answer:{}},updateModelRoleCards:()=>{},goToPage:p=>assert.equal(p,'env')};
 vm.createContext(ctx);vm.runInContext(src.slice(src.indexOf('function startWizard('),src.indexOf('function startQuestionAnalysis(')),ctx);
 ctx.startWizard();
-assert.deepEqual(calls,[['reasoning','lingsuan_openai','gpt-5.6-sol'],['answer','lingsuan_openai','gpt-5.6-sol']]);
+assert.deepEqual(calls,[]);
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)

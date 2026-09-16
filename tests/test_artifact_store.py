@@ -163,3 +163,52 @@ def test_final_practice_record_marks_selected_nonfailed_asset(tmp_path) -> None:
 
     assert report["final_adopted_count"] == 1
     assert ImageArtifactStore(store.root).get(artifact.asset_id).adopted is True  # type: ignore[union-attr]
+
+
+def test_windows_busy_replace_retries_same_file_and_preserves_old_checkpoint(tmp_path, monkeypatch):
+    import json
+
+    import app.artifact_store as store
+
+    target = tmp_path / "progress.json"
+    atomic_write_json(target, {"completed": 1})
+    real_replace = os.replace
+    calls = []
+
+    def replace(source, destination):
+        calls.append(source)
+        assert json.loads(target.read_text()) == {"completed": 1}
+        if len(calls) < 3:
+            error = PermissionError("busy")
+            error.winerror = 5
+            raise error
+        real_replace(source, destination)
+
+    monkeypatch.setattr(store.os, "replace", replace)
+    monkeypatch.setattr(store.time, "sleep", lambda delay: None)
+    atomic_write_json(target, {"completed": 2})
+    assert len(calls) == 3 and len(set(calls)) == 1
+    assert json.loads(target.read_text()) == {"completed": 2}
+    assert not list(tmp_path.glob(".tmp-*"))
+
+
+def test_permanent_replace_failure_is_bounded_and_preserves_checkpoint(tmp_path):
+    import pytest
+
+    import app.artifact_store as store
+
+    target = tmp_path / "progress.json"
+    atomic_write_json(target, {"completed": 1})
+    before = target.read_bytes()
+    error = PermissionError("denied")
+    error.winerror = 32
+    with patch.object(store.os, "replace", side_effect=error) as replace, patch.object(store.time, "sleep"):
+        with pytest.raises(PermissionError):
+            atomic_write_json(target, {"completed": 2})
+        assert replace.call_count == 7
+    assert target.read_bytes() == before
+    assert not list(tmp_path.glob(".tmp-*"))
+    with patch.object(store.os, "replace", side_effect=OSError("disk error")) as replace:
+        with pytest.raises(OSError):
+            atomic_write_json(target, {"completed": 2})
+        assert replace.call_count == 1

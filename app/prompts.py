@@ -19,7 +19,7 @@ from .image_orchestration import ensure_generation_image_label_language_requirem
 from .omml_input import strip_structured_math_metadata
 from .question_requirements import answer_figure_required
 from .question_scores import confirmed_score_from_question, normalize_score
-from .question_types import has_calculation_answer_unit, question_kind
+from .question_types import has_calculation_answer_unit, infer_question_type, iter_question_parts, question_kind
 
 SYSTEM_PROMPT = """你是专业考研真题解析教师，你输出的答案要倾向专业考研真题解析，要平衡学生理解和解析深度。
 你只负责根据输入的真题和教材内容完成解析，并输出一个合法 JSON object。
@@ -531,6 +531,20 @@ def build_answer_draft_prompt(
         "question_understanding": understanding,
         "textbook_content": [_textbook_content_record(row) for row in evidence],
     }
+    confirmed_types = {infer_question_type(question)}
+    confirmed_types.update(
+        infer_question_type(part)
+        for part in iter_question_parts(question)
+        if isinstance(part, dict)
+    )
+    if "单选题" in confirmed_types:
+        user_payload["hard_rules"].append(
+            "For every 单选题 answer unit, select exactly one correct option. Put exactly one uppercase option label in answer (for example A), and explain every meaningful option in option_analysis."
+        )
+    if "多选题" in confirmed_types:
+        user_payload["hard_rules"].append(
+            "For every 多选题 answer unit, return all correct options and at least two distinct uppercase option labels in answer (for example A、C). Explain every meaningful option in option_analysis; never collapse it to a single-choice answer."
+        )
     if not include_textbook_evidence:
         user_payload["analysis_profile"] = "question_only"
         user_payload.pop("textbook_content", None)

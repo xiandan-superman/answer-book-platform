@@ -10,7 +10,7 @@ from urllib.parse import quote
 from .drawing_code import normalize_drawing_mode
 from .paths import OUTPUTS_DIR
 from .question_scores import format_score, infer_suggested_score, normalize_score, parse_score
-from .question_types import QUESTION_TYPES, infer_question_type, normalize_question_type
+from .question_types import REVIEW_QUESTION_TYPES, infer_question_type, normalize_question_type
 from .resource_ids import bounded_resource_path
 from .task_control import TaskCancelled, read_task_control
 from .task_store import append_event, task_dir, update_task
@@ -204,6 +204,14 @@ def _validate_score_row(row: dict[str, Any], label: str, issues: list[str]) -> N
         issues.append(f"{label} 缺少确认分值")
 
 
+def _validate_question_type_row(row: dict[str, Any], label: str, issues: list[str]) -> None:
+    question_type = normalize_question_type(row.get("question_type"))
+    if question_type == "选择题":
+        issues.append(f"{label} 请确认为单选题或多选题")
+    elif not question_type:
+        issues.append(f"{label} 缺少确认题型")
+
+
 def validate_exam_structure_review_updates(updates: list[dict[str, Any]]) -> list[str]:
     issues: list[str] = []
     for q_index, row in enumerate(updates, start=1):
@@ -211,15 +219,19 @@ def validate_exam_structure_review_updates(updates: list[dict[str, Any]]) -> lis
             continue
         label = f"第{q_index}题"
         _validate_score_row(row, label, issues)
+        _validate_question_type_row(row, label, issues)
         for sub_index, sub in enumerate(row.get("subquestions") or [], start=1):
             if not isinstance(sub, dict) or sub.get("deleted") or sub.get("_delete"):
                 continue
             sub_label = f"{label}小问{sub.get('number') or sub_index}"
             _validate_score_row(sub, sub_label, issues)
+            _validate_question_type_row(sub, sub_label, issues)
             for req_index, req in enumerate(sub.get("requirements") or [], start=1):
                 if not isinstance(req, dict) or req.get("deleted") or req.get("_delete"):
                     continue
-                _validate_score_row(req, f"{sub_label}要求{req.get('number') or req_index}", issues)
+                req_label = f"{sub_label}要求{req.get('number') or req_index}"
+                _validate_score_row(req, req_label, issues)
+                _validate_question_type_row(req, req_label, issues)
     return issues
 
 
@@ -372,7 +384,7 @@ def build_exam_structure_review_request(task_id: str, structured_exam: dict[str,
         "stage": "exam_structure_review",
         "title": "真题结构、题型与分值确认",
         "message": "请确认每道题的题干抽取、题型识别和分值。确认后的题型与分值会用于后续考点判断、教材检索、答案生成、内容审查和 Word 排版。",
-        "question_types": list(QUESTION_TYPES),
+        "question_types": list(REVIEW_QUESTION_TYPES),
         "items": items,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }

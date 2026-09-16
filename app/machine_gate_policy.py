@@ -5,6 +5,7 @@ MACHINE_CONTENT_CODES = frozenset({
     "missing_answer_unit_content", "missing_answer_unit_steps",
     "unresolved_formula_placeholder", "missing_confirmed_evidence", "uses_rejected_evidence",
     "choice_missing_option_analysis", "missing_answer_summary", "calculation_missing_formula",
+    "single_choice_answer_count_invalid", "multiple_choice_answer_count_invalid",
     "calculation_missing_steps", "calculation_missing_subquestion_steps",
     "calculation_invalid_subquestion_number", "calculation_steps_missing_formula_refs",
     "missing_required_figure", "calculation_internal_inconsistency",

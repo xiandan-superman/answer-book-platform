@@ -85,7 +85,7 @@ def test_incomplete_model_record_is_rejected() -> None:
 
 def test_registry_drives_input_and_task_eligibility() -> None:
     assert model_accepts_input("bailian", "qwen3.7-plus", "image") is True
-    assert model_accepts_input("ark", "deepseek-v4-pro-ga-260813", "image") is False
+    assert model_accepts_input("ark", "deepseek-v4-pro-ga-260813", "image") is None
     assert model_task_support("bailian", "qwen3.7-plus", "source_analysis") == "limited"
     assert model_is_eligible_for_automatic_task("bailian", "qwen3.7-plus", "source_analysis") is False
     assert get_model_capability("missing", "missing") is None
@@ -135,7 +135,7 @@ def test_new_model_with_only_failed_probe_is_rejected_before_launch() -> None:
 
 def test_public_tool_profile_is_not_gated_by_historical_tool_registry() -> None:
     providers = _providers()
-    providers["providers"]["bailian"]["model_profiles"]["qwen-vl-max"][
+    providers["providers"]["bailian"]["model_profiles"]["qwen3.7-plus"][
         "supports_tool_calls"
     ] = True
 

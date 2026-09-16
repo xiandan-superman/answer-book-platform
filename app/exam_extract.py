@@ -17,9 +17,10 @@ from .formula_audit import looks_like_formula
 from .input_representations import REPRESENTATION_SCHEMA, render_page_representation
 from .omml_input import mixed_text_with_structured_math, strip_structured_math_metadata
 from .question_requirements import answer_figure_required, source_image_required
+from .question_types import choice_subtype_from_text
 from .text_utils import clean_text, cn_to_int
 
-SECTION_TITLE_PREFIX = r"(?:选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)"
+SECTION_TITLE_PREFIX = r"(?:单选题|单项选择题|单项选择|多选题|多项选择题|多项选择|选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)"
 SECTION_RE = re.compile(
     rf"^([一二三四五六七八九十]+)(?:\s*、\s*|\s*[.．]\s*(?={SECTION_TITLE_PREFIX})|\s+(?={SECTION_TITLE_PREFIX}))(.*)"
 )
@@ -33,7 +34,7 @@ MULTIPART_CUE_RE = re.compile(
 PAREN_SUBQUESTION_RE = re.compile(r"^[（(]\s*(\d{1,2})\s*[）)]\s*(.*)")
 ORDINAL_SUBQUESTION_RE = re.compile(r"^第\s*([一二三四五六七八九十\d]{1,3})\s*(?:小?问|题)\s*[:：、.．]?\s*(.*)")
 UNNUMBERED_SECTION_RE = re.compile(
-    r"^(选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)\s*[（(].*(?:本题|每小题|共|分).*[）)]?\s*$"
+    r"^(单选题|单项选择题|多选题|多项选择题|选择题|判断题|正误题|填空题|名词解释题|名词解释|名解题|简答题|问答题|计算题|回答下列问题)\s*[（(].*(?:本题|每小题|共|分).*[）)]?\s*$"
 )
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -491,8 +492,8 @@ def _attach_page_visual_compensation(exam_file: Path, items: list[dict], output_
 def section_kind(raw_title: str, body: list[str]) -> tuple[str, str]:
     if "回答下列问题" in raw_title or "回答问题" in raw_title:
         return "问答题", "qa"
-    if "选择" in raw_title:
-        return "选择题", "choice"
+    if "选择" in raw_title or "单选" in raw_title or "多选" in raw_title:
+        return choice_subtype_from_text(raw_title, *body[:2]) or "选择题", "choice"
     if "判断" in raw_title or "正误" in raw_title:
         return "判断题", "judge"
     if "填空" in raw_title:
@@ -506,8 +507,8 @@ def section_kind(raw_title: str, body: list[str]) -> tuple[str, str]:
     text = raw_title + " " + " ".join(body[:5])
     if "判断" in text or "正误" in text:
         return "判断题", "judge"
-    if "选择" in text:
-        return "选择题", "choice"
+    if "选择" in text or "单选" in text or "多选" in text:
+        return choice_subtype_from_text(text) or "选择题", "choice"
     if "填空" in text:
         return "填空题", "fill"
     if "名词解释" in text or "名解" in text:

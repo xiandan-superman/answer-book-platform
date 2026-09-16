@@ -179,6 +179,7 @@ def _is_capability_probe_source(source: str) -> bool:
         "manual_probe",
         "scheduled_probe",
         "startup_probe",
+        "task_preflight",
         "test_probe",
         "onboarding_probe",
     }

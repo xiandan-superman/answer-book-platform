@@ -7,6 +7,10 @@
 
 ## 1. 总原则
 
+### 2026-09-16 能力依据与通道状态分离（用户确认）
+
+模型输入能力按模型官方说明登记，同一型号经聚合商调用不因通道短测失败而降为纯文本。供应商请求协议、连接错误与实测记录独立保存，不用于覆盖官方声明的多模态能力。灵算 `deepseek-v4.1-flash` 的文字和图片输入依据 https://api-docs.deepseek.com/ 及 https://api-docs.deepseek.com/guides/vision 。本次 Chat Completions 与 Responses 都有成功观察；平台客户端另有 503 瞬时失败，保留为可用性观察，不改变模型能力。
+
 ### 2026-09-12 灵算国模分组与统一 Edge 入口
 
 用户指定四个灵算分组统一使用 `https://edge.lingsuan.org/v1`。新增 `lingsuan_domestic`，其十个模型只共用独立 `LINGSUAN_DOMESTIC_API_KEY`，不迁移或复用其他分组凭证。新组十条 Chat Completions 路线在 Edge 上均完成最小 JSON 调用（auto，不发送额外思考档位），只登记文本、人工显式选择的 limited 资格；不声称 Responses、视觉、长任务质量或独立并发容量已验证。旧分组的既有能力观察仍是历史记录，不改写为新域名实测。

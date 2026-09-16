@@ -89,8 +89,8 @@ def test_review_candidate_checkpoint_retry_is_not_cut_off_by_card_action_limit()
 def test_exam_flow_has_explicit_high_risk_correctness_model_route() -> None:
     assert 'id="correctnessProviderSelect"' in INDEX_HTML
     assert 'id="correctnessModelSelect"' in INDEX_HTML
-    assert 'correctness_provider: $("correctnessProviderSelect")' in APP_JS
-    assert 'correctness_model: selectedTextRoleModel("correctness")' in APP_JS
+    assert 'correctness_provider: answerProviderName' in APP_JS
+    assert 'correctness_model: answerModelName' in APP_JS
 
 
 def test_new_practice_entries_detach_from_the_previously_viewed_job() -> None:
@@ -235,7 +235,7 @@ def test_multimodal_answer_model_hides_redundant_vision_stage() -> None:
     assert "不再先调用独立识图模型" in APP_JS
 
 
-def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -> None:
+def test_model_configuration_preserves_manual_choice_and_keeps_optional_presets() -> None:
     assert 'id="examModelPresetSelect"' in INDEX_HTML
     assert 'value="balanced"' not in INDEX_HTML
     assert "稳定推荐" not in INDEX_HTML
@@ -248,8 +248,8 @@ def test_model_configuration_defaults_to_simple_presets_with_advanced_routes() -
     assert 'answer: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
     assert 'correctness: ["lingsuan_openai", "gpt-5.6-sol"]' in APP_JS
     assert 'answer: ["lingsuan_google", "gemini-3.6-flash"]' in APP_JS
-    assert 'if (saved === "balanced") return "quality";' in APP_JS
-    assert 'return "quality";' in APP_JS
+    assert 'function recommendedExamModelPreset() {\n  return "custom";' in APP_JS
+    assert 'applyExamModelPreset(key, { persist: false });' in APP_JS
 
 
 def test_retained_providers_are_visible_and_removed_providers_are_not_in_catalog() -> None:
@@ -281,7 +281,7 @@ def test_practice_generation_defaults_to_lingsuan_gemini_and_image_two() -> None
 
 def test_exam_model_matrix_uses_recommended_defaults_and_one_ark_image_route() -> None:
     assert 'class="model-config-matrix-head"' in INDEX_HTML
-    assert "系统自动应用推荐的请求方式与中等思考强度" in INDEX_HTML
+    assert "主模型和生图模型同为必选" in INDEX_HTML
     assert 'populateRoleThinkingMode("reasoning", "medium");' in APP_JS
     assert 'populateRoleThinkingMode("answer", "medium");' in APP_JS
     assert 'const configuredDefault = modes.includes("medium") ? "medium" : registeredDefault;' in APP_JS
@@ -293,10 +293,27 @@ def test_exam_model_matrix_uses_recommended_defaults_and_one_ark_image_route() -
     assert 'return Boolean(String(model || "").trim());' in APP_JS
 
 
-def test_practice_and_knowledge_expose_one_primary_model_by_default() -> None:
+def test_practice_and_knowledge_expose_primary_and_image_models_as_required_peers() -> None:
     assert INDEX_HTML.count("高级：主模型不能读图时的图片回退") == 2
-    assert INDEX_HTML.count("<h3>主生成模型</h3>") == 2
+    assert INDEX_HTML.count("<h3>主模型 <em>必选</em></h3>") == 2
+    assert INDEX_HTML.count("<h3>生图模型 <em>必选</em></h3>") == 2
+    assert 'id="practiceTextRoutePicker"' in INDEX_HTML
+    assert 'id="practiceImageRoutePicker"' in INDEX_HTML
+    assert 'id="knowledgeTextRoutePicker"' in INDEX_HTML
+    assert 'id="knowledgeImageRoutePicker"' in INDEX_HTML
     assert 'class="task-model-fallback-details"' in INDEX_HTML
+
+
+def test_task_model_picker_groups_routes_by_model_family_and_preserves_exact_route() -> None:
+    assert "function modelFamilyName(model, kind" in APP_JS
+    assert 'return "DeepSeek";' in APP_JS
+    assert 'return "GPT";' in APP_JS
+    assert 'return "Gemini";' in APP_JS
+    assert "function renderModelRoutePicker(" in APP_JS
+    assert 'data-route-provider="${escapeHtml(route.provider)}"' in APP_JS
+    assert 'data-route-model="${escapeHtml(route.model)}"' in APP_JS
+    assert "applyTaskModelRoute(profile, \"image\", provider, model)" in APP_JS
+    assert "applyExamModelRoute(\"image\", provider, model)" in APP_JS
 
 
 def test_main_model_image_route_is_fixed_and_requires_configuration() -> None:
@@ -435,6 +452,12 @@ def test_failed_plan_retry_has_one_confirmation_and_replaces_loading_state() -> 
 
 def test_task_polling_preserves_open_technical_details() -> None:
     assert '#taskManagerList .task-card-more[open], #taskManagerList .task-technical-details[open]' in APP_JS
+    assert 'const expandedTaskSections = new Map(' in APP_JS
+    assert 'expandedSections?.technical' in APP_JS
+    assert 'expandedSections?.more' in APP_JS
+    assert 'currentPage === "tasks" && !silent' in APP_JS
+    assert "taskManagerRenderedDataSignature" in APP_JS
+    assert "taskManagerInteractionActive()" in APP_JS
 
 
 def test_cancelled_practice_job_stops_polling_and_clears_resume_pointer() -> None:
@@ -923,10 +946,11 @@ def test_model_configuration_progressively_discloses_visual_and_image_routes() -
     assert 'id="knowledgeVisionFallbackDetails"' in INDEX_HTML
     assert "function syncExamProgressiveModelUi()" in APP_JS
     assert "syncExamFollowerRolesFromAnswer();" in APP_JS
-    assert 'advancedDetails.addEventListener("toggle"' in APP_JS
+    assert 'mountId: "examReasoningRoutePicker"' in APP_JS
     assert "function syncTaskProgressiveModelUi(profile" in APP_JS
-    assert 'visionCard.classList.toggle("hidden", readsImages)' in APP_JS
-    assert 'imageCard.hidden = !supportsImageTools' in APP_JS
+    assert 'id="examModelRoleDetails" class="exam-model-role-details" hidden' in INDEX_HTML
+    assert 'if (imageCard) imageCard.hidden = false' in APP_JS
+    assert 'mountId: "examImageRoutePicker"' in APP_JS
     assert 'return "main_model_tool_loop";' in APP_JS
     assert 'id="imageOrchestrationSwitch"' not in INDEX_HTML
 
@@ -966,7 +990,7 @@ def test_task_model_pages_offer_only_registered_protocol_choices_and_persist_the
     assert 'api_protocol: evidenceOnly ? selectedRoleProtocol("reasoning") : selectedRoleProtocol("answer")' in APP_JS
     assert 'reasoning_protocol: selectedRoleProtocol("reasoning")' in APP_JS
     assert 'answer_protocol: selectedRoleProtocol("answer")' in APP_JS
-    assert 'correctness_protocol: selectedRoleProtocol("correctness")' in APP_JS
+    assert 'correctness_protocol: selectedRoleProtocol("answer")' in APP_JS
     assert 'api_protocol: selectedTaskProtocol(knowledgeMode ? "knowledge" : "practice")' in APP_JS
 
 
@@ -1073,24 +1097,37 @@ def test_practice_secondary_result_context_is_collapsed_behind_one_summary() -> 
     assert '$("practiceResultTools").open = false' in APP_JS
 
 
-def test_environment_distinguishes_network_configuration_and_actual_model_call() -> None:
-    assert 'id="modelConfigCheckIcon"' in INDEX_HTML
-    assert 'id="modelCallCheckIcon"' in INDEX_HTML
-    assert 'id="testExamModelRoutesBtn"' in INDEX_HTML
-    assert "async function testExamModelRoutes()" in APP_JS
-    assert 'api("/api/provider-test"' in APP_JS
+def test_task_start_validates_the_selected_models_without_environment_page_checks() -> None:
+    assert 'data-page="env" aria-current="step"><span>1</span>选择模型' in INDEX_HTML
+    assert 'id="environmentStatusDisclosure"' not in INDEX_HTML
+    assert 'id="environmentBox"' not in INDEX_HTML
+    assert 'id="modelConfigCheckIcon"' not in INDEX_HTML
+    assert 'id="modelCallCheckIcon"' not in INDEX_HTML
+    assert 'api("/api/environment")' not in APP_JS
+    assert "function syncExamModelSelectionAvailability()" in APP_JS
+    assert "开始任务时会验证实际连接" in APP_JS
     assert 'const preflightRoutes = examTaskPreflightRoutes();' in APP_JS
     assert 'await preflightTaskModelRoutes(preflightRoutes' in APP_JS
     assert 'await preflightTaskModelRoutes(practiceTaskPreflightRoutes(operation, queuedPayload)' in APP_JS
     assert 'await preflightTaskModelRoutes(savedExamTaskPreflightRoutes(task)' in APP_JS
     assert 'practiceTaskPreflightRoutes("generate_from_plan", saved.request || {})' in APP_JS
+    preflight = APP_JS.split("async function preflightTaskModelRoutes(", 1)[1].split("function practiceTaskPreflightRoutes", 1)[0]
+    assert 'api("/api/provider-control/probe"' in preflight
+    assert 'source: "task_preflight"' in preflight
+    assert 'await platformAlert(details' in preflight
+    assert 'return false' in preflight
 
 
-def test_environment_requires_the_exact_supported_python_runtime() -> None:
-    assert "env?.python_supported" in APP_JS
-    assert '需要 Python ${env?.python_requirement || "3.11.x"}' in APP_JS
+def test_model_choices_use_the_full_page_without_a_redundant_outer_card() -> None:
+    assert 'class="reference-card env-card"' not in INDEX_HTML
+    assert '#page-env .provider-card {\n  width: 100%;\n  border: 0;' in PLATFORM_THEME_CSS
+    assert ".env-config-grid {\n  grid-template-columns: minmax(0, 1fr);" in PLATFORM_THEME_CSS
+
+
+def test_model_page_keeps_manual_test_support_without_using_it_as_a_navigation_gate() -> None:
     assert 'rememberModelConnectionTest(route.provider' in APP_JS
     assert "function syncExamModelTestAvailability()" in APP_JS
+    assert "function syncExamModelSelectionAvailability()" in APP_JS
 
 
 def test_word_format_start_requires_a_selected_document() -> None:
@@ -1119,7 +1156,8 @@ def test_practice_requests_include_the_configured_image_route() -> None:
 def test_practice_and_knowledge_preflight_missing_model_configuration_before_job_submission() -> None:
     assert "function practiceSubmissionConfigurationIssue(" in APP_JS
     assert "function practiceRequestRequiresImageTools(" in APP_JS
-    assert "practiceRequestRequiresImageTools(request)" in APP_JS
+    assert 'const imageProvider = String(request.image_provider || "").trim();' in APP_JS
+    assert "生图模型是任务必选项" in APP_JS
     assert "showPracticeSubmissionConfigurationIssue(sourceMode, configurationIssue)" in APP_JS
     assert 'showPracticeSubmissionConfigurationIssue("knowledge", configurationIssue)' in APP_JS
     assert "缺少 ${providerLabel} API Key" in APP_JS
@@ -1165,6 +1203,18 @@ def test_word_format_reviewer_is_a_secondary_home_tool_and_managed_task_kind() -
     assert '"format-download"' in APP_JS
     assert '"format-delete"' in APP_JS
     assert 'window.location.href = `/word-format${query}`' in APP_JS
+
+
+def test_exam_delivery_package_triggers_the_returned_download() -> None:
+    start = APP_JS.index("async function deliveryPackage()")
+    end = APP_JS.index("async function pageMap()", start)
+    flow = APP_JS[start:end]
+    assert "data.download_url" in flow
+    assert "downloadPracticeWord(data.download_url" in flow
+
+
+def test_home_no_longer_shows_redundant_exam_advanced_settings() -> None:
+    assert "高级模型设置" not in INDEX_HTML
 
 
 def test_generation_network_summary_exposes_each_transport_layer() -> None:
@@ -1361,8 +1411,7 @@ def test_provider_control_center_exposes_status_responsibility_and_exact_probes(
     assert "startup_probe_pending_provider_count" in APP_JS
     assert '<option value="tool_call">' not in INDEX_HTML
     preflight = APP_JS.split("async function preflightTaskModelRoutes(", 1)[1].split("function practiceTaskPreflightRoutes", 1)[0]
-    assert 'api("/api/provider-test"' not in preflight
-    assert 'throw ' not in preflight
+    assert 'api("/api/provider-control/probe"' in preflight
     assert "loadProviderControl()" in preflight
     assert 'capability: "vision"' in APP_JS
     assert '工具调用</option>' not in INDEX_HTML
@@ -1370,6 +1419,22 @@ def test_provider_control_center_exposes_status_responsibility_and_exact_probes(
     assert "provider-history-track" in APP_JS
     assert 'not_configured: ["未接入"' in APP_JS
     assert ".provider-matrix-group.status-not-configured" in PLATFORM_THEME_CSS
+
+
+def test_provider_model_capability_is_separate_from_connection_result() -> None:
+    assert 'function providerConnectionPresentation(row = {})' in APP_JS
+    assert 'registered ? "支持" : "待审核"' in APP_JS
+    assert '已登记能力 / 最近验证' in APP_JS
+    assert '连接超时' in APP_JS
+    assert '图片输入已验证' not in APP_JS
+    assert '图片输入已登记' not in APP_JS
+
+
+def test_provider_response_time_uses_friendly_labels() -> None:
+    assert 'function formatFriendlyModelLatency(milliseconds)' in APP_JS
+    assert '不到 1 秒' in APP_JS
+    assert '通常响应' in APP_JS
+    assert '成功请求的历史中位耗时' in APP_JS
 
 
 def test_audited_modals_share_keyboard_focus_and_restore_behavior() -> None:
@@ -1412,6 +1477,15 @@ def test_core_pages_have_readable_caption_and_numeric_primitives() -> None:
     assert ".task-manager-list.is-loading" in PLATFORM_THEME_CSS
     assert "@keyframes platform-skeleton-shimmer" in PLATFORM_THEME_CSS
     assert "@media (prefers-reduced-motion: reduce)" in PLATFORM_THEME_CSS
+
+
+def test_shared_interface_density_keeps_core_controls_compact_and_touchable() -> None:
+    assert "min-height: 44px !important;" in PLATFORM_THEME_CSS
+    assert ".model-route-option" in PLATFORM_THEME_CSS
+    assert "min-height: 50px;" in PLATFORM_THEME_CSS
+    assert ".task-model-grid .practice-model-setting" in PLATFORM_THEME_CSS
+    assert "padding: 18px;" in PLATFORM_THEME_CSS
+    assert ".model-family-tabs button { min-height: 40px;" in PLATFORM_THEME_CSS
 
 
 def test_model_key_status_uses_refreshed_provider_configuration() -> None:

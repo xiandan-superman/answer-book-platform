@@ -633,7 +633,7 @@ def _preserve_accepted_generated_images(
     tool-loop artifact record proving that the main model received that asset.
     """
 
-    if not isinstance(original, dict) or repaired.get("generated_images"):
+    if not isinstance(original, dict):
         return
     original_images = [
         copy.deepcopy(item)
@@ -651,12 +651,61 @@ def _preserve_accepted_generated_images(
     preserved_images = [item for item in original_images if str(item.get("asset_id") or "").strip() in proven_ids]
     if not preserved_images:
         return
-    repaired["generated_images"] = preserved_images
+    if not repaired.get("generated_images"):
+        repaired["generated_images"] = preserved_images
+    accepted_ids = {
+        str(item.get("asset_id") or "").strip()
+        for item in repaired["generated_images"]
+        if isinstance(item, dict)
+    }
+    retained_ids = accepted_ids & proven_ids
+    if not retained_ids:
+        return
     if isinstance(repaired.get("_draft"), dict):
-        repaired["_draft"]["generated_images"] = copy.deepcopy(preserved_images)
+        repaired["_draft"]["generated_images"] = copy.deepcopy(repaired["generated_images"])
     repaired_meta = dict(repaired.get("_meta") or {})
-    repaired_meta["image_tool_loop"] = copy.deepcopy(original_loop)
+    loop = copy.deepcopy(repaired_meta.get("image_tool_loop") or original_loop)
+    known_ids = {item.get("asset_id") for item in loop.get("generated_artifacts", []) if isinstance(item, dict)}
+    loop.setdefault("generated_artifacts", []).extend(
+        item for item in artifacts if item["asset_id"] in retained_ids and item["asset_id"] not in known_ids
+    )
+    repaired_meta["image_tool_loop"] = loop
     repaired["_meta"] = repaired_meta
+
+    # Asset adoption alone does not place an image in Word. Scoped text/formula
+    # repairs reconstruct blocks, so carry forward the already materialized
+    # image and its tagged caption only when that SAME asset remains adopted.
+    # Do not restore surrounding prose/formulas or superseded image assets.
+    qid = _qid(original)
+    retained_figure_ids = {
+        f"{qid}_agent_img_{index:02d}"
+        for index, item in enumerate(original.get("generated_images", []), start=1)
+        if isinstance(item, dict) and item.get("asset_id") in retained_ids
+    }
+    existing_ids = {
+        segment.get("image_id")
+        for block in repaired.get("blocks", []) or [] if isinstance(block, dict)
+        for segment in block.get("segments", []) or [] if isinstance(segment, dict)
+        if segment.get("type") == "image_ref"
+    }
+    missing_ids = retained_figure_ids - existing_ids
+    segments = []
+    for block in original.get("blocks", []) or []:
+        if not isinstance(block, dict):
+            continue
+        for segment in block.get("segments", []) or []:
+            if not isinstance(segment, dict):
+                continue
+            if (
+                segment.get("type") == "image_ref"
+                and segment.get("role") == "answer_generated_figure"
+                and segment.get("image_id") in missing_ids
+            ) or segment.get("figure_caption_for") in missing_ids:
+                segments.append(copy.deepcopy(segment))
+    if segments:
+        blocks = repaired.setdefault("blocks", [])
+        position = next((i for i, block in enumerate(blocks) if block.get("label") in {"解析", "解题步骤"}), len(blocks))
+        blocks.insert(position, {"label": "图示", "segments": segments})
 
 
 def _attach_image_tool_loop_result(repaired: dict[str, Any], result: Any) -> None:

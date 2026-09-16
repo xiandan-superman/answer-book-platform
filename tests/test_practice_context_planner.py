@@ -186,8 +186,8 @@ def test_context_plan_cannot_report_complete_when_text_evidence_is_missing() -> 
 def test_context_plan_counts_delivered_images_and_rejects_text_only_model() -> None:
     plan = build_context_plan(
         stage="generation",
-        provider_name="ark",
-        model_name="deepseek-v4-flash-ga-260731",
+        provider_name="lingsuan_domestic",
+        model_name="glm-5.2",
         text="生成一道题",
         image_evidence_refs=["image:2"],
         required_evidence_refs=["C01P0001", "image:2"],
@@ -202,7 +202,7 @@ def test_context_plan_counts_delivered_images_and_rejects_text_only_model() -> N
 
 
 def test_current_catalog_uses_default_generation_quality_limit() -> None:
-    assert model_stage_quality_limit("ark", "deepseek-v4-flash-ga-260731", "generation") == 20000
+    assert model_stage_quality_limit("lingsuan_domestic", "glm-5.2", "generation") == 20000
     assert estimate_text_tokens("材料科学ABC") >= 5
     assert image_numbers_from_evidence_refs(["image:2", "image:2", "image:9"], maximum=3) == [2]
 
