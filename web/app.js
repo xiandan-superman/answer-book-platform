@@ -1671,9 +1671,10 @@ function providerEnvKey(providerName) {
     lingsuan_openai: "LINGSUAN_OPENAI_API_KEY",
     lingsuan_domestic: "LINGSUAN_DOMESTIC_API_KEY",
     lingsuan_image: "LINGSUAN_IMAGE_API_KEY",
-    lingsuan_google: "LINGSUAN_GOOGLE_API_KEY"
-    ,wawapi_openai: "WAWAPI_OPENAI_API_KEY", wawapi_google: "WAWAPI_GOOGLE_API_KEY", wawapi_xai: "WAWAPI_XAI_API_KEY"
-    ,wawapi_image_openai: "WAWAPI_IMAGE_OPENAI_API_KEY", wawapi_image_google: "WAWAPI_IMAGE_GOOGLE_API_KEY", wawapi_image_xai: "WAWAPI_IMAGE_XAI_API_KEY"
+    lingsuan_google: "LINGSUAN_GOOGLE_API_KEY",
+    lingsuan_claude: "LINGSUAN_CLAUDE_API_KEY",
+    wawapi_openai: "WAWAPI_OPENAI_API_KEY", wawapi_google: "WAWAPI_GOOGLE_API_KEY", wawapi_xai: "WAWAPI_XAI_API_KEY",
+    wawapi_image_openai: "WAWAPI_IMAGE_OPENAI_API_KEY", wawapi_image_google: "WAWAPI_IMAGE_GOOGLE_API_KEY", wawapi_image_xai: "WAWAPI_IMAGE_XAI_API_KEY"
   };
   return map[name] || "";
 }
@@ -1682,6 +1683,7 @@ function displayProviderName(name) {
   const labels = {
     gemini_smart_router: "Gemini 智能路由",
     gpt_smart_router: "GPT 智能路由",
+    claude_smart_router: "Claude 智能路由",
     image_smart_router: "生图智能路由",
     cloudflare_smart_router: "Cloudflare 智能路由",
     ark: "火山方舟",
@@ -1692,8 +1694,9 @@ function displayProviderName(name) {
     lingsuan_domestic: "灵算 · 国模分组",
     lingsuan_image: "灵算 · OpenAI 图片",
     lingsuan_google: "灵算 · Google Gemini"
-    ,wawapi_openai: "WawAPI · GPT", wawapi_google: "WawAPI · Gemini", wawapi_xai: "WawAPI · Grok"
-    ,wawapi_image_openai: "WawAPI · GPT 图片", wawapi_image_google: "WawAPI · Gemini 图片", wawapi_image_xai: "WawAPI · Grok 图片"
+    ,lingsuan_claude: "灵算 · Claude",
+    wawapi_openai: "WawAPI · GPT", wawapi_google: "WawAPI · Gemini", wawapi_xai: "WawAPI · Grok",
+    wawapi_image_openai: "WawAPI · GPT 图片", wawapi_image_google: "WawAPI · Gemini 图片", wawapi_image_xai: "WawAPI · Grok 图片"
   };
   return labels[String(name || "").toLowerCase()] || name;
 }
@@ -2544,7 +2547,7 @@ function practiceRequestRequiresImageTools(request = {}) {
 }
 
 function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模拟出题") {
-  const smartRouterProviders = new Set(["gemini_smart_router", "gpt_smart_router", "image_smart_router"]);
+  const smartRouterProviders = new Set(["gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"]);
   const providerName = String(request.provider || "").trim();
   const model = String(request.model || "").trim();
   const providerLabel = displayProviderName(providerName || "未选择供应商");
@@ -2914,13 +2917,13 @@ async function preflightTaskModelRoutes(routes, workflowLabel) {
   const requiredRoutes = uniqueTaskModelRoutes(routes);
   if (!requiredRoutes.length) return true;
   const failed = [];
-  if (requiredRoutes.some((route) => ["gemini_smart_router", "gpt_smart_router", "image_smart_router"].includes(route.provider))) {
+  if (requiredRoutes.some((route) => ["gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"].includes(route.provider))) {
     // Smart routing is owned by the remote Cloudflare service. Its candidate
     // health is deliberately not inferred from this installation's provider
     // control records or local API keys.
   }
   for (const route of requiredRoutes) {
-    if (["gemini_smart_router", "gpt_smart_router", "image_smart_router"].includes(route.provider)) {
+    if (["gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"].includes(route.provider)) {
       // Smart-router availability belongs to Cloudflare's candidate pool. Do
       // not block task start with a local model probe or a stale gateway flag.
       continue;
@@ -9991,7 +9994,7 @@ function searchKeyProviders(value) {
 
 function apiProviderGroup(name) {
   const normalized = String(name || "");
-  if (["gemini_smart_router", "gpt_smart_router", "image_smart_router"].includes(normalized)) return "智能路由";
+  if (["gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"].includes(normalized)) return "智能路由";
   if (normalized === "ark_image" || normalized === "lingsuan_image" || normalized.startsWith("wawapi_image_")) return "图片";
   if (normalized.startsWith("lingsuan_") || normalized.startsWith("wawapi_")) return "聚合网关";
   return "官方";
@@ -10007,12 +10010,12 @@ function buildApiProviderNavigation(entries) {
   const item = (id, label, section, names, icon = "fa-cloud") => ({ id, label, section, icon, entries: take(names) });
   const officialNames = entries.map(([name]) => name).filter((name) => apiProviderGroup(name) === "官方");
   const catalog = [
-    item("smart:gemini", "Gemini 智能路由", "智能路由", ["gemini_smart_router"], "fa-route"),
+    item("smart:gemini", "智能路由", "智能路由", ["gemini_smart_router", "claude_smart_router"], "fa-route"),
     ...officialNames.map((name) => item(`official:${name}`, displayProviderName(name), "官方", [name])),
     item("image:ark", "火山方舟图片", "图片", ["ark_image"], "fa-image"),
     item("image:lingsuan", "灵算图片", "图片", ["lingsuan_image"], "fa-image"),
     item("image:wawapi", "WawAPI 图片", "图片", ["wawapi_image_openai", "wawapi_image_google", "wawapi_image_xai"], "fa-image"),
-    item("gateway:lingsuan", "灵算", "聚合网关", ["lingsuan_openai", "lingsuan_google", "lingsuan_domestic"], "fa-network-wired"),
+    item("gateway:lingsuan", "灵算", "聚合网关", ["lingsuan_openai", "lingsuan_google", "lingsuan_domestic", "lingsuan_claude"], "fa-network-wired"),
     item("gateway:wawapi", "WawAPI", "聚合网关", ["wawapi_openai", "wawapi_google", "wawapi_xai"], "fa-network-wired"),
   ].filter((entry) => entry.entries.length);
   const configuredIds = new Set(catalog
@@ -10474,6 +10477,7 @@ function modelFamilyName(model, kind = "text") {
     if (value.includes("grok-imagine")) return "Grok Image";
     if (value.includes("sensenova")) return "SenseNova";
   }
+  if (value.includes("smart-router")) return "智能路由";
   if (value.includes("deepseek")) return "DeepSeek";
   if (value.includes("gpt")) return "GPT";
   if (value.includes("gemini")) return "Gemini";
@@ -10517,7 +10521,7 @@ function renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, sele
   }
   const familyOrder = kind === "image"
     ? ["智能路由", "GPT Image", "Seedream", "Qwen Image", "Gemini Image", "Grok Image", "SenseNova", "其他"]
-    : ["DeepSeek", "GPT", "Gemini", "Claude", "GLM", "Qwen", "Doubao", "Kimi", "MiMo", "Hunyuan", "其他"];
+    : ["智能路由", "DeepSeek", "GPT", "Gemini", "Claude", "GLM", "Qwen", "Doubao", "Kimi", "MiMo", "Hunyuan", "其他"];
   const familyRank = (family) => {
     const index = familyOrder.indexOf(family);
     return index < 0 ? familyOrder.length : index;
@@ -10554,7 +10558,18 @@ function renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, sele
     });
   });
   mount.querySelectorAll("[data-route-provider]").forEach((button) => {
-    button.addEventListener("click", () => onChoose(button.dataset.routeProvider || "", button.dataset.routeModel || ""));
+    button.addEventListener("click", () => {
+      const options = button.closest(".model-route-options");
+      const scrollTop = options?.scrollTop || 0;
+      const activeFamily = mount.dataset.activeFamily || "";
+      onChoose(button.dataset.routeProvider || "", button.dataset.routeModel || "");
+      // Selecting a route re-renders the picker. Restore the user's position so
+      // long model lists do not jump back to their first item.
+      window.requestAnimationFrame(() => {
+        const nextOptions = mount.querySelector(".model-route-options");
+        if (nextOptions && mount.dataset.activeFamily === activeFamily) nextOptions.scrollTop = scrollTop;
+      });
+    });
   });
 }
 
@@ -11629,7 +11644,7 @@ function taskSearchText(task = {}) {
 
 function taskUsesSmartGemini(task = {}) {
   return [task.provider, task.answer_provider, task.reasoning_provider, task.vision_provider, task.model_provider]
-    .some((value) => ["gemini_smart_router", "gpt_smart_router"].includes(String(value || "")));
+    .some((value) => ["gemini_smart_router", "gpt_smart_router", "claude_smart_router"].includes(String(value || "")));
 }
 
 function smartGeminiThinkingText(row = {}) {
