@@ -4252,10 +4252,28 @@ async function typesetMath(container) {
   if (!container) return;
   try {
     const mathJax = await ensurePracticeMathJax();
-    mathJax.typesetClear?.([container]);
-    await mathJax.typesetPromise([container]);
+    // Render independent blocks separately. One malformed formula should not
+    // make every formula on the page fall back to raw LaTeX.
+    const blocks = Array.from(container.querySelectorAll(
+      ".practice-math, .practice-stem, .practice-options, .analysis-section, .formula-section, [data-formula-preview]"
+    ));
+    const targets = blocks.length ? blocks : [container];
+    for (const target of targets) {
+      if (!/[\\$]|\\\\\(|\\\\\[/.test(target.textContent || "")) continue;
+      try {
+        mathJax.typesetClear?.([target]);
+        await mathJax.typesetPromise([target]);
+        target.removeAttribute("data-math-render-failed");
+        target.removeAttribute("title");
+      } catch {
+        // Keep the original escaped LaTeX visible for this block only.
+        target.dataset.mathRenderFailed = "true";
+        target.title = "公式渲染失败，当前显示公式源码";
+      }
+    }
   } catch {
-    // 网络不可用时保留可读的 LaTeX 原文，不影响题目和导出。
+    // Script loading failure keeps the escaped LaTeX readable and does not
+    // block the question, answer, or export flow.
   }
 }
 
