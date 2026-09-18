@@ -125,6 +125,22 @@ def classify_provider_error(
             failure_state="route_blocked",
         )
 
+    smart_attempts = getattr(error, "smart_route_attempts", None)
+    if isinstance(smart_attempts, list) and smart_attempts:
+        attempt_text = "；".join(
+            f"{str(item.get('provider') or '未知供应商')} / {str(item.get('model') or '未知模型')}：{str(item.get('status') or '失败')}"
+            for item in smart_attempts
+            if isinstance(item, dict)
+        )
+        return result(
+            "smart_route_exhausted",
+            "智能路由中的模型均调用失败",
+            f"本次已依次尝试：{attempt_text}。任务本身没有异常，已完成内容会保留。",
+            "请稍后从当前安全检查点重试；路由恢复后无需重新执行已完成步骤。",
+            retryable=True,
+            failure_state="service_degraded",
+        )
+
     if isinstance(error, ProviderRouteDegradedError) or "供应商模型路由持续异常" in raw:
         route_match = re.search(r"供应商：([^；]{1,120})；模型：([^；]{1,160})", raw)
         route_label = (
@@ -488,6 +504,16 @@ def classify_provider_error(
             "模型服务内部异常",
             "服务商在处理请求时发生内部错误，本次任务未能完成。",
             "请稍后从当前步骤重试；若持续出现，可切换模型或服务商。",
+            retryable=True,
+            failure_state="service_degraded",
+        )
+
+    if _contains(lowered, "returned empty", "empty response", "空响应"):
+        return result(
+            "provider_empty_response",
+            "模型返回了空内容",
+            "服务商已接收请求，但没有返回可供任务继续处理的内容。",
+            "平台可切换到下一条可用路线继续本次请求。",
             retryable=True,
             failure_state="service_degraded",
         )

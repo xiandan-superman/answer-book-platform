@@ -143,6 +143,7 @@ from .runtime_monitor import (
 )
 from .settings import (
     DEFAULT_MODEL_MAX_TOKENS,
+    SMART_ROUTER_PROVIDER_NAMES,
     get_provider,
     list_providers,
     provider_model_supports_vision,
@@ -208,6 +209,10 @@ def _provider_key_validation_errors(entries: list[tuple[str, object]]) -> list[s
         if key in seen:
             continue
         seen.add(key)
+        if name in SMART_ROUTER_PROVIDER_NAMES:
+            # Smart-router credentials and candidate health are owned by the
+            # remote gateway. They must not be treated as local provider keys.
+            continue
         if not str(getattr(provider, "api_key", "") or "").strip():
             errors.append(_provider_key_issue(label, provider))
     return errors
@@ -564,10 +569,13 @@ def _build_task_list_payload() -> dict:
         )
         row.update(_task_duration_summary(row))
         exam_tasks.append(build_exam_run(row))
-    practice_tasks = build_practice_runs(
-        list_practice_jobs(limit=100, include_history_completed=True),
-        list_practice_records(limit=100),
-    )
+    practice_jobs = list_practice_jobs(limit=100, include_history_completed=True)
+    for job in practice_jobs:
+        job.update(model_call_route_summary(str(job.get("job_id") or "")))
+    practice_histories = list_practice_records(limit=100)
+    for history in practice_histories:
+        history.update(model_call_route_summary(str(history.get("generation_run_id") or "")))
+    practice_tasks = build_practice_runs(practice_jobs, practice_histories)
     return {
         "tasks": exam_tasks + practice_tasks + list_word_format_tasks(),
         "schema_version": 2,
@@ -580,8 +588,26 @@ def _delete_managed_task(task_id: str) -> dict:
     if task_id.startswith("generation_"):
         return delete_practice_job(task_id)
     if task_id.startswith("practice_"):
-        result = delete_practice_record(task_id)
-        return {**result, **delete_jobs_for_history(task_id), "task_id": task_id}
+        # The task center may expose a stable practice_batch_id while the
+        # persisted history file is keyed by history_id. Resolve the visible
+        # id before deleting so cleanup cannot leave the same task behind.
+        history_id = task_id
+        try:
+            records = list_practice_records(limit=1000)
+        except Exception:
+            records = []
+        for record in records:
+            request = record.get("request") if isinstance(record.get("request"), dict) else {}
+            candidates = {
+                str(record.get("history_id") or "").strip(),
+                str(record.get("practice_batch_id") or "").strip(),
+                str(request.get("practice_batch_id") or "").strip(),
+            }
+            if task_id in candidates:
+                history_id = str(record.get("history_id") or task_id)
+                break
+        result = delete_practice_record(history_id)
+        return {**result, **delete_jobs_for_history(history_id), "task_id": task_id}
     return delete_task(task_id)
 
 
@@ -684,6 +710,10 @@ def _practice_job_api_payload(record: dict) -> dict:
         "suggested_action": presentation.retry_hint if presentation else str(record.get("suggested_action") or ""),
         "error_presentation": asdict(presentation) if presentation else None,
     }
+    route_summary = model_call_route_summary(str(record.get("job_id") or ""))
+    payload.update(route_summary)
+    if isinstance(payload.get("result"), dict):
+        payload["result"] = {**payload["result"], "smart_route_summary": route_summary}
     payload.pop("diagnostic_context", None)
     payload.pop("failure_context", None)
     payload.pop("postprocess_checkpoint", None)
@@ -1374,12 +1404,15 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_file(target, content_type="application/pdf", disposition="inline")
             return
         if parsed.path == "/api/practice/history":
-            self.send_json(
-                READ_SNAPSHOTS.get(
-                    "practice_history",
-                    lambda: {"records": list_practice_records()},
-                )
-            )
+            def practice_history_payload() -> dict:
+                records = list_practice_records()
+                for record in records:
+                    summary = model_call_route_summary(str(record.get("generation_run_id") or ""))
+                    record.update(summary)
+                    if isinstance(record.get("data"), dict):
+                        record["data"] = {**record["data"], "smart_route_summary": summary}
+                return {"records": records}
+            self.send_json(READ_SNAPSHOTS.get("practice_history", practice_history_payload))
             return
         if parsed.path == "/api/practice/jobs":
             query = parse_qs(parsed.query)
@@ -1434,7 +1467,12 @@ class PlatformHandler(BaseHTTPRequestHandler):
             self.send_json(_practice_job_api_payload(load_practice_job(parts[3], include_payload=include_payload)))
             return
         if len(parts) == 4 and parts[:3] == ["api", "practice", "history"]:
-            self.send_json(load_practice_record(parts[3]))
+            record = load_practice_record(parts[3])
+            route_summary = model_call_route_summary(str(record.get("generation_run_id") or ""))
+            record.update(route_summary)
+            if isinstance(record.get("data"), dict):
+                record["data"] = {**record["data"], "smart_route_summary": route_summary}
+            self.send_json(record)
             return
         if parsed.path == "/api/library-files":
             self.send_json(scan_library_files())

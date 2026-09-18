@@ -36,7 +36,8 @@ def test_all_lingsuan_groups_migrate_old_saved_endpoint_without_changing_keys():
             raw["providers"][name]["base_url"] = old_url
         with patch("app.settings.load_provider_config_file", return_value=raw):
             providers = list_providers()
-        assert len(names) == 4
+        assert len(names) == 5
+        assert "lingsuan_claude" in names
         for name in names:
             assert providers[name].base_url == "https://edge.lingsuan.org/v1"
             assert providers[name].api_key_env == raw["providers"][name]["api_key_env"]

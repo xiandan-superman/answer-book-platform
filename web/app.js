@@ -1680,6 +1680,10 @@ function providerEnvKey(providerName) {
 
 function displayProviderName(name) {
   const labels = {
+    gemini_smart_router: "Gemini 智能路由",
+    gpt_smart_router: "GPT 智能路由",
+    image_smart_router: "生图智能路由",
+    cloudflare_smart_router: "Cloudflare 智能路由",
     ark: "火山方舟",
     ark_image: "火山方舟",
     bailian: "阿里云百炼",
@@ -2540,6 +2544,7 @@ function practiceRequestRequiresImageTools(request = {}) {
 }
 
 function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模拟出题") {
+  const smartRouterProviders = new Set(["gemini_smart_router", "gpt_smart_router", "image_smart_router"]);
   const providerName = String(request.provider || "").trim();
   const model = String(request.model || "").trim();
   const providerLabel = displayProviderName(providerName || "未选择供应商");
@@ -2556,7 +2561,7 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
       message: `无法开始${workflowLabel}：当前供应商 ${providerLabel} 尚未选择模型。请先调整模型；当前材料已保留。`,
     };
   }
-  if (providerConfigs?.[providerName]?.api_key_set !== true) {
+  if (!smartRouterProviders.has(providerName) && providerConfigs?.[providerName]?.api_key_set !== true) {
     return {
       provider: providerName,
       message: `无法开始${workflowLabel}：当前模型 ${routeLabel} 缺少 ${providerLabel} API Key。请前往 API 配置填写并验证后重试；当前材料已保留。`,
@@ -2564,7 +2569,7 @@ function practiceSubmissionConfigurationIssue(request = {}, workflowLabel = "模
   }
   const imageProvider = String(request.image_provider || "").trim();
   const imageModel = String(request.image_model || "").trim();
-  if (!imageProvider || !imageModel || providerConfigs?.[imageProvider]?.api_key_set !== true) {
+  if (!imageProvider || !imageModel || (!smartRouterProviders.has(imageProvider) && providerConfigs?.[imageProvider]?.api_key_set !== true)) {
     return {
       provider: imageProvider,
       message: `无法开始${workflowLabel}：生图模型是任务必选项。请完成生图服务商、模型和 API Key 配置；当前材料已保留。`,
@@ -2909,7 +2914,17 @@ async function preflightTaskModelRoutes(routes, workflowLabel) {
   const requiredRoutes = uniqueTaskModelRoutes(routes);
   if (!requiredRoutes.length) return true;
   const failed = [];
+  if (requiredRoutes.some((route) => ["gemini_smart_router", "gpt_smart_router", "image_smart_router"].includes(route.provider))) {
+    // Smart routing is owned by the remote Cloudflare service. Its candidate
+    // health is deliberately not inferred from this installation's provider
+    // control records or local API keys.
+  }
   for (const route of requiredRoutes) {
+    if (["gemini_smart_router", "gpt_smart_router", "image_smart_router"].includes(route.provider)) {
+      // Smart-router availability belongs to Cloudflare's candidate pool. Do
+      // not block task start with a local model probe or a stale gateway flag.
+      continue;
+    }
     try {
       await api("/api/provider-control/probe", {
         method: "POST",
@@ -5002,6 +5017,8 @@ function renderPracticeResults(data) {
   $("practiceLoading")?.classList.add("hidden");
   $("practicePlanReview")?.classList.add("hidden");
   $("practiceResults")?.classList.remove("hidden");
+  const smartRouteSummary = data?.smart_route_summary || {};
+  const questionModelRoutes = smartRouteSummary.question_model_routes || {};
   if ($("practiceResultTools")) $("practiceResultTools").open = false;
   // Closing a saved scope drawer can offer its resume card again.  A completed
   // result must never show that earlier-step card, even when a stale scope is
@@ -5103,6 +5120,10 @@ function renderPracticeResults(data) {
     "blueprint_audit_failed"
   ]);
   $("practiceExerciseList").innerHTML = (data.exercises || []).map((item, idx) => {
+    const route = [item.question_id, item.plan_item_id, item.parent_plan_item_id, item.number]
+      .map((value) => questionModelRoutes[String(value || "")])
+      .find(Boolean) || {};
+    const routeLabel = route.model ? `${displayProviderName(route.provider)} / ${route.model}` : "";
     const sourceRefs = uniquePracticeLabels([
       ...(Array.isArray(item.source_refs) ? item.source_refs : []),
       item.source_question_id
@@ -5161,6 +5182,7 @@ function renderPracticeResults(data) {
         <div class="practice-exercise__identity"><b>第 ${escapeHtml(item.number || String(idx + 1))} 题</b><span>${auditNeedsReview ? "蓝图待复核" : configurationNeedsReview ? "待配置" : generationFailed ? "生成失败" : escapeHtml(item.question_type || "综合题")}</span></div>
         <div class="practice-exercise__meta">
           <small>${escapeHtml(item.target_skill || "核心能力训练")}</small>
+          ${routeLabel ? `<small>最终模型：${escapeHtml(routeLabel)}</small>` : ""}
           <em class="${item.difficulty === "挑战" ? "hard" : item.difficulty === "基础" ? "easy" : ""}">${escapeHtml(item.difficulty)}</em>
           <div class="practice-exercise__actions">
             <label title="选择本题" class="practice-exercise__select"><input type="checkbox" aria-label="选择第 ${escapeHtml(item.number || String(idx + 1))} 题" data-practice-select="${idx}" ${selectedPracticeExerciseIndexes.has(idx) ? "checked" : ""}><span>选择</span></label>
@@ -9864,7 +9886,8 @@ function renderApiKeyFileInfo() {
     setText("homeApiKeyFileStatus", "API 配置保存状态暂时无法读取，可进入配置中心重试");
     return;
   }
-  const visibleEntries = userVisibleProviderEntries();
+  const visibleEntries = userVisibleProviderEntries()
+    .filter(([name]) => name !== "gpt_smart_router");
   const count = visibleEntries.filter(([, cfg]) => cfg.api_key_set).length;
   const total = visibleEntries.length;
   setText(
@@ -9968,12 +9991,15 @@ function searchKeyProviders(value) {
 
 function apiProviderGroup(name) {
   const normalized = String(name || "");
+  if (["gemini_smart_router", "gpt_smart_router", "image_smart_router"].includes(normalized)) return "智能路由";
   if (normalized === "ark_image" || normalized === "lingsuan_image" || normalized.startsWith("wawapi_image_")) return "图片";
   if (normalized.startsWith("lingsuan_") || normalized.startsWith("wawapi_")) return "聚合网关";
   return "官方";
 }
 
-const HIDDEN_API_CONFIG_PROVIDER_NAMES = new Set();
+// GPT and Gemini smart routing share one Cloudflare address and user access
+// key, so the configuration center exposes a single card for that connection.
+const HIDDEN_API_CONFIG_PROVIDER_NAMES = new Set(["gpt_smart_router", "image_smart_router"]);
 
 function buildApiProviderNavigation(entries) {
   const byName = new Map(entries);
@@ -9981,6 +10007,7 @@ function buildApiProviderNavigation(entries) {
   const item = (id, label, section, names, icon = "fa-cloud") => ({ id, label, section, icon, entries: take(names) });
   const officialNames = entries.map(([name]) => name).filter((name) => apiProviderGroup(name) === "官方");
   const catalog = [
+    item("smart:gemini", "Gemini 智能路由", "智能路由", ["gemini_smart_router"], "fa-route"),
     ...officialNames.map((name) => item(`official:${name}`, displayProviderName(name), "官方", [name])),
     item("image:ark", "火山方舟图片", "图片", ["ark_image"], "fa-image"),
     item("image:lingsuan", "灵算图片", "图片", ["lingsuan_image"], "fa-image"),
@@ -10037,7 +10064,7 @@ function renderKeyProviderCards() {
       <button type="button" class="outline-button" data-key-config-retry><i class="fas fa-rotate"></i>重试加载</button>
       ${apiKeyConfigLoadState.recoveryAvailable ? '<button type="button" class="outline-button danger-text" data-key-config-recover><i class="fas fa-shield-halved"></i>备份损坏配置并重建</button>' : ""}
     </div>` : "";
-  const sections = ["已配置", "官方", "图片", "聚合网关"];
+  const sections = ["已配置", "智能路由", "官方", "图片", "聚合网关"];
   const nav = sections.map((section) => {
     const sectionItems = navigation.filter((entry) => entry.section === section);
     if (!sectionItems.length) return "";
@@ -10046,12 +10073,15 @@ function renderKeyProviderCards() {
       return `<button type="button" class="key-pane-nav-item ${entry.id === selectedItem.id ? "active" : ""}" data-key-group="${escapeHtml(entry.id)}"><span><i class="fas ${entry.icon}"></i>${escapeHtml(entry.label)}</span><small title="已配置 ${configured} 条通道，共 ${entry.entries.length} 条">${configured}/${entry.entries.length} 已配置</small></button>`;
     }).join("")}</div>`;
   }).join("");
-  const detailHint = selectedItem.section === "聚合网关"
+  const detailHint = selectedItem.section === "智能路由"
+    ? "这里只保存 Cloudflare 路由地址和用户访问 Key；候选模型、上游 Key、并发和健康记录均在云端管理。"
+    : selectedItem.section === "聚合网关"
     ? "该网关的模型家族集中在这里配置；任务中只会出现已配置且能力匹配的模型。"
     : selectedItem.section === "图片"
       ? "这里只配置图片生成通道，不与文本聚合网关混放。"
       : "查看该供应商可接入的模型，测试并保存 API Key。";
   grid.innerHTML = keyFileWarning + `<div class="key-split-layout"><aside class="key-pane-nav">${nav}</aside><section class="key-pane-detail"><div class="key-pane-detail-head"><span class="eyebrow">${escapeHtml(selectedItem.section)}</span><h3>${escapeHtml(selectedItem.label)}</h3><p>${escapeHtml(detailHint)}</p></div><div class="key-provider-detail-list">` + selectedEntries.map(([name, cfg]) => {
+    if (name === "gemini_smart_router") return renderSmartGeminiGatewayCard(cfg);
     const expanded = true;
     return `
     <form class="key-provider-card${expanded ? " expanded" : ""}" data-key-provider="${escapeHtml(name)}" data-key-label="${escapeHtml(displayProviderName(name))}" data-key-capabilities="${escapeHtml(keyProviderCapabilityText(cfg))}" data-key-models="${escapeHtml([...(cfg.model_options || []), ...(cfg.image_model_options || []), cfg.default_model, cfg.image_model].filter(Boolean).join(" "))}" data-key-saved="${cfg.api_key_set ? "true" : "false"}" autocomplete="off">
@@ -10125,6 +10155,79 @@ function renderKeyProviderCards() {
   grid.querySelectorAll("[data-key-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteKeyProvider(button.dataset.keyDelete));
   });
+  grid.querySelectorAll("[data-smart-gateway-input]").forEach((input) => input.addEventListener("input", () => {
+    const card = input.closest(".key-provider-card");
+    const save = card?.querySelector("[data-smart-gateway-save]");
+    if (save) save.disabled = false;
+    keyProviderStatus(card, "idle", "配置有变化", "保存前只检查必填项和格式，不会调用模型。");
+  }));
+  grid.querySelector("[data-smart-gateway-check]")?.addEventListener("click", checkSmartGeminiGatewayConfig);
+  grid.querySelector("[data-smart-gateway-save]")?.addEventListener("click", saveSmartGeminiGatewayConfig);
+  grid.querySelector("[data-smart-gateway-delete]")?.addEventListener("click", deleteSmartGeminiGatewayConfig);
+}
+
+function renderSmartGeminiGatewayCard(cfg = {}) {
+  const fields = [
+    ["CLOUDFLARE_SMART_ROUTER_URL", "Cloudflare 智能路由地址", cfg.smart_router_url || "", false],
+    ["CLOUDFLARE_SMART_ROUTER_ACCESS_KEY", "用户访问 Key", "", true],
+  ];
+  return `<form class="key-provider-card expanded" data-key-provider="gemini_smart_router" data-key-saved="${cfg.gateway_ready ? "true" : "false"}" autocomplete="off">
+    <header><div class="key-provider-summary"><span class="key-provider-mark"><i class="fas fa-route"></i></span><span class="key-provider-summary__copy"><strong>Cloudflare 智能路由</strong><small>管理员统一配置 · 多模态与生图</small></span><span class="key-saved-badge ${cfg.gateway_ready ? "saved" : ""}"><i class="fas ${cfg.gateway_ready ? "fa-circle-check" : "fa-circle"}"></i>${cfg.gateway_ready ? "已配置" : "未配置"}</span></div></header>
+    <div class="key-provider-details">${fields.map(([env, label, value, secret]) => `<label>${escapeHtml(label)}</label><div class="key-provider-input-row"><input type="${secret ? "password" : "text"}" data-smart-gateway-input="${env}" value="${escapeHtml(value)}" placeholder="${secret && cfg.gateway_token_set ? "留空表示继续使用已保存 Token" : `填写${label}`}"></div>`).join("")}
+      <p class="key-test-model">检查配置不会调用模型。供应商、具体模型、上游 Key、健康记录和共享并发均由 Cloudflare 端统一管理。</p>
+      <div class="key-provider-actions"><button type="button" class="outline-button" data-smart-gateway-check><i class="fas fa-list-check"></i>检查配置</button><button type="button" class="secondary-button" data-smart-gateway-save disabled><i class="fas fa-floppy-disk"></i>保存</button>${cfg.gateway_ready ? '<button type="button" class="text-button danger-text" data-smart-gateway-delete>删除</button>' : ""}</div>
+      <div class="key-provider-status ${cfg.gateway_ready ? "ok" : "idle"}" data-key-status><strong>${cfg.gateway_ready ? "已配置" : "等待配置"}</strong><span>${cfg.gateway_ready ? "智能路由可供新任务选择；实际状态由 Cloudflare 路由记录决定。" : "请填写路由地址和用户访问 Key。"}</span></div>
+    </div></form>`;
+}
+
+function smartGatewayValues(card) {
+  return Object.fromEntries([...card.querySelectorAll("[data-smart-gateway-input]")].map((input) => [input.dataset.smartGatewayInput, input.value.trim()]));
+}
+
+function validateSmartGatewayValues(values, cfg = {}) {
+  const missing = Object.entries(values).filter(([name, value]) => !value && !(name === "CLOUDFLARE_SMART_ROUTER_ACCESS_KEY" && cfg.gateway_token_set));
+  if (missing.length) return "请填写路由地址和用户访问 Key";
+  try {
+    const url = new URL(values.CLOUDFLARE_SMART_ROUTER_URL);
+    if (url.protocol !== "https:") return "智能路由地址必须使用 HTTPS";
+  } catch (_) { return "智能路由地址格式无效"; }
+  return "";
+}
+
+function checkSmartGeminiGatewayConfig() {
+  const card = document.querySelector('[data-key-provider="gemini_smart_router"]');
+  if (!card) return;
+  const error = validateSmartGatewayValues(smartGatewayValues(card), providerConfigs.gemini_smart_router || {});
+  keyProviderStatus(card, error ? "error" : "ok", error || "配置格式通过", error ? "请修改后重新检查。" : "未发送模型请求；保存后即可在新任务中选择智能路由。");
+}
+
+async function saveSmartGeminiGatewayConfig() {
+  const card = document.querySelector('[data-key-provider="gemini_smart_router"]');
+  if (!card) return;
+  const values = smartGatewayValues(card);
+  const cfg = providerConfigs.gemini_smart_router || {};
+  const error = validateSmartGatewayValues(values, cfg);
+  if (error) return keyProviderStatus(card, "error", error);
+  if (!values.CLOUDFLARE_SMART_ROUTER_ACCESS_KEY) delete values.CLOUDFLARE_SMART_ROUTER_ACCESS_KEY;
+  try {
+    await api("/api/providers/local-keys", { method: "POST", body: JSON.stringify({ keys: values }) });
+    setVisual("keyConfigNotice", "智能路由配置已保存", "未调用模型；新任务现在可以选择 Gemini 智能路由。", "ok");
+    await refresh();
+  } catch (err) {
+    keyProviderStatus(card, "error", "保存失败", err?.userMessage || String(err));
+  }
+}
+
+async function deleteSmartGeminiGatewayConfig() {
+  if (!await platformConfirm({ eyebrow: "智能路由", title: "删除 Cloudflare 智能路由配置？", message: "只删除 Cloudflare 配置，不会删除本机灵算和 WawAPI 的 Key，也不影响原手动路线。", confirmText: "确认删除", tone: "danger" })) return;
+  const names = ["CLOUDFLARE_SMART_ROUTER_URL", "CLOUDFLARE_SMART_ROUTER_ACCESS_KEY"];
+  try {
+    await api("/api/providers/local-keys", { method: "POST", body: JSON.stringify({ keys: Object.fromEntries(names.map((name) => [name, ""])) }) });
+    setVisual("keyConfigNotice", "智能路由配置已删除", "原有手动 Gemini 路线不受影响。", "ok");
+    await refresh();
+  } catch (err) {
+    setVisual("keyConfigNotice", "删除失败", err?.userMessage || String(err), "error");
+  }
 }
 
 async function recoverDamagedApiConfiguration(event) {
@@ -10363,6 +10466,7 @@ function taskModelOptions(kind, cfg, purpose = "") {
 function modelFamilyName(model, kind = "text") {
   const value = String(model || "").toLowerCase();
   if (kind === "image") {
+    if (value.includes("image-smart-router")) return "智能路由";
     if (value.includes("gpt-image")) return "GPT Image";
     if (value.includes("seedream")) return "Seedream";
     if (value.includes("qwen-image")) return "Qwen Image";
@@ -10412,7 +10516,7 @@ function renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, sele
     return;
   }
   const familyOrder = kind === "image"
-    ? ["GPT Image", "Seedream", "Qwen Image", "Gemini Image", "Grok Image", "SenseNova", "其他"]
+    ? ["智能路由", "GPT Image", "Seedream", "Qwen Image", "Gemini Image", "Grok Image", "SenseNova", "其他"]
     : ["DeepSeek", "GPT", "Gemini", "Claude", "GLM", "Qwen", "Doubao", "Kimi", "MiMo", "Hunyuan", "其他"];
   const familyRank = (family) => {
     const index = familyOrder.indexOf(family);
@@ -10875,7 +10979,12 @@ function populateThinkingModeControl(selectId, hintId, providerName, model, pref
   select.innerHTML = modes.map((mode) => `<option value="${escapeHtml(mode)}">${escapeHtml(THINKING_MODE_LABELS[mode] || mode)}</option>`).join("");
   select.value = modes.includes(previous) ? previous : (modes.includes(configuredDefault) ? configuredDefault : modes[0]);
   select.disabled = modes.length <= 1;
-  setText(hintId, `可选思考档位：${modes.map((mode) => THINKING_MODE_LABELS[mode] || mode).join("、")}`);
+  const smartHint = providerName === "gemini_smart_router"
+    ? "。智能路由按候选型号的已登记下限处理：灵算 3.8/3.7 最低中等，3.6/3.5 最低极低；低于下限时请求档位会提高。自动不发送深度参数，使用上游默认值；切换通道不会为了提速主动降低所选档位。运行及结果记录会显示实际请求档位，但不代表已验证模型内部思考程度。"
+    : providerName === "gpt_smart_router"
+      ? "。GPT 智能路由会按最终候选型号的已登记档位处理；当前仅创建选择入口，Worker 路线将在后续配置和验收。"
+      : "";
+  setText(hintId, `可选思考档位：${modes.map((mode) => THINKING_MODE_LABELS[mode] || mode).join("、")}${smartHint}`);
   return select.value || "auto";
 }
 
@@ -10985,7 +11094,9 @@ async function createTask() {
     const selectedBooks = selectedTextbooks();
     if (!questionOnly && !selectedBooks.length) throw new Error("请至少选择一本已建立索引的教材");
     const selectedBookNames = selectedTextbookNames();
-    const imageFallbackConfigured = Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel());
+    const imageProviderName = $("imageProviderSelect")?.value || "";
+    const imageSmartRouterSelected = imageProviderName === "image_smart_router";
+    const imageFallbackConfigured = imageSmartRouterSelected || Boolean(selectedImageProviderConfig()?.api_key_set && selectedImageModel());
     if (!evidenceOnly && !imageFallbackConfigured) {
       throw new Error("生图模型是任务必选项，请先完成生图服务商、模型和 API Key 配置。");
     }
@@ -11015,7 +11126,7 @@ async function createTask() {
         correctness_protocol: selectedRoleProtocol("answer"),
         vision_provider: directVisionRoute.provider,
         vision_model: directVisionRoute.model,
-        image_provider: imageFallbackConfigured ? ($("imageProviderSelect")?.value || "") : "",
+        image_provider: imageFallbackConfigured ? imageProviderName : "",
         image_model: imageFallbackConfigured ? selectedImageModel() : "",
         image_orchestration: imageOrchestrationMode("exam"),
         model_thinking: evidenceOnly ? selectedRoleThinkingMode("reasoning") : selectedRoleThinkingMode("answer"),
@@ -11516,6 +11627,77 @@ function taskSearchText(task = {}) {
   ].filter(Boolean).map((value) => String(value).toLocaleLowerCase()).join(" ");
 }
 
+function taskUsesSmartGemini(task = {}) {
+  return [task.provider, task.answer_provider, task.reasoning_provider, task.vision_provider, task.model_provider]
+    .some((value) => ["gemini_smart_router", "gpt_smart_router"].includes(String(value || "")));
+}
+
+function smartGeminiThinkingText(row = {}) {
+  const trace = row.thinking_trace || {};
+  const label = (value) => value === "provider_default" ? "上游默认（未指定）" : value === "enabled" ? "开启思考" : (THINKING_MODE_LABELS[value] || "未记录");
+  const reasons = {
+    model_minimum: `按该型号已登记的最低档位提高至${label(trace.minimum)}`,
+    provider_default: "未发送深度参数，使用上游默认值",
+    selection_unrecorded: "本次调用未保留原选择，不能推断是否调整",
+    unrecognized_parameter: "请求参数无法识别，不推断模型内部深度",
+    unchanged: "保持所选档位",
+    request_parameter: "按最终请求参数记录",
+  };
+  return `用户选择：${label(trace.selected)}；实际请求深度：${label(trace.actual_requested)}；${reasons[trace.reason] || "历史记录缺少深度信息，不作推断"}`;
+}
+
+function smartGeminiRouteSummaryHtml(task = {}) {
+  if (!taskUsesSmartGemini(task)) return "";
+  const waiting = task.smart_route_status || {};
+  const waitingHtml = waiting.state === "waiting_concurrency"
+    ? `<span><i class="fas fa-hourglass-half"></i>${escapeHtml(waiting.message || "模型并发已满，正在等待可用名额；任务本身没有异常。")} 已等待 ${Math.max(0, Number(waiting.waited_seconds || 0))} 秒</span>`
+    : "";
+  const isSmartCandidate = (row) => {
+    const provider = String(row?.provider || "");
+    const model = String(row?.model || "").toLowerCase();
+    return ["lingsuan_google", "wawapi_google", "lingsuan_openai", "wawapi_openai", "cloudflare_smart_router"].includes(provider)
+      && (model.startsWith("gemini-") || model.startsWith("gpt-"));
+  };
+  const routes = (Array.isArray(task.actual_model_routes) ? task.actual_model_routes : []).filter(isSmartCandidate);
+  const timeline = (Array.isArray(task.model_route_timeline) ? task.model_route_timeline : []).filter(isSmartCandidate);
+  if (!routes.length && !timeline.length) return waitingHtml || '<span><i class="fas fa-route"></i>智能路由：等待第一次真实请求</span>';
+  const latest = timeline[timeline.length - 1] || {};
+  const cloudAttempts = timeline.flatMap((row) => Array.isArray(row.smart_route?.attempts) ? row.smart_route.attempts : []);
+  const current = latest.provider ? `${displayProviderName(latest.provider)} / ${latest.model}` : "等待选择";
+  const state = latest.outcome === "running" ? "正在使用" : latest.outcome === "succeeded" ? "最近成功" : "最近失败，等待下一路线";
+  const initial = timeline[0] || {};
+  const initialAttempt = cloudAttempts[0] || initial;
+  const switches = timeline.slice(1).map((row, index) => {
+    const previous = timeline[index];
+    return {
+      ...row,
+      switched: previous.provider !== row.provider || previous.model !== row.model,
+      from_provider: previous.provider,
+      from_model: previous.model,
+      switch_reason: row.from_provider === previous.provider && row.from_model === previous.model ? row.switch_reason : "",
+    };
+  }).filter((row) => row.switched);
+  const routeStats = routes.map((route) => {
+    const tokens = Number(route.prompt_tokens || 0) + Number(route.completion_tokens || 0);
+    const cost = Number.isFinite(Number(route.provider_reported_cost)) && route.provider_reported_cost !== null ? `，费用 ${Number(route.provider_reported_cost).toFixed(6)}` : "";
+    return `${displayProviderName(route.provider)} / ${route.model}：成功 ${route.success_count || 0}，失败 ${route.failed_count || 0}，耗时 ${formatDuration(Math.ceil(Number(route.elapsed_ms || 0) / 1000))}${tokens ? `，Token ${tokens}` : ""}${cost}`;
+  }).join("；");
+  const lastSwitch = switches[switches.length - 1] || null;
+  const switchReason = lastSwitch?.switch_reason ? `；原因：${String(lastSwitch.switch_reason).slice(0, 100)}` : "";
+  const switchTime = lastSwitch?.switched_at ? `（${formatTaskTimestamp(lastSwitch.switched_at)}）` : "";
+  const switchText = lastSwitch ? `；已切换 ${switches.length} 次，最近一次${switchTime} ${displayProviderName(lastSwitch.from_provider)} / ${lastSwitch.from_model} → ${displayProviderName(lastSwitch.provider)} / ${lastSwitch.model}${switchReason}` : cloudAttempts.length > 1 ? `；云端已切换 ${cloudAttempts.length - 1} 次` : "；尚未切换";
+  const cloudAttemptText = cloudAttempts.length > 1
+    ? `<span><i class="fas fa-shuffle"></i>本次云端依次尝试：${escapeHtml(cloudAttempts.map((row) => `${displayProviderName(row.provider)} / ${row.model}${row.status === "succeeded" ? "（成功）" : `（${row.error || row.status || "失败"}）`}`).join(" → "))}</span>`
+    : "";
+  const thinkingHistory = new Map();
+  timeline.forEach((row) => {
+    const description = `${displayProviderName(row.provider)} / ${row.model}：${smartGeminiThinkingText(row)}`;
+    thinkingHistory.set(description, (thinkingHistory.get(description) || 0) + 1);
+  });
+  const thinkingDetails = [...thinkingHistory].map(([description, count]) => `<li>${escapeHtml(description)}（${count} 次请求）</li>`).join("");
+  return `${waitingHtml}<span><i class="fas fa-route"></i>${escapeHtml(state)}：${escapeHtml(current)}</span>${cloudAttemptText}<span>${escapeHtml(smartGeminiThinkingText(latest))}</span><span><i class="fas fa-flag"></i>初始路线：${escapeHtml(initialAttempt.provider ? `${displayProviderName(initialAttempt.provider)} / ${initialAttempt.model}` : "等待选择")}${escapeHtml(switchText)}</span>${routeStats ? `<span><i class="fas fa-chart-simple"></i>${escapeHtml(routeStats)}</span>` : ""}<details><summary>思考深度请求记录（不代表内部思考程度已验证）</summary><ul>${thinkingDetails}</ul></details>`;
+}
+
 function completedGenerationTaskMessage(task = {}) {
   const completion = practiceCompletionContract(task);
   const { generated_count: generatedCount, total_count: totalCount, unfinished_count: unfinishedCount } = completion;
@@ -11715,7 +11897,10 @@ function renderTaskManager(tasks = latestTasks) {
       ? (task.is_generation_job ? (errorMessage || task.progress_message || (normalized === "queued" ? "任务已进入等待队列" : normalized === "needs_input" ? "当前步骤已完成，等待确认后继续" : "任务正在后台执行")) : completedGenerationTaskMessage(task))
       : (errorMessage || (normalized === "queued" ? "等待开始" : stageText)));
     const networkSummary = generationNetworkSummary(task);
-    const progressMessage = reviewPending
+    const smartWaiting = task.smart_route_status?.state === "waiting_concurrency";
+    const progressMessage = smartWaiting
+      ? (task.smart_route_status.message || "模型并发已满，正在等待可用名额；任务本身没有异常。")
+      : reviewPending
       ? "当前步骤已完成，等待你确认后继续。"
       : (["running", "queued"].includes(normalized) && taskHealth.health_status ? healthTaskSummary(task) : defaultProgressMessage);
     const displayProgressMessage = normalized === "failed" && progressMessage.length > 120
@@ -11762,6 +11947,7 @@ function renderTaskManager(tasks = latestTasks) {
               ${Number(task.queue_duration_seconds || 0) > 0 ? `<span><i class="fas fa-clock"></i>排队 ${escapeHtml(formatDuration(Number(task.queue_duration_seconds)))}</span>` : ""}
               ${Number(task.model_attempt_count || 0) > 0 ? `<span><i class="fas fa-rotate"></i>模型请求 ${Math.floor(Number(task.model_attempt_count))} 次</span>` : ""}
               ${networkSummary ? `<span><i class="fas fa-chart-line"></i>${escapeHtml(networkSummary)}</span>` : ""}
+              ${smartGeminiRouteSummaryHtml(task)}
             </div>
           </details>
         </div>
@@ -14625,7 +14811,7 @@ async function checkStartupTaskCleanup() {
   }));
   setText(
     "taskCleanupSummary",
-    `当前共 ${data.task_count || 0} 个任务。平台保留最新 40 个，在更旧的 ${data.overflow_count || 0} 个任务中，推荐清理 ${data.recommended_count || 0} 个。`
+    `当前共 ${data.task_count || 0} 个任务。平台保留最新 30 个，在更旧的 ${data.overflow_count || 0} 个任务中，推荐清理 ${data.recommended_count || 0} 个。`
   );
   const reasons = $("taskCleanupReasons");
   if (reasons) {
@@ -14634,7 +14820,7 @@ async function checkStartupTaskCleanup() {
     `).join("") || `<article><strong>${data.safe_overflow_count || 0}</strong><span>可安全整理的历史任务</span></article>`;
   }
   $("taskCleanupRecommended").textContent = `按照推荐清理（${data.recommended_count || 0} 个）`;
-  $("taskCleanupAllOverflow").textContent = `清理排序 40+ 的全部任务（${data.safe_overflow_count || 0} 个）`;
+  $("taskCleanupAllOverflow").textContent = `清理排序 30+ 的全部任务（${data.safe_overflow_count || 0} 个）`;
   activateAccessibleModal(modal, {
     initialFocus: $("taskCleanupRecommended"),
     onEscape: closeTaskCleanupModal
@@ -15346,6 +15532,8 @@ function renderQuestionDetail(question) {
   const tips = resultBlock(question, "易错");
   const issueRows = (question.quality_issues || []).slice(0, 6);
   const checkpoint = checkpointStatusMeta(question.checkpoint_status);
+  const route = question.model_route || {};
+  const routeLabel = route.model ? `${displayProviderName(route.provider)} / ${route.model}` : "";
   const hideTopAnswer = shouldHideTopAnswer(question);
   const isTermExplanation = isTermExplanationQuestion(question);
   const analysisTitle = isShortAnswerQuestion(question) ? "答案" : "解析";
@@ -15369,6 +15557,7 @@ function renderQuestionDetail(question) {
       <div class="question-detail-meta">
         ${checkpoint ? `<span class="checkpoint-status ${checkpoint.className}">${checkpoint.label}</span>` : ""}
         ${question.score ? `<span>分值：${escapeHtml(question.score)} 分</span>` : ""}
+        ${routeLabel ? `<small>本题最终模型：${escapeHtml(routeLabel)}</small>` : ""}
         <button class="text-button" type="button" data-result-question-feedback="${escapeHtml(question.question_id || "")}"><i class="fas fa-bug"></i>反馈此题</button>
       </div>
     </div>

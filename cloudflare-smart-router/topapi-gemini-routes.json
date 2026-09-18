@@ -1,0 +1,56 @@
+[
+  {
+    "id": "topapi-gemini-gemini-3.8-flash-high",
+    "family": "gemini",
+    "provider": "topapi_google",
+    "provider_pool": "topapi",
+    "model": "gemini-3.8-flash-high",
+    "base_url": "https://api-top.com",
+    "api_key_secret": "TOPAPI_GOOGLE_API_KEY",
+    "api_protocol": "chat_completions",
+    "priority": 1,
+    "provider_concurrency": 8,
+    "model_concurrency": 8,
+    "capabilities": [
+      "text",
+      "vision"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "topapi-gemini-gemini-3.7-flash-high",
+    "family": "gemini",
+    "provider": "topapi_google",
+    "provider_pool": "topapi",
+    "model": "gemini-3.7-flash-high",
+    "base_url": "https://api-top.com",
+    "api_key_secret": "TOPAPI_GOOGLE_API_KEY",
+    "api_protocol": "chat_completions",
+    "priority": 1,
+    "provider_concurrency": 8,
+    "model_concurrency": 8,
+    "capabilities": [
+      "text",
+      "vision"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "topapi-gemini-gemini-3.6-flash-high",
+    "family": "gemini",
+    "provider": "topapi_google",
+    "provider_pool": "topapi",
+    "model": "gemini-3.6-flash-high",
+    "base_url": "https://api-top.com",
+    "api_key_secret": "TOPAPI_GOOGLE_API_KEY",
+    "api_protocol": "chat_completions",
+    "priority": 1,
+    "provider_concurrency": 8,
+    "model_concurrency": 8,
+    "capabilities": [
+      "text",
+      "vision"
+    ],
+    "enabled": true
+  }
+]

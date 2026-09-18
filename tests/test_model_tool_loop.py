@@ -819,6 +819,43 @@ class ModelToolLoopTests(unittest.TestCase):
             self.assertEqual(0, result.tool_calls)
             self.assertIn("Repair only its JSON syntax", requests[1][-1]["content"][0]["text"])
 
+    def test_malformed_final_json_is_not_replayed_or_retried_as_tool_turn(self):
+        from app.image_artifacts import ImageArtifactStore
+        from app.model_tool_loop import ModelToolLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ImageArtifactStore(Path(tmp))
+            client = self._client()
+            requests = []
+            malformed = '\", "question_id": "q1", "answer": "A"}'
+
+            def create(input_items, **kwargs):
+                requests.append(json.loads(json.dumps(input_items)))
+                return {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": malformed}],
+                        }
+                    ]
+                }
+
+            client.create_tool_response = create
+            with self.assertRaisesRegex(Exception, "Extra data|valid JSON"):
+                ModelToolLoop(client, [], store, max_steps=6).run_json(
+                    [{"role": "user", "content": "回答"}],
+                    model="fake-vision-model",
+                    max_tokens=1000,
+                    thinking="medium",
+                    timeout=30,
+                )
+
+            self.assertEqual(2, len(requests))
+            # The malformed assistant response is never copied into the
+            # retry context; only the short repair instruction is added.
+            self.assertNotIn(malformed, json.dumps(requests[1], ensure_ascii=False))
+            self.assertIn("Repair only its JSON syntax", json.dumps(requests[1], ensure_ascii=False))
+
     def test_chat_completions_tool_result_and_pixels_return_to_same_model(self):
         from app.image_artifacts import ImageArtifactStore
         from app.model_tool_loop import ModelToolLoop, tool_loop_supported

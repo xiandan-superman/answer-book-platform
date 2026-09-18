@@ -32,6 +32,10 @@ def title_matches_material_name(title: Any, material_name: Any) -> bool:
 def short_model_label(model: Any, provider: Any = "") -> str:
     text = clean_task_title(model, limit=120)
     lowered = text.lower()
+    if lowered == "gpt-smart-router" or clean_task_title(provider).lower() == "gpt_smart_router":
+        return "GPT"
+    if lowered == "image-smart-router" or clean_task_title(provider).lower() == "image_smart_router":
+        return "生图"
     for tier in ("terra", "sol", "luna"):
         if re.search(rf"(?:^|[-_\s]){tier}(?:$|[-_\s])", lowered):
             return tier.title()

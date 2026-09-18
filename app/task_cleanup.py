@@ -9,7 +9,10 @@ from typing import Any, Iterable
 
 from .paths import LOCAL_CONFIG_DIR, ensure_project_dirs
 
-KEEP_NEWEST_TASKS = 40
+# Keep the newest 30 out of the automatic overflow cleanup scope. The prompt
+# itself is intentionally delayed until the workspace grows past 50 tasks.
+KEEP_NEWEST_TASKS = 30
+CLEANUP_PROMPT_THRESHOLD = 50
 LIVE_OR_PROTECTED_STATUSES = {
     "running", "queued", "paused", "needs_input", "action_required", "cancel_requested"
 }
@@ -130,5 +133,5 @@ def build_cleanup_recommendation(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "recommended_count": len(recommended),
         "recommended": recommended,
         "overflow_all": all_candidates,
-        "show_prompt": len(ordered) > KEEP_NEWEST_TASKS and bool(all_candidates),
+        "show_prompt": len(ordered) > CLEANUP_PROMPT_THRESHOLD and bool(all_candidates),
     }

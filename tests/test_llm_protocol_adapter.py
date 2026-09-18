@@ -201,7 +201,8 @@ class LLMProtocolAdapterTests(unittest.TestCase):
                     self.assertEqual("responses", provider.api_protocol)
                     self.assertTrue(provider.responses_streaming)
                     self.assertFalse(provider.responses_fallback_to_chat)
-                    self.assertIsInstance(client, ResponsesAPIClient)
+                    if name not in {"gpt_smart_router"}:
+                        self.assertIsInstance(client, ResponsesAPIClient)
                 elif name in BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES:
                     self.assertEqual("anthropic_messages", provider.api_protocol)
                     self.assertIsInstance(client, AnthropicMessagesClient)

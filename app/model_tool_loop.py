@@ -827,6 +827,11 @@ class ModelToolLoop:
         generated_assets: dict[str, ImageArtifact] = {}
         tool_failures: list[dict[str, Any]] = []
         tool_call_count = 0
+        # A malformed final answer is a response-boundary problem, not a new
+        # tool turn.  Keep one clean repair attempt, then stop.  In
+        # particular, never append the malformed assistant text repeatedly:
+        # doing so makes the request grow without adding any useful state.
+        json_repair_attempted = False
 
         if self._session_artifacts:
             prior_content: list[dict[str, Any]] = [
@@ -902,6 +907,7 @@ class ModelToolLoop:
                 input_sha256=hashlib.sha256(_canonical_json(input_items).encode("utf-8")).hexdigest(),
                 tools_sha256=hashlib.sha256(_canonical_json(tool_definitions).encode("utf-8")).hexdigest(),
             )
+            context_before_response = json.loads(json.dumps(input_items, ensure_ascii=False))
             try:
                 raw = active_client.create_tool_response(
                     input_items,
@@ -943,9 +949,21 @@ class ModelToolLoop:
                     raise LLMError("main model returned neither a tool call nor final JSON")
                 try:
                     value = parse_json_content(content)
-                except LLMError:
-                    if step >= self.max_steps:
+                except LLMError as exc:
+                    self._event_log.append(
+                        "agent/output_parse_error",
+                        provider=provider_name,
+                        model=model,
+                        protocol=protocol,
+                        step=step,
+                        repair_attempted=json_repair_attempted,
+                        content_length=len(content),
+                        content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        error={"name": type(exc).__name__, "message": str(exc)},
+                    )
+                    if json_repair_attempted or step >= self.max_steps:
                         raise
+                    json_repair_attempted = True
                     repair_text = (
                         "Your previous final answer was not one valid JSON object. Repair only its "
                         "JSON syntax and string escaping. Preserve the accepted image asset_ids and "
@@ -953,16 +971,21 @@ class ModelToolLoop:
                         "fence, or trailing explanation. Do not call an image tool unless the image "
                         "itself is actually wrong."
                     )
-                    if responses_protocol:
-                        output_items = raw.get("output")
-                        if isinstance(output_items, list):
-                            input_items.extend(output_items)
-                        input_items.append(
-                            {"role": "user", "content": [{"type": "input_text", "text": repair_text}]}
-                        )
-                    else:
-                        input_items.append({"role": "assistant", "content": content})
-                        input_items.append({"role": "user", "content": repair_text})
+                    # Rebuild from the last accepted context.  The malformed
+                    # response is retained in the event/model-call ledger,
+                    # but is deliberately not fed back as an assistant turn.
+                    input_items = context_before_response
+                    input_items.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text" if responses_protocol else "text",
+                                    "text": repair_text,
+                                }
+                            ],
+                        }
+                    )
                     continue
                 selected_asset_ids = _generated_image_refs(value)
                 unknown = selected_asset_ids - delivered_assets

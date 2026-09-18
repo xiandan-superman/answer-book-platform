@@ -134,7 +134,7 @@ export BAI_API_KEY="..."
 export OPENROUTER_API_KEY="..."
 export YUANHENG_API_KEY="..."
 export ARK_IMAGE_MODEL="doubao-seedream-5-0-260128"
-export BAILIAN_IMAGE_MODEL="qwen-image-2.0-pro"
+export BAILIAN_IMAGE_MODEL="qwen-image-3.0"
 export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 ```
 
@@ -147,7 +147,7 @@ export ANSWER_BOOK_IMAGE_SIZE="2048x2048"
 
 火山方舟使用 OpenAI 兼容接口，默认地址为 `https://ark.cn-beijing.volces.com/api/v3`。模型选择处可以直接填写方舟控制台里的模型 ID 或推理接入点 ID，例如 `doubao-seed-1-6-250615` 或 `ep-...`。
 
-阿里云百炼使用 OpenAI 兼容 Chat Completions 接口调用通义千问多模态模型，默认地址为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如需使用百炼业务空间专属域名，可在 `providers.local.json` 中把 `bailian.base_url` 改为 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。百炼图片生成默认使用 Qwen-Image `qwen-image-2.0-pro`，通过 DashScope 多模态生成接口调用。
+阿里云百炼使用 OpenAI 兼容 Chat Completions 接口调用通义千问多模态模型，默认地址为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；如需使用百炼业务空间专属域名，可在 `providers.local.json` 中把 `bailian.base_url` 改为 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。百炼图片生成默认使用 Qwen-Image `qwen-image-3.0`，通过 DashScope 多模态生成接口调用。
 
 商汤日日新使用 `https://token.sensenova.cn/v1` 的 OpenAI 兼容接口。文本模型包含多模态的 `sensenova-6.8-flash-lite`（支持图片输入）、`deepseek-v4-flash` 和 `glm-5.2`；图片生成使用 `sensenova-u1.5-lite`，结果以 PNG/Base64 接收并立即保存到本地。按产品要求未接入 `sensenova-u1-fast`。
 

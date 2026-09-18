@@ -216,6 +216,13 @@ _CONTRACTS = (
         version="2",
     ),
     _contract(
+        "practice.choice_review",
+        profiles=("practice", "knowledge"),
+        sections=("base_rules", "exercise", "choice_options", "output_schema"),
+        output="json_object",
+        consumers=("practice_choice_review",),
+    ),
+    _contract(
         "practice.blueprint_revision",
         profiles=("practice", "knowledge"),
         sections=("base_rules", "source_analysis", "current_blueprint_item", "user_instruction", "output_schema"),

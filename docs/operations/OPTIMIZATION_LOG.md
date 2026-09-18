@@ -1,3 +1,116 @@
+### OPT-20260918-06｜Responses 工具回合的结构化输出边界保护
+- status: verified_local
+- scope: 真题解析及共享主模型工具循环的最终 JSON 解析、格式修复和失败诊断。
+- changed: 主模型没有产生工具调用时立即进入最终输出解析；残缺 JSON 只允许一次基于最后有效上下文的干净格式修复请求，异常 assistant 文本不再重复回灌；新增输出解析失败事件，记录脱敏长度、摘要和修复次数，保留现有模型诊断压缩原始请求/响应。
+- trigger: Responses 任务中模型已有答案但 JSON 头部损坏，旧循环在无工具调用时仍连续重试并追加坏输出，造成上下文膨胀、错误固化和整题无法诊断。
+- invariants: 工具调用、图片资产回灌、合法 JSON 结果和既有失败门禁保持不变；不猜测补全截断 JSON，不降低 v4、公式或业务质量校验，不修改用户机或用户数据。
+- verification: `tests/test_model_tool_loop.py` 28 passed；新增回归确认残缺 JSON 最多发起 2 次请求，第二次不包含原始坏 assistant 文本；未发起真实模型请求，未部署或发布。
+
+### OPT-20260918-05｜独立生图智能路由
+- status: verified_real_trial
+- scope: 真题解析、按题出题、知识点出题的生图模型选择，Cloudflare 图片协议转换、并发、失败切换、参考图编辑和用量记录。
+- changed: 新增“生图智能路由 / 自动选择”虚拟入口，与 Gemini/GPT 多模态路由完全分池；Worker 增加普通生图与参考图编辑端点，按路线转换标准 Images、火山 Seedream、百炼 DashScope、Waw Gemini Chat/Responses 嵌入图片五类协议。首批加入当前平台 11 个不重复图片模型，全部同优先级；火山、百炼、灵算并发各 1，Waw GPT/Gemini/Grok 分别为 2/1/4。普通生图使用全部候选，参考图编辑只进入已登记支持编辑的 Waw 与灵算 `gpt-image-2`。
+- trigger: 用户要求建立独立生图路由并纳入平台当前全部生图模型，后续只保留多模态与生图两类智能路由。
+- invariants: 上游 Key只保存在 Cloudflare Secret，不从本机复制或写入源码；任务预检只检查共享 Cloudflare 配置，不生成收费测试图；响应中必须实际含图片才计为成功；所有候选失败返回逐路线摘要。任务使用实际供应商和模型记账，虚拟入口不进入文字模型选择；导出合同不增加路由说明。Gemini 7 条和 GPT 6 条既有路线、任务名称、保存恢复和并发逻辑保持不变。
+- impact_matrix: 三类任务共享生图选择器均显示自动路线；普通生成和主模型工具循环复用统一客户端；参考图修复按独立能力预约；历史任务及手动图片供应商继续可用；Word/PDF 只消费最终图片资产，不写入供应商信息。上游 Key未填写时不会在任务开始前扣费，实际需要图片时给出全部候选配置失败摘要。
+- verification: Worker TypeScript、Wrangler dry-run 和正式部署通过，云端状态确认 Gemini 7、GPT 6、生图 11 条路线并存，11 条并发与能力登记正确；本地服务重启后公开配置确认入口为仅生图能力，Chromium 页面确认“智能路由 / 自动选择 / 生图智能路由”可选且不进入文字模型区。真实图片验收生成有效 PNG：火山方舟 `doubao-seedream-5-0-lite-260128` 返回 2048×2048；受控缺 Key 路线随后自动切换到阿里百炼 `qwen-image-2.0`，返回 2048×2048，调用账本从 13 增至 14，并记录两次尝试；参考图编辑由 Waw `gpt-image-2` 成功返回 1024×1024 PNG。验收中发现通用 1024 尺寸覆盖 Seedream 合法尺寸，已修正 Worker 按路线强制使用 2048×2048 并重新部署；两条临时验收路线均已删除，云端恢复 11 条生图路线，累计用量为 15 次。平台定向回归 172 passed，Python 3.11 编译、Node 语法、git diff 格式检查通过。尚未逐一真实调用其余图片模型；未提交、推送或发布 GitHub。
+
+### OPT-20260918-04｜固定智能路由的两类能力边界
+- status: documented
+- scope: 后续 Gemini、GPT、其他多模态供应商及独立生图智能路由的接入和产品分类。
+- changed: 长期规则明确为智能路由只分“多模态模型路由”和“生图模型路由”。Gemini、GPT 及其他非生图路线均归为多模态候选，必须支持文字和图片输入、文字输出；不再建立纯文本智能路由，也不把生图模型混入多模态候选池。生图模型以后单独建立智能路由。
+- trigger: 用户要求后续所有对话与实施统一使用这两个分类，避免按模型家族或纯文本/视觉继续拆出新的产品路线。
+- invariants: 多模态不等于生图；模型家族、供应商、模型 ID 和协议仍保留为池内精确路由属性；现有 Gemini/GPT 云端调度、健康记录、并发和失败切换不因本次文档规则改变。
+- verification: 项目长期协作规则与模型接入标准已同步，未修改运行代码、云端配置或模型路线，未发模型请求。
+
+### OPT-20260918-03｜智能路由供应商静默扩展
+- status: verified_deployed
+- scope: Cloudflare Worker 的 Gemini/GPT 后续供应商与多模型路线配置。
+- changed: Worker 自动发现并合并 `ROUTE_BUNDLE_<供应商>_JSON` 独立路线包；每个新供应商可单独新增、修改或删除自己的模型、Key 引用、能力、优先级和总并发，不覆盖现有 Gemini/GPT 私密路线，也不要求终端用户更新平台版本。
+- trigger: 用户要求后续新增 Gemini 供应商和多个模型时可以只调整云端配置，对已安装平台静默生效。
+- invariants: 路线 ID 全局唯一；同一供应商模型继续按 `provider_pool` 共享总并发；上游 Key与私人路线只保存在 Cloudflare Secret，不进入源码或下载包；普通 OpenAI 兼容 Chat/Responses 路线无需客户端更新，新增平台尚未支持的协议仍需代码适配和验收。
+- verification: Worker TypeScript、Wrangler dry-run 和正式部署通过，平台路由与前端回归 160 passed，git diff 格式检查通过。云端创建一份禁用的临时独立路线包后，状态接口正确发现该路线包；随后删除临时 Secret，原有 Gemini 7 条、GPT 6 条启用路线均完整保留，未发模型请求、未产生模型费用。
+
+### OPT-20260918-02｜GPT 智能路由平台入口
+- status: verified_real_trial
+- scope: 真题解析、按题出题、知识点出题的文字与读图模型选择，任务名称、保存恢复、能力登记、任务预检及共享 Cloudflare 路由客户端。
+- changed: 新增“GPT 智能路由 / 自动选择”虚拟入口，复用现有 Cloudflare 路由地址和用户访问 Key；任务调用按 gpt family 预约，Gemini 继续按 gemini family 预约。Worker 通过独立的 GPT 私密路线配置合并灵算与 WawAPI 各自的 GPT-6 Astra、GPT-5.6 Sol、GPT-5.6 Terra，统一使用 Responses，并继续按 provider_pool 与 Gemini 共享供应商总并发。任务标题显示 GPT，虚拟入口不进入本地供应商探测，不支持图片生成。
+- trigger: 用户要求在平台入口完成后继续搭建 GPT Worker 路线，并由用户本人最后填写两家上游 API Key。
+- invariants: 不覆盖现有 Gemini 私密路线、手动 GPT/Gemini 路线、健康历史、失败切换或用户用量；GPT 与 Gemini 必须在同一 Durable Object 内共享灵算/Waw 总并发。上游 Key、用户访问 Key和私人路线配置不进入源码；用户填写 GPT Key 前不发真实模型请求或宣称真实调用通过。
+- impact_matrix: 三类任务的共享模型选择器均显示 GPT 智能路由并保存虚拟 provider/model；预检只检查共享 Cloudflare 配置，不读取本地灵算/Waw Key或触发探针；任务名称固定显示 GPT，历史任务与 Gemini 路由不重写；Word/PDF合同和逐题实际模型字段结构不变。
+- verification: Worker TypeScript、Wrangler dry-run 和两次正式部署通过；云端状态确认 GPT 6 条 Responses 路线、Gemini 7 条 Chat Completions 路线均存在，两家供应商总并发均为 8。平台协议与影响面回归 201 passed，补充路由/前端回归 166 passed，Ruff、Node 语法和 git diff 格式检查通过；本地服务重启后 GPT 入口、文字、读图与禁用生图状态正确。用户填写两家 GPT Key 后完成真实短调用：灵算三款模型、Waw GPT-6 Astra 与 GPT-5.6 Sol 均有成功记录，标准图片经灵算 GPT-6 Astra 成功读取；灵算与 Waw 的 502/503 均真实触发跨路线切换并成功完成请求。验收同时发现 Waw 上游 400 `upstream_error` 应继续换线，已修正并部署；明确的 `invalid_request_error` 仍停止，避免重复无效请求。Waw GPT-5.6 Terra 本次两次返回 503，保持临时冷却并等待后续真实任务重新采样。用量已按用户、供应商和模型记录；未提交或推送 GitHub。
+
+### OPT-20260918-01｜Cloudflare 模型级智能路由与逐题透明展示
+- status: verified_real_trial
+- scope: Gemini 智能路由云端调度、供应商共享并发、任务排队提示、调用记录、真题/按题/知识点前端结果展示及现有任务合同兼容。
+- changed: 新增 Cloudflare Worker + Durable Object 路由服务，候选单位改为“供应商 + 具体模型”，同一供应商下 Gemini/GPT 共用人工配置的总并发；同优先级新模型先收集 5 次真实调用样本，之后按成功率、平均延迟和稳定顺序选择。供应商/模型并发不足排队最多 60 秒；上游网络、认证、限流、空响应和 5xx 按顺序尝试全部剩余模型，请求内容错误不盲目换线；全部失败返回各路线摘要。平台只保存 Cloudflare 地址和用户访问 Key，不读取本地运行中心健康记录或本地上游 Key做智能选择。云端按用户记录模型、Token、任务阶段和题目关联，并提供用量与路由状态查询。
+- user_visibility: 排队期间任务中心明确显示“模型并发已满，任务本身没有异常”；调用账本按 active_item 生成逐题最终路线，真题结果和练习题卡只用小字展示最终供应商/模型，不在结果页顶部重复展示完整路由历史。完整路线仍可从任务管理的运行详情查看。该字段只存在于前端结果 API，不进入 Word/PDF 或正式交付内容。任务名称仍使用既有用户选择的“Gemini 智能路由”简称，不被实际供应商/模型改写。
+- invariants: 模型健康只由历史真实调用更新，不在任务开始前额外测试；供应商并发上限由接入配置提供，执行时以 Durable Object 强一致预约计数；平台质量门、恢复检查点、任务标题和导出合同保持不变。Cloudflare 服务未配置时仍在任务创建前给出明确配置提示；GitHub 与下载包不得包含上游 Key、用户访问 Key 或私人路线配置。
+- impact_matrix: 真题解析的批量/单题答案调用按题目 ID 关联最终路线；按题和知识点生成批次按 plan_item_id 关联路线，前端结果卡展示且导出不消费该字段；历史记录缺少路线字段时保持原显示；任务管理、恢复、失败合同、供应商容量和正式交付相关回归通过。未来 GPT 路由复用 family 隔离的模型池，同时由相同 provider_pool 共享供应商并发。
+- deployment: Worker 已部署到用户 Cloudflare 账号，Durable Object 及 7 条首批 Gemini 路线已配置；灵算与 Waw Key 均作为 Worker Secret 配置，两家供应商总并发均由用户填写为 8。用户访问 Key、上游 Key、正式 Worker 地址和私人路线配置只保存在 Cloudflare 或本机用户数据目录，未进入 Git 追踪文件。Gemini/GPT 通过独立 family 模型池选择，同时按 provider_pool 共享供应商总并发，实际通道名继续用于前端展示与账本。
+- transport_fix: 正式调用首次在预约阶段收到 Cloudflare 403/Error 1010，定位为 Python urllib 默认请求标识触发 Cloudflare 浏览器签名规则，主责任层为 provider_transport。平台预约及候选执行请求统一携带固定 User-Agent；未改模型健康、候选排序、质量门或失败归因。
+- real_trial: 单题真题任务完成并通过正式验收，教材规划和答案生成均先遇到灵算 gemini-3.5-flash 404，再自动切换至 gemini-3.6-flash 成功；证据选择由 gemini-3.7-flash-medium 完成。Cloudflare 用户 owner 用量累计 3 次成功调用，输入 Token 18333、输出 Token 4183。任务标题为“真题解析 · Gemini · 智能路由验收 · 单题”，配置模型保持 Gemini 智能路由，实际模型独立记录；逐题结果显示“灵算 · Google Gemini / gemini-3.6-flash”。服务重启后恢复到结构确认并可继续完成。生成 Word 通过正式验收，解包扫描不含供应商名、实际模型名或智能路由说明；未产生图片调用。
+- verification: Cloudflare TypeScript `tsc --noEmit` 与 Wrangler 4.134.0 dry-run 构建通过；本地 Worker 端到端模拟、供应商容量、并发公平、API 配置、三业务入口、任务名称/恢复、结果视图和交付回归通过。正式付费任务验证 7 条路线配置、历史健康选择、真实失败切换、逐题路线、用户用量和 Word 隔离；浏览器确认任务标题正常，删除结果页顶部完整路由汇总后仍显示逐题最终模型。最终受影响回归 288 passed，Ruff、Node 语法与 git diff --check 通过。未提交、推送或发布 GitHub，未执行完整发布门禁。
+
+### OPT-20260917-06｜客观题括号规范与单选题唯一性核验
+- status: verified_local
+- scope: 按题/知识点出题共享生成、单题重生、质量重算和 Word 导出。
+- runtime: 生产 Python 3.11 本地服务已启动并通过 /api/version 检查；最终补充复核标记与空/失败题目分支导入保护，相关 17 项回归通过。运行进程继续临时停用自动付费测速，未改产品默认调度配置。
+- changed: 末尾空括号识别覆盖后置标点及相邻重复空括号，保留一组标准空位及一个原标点，保持幂等，不修改正文条件括号。新增每道纯文字单选题至多一次独立逐项核验，要求完整编号、布尔判断、简短依据、无歧义且恰好一个满足题干的选项；核验结果绑定题面内容摘要。持久化只保留状态、版本及摘要，不向题目公开答案标签或核验解答。
+- trigger: 试运行原输出“（ ）。”被本地补位规则再次添加括号；模型将特定方程已排除零情况下的同除未知数当作错误干扰项，结构检查未检测单选唯一性。
+- invariants: 不擅自改写题意或猜测正确答案；失败、残缺、超时和编辑后陈旧核验不得正式通过；取消信号继续抛出，每题调用前检查任务活动状态；不自动语义修题或反复调用。图片依赖题面无法仅靠文字核验，当前明确保留为未核验并阻断正式输出，等待具备像素证据的复核路径；不虚报图文核验成功。
+- impact_matrix: 按题和知识点通过 generate_practice_from_plan（包括合同生成）统一审查，单题重生在选项排序后审查；草案不宣称正式核验。编辑、历史恢复、导出均以当前题面摘要重算，旧单选题无记录降为待复核，已审题目内容变化阻断。真题解析不调用本出题格式/质量模块，其答案正确性流程不修改。Word 共享补位函数修复老题面的重复括号，导出复用新质量门；PDF 装配未改。本轮不重写用户既有任务。
+- verification: Python 3.12 定向 pytest 第一组覆盖生成重构、内容保真、结果组装、定向修复、生图工具及持久化、格式与唯一性：102 passed；最终组覆盖唯一性/取消/复用、格式、部分生成、恢复幂等、编辑冲突、任务保存、Word 下载：60 passed（两组有重复文件，不累加为独立总数）。Ruff（修改文件）和 git diff --check 通过；真实模型核验准确率尚未验证，没有新增付费调用、未重跑试运行。未执行完整发布门禁、未提交推送、未发布。
+
+### OPT-20260917-05｜任务提交不再付费生成探测图
+- status: verified_local_trial_not_accepted
+- changed: 共享 probe_route 对 task_preflight/image_generation 改为本地密钥、地址、模型目录和登记能力检查，不创建客户端、不生成测试图、不写入健康成功证据；显式手动检测及实际任务生图保持原行为。
+- trigger: 纯文字知识点试运行仍配置备用生图路线，提交时会额外真实生成测试图；主责任层 model_orchestration。
+- invariants: 不降低真实图生成、资产回看或交付质量门，不隐藏连接错误，不把配置通过视为连接成功；不修改用户凭据或历史任务，不改变自动测速的产品默认行为。
+- impact_matrix: 真题、按题、知识点与历史恢复均通过同一 source=task_preflight 检查入口，统一不再产生前置测试图；实际生图工具和 Word/PDF 消费合同不改。保留缺配置/非法或非生图模型拒绝与显式手动探测回归。
+- verification: Python 3.12 定向 pytest：前置检查、运行中心、前端合同、智能入口 180 passed；生图工具、图路线持久化、工具循环、Word 下载、智能路由和思考记录 111 passed；修改文件 Ruff 与 git diff --check 通过。生产 Python 3.11 服务已重启，本进程自动付费调度仍临时暂停；真实 HTTP 生图前置检查返回 skipped=true/configuration_only，未生成探测图。无关任务未重跑。完整发布门禁未执行，未提交、推送或发布。
+- real_trial: 用户批准的一元一次方程单题，分析 generation_20260917182250_343957fa、蓝图 generation_20260917182431_4b0cfc37、生成 generation_20260917182536_b953bc65 均完成，保存 practice_20260917182626_44fe487a。共 3 次成功文本调用、0 次失败、0 次生图；均经智能路由到 lingsuan_google/gemini-3.8-flash-medium，无换线。分析/生成 low 受模型最低档调整 medium，蓝图由既有阶段策略直接请求 medium；记录仅证明请求档位。费用未知，未额外重跑。
+- acceptance: 不接受为完整教学成果、未导出 Word。题干原始模型输出末尾为“（ ）。”，本地 ensure_objective_answer_slot 只识别严格末尾括号，追加第二组，属 deterministic_postprocess；题目现 B 项声称同除以 x 保持解，原方程本来排除 x=0，故该干扰项可作成立解释，唯一答案门不足，属 model_output。用户要求答案解析，但当前出题提示显式禁止且 practice_store 剥离答案字段，属现行 question-only 产品合同与本次试验目标不一致，不能擅自取消该合同。暂停后续付费与新修复，另请用户决定。
+
+### OPT-20260917-04｜智能路由任务选择入口登记
+- status: verified_local_trial_blocked
+- scope: 共享能力注册表、公开模型配置投影及三类任务的模型选择过滤。
+- changed: 将 Gemini 智能路由登记到独立 virtual_providers，补齐文字任务与读图适配；实际候选仍使用原物理模型能力与可用状态检查。生成能力文档同步展示虚拟入口为委托候选、试运行，不伪造独立模型协议探测证据。
+- trigger: 公开智能路由配置缺少 task_support，被各任务入口共享的前端能力过滤器隐藏，试运行尚未提交。
+- invariants: 不放宽实际候选能力门、协议验证、质量门、路由和重试预算；虚拟入口禁止生图，未配置网关不可选择；不修改用户凭据、已有任务及交付数据。
+- impact_matrix: 真题答案/教材分析/正确性复核、按题出题、知识点出题与读图均通过真实前端过滤函数的 Node 回归；生图明确排除，未配置场景仍排除。历史任务恢复和 Word/PDF 生产消费合同未改，本次未进行完整交付验证。物理目录与协议精确同步测试继续通过，虚拟入口不加入自动探测目录。
+- verification: `.venv/bin/python -m pytest -q` 执行智能入口、智能路由、能力、协议、深度记录、前端合同六组测试，243 passed（Python 3.12）；修改模块及新增测试 Ruff、Node 语法、能力文档 --check、git diff --check 通过。真实生产 Python 3.11 服务启动成功，公开 API 确认 gateway_ready/api_key_set 为 true 且返回新增适配字段。未执行完整发布门禁、未提交推送或发布。
+- trial_boundary: 本次没有发起模型调用。发现 practiceTaskPreflightRoutes 在 generate_from_plan 且配置生图路线时必做 image_generation probe，后端 probe_route 会真实生成测试图；与已批准“不生图”边界冲突，停止试运行并请求用户确认单独修复。服务本进程继续停用自动付费探测调度，仅为避免无关付费请求，未修改其源码默认行为。
+
+### OPT-20260917-03｜智能路由思考深度透明记录
+- status: verified_local
+- scope: 智能路由思考选项提示、共享模型调用账本、运行详情及真题/练习结果记录。
+- changed: 在智能调用作用域保留调用方选择与候选型号已登记下限，网络边界从最终请求读取实际 reasoning_effort；运行中、成功和失败记录以及耐久调用意图/结果均保存独立深度元数据。前端显示用户选择、实际请求深度及调整原因，并按通道/型号汇总深度请求记录；自动明确表示未指定参数、采用上游默认。旧记录、未显式传入选择及预构造请求不反推用户选择或伪称已执行下限调整。
+- trigger: 用户询问智能路由如何控制思考深度并批准补充展示；现有型号最低档位转换已经生效，但原选择与调整原因不可见。
+- invariants: 仅观察及展示，不改变请求内容、路由排序、换线、重试、默认档位、预算、质量门或用户数据；请求参数不等于上游接受或实际内部推理程度已验证。观察上下文在异常后复位、并行任务隔离；不将元数据发送给模型，不记录凭据或正文。
+- impact_matrix: 真题有/无教材、按题和知识点共用同一智能客户端与账本边界，分别覆盖三类任务上下文及读模型投影；JSON、文本、结构化对象和原生工具入口均验证。恢复后新增调用记录新字段，已有历史缺字段显示未记录、不重写。Word/PDF 装配和下载合同未改，交付一致性既有回归通过；手动模型调用不进入新增智能上下文。
+- verification: 本地 Python 3.12 执行 `.venv/bin/python -m pytest -q` 指定智能路由/深度、账本、协议、任务合同/读模型/结果、生成/重试、知识点、工具和交付等 18 个测试文件：423 passed。最后补充活动练习投影与开启标签后，新文件定向 70 passed；其中 Node 执行真实前端格式化/汇总函数验证旧记录、调整、自动和换线显示。修改文件 Ruff、`node --check web/app.js`、`git diff --check` 通过。未运行 Python 3.11 完整发布门禁、真实浏览器视觉验收或付费模型请求；未重启服务、重跑用户任务、提交、推送或发布。
+
+### OPT-20260917-02｜Gemini 智能路由试运行
+- status: verified
+- scope: 真题解析、按题出题、知识点出题的新任务；原 Gemini 手动路线与历史任务保持不变。
+- changed: 新增管理员统一配置的 Gemini 智能路由；只复用供应商运行中心的已有状态，按可用、版本、24 小时成功率、延迟排序，任务内保持成功路线，真实服务失败后顺序切换其余可用路线；不新增或触发前置付费测速。
+- cloudflare: 灵算与 WawAPI 自定义供应商请求经 AI Gateway 转发；Run Token 仅进入 cf-aig-authorization，强制 cf-aig-collect-log-payload=false，不缓存正文、不启用 Guardrails；Cloudflare 自身连接或鉴权故障停止任务且不污染上游健康状态。
+- visibility: 运行详情和真题/练习结果展示当前、初始、切换时间与原因、最终路线及各路线成功失败、耗时、Token 和可用费用；不展示 Key、题目、教材或回答正文。
+- invariants: JSON/业务结构错误沿用原修复逻辑且不切换供应商；智能路由不支持图片生成；原手动路线仍本机直连；未创建 Cloudflare 外部资源、未上传真实 Key、未发起付费模型请求。
+- impact_matrix: 真题、按题、知识点共享智能路由与账本投影；历史恢复继续读取原 provider/model；Word/PDF 与生图路线不变；运行中心只记录实际候选路线，不登记或探测虚拟供应商。
+- verification: 完整测试 2443 passed、17 deselected；新增排序、超时切换、黏性、Cloudflare 故障停止、隐私请求头、结果时间线定向测试；Ruff（本次文件）、Node 语法、Python 编译、能力文档同步和 diff 检查通过。
+
+### OPT-20260917-01｜任务名称固定读取主模型
+- status: verified
+- scope: 真题任务列表、详情及历史任务名称。
+- changed: 名称和模型简称读取保存的答案主模型，教材引用定位读取教材分析主模型，旧记录缺角色配置时回退任务 model；实际调用记录继续保留供诊断。
+- trigger: 复核调用被记入答案阶段，最后调用模型覆盖任务名称中的主模型。
+- invariants: 仅更改名称投影，不改变调用路由、复核配置、历史数据、质量门或费用。
+- impact_matrix: 真题与历史列表/详情共用读模型；按题与知识点原已读取保存主模型，无需修改；Word/PDF及共享调度不受影响。
+- do_not_regress: 不得用复核、生图或最后一次调用模型替换名称中的主模型。
+- verification: 任务合同、生命周期与名称定向回归通过，详见本次执行结果；未连接用户机、未提交推送或发布。
+
 ## OPT-20260916-05 0.9.54 统一发布验证
 
 - 用户授权将本任务和其他对话落地改动一起推送发布。包含模型选择与目录、单多选识别、修复保图、Windows 保存重试、失败诊断及 Word 页面安全策略。
@@ -1916,3 +2029,24 @@
 - trigger: 用户反馈这些状态在平台启动或任务提交阶段已有对应检查，模型选择页再次展示会增加认知负担和滚动距离。
 - invariants: 不改变 API 配置、模型登记、任务提交前实际路由预检、请求方式、思考深度、生图模型必选规则或任务执行逻辑。
 - verification: 定向前端与协议回归 248 passed；Node 语法检查、git diff 格式检查通过；本地 Chromium 复核模型选择页显示为“选择模型”，主模型与生图模型同级并列，页面无环境检查栏。
+
+## 2026-09-18 阿里百炼生图路线调整
+
+- change: 阿里百炼生图智能路由仅保留 `qwen-image-3.0` 与 `qwen-image-2.0-2026-03-03`，移除 `qwen-image-2.0-pro`、`qwen-image-2.0`、`qwen-image-max`、`qwen-image-plus`；两条新路线均使用 DashScope 适配器、2048*2048 默认尺寸、独立模型并发 1，并与其他生图供应商保持原有失败切换和并发规则。
+- verification: 本地 Worker TypeScript 检查、JSON 校验和 `git diff --check` 通过；图片路线总数从 11 条调整为 9 条，其中百炼为上述 2 条；Cloudflare Secret `ROUTE_BUNDLE_IMAGE_MODELS_JSON` 已更新并产生新部署。由于当前命令行 Python 为 3.9，既有依赖使用 Python 3.10 类型语法，生图观测测试在导入阶段受环境版本阻塞，未归因于本次配置变更。
+
+## 2026-09-18 Top-API Gemini 路线接入
+
+- change: 新增 Top-API Gemini 供应商，地址 `https://api-top.com`，采用与灵算、Waw Gemini 相同的 OpenAI Chat Completions 协议。首批加入 `gemini-3.8-flash-high`、`gemini-3.7-flash-high`、`gemini-3.6-flash-high`，共享 `topapi` 供应商池，总并发配置为 8；生图模型不纳入本路线。
+- verification: 已从 Top-API 模型广场确认上述 3 个模型均实际存在；同时确认另有 `gemini-3.1-pro-low`、`gemini-3.1-flash-lite` 和生图模型 `nano-banana-2`，本次按用户要求暂不接入。Worker 类型检查通过，路线包和平台配置 JSON 校验通过，Cloudflare 已上传 `ROUTE_BUNDLE_TOPAPI_GEMINI_JSON` 与 `TOPAPI_TOTAL_CONCURRENCY`。`TOPAPI_GOOGLE_API_KEY` 未代替用户写入，需由管理员在 Cloudflare Secret 中填写。
+
+## 2026-09-18 多模型家族路由配置优化
+
+- change: Worker 新增通用 `PROVIDER_CONCURRENCY_JSON` 配置。供应商下的 Gemini、GPT、DeepSeek、XAI 等模型家族可分别绑定不同 `api_key_secret`，但通过相同 `provider_pool` 共享供应商总并发；保留旧供应商并发变量兼容迁移。
+- verification: Worker TypeScript 检查和正式部署通过；不改变现有 Gemini、GPT、生图路线及失败切换规则。
+
+
+## 2026-09-18 路由配置迁移到 Cloudflare KV
+
+- change: 统一路由配置迁移到 Cloudflare KV Namespace `ROUTER_CONFIG`，保存 25 条路线和灵算/Waw/Top-API 供应商并发 8；API Key 仍按供应商与模型家族分别保留在 Secrets。Worker 每次请求刷新统一路线配置，保留旧配置读取兼容。
+- verification: KV 远端读取核对为 Gemini 10、GPT 6、生图 9；Worker TypeScript 检查和部署通过。已删除旧的 `ROUTES_JSON`、`GPT_ROUTES_JSON`、图片/Top-API 路线包及旧供应商并发 Secrets；当前 Secret 列表仅保留用户访问配置、供应商/模型家族 API Key。

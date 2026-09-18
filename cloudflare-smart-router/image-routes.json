@@ -1,0 +1,166 @@
+[
+  {
+    "id": "image-ark-seedream-5-pro",
+    "family": "image",
+    "provider": "ark_image",
+    "provider_pool": "ark_image",
+    "model": "doubao-seedream-5-0-260128",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "api_key_secret": "ARK_API_KEY",
+    "image_adapter": "ark_seedream",
+    "image_size": "2048x2048",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "image-ark-seedream-5-lite",
+    "family": "image",
+    "provider": "ark_image",
+    "provider_pool": "ark_image",
+    "model": "doubao-seedream-5-0-lite-260128",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "api_key_secret": "ARK_API_KEY",
+    "image_adapter": "ark_seedream",
+    "image_size": "2048x2048",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true
+  },
+  {
+    "family": "image",
+    "provider": "bailian",
+    "provider_pool": "bailian_image",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key_secret": "DASHSCOPE_API_KEY",
+    "image_adapter": "dashscope",
+    "image_size": "2048*2048",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true,
+    "id": "image-bailian-qwen-3",
+    "model": "qwen-image-3.0"
+  },
+  {
+    "family": "image",
+    "provider": "bailian",
+    "provider_pool": "bailian_image",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key_secret": "DASHSCOPE_API_KEY",
+    "image_adapter": "dashscope",
+    "image_size": "2048*2048",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true,
+    "id": "image-bailian-qwen-2-20260303",
+    "model": "qwen-image-2.0-2026-03-03"
+  },
+  {
+    "id": "image-waw-gpt-image-2",
+    "family": "image",
+    "provider": "wawapi_image_openai",
+    "provider_pool": "wawapi_image_openai",
+    "model": "gpt-image-2",
+    "base_url": "https://wawapii.com/v1",
+    "api_key_secret": "WAWAPI_IMAGE_OPENAI_API_KEY",
+    "image_adapter": "images",
+    "image_size": "1024x1024",
+    "priority": 1,
+    "provider_concurrency": 2,
+    "model_concurrency": 2,
+    "capabilities": [
+      "image_generation",
+      "image_edit"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "image-waw-gemini-3-pro",
+    "family": "image",
+    "provider": "wawapi_image_google",
+    "provider_pool": "wawapi_image_google",
+    "model": "gemini-3-pro-image-preview",
+    "base_url": "https://wawapii.com/v1",
+    "api_key_secret": "WAWAPI_IMAGE_GOOGLE_API_KEY",
+    "image_adapter": "embedded_chat",
+    "image_size": "1024x1024",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "image-waw-gemini-31-flash",
+    "family": "image",
+    "provider": "wawapi_image_google",
+    "provider_pool": "wawapi_image_google",
+    "model": "gemini-3.1-flash-image-preview",
+    "base_url": "https://wawapii.com/v1",
+    "api_key_secret": "WAWAPI_IMAGE_GOOGLE_API_KEY",
+    "image_adapter": "embedded_responses",
+    "image_size": "1024x1024",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "image-waw-grok-imagine-2",
+    "family": "image",
+    "provider": "wawapi_image_xai",
+    "provider_pool": "wawapi_image_xai",
+    "model": "grok-imagine-image-2.0",
+    "base_url": "https://wawapii.com/v1",
+    "api_key_secret": "WAWAPI_IMAGE_XAI_API_KEY",
+    "image_adapter": "images",
+    "image_size": "1024x1024",
+    "priority": 1,
+    "provider_concurrency": 4,
+    "model_concurrency": 4,
+    "capabilities": [
+      "image_generation"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "image-lingsuan-gpt-image-2",
+    "family": "image",
+    "provider": "lingsuan_image",
+    "provider_pool": "lingsuan_image",
+    "model": "gpt-image-2",
+    "base_url": "https://edge.lingsuan.org/v1",
+    "api_key_secret": "LINGSUAN_IMAGE_API_KEY",
+    "image_adapter": "images",
+    "image_size": "1024x1024",
+    "priority": 1,
+    "provider_concurrency": 1,
+    "model_concurrency": 1,
+    "capabilities": [
+      "image_generation",
+      "image_edit"
+    ],
+    "enabled": true
+  }
+]

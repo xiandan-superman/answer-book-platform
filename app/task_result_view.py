@@ -11,6 +11,7 @@ from .analysis_profiles import (
 )
 from .pipeline import stage_dir
 from .question_types import infer_question_type
+from .runtime_monitor import model_call_route_summary
 from .task_store import load_task
 
 
@@ -121,6 +122,8 @@ def _quality_issues_by_question(stage_data: dict[str, Any] | None) -> dict[str, 
 
 def build_task_result_view(task_id: str) -> dict[str, Any]:
     record = load_task(task_id)
+    route_summary = model_call_route_summary(task_id)
+    question_model_routes = route_summary.get("question_model_routes") if isinstance(route_summary.get("question_model_routes"), dict) else {}
     sdir = stage_dir(task_id)
     exam = _json_dict(_read_json(sdir / "structured_exam.json"))
     fragments_data = _json_dict(_read_json(sdir / "answer_fragments.json"))
@@ -261,10 +264,11 @@ def build_task_result_view(task_id: str) -> dict[str, Any]:
                     if qid in redrive_checkpoint_ids
                     else "not_evaluated"
                 ),
+                "model_route": dict(question_model_routes.get(qid) or {}),
             }
         )
     return {
-        "task": record.__dict__,
+        "task": {**record.__dict__, **route_summary},
         "metrics": {
             "question_count": len(exam_items),
             "answered_count": len(evidence_questions) if evidence_only else len(fragments),

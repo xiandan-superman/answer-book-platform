@@ -210,13 +210,13 @@ def build_exam_run(row: dict[str, Any], quality_summary: dict[str, Any] | None =
     evidence_only = str(row.get("analysis_profile") or "") == TEXTBOOK_EVIDENCE_ONLY_ANALYSIS
     textbook_names = [] if question_only else _textbook_display_names(row)
     task_label = "教材引用定位" if evidence_only else "题目解析" if question_only else "真题解析"
-    display_model = row.get("actual_model") or (
+    display_model = (
         row.get("reasoning_model") if evidence_only else row.get("answer_model")
     ) or row.get("model")
-    display_provider = row.get("actual_provider") or (
+    display_provider = (
         row.get("reasoning_provider") if evidence_only else row.get("answer_provider")
     ) or row.get("provider")
-    model_source = "actual_call" if row.get("actual_model") else "configured_reasoning" if evidence_only else "configured_answer"
+    model_source = "configured_reasoning" if evidence_only else "configured_answer"
     model_label = short_model_label(display_model, display_provider)
     public_row = {
         **row,
@@ -335,6 +335,9 @@ def _practice_history_run(record: dict[str, Any]) -> dict[str, Any]:
         "duration_text": "已完成",
         "progress_percent": 100,
     }
+    for key in ("actual_model", "actual_provider", "actual_model_routes", "model_route_timeline", "question_model_routes", "smart_route_status"):
+        if key in record:
+            row[key] = record[key]
     result = enrich_contract(
         row,
         workflow=workflow_for_kind(task_kind),
@@ -418,6 +421,9 @@ def _practice_job_run(record: dict[str, Any], steps: list[dict[str, Any]]) -> di
         ),
         "progress_percent": 15 if engine_status == "queued" else (running_progress if engine_status in {"running", "paused"} else 100),
     }
+    for key in ("actual_model", "actual_provider", "actual_model_routes", "model_route_timeline", "question_model_routes", "smart_route_status"):
+        if key in record:
+            row[key] = record[key]
     result = enrich_contract(
         row,
         workflow=workflow_for_kind(task_kind),

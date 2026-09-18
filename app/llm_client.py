@@ -70,16 +70,59 @@ def _execution_protocol(url: str, purpose: str) -> str:
 
 
 def _provider_request_headers(config: ProviderConfig, *, accept: str = "") -> dict[str, str]:
-    headers = {
-        "Authorization": f"Bearer {config.api_key}",
-        "Content-Type": "application/json",
-    }
+    gateway_token = str(getattr(config, "cloudflare_gateway_token", "") or "").strip()
+    if bool(getattr(config, "cloudflare_gateway_enabled", False)):
+        headers = {
+            "cf-aig-authorization": f"Bearer {gateway_token}",
+            "cf-aig-collect-log-payload": "false",
+            "Content-Type": "application/json",
+        }
+    else:
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        }
+    smart_lease = str(getattr(config, "smart_router_lease", "") or "").strip()
+    smart_request_id = str(getattr(config, "smart_router_request_id", "") or "").strip()
+    if smart_lease:
+        headers["x-smart-router-lease"] = smart_lease
+    if smart_request_id:
+        headers["x-smart-router-request-id"] = smart_request_id
     user_agent = str(getattr(config, "user_agent", "") or "").strip()
     if user_agent:
         headers["User-Agent"] = user_agent
     if accept:
         headers["Accept"] = accept
     return headers
+
+
+def _mark_cloudflare_gateway_failure(
+    config: ProviderConfig,
+    exc: BaseException,
+    *,
+    body: str = "",
+) -> BaseException:
+    """Mark gateway-only failures so they never damage an upstream route."""
+
+    if not bool(getattr(config, "cloudflare_gateway_enabled", False)):
+        return exc
+    status = getattr(exc, "status_code", None)
+    if status is None and isinstance(exc, urllib.error.HTTPError):
+        status = exc.code
+    lowered = str(body or exc).lower()
+    reason = getattr(exc, "reason", None)
+    network_gateway_failure = str(getattr(exc, "transport_phase", "") or "") == "connect" or isinstance(exc, (ssl.SSLError, socket.gaierror)) or (
+        isinstance(exc, urllib.error.URLError)
+        and isinstance(reason, (ssl.SSLError, socket.gaierror, ConnectionRefusedError))
+    )
+    gateway_http_failure = status in {401, 403} or (
+        isinstance(status, int)
+        and status >= 500
+        and ("cloudflare" in lowered or "<!doctype html" in lowered or "<html" in lowered)
+    )
+    if network_gateway_failure or gateway_http_failure:
+        exc.gateway_failure = True
+    return exc
 
 
 class LLMError(RuntimeError):
@@ -509,7 +552,7 @@ def _http_error_diagnostic_payload(exc: urllib.error.HTTPError, body: str) -> di
 def _http_llm_error(exc: urllib.error.HTTPError, body: str) -> LLMError:
     safe_body = redact_credentials(body[:800])
     fields = _http_provider_error_fields(exc, body)
-    return LLMError(
+    error = LLMError(
         f"Provider HTTP {exc.code}: {safe_body}",
         status_code=int(exc.code),
         retry_after_seconds=_http_retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None),
@@ -519,6 +562,23 @@ def _http_llm_error(exc: urllib.error.HTTPError, body: str) -> LLMError:
         provider_error_message=fields.get("message", ""),
         provider_request_id=fields.get("request_id", ""),
     )
+    try:
+        parsed = json.loads(body)
+        smart_route = parsed.get("_smart_route") if isinstance(parsed, dict) else None
+        attempts = smart_route.get("attempts") if isinstance(smart_route, dict) else None
+        if isinstance(attempts, list):
+            error.smart_route_attempts = [
+                {
+                    "provider": str(item.get("provider") or "")[:120],
+                    "model": str(item.get("model") or "")[:160],
+                    "status": str(item.get("status") or "失败")[:40],
+                }
+                for item in attempts
+                if isinstance(item, dict)
+            ]
+    except (TypeError, ValueError):
+        pass
+    return error
 
 
 @dataclass(frozen=True)
@@ -778,6 +838,8 @@ def _anthropic_output_schema(messages: list[dict[str, Any]]) -> dict[str, Any] |
 
 class OpenAICompatibleClient:
     def __new__(cls, config: ProviderConfig):
+        if cls is OpenAICompatibleClient and getattr(config, "name", "") in {"gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"}:
+            return super().__new__(SmartGeminiClient)
         protocol = str(getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
         if cls is OpenAICompatibleClient and protocol in {"responses", "responses_api"}:
             return super().__new__(ResponsesAPIClient)
@@ -1129,16 +1191,22 @@ class OpenAICompatibleClient:
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
-                        raise _http_llm_error(exc, body) from exc
+                        error = _http_llm_error(exc, body)
+                        _mark_cloudflare_gateway_failure(self.config, error, body=body)
+                        raise error from exc
                     except Exception as exc:
                         record_model_diagnostic(call_record, payload, error=exc, outcome="failed")
+                        _mark_cloudflare_gateway_failure(self.config, exc)
                         raise
                     record_model_call_usage(call_record, raw)
                     record_model_diagnostic(call_record, payload, response_payload=raw)
         except (LLMError, ModelRequestAborted, ModelExecutionLedgerError):
             raise
         except Exception as exc:
-            raise LLMError(f"Provider request failed: {exc}") from exc
+            error = LLMError(f"Provider request failed: {exc}")
+            if getattr(exc, "gateway_failure", False):
+                error.gateway_failure = True
+            raise error from exc
 
         try:
             message = raw["choices"][0]["message"]
@@ -1171,12 +1239,13 @@ class OpenAICompatibleClient:
             content = _separate_gateway_final_json(content)
         if bool(_model_profile(self.config, target_model).get("strip_think_blocks")):
             content = _strip_think_blocks(content)
+        smart_route = raw.get("_smart_route") if isinstance(raw, dict) and isinstance(raw.get("_smart_route"), dict) else {}
         return _shadow_lingsuan_result(
             self.config,
             messages,
             LLMResult(
-                provider=self.config.name,
-                model=str(payload["model"]),
+                provider=str(smart_route.get("provider") or self.config.name),
+                model=str(smart_route.get("model") or payload["model"]),
                 content=content,
                 raw=raw,
             ),
@@ -1751,9 +1820,12 @@ class OpenAICompatibleClient:
                             error=f"Provider HTTP {exc.code}",
                             outcome="failed",
                         )
-                        raise _http_llm_error(exc, body) from exc
+                        error = _http_llm_error(exc, body)
+                        _mark_cloudflare_gateway_failure(self.config, error, body=body)
+                        raise error from exc
                     except Exception as exc:
                         record_model_diagnostic(call_record, payload, error=exc, outcome="failed")
+                        _mark_cloudflare_gateway_failure(self.config, exc)
                         raise
                     record_model_call_usage(call_record, raw)
                     record_model_diagnostic(call_record, payload, response_payload=raw)
@@ -1762,7 +1834,10 @@ class OpenAICompatibleClient:
         except LLMError:
             raise
         except Exception as exc:
-            raise LLMError(f"Provider request failed: {exc}") from exc
+            error = LLMError(f"Provider request failed: {exc}")
+            if getattr(exc, "gateway_failure", False):
+                error.gateway_failure = True
+            raise error from exc
         if not isinstance(raw, dict):
             raise LLMError(f"Unexpected provider response shape: {raw}")
         return raw
@@ -2108,12 +2183,13 @@ class ResponsesAPIClient(OpenAICompatibleClient):
         if not content:
             detail = _responses_response_detail(raw)
             raise LLMError(f"Model returned empty response content; {detail}" if detail else "Model returned empty response content")
+        smart_route = raw.get("_smart_route") if isinstance(raw, dict) and isinstance(raw.get("_smart_route"), dict) else {}
         return _shadow_lingsuan_result(
             self.config,
             messages,
             LLMResult(
-                provider=self.config.name,
-                model=str(payload["model"]),
+                provider=str(smart_route.get("provider") or self.config.name),
+                model=str(smart_route.get("model") or payload["model"]),
                 content=content,
                 raw=raw,
             ),
@@ -2263,16 +2339,121 @@ class AnthropicMessagesClient(OpenAICompatibleClient):
             "thinking": thinking_mode,
             "max_tokens": payload["max_tokens"],
         }
+        smart_route = raw.get("_smart_route") if isinstance(raw, dict) and isinstance(raw.get("_smart_route"), dict) else {}
         return _shadow_lingsuan_result(
             self.config,
             messages,
-            LLMResult(provider=self.config.name, model=target_model, content=content, raw=raw),
+            LLMResult(provider=str(smart_route.get("provider") or self.config.name), model=str(smart_route.get("model") or target_model), content=content, raw=raw),
             int(payload["max_tokens"]),
         )
 
 
+class SmartGeminiClient(OpenAICompatibleClient):
+    """Virtual model-family client backed by the Cloudflare routing service."""
+
+    def _run(self, messages: list[dict[str, Any]], method: str, kwargs: dict[str, Any]) -> Any:
+        from .runtime_monitor import smart_thinking_context
+        from .smart_gemini_router import execute_smart_route, messages_require_vision
+
+        capability = "vision" if messages_require_vision(messages) else "text"
+        forwarded = dict(kwargs)
+        forwarded.pop("model", None)
+
+        def invoke(candidate: ProviderConfig) -> Any:
+            client = OpenAICompatibleClient(candidate)
+            client._urlopen = self._urlopen
+            selected = _normalize_thinking_mode(forwarded["thinking"]) if forwarded.get("thinking") is not None else "unknown"
+            minimum = str(_model_profile(candidate, candidate.default_model).get("thinking_minimum") or "")
+            with smart_thinking_context(selected=selected, minimum=minimum):
+                result = getattr(client, method)(messages, model=candidate.default_model, **forwarded)
+            if isinstance(result, LLMResult) and not str(result.content or "").strip():
+                raise LLMError("Model returned empty response")
+            return result
+
+        return execute_smart_route(capability, invoke, virtual_provider=self.config.name)
+
+    def chat_json(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
+        return self._run(messages, "chat_json", kwargs)
+
+    def chat_text(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
+        return self._run(messages, "chat_text", kwargs)
+
+    def chat_json_object(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        return self._run(messages, "chat_json_object", kwargs)
+
+    def create_tool_response(
+        self,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return self._run(messages, "create_tool_response", kwargs)
+
+    def _post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        timeout: int,
+        headers: dict[str, str] | None = None,
+        purpose: str = "",
+    ) -> dict[str, Any]:
+        messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+        from .runtime_monitor import smart_thinking_context
+        from .smart_gemini_router import execute_smart_route, messages_require_vision
+
+        capability = "vision" if messages_require_vision(messages) else "text"
+
+        def invoke(candidate: ProviderConfig) -> dict[str, Any]:
+            client = OpenAICompatibleClient(candidate)
+            client._urlopen = self._urlopen
+            actual_payload = {**payload, "model": candidate.default_model}
+            # A prebuilt payload does not retain the user's original choice.
+            # Observe it as-is, without applying or claiming a minimum adjustment.
+            with smart_thinking_context(selected="unknown", minimum=""):
+                return client._post_json(
+                    f"{candidate.base_url}/chat/completions",
+                    actual_payload,
+                    timeout=timeout,
+                    purpose=purpose or "tool_call",
+                )
+
+        return execute_smart_route(capability, invoke, virtual_provider=self.config.name)
+
+    def _run_image(self, method: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> ImageGenerationResult:
+        from .smart_gemini_router import execute_smart_route
+
+        if self.config.name != "image_smart_router":
+            raise LLMError("该多模态智能路由不支持图片生成")
+        forwarded = dict(kwargs)
+        forwarded.pop("model", None)
+        capability = "image_edit" if method == "edit_image" else "image_generation"
+
+        def invoke(candidate: ProviderConfig) -> ImageGenerationResult:
+            client = OpenAICompatibleClient(candidate)
+            client._urlopen = self._urlopen
+            result = getattr(client, method)(*args, model=candidate.image_model, **forwarded)
+            route = result.raw.get("_smart_route") if isinstance(result.raw, dict) else None
+            route = route if isinstance(route, dict) else {}
+            return ImageGenerationResult(
+                provider=str(route.get("provider") or result.provider),
+                model=str(route.get("model") or result.model),
+                path=result.path,
+                raw=result.raw,
+            )
+
+        return execute_smart_route(capability, invoke, virtual_provider=self.config.name)
+
+    def generate_image(self, *args: Any, **kwargs: Any) -> ImageGenerationResult:
+        return self._run_image("generate_image", args, kwargs)
+
+    def edit_image(self, *args: Any, **kwargs: Any) -> ImageGenerationResult:
+        return self._run_image("edit_image", args, kwargs)
+
+
 def create_llm_client(config: ProviderConfig) -> LLMClientProtocol:
     """Create a client from provider configuration without changing defaults."""
+    if getattr(config, "name", "") in {"gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"}:
+        return OpenAICompatibleClient(config)
     protocol = str(getattr(config, "api_protocol", "chat_completions") or "chat_completions").strip().lower()
     if protocol in {"responses", "responses_api"}:
         return ResponsesAPIClient(config)

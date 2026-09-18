@@ -78,7 +78,7 @@ from .prompt_registry import practice_prompt_contract_id, prompt_contract
 from .provider_errors import classify_provider_error, is_terminal_provider_route_error
 from .redaction import redact_credentials
 from .runtime_capacity import practice_inner_concurrency
-from .runtime_monitor import record_model_retry_scheduled, record_model_retry_started
+from .runtime_monitor import model_call_context, record_model_retry_scheduled, record_model_retry_started
 from .settings import (
     DEFAULT_MODEL_MAX_TOKENS,
     get_provider,
@@ -2651,6 +2651,8 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
     generated mathematics or science is correct.  That distinction is exposed
     to the UI so ``passed`` cannot be mistaken for subject-matter acceptance.
     """
+    from .practice_choice_review import review_issue
+
     exercises = practice.get("exercises") if isinstance(practice, dict) else []
     exercises = exercises if isinstance(exercises, list) else []
     blueprint = practice.get("blueprint") if isinstance(practice.get("blueprint"), dict) else {}
@@ -2688,6 +2690,18 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
             else str(item.get("plan_item_id") or "").strip()
         )
         question_type = _effective_question_type(item, planned_by_id.get(plan_item_id))
+        choice_issue = review_issue({**item, "question_type": question_type})
+        if choice_issue:
+            message = f"第 {question_number} 题{choice_issue}"
+            choice_review_status = str((item.get("choice_review") or {}).get("status") or "")
+            # A completed review whose fingerprint no longer matches the
+            # current question is stale and must block export.  An
+            # unavailable reviewer is explicitly kept as a warning so a
+            # practice set can still be inspected and regenerated later.
+            if choice_review_status in {"passed", "needs_review"}:
+                blocking_issues.append(message)
+            else:
+                warnings.append(message)
         planned_item = planned_by_id.get(plan_item_id) or {}
         provenance_issue = cloze_issue(item, planned_item, practice)
         if provenance_issue:
@@ -2784,7 +2798,10 @@ def recompute_practice_quality(practice: dict[str, Any]) -> dict[str, Any]:
         for observation in difficulty_observations
         if _clean(observation.get("message"), 800)
     )
-    subject_review_required = bool(boundary_issues)
+    subject_review_required = bool(boundary_issues) or any(
+        review_issue(item) for item in exercises
+        if isinstance(item, dict) and item.get("question_type") == "单选题"
+    )
     word_formula_issues = preflight_practice_inline_expressions({"exercises": exercises})
     blocking_issues.extend(word_formula_issues)
     checks = {
@@ -7927,7 +7944,7 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
     )
     max_concurrency = practice_generation_concurrency(payload)
 
-    def generate_batch(
+    def _generate_batch_impl(
         batch_start: int,
         batch_plan: list[dict[str, Any]],
         *,
@@ -8901,6 +8918,19 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         batch_diagnostic["status"] = "partial_success" if failures else "completed"
         return batch_start, restored, failures, batch_diagnostic
 
+    def generate_batch(
+        batch_start: int,
+        batch_plan: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> tuple[int, list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
+        active_items = ",".join(
+            _clean(item.get("plan_item_id"), 80) or f"plan_item_{batch_start + index + 1:02d}"
+            for index, item in enumerate(batch_plan)
+            if isinstance(item, dict)
+        )
+        with model_call_context(stage="practice_generation", active_item=active_items):
+            return _generate_batch_impl(batch_start, batch_plan, **kwargs)
+
     pending_batches: list[tuple[int, list[dict[str, Any]]]] = []
     batch_failures: dict[str, dict[str, Any]] = {}
     generation_batch_diagnostics: list[dict[str, Any]] = []
@@ -9224,7 +9254,9 @@ def generate_practice_from_plan(payload: dict[str, Any]) -> dict[str, Any]:
         result["history_id"] = resume_history_id
     result["blueprint_review_enabled"] = bool(payload.get("blueprint_review_enabled", True))
     result["quality"] = recompute_practice_quality(result)
-    # Generation ends at deterministic quality recomputation; no second model-review stage is created.
+    from .practice_choice_review import review_choices
+
+    review_choices(result, _practice_generation_client(provider, model), model, payload.get("thinking"), payload=payload)
     result["quality"] = recompute_practice_quality(result)
     return result
 
@@ -9701,6 +9733,9 @@ def regenerate_practice_exercise(payload: dict[str, Any]) -> dict[str, Any]:
     merged[index] = exercise
     ensure_unique_figure_ids(merged)
     exercise = merged[index]
+    from .practice_choice_review import review_choices
+
+    review_choices({"exercises": [exercise]}, _practice_generation_client(provider, model), model, payload.get("thinking"), payload=payload)
     updated_practice = {**practice, "exercises": merged, "quality": {}}
     quality = recompute_practice_quality(updated_practice)
     return {

@@ -38,8 +38,9 @@ def test_shipped_catalog_contains_only_approved_verified_channels() -> None:
     assert set(providers) == {
         "ark", "ark_image", "bailian", "deepseek",
         "lingsuan_openai", "lingsuan_google", "lingsuan_image", "lingsuan_domestic",
-        "wawapi_openai", "wawapi_google", "wawapi_xai",
+        "wawapi_openai", "wawapi_google", "wawapi_xai", "lingsuan_claude", "wawapi_claude",
         "wawapi_image_openai", "wawapi_image_google", "wawapi_image_xai",
+        "topapi_google",
     }
     assert all(provider.get("allow_custom_model") is False for provider in providers.values())
 

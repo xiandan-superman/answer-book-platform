@@ -17,7 +17,7 @@ from app.task_contracts import (
 from app.task_read_model import build_exam_run, build_practice_runs
 
 
-def test_exam_title_prefers_actual_called_model_over_legacy_default() -> None:
+def test_exam_title_keeps_main_model_when_latest_call_is_reviewer() -> None:
     run = build_exam_run({
         "task_id": "exam-real-route",
         "status": "running",
@@ -31,9 +31,10 @@ def test_exam_title_prefers_actual_called_model_over_legacy_default() -> None:
         "actual_model": "gemini-3.6-flash",
     })
 
-    assert run["display_title"] == "真题解析 · Gemini · 高分子真题"
-    assert run["model_label"] == "Gemini"
-    assert run["model_source"] == "actual_call"
+    assert run["display_title"] == "真题解析 · Terra · 高分子真题"
+    assert run["model_label"] == "Terra"
+    assert run["model_source"] == "configured_answer"
+    assert run["actual_model"] == "gemini-3.6-flash"
 
 
 def test_exam_title_uses_configured_answer_model_before_first_call() -> None:

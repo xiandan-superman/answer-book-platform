@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-16",
+  "updated_at": "2026-09-17",
   "task_labels": {
     "source_analysis": "材料理解",
     "knowledge_planning": "考查内容规划",
@@ -77,6 +77,133 @@
         "protocol": "chat_completions",
         "evidence": "live_native_tool_probe",
         "last_verified_at": "2026-08-29"
+      }
+    }
+  },
+  "virtual_providers": {
+    "gemini_smart_router": {
+      "display_name": "Gemini 智能路由",
+      "models": {
+        "gemini-smart-router": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "delegated_to_candidate",
+          "thinking": "delegated_to_candidate",
+          "task_support": {
+            "source_analysis": "limited",
+            "knowledge_planning": "limited",
+            "evidence_selection": "limited",
+            "planning": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "answer_generation": "limited",
+            "review": "limited",
+            "semantic_review": "limited",
+            "format_repair": "limited",
+            "image_generation": "forbidden"
+          },
+          "last_verified_at": "",
+          "notes": "虚拟路由入口登记，不代表独立模型。文字与读图由 Cloudflare 在已配置候选中选择；健康来自真实调用历史，供应商并发由云端统一管理；不支持图片生成。"
+        }
+      }
+    },
+    "gpt_smart_router": {
+      "display_name": "GPT 智能路由",
+      "models": {
+        "gpt-smart-router": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "delegated_to_candidate",
+          "thinking": "delegated_to_candidate",
+          "task_support": {
+            "source_analysis": "limited",
+            "knowledge_planning": "limited",
+            "evidence_selection": "limited",
+            "planning": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "answer_generation": "limited",
+            "review": "limited",
+            "semantic_review": "limited",
+            "format_repair": "limited",
+            "image_generation": "forbidden"
+          },
+          "last_verified_at": "",
+          "notes": "虚拟 GPT 路由入口登记，不代表独立模型。首批候选约定为灵算与 WawAPI 的 GPT-6 Astra、GPT-5.6 Sol、GPT-5.6 Terra；Worker 路线和真实调用尚待配置验收。"
+        }
+      }
+    },
+    "image_smart_router": {
+      "display_name": "生图智能路由",
+      "models": {
+        "image-smart-router": {
+          "kind": "image_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "image"
+          ],
+          "structured_output": "not_applicable",
+          "thinking": "not_applicable",
+          "task_support": {
+            "image_generation": "limited"
+          },
+          "last_verified_at": "",
+          "notes": "虚拟生图路由入口，不代表独立模型。Cloudflare 在已配置图片模型中选择；普通生图与参考图编辑使用独立候选能力，健康来自真实调用历史，供应商并发由云端统一管理。"
+        }
+      }
+    },
+    "claude_smart_router": {
+      "display_name": "Claude 智能路由",
+      "models": {
+        "claude-smart-router": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "delegated_to_candidate",
+          "thinking": "delegated_to_candidate",
+          "task_support": {
+            "source_analysis": "limited",
+            "knowledge_planning": "limited",
+            "evidence_selection": "limited",
+            "planning": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "answer_generation": "limited",
+            "review": "limited",
+            "semantic_review": "limited",
+            "format_repair": "limited",
+            "image_generation": "forbidden"
+          },
+          "last_verified_at": "",
+          "notes": "虚拟 Claude 路由入口，仅在灵算与 WawAPI 的 claude-opus-5、claude-sonnet-5 中选择。"
+        }
       }
     }
   },
@@ -279,7 +406,7 @@
           },
           "last_verified_at": "unknown"
         },
-        "qwen-image-2.0-pro": {
+        "qwen-image-3.0": {
           "kind": "image_generation",
           "evidence_grade": "C",
           "native_inputs": [
@@ -295,39 +422,7 @@
           },
           "last_verified_at": "unknown"
         },
-        "qwen-image-2.0": {
-          "kind": "image_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "image"
-          ],
-          "structured_output": "not_applicable",
-          "thinking": "not_applicable",
-          "task_support": {
-            "image_generation": "limited"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen-image-max": {
-          "kind": "image_generation",
-          "evidence_grade": "C",
-          "native_inputs": [
-            "text"
-          ],
-          "native_outputs": [
-            "image"
-          ],
-          "structured_output": "not_applicable",
-          "thinking": "not_applicable",
-          "task_support": {
-            "image_generation": "limited"
-          },
-          "last_verified_at": "unknown"
-        },
-        "qwen-image-plus": {
+        "qwen-image-2.0-2026-03-03": {
           "kind": "image_generation",
           "evidence_grade": "C",
           "native_inputs": [
@@ -977,6 +1072,178 @@
             "review": "unknown"
           },
           "last_verified_at": "unknown"
+        }
+      }
+    },
+    "topapi_google": {
+      "display_name": "Top-API · Gemini",
+      "models": {
+        "gemini-3.8-flash-high": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "knowledge_planning": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "limited",
+            "format_repair": "limited"
+          },
+          "last_verified_at": "unknown"
+        },
+        "gemini-3.7-flash-high": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "knowledge_planning": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "limited",
+            "format_repair": "limited"
+          },
+          "last_verified_at": "unknown"
+        },
+        "gemini-3.6-flash-high": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "knowledge_planning": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "limited",
+            "format_repair": "limited"
+          },
+          "last_verified_at": "unknown"
+        }
+      }
+    },
+    "lingsuan_claude": {
+      "display_name": "灵算 · Claude",
+      "models": {
+        "claude-opus-5": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-18",
+          "notes": "模型目录已通过供应商 /v1/models 查询确认；真实生成协议待部署后在受控请求中复核。"
+        },
+        "claude-sonnet-5": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-18",
+          "notes": "模型目录已通过供应商 /v1/models 查询确认；真实生成协议待部署后在受控请求中复核。"
+        }
+      }
+    },
+    "wawapi_claude": {
+      "display_name": "WawAPI · Claude",
+      "models": {
+        "claude-opus-5": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-18",
+          "notes": "模型目录已通过供应商 /v1/models 查询确认；真实生成协议待部署后在受控请求中复核。"
+        },
+        "claude-sonnet-5": {
+          "kind": "text_generation",
+          "evidence_grade": "C",
+          "native_inputs": [
+            "text",
+            "image"
+          ],
+          "native_outputs": [
+            "text"
+          ],
+          "structured_output": "unknown",
+          "thinking": "unknown",
+          "task_support": {
+            "source_analysis": "limited",
+            "blueprint": "limited",
+            "generation": "limited",
+            "answer": "limited",
+            "review": "unknown"
+          },
+          "last_verified_at": "2026-09-18",
+          "notes": "模型目录已通过供应商 /v1/models 查询确认；真实生成协议待部署后在受控请求中复核。"
         }
       }
     }

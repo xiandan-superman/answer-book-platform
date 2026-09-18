@@ -42,6 +42,9 @@ ARK_SEEDREAM_IMAGE_LABELS = {
     "doubao-seedream-5-0-lite-260128": "Doubao-Seedream-5.0-lite",
 }
 SUPPORTED_PROVIDER_NAMES = frozenset({
+    "gemini_smart_router",
+    "gpt_smart_router",
+    "image_smart_router",
     "lingsuan_domestic",
     "ark",
     "ark_image",
@@ -56,7 +59,11 @@ SUPPORTED_PROVIDER_NAMES = frozenset({
     "wawapi_image_xai",
     "wawapi_openai",
     "wawapi_xai",
+    "topapi_google",
+    "lingsuan_claude",
+    "wawapi_claude",
 })
+SMART_ROUTER_PROVIDER_NAMES = frozenset({"gemini_smart_router", "gpt_smart_router", "claude_smart_router", "image_smart_router"})
 REMOVED_PROVIDER_NAMES = {"yunwu", "lingsuan"}
 LEGACY_PROVIDER_ALIASES = {"lingsuan": "lingsuan_openai"}
 LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
@@ -64,6 +71,7 @@ LINGSUAN_OFFICIAL_THINKING_DEFAULTS = {
     "lingsuan_openai": "auto",
     "lingsuan_image": "auto",
     "lingsuan_google": "auto",
+    "lingsuan_claude": "auto",
 }
 LINGSUAN_PROVIDER_NAMES = frozenset(LINGSUAN_OFFICIAL_THINKING_DEFAULTS)
 LINGSUAN_GATEWAY_BASE_URL = "https://edge.lingsuan.org/v1"
@@ -86,11 +94,18 @@ BUILTIN_RESPONSES_PROVIDER_NAMES = {
     "wawapi_xai",
     "wawapi_image_openai",
     "wawapi_image_xai",
+    "gpt_smart_router",
 }
 BUILTIN_CHAT_COMPLETIONS_PROVIDER_NAMES = {
+    "gemini_smart_router",
+    "image_smart_router",
+    "claude_smart_router",
     "lingsuan_domestic",
     "lingsuan_google",
     "wawapi_google",
+    "topapi_google",
+    "lingsuan_claude",
+    "wawapi_claude",
 }
 BUILTIN_ANTHROPIC_MESSAGES_PROVIDER_NAMES: set[str] = set()
 
@@ -126,6 +141,10 @@ class ProviderConfig:
     responses_fallback_to_chat: bool = False
     responses_streaming: bool = True
     user_agent: str = ""
+    cloudflare_gateway_token: str = ""
+    cloudflare_gateway_enabled: bool = False
+    smart_router_lease: str = ""
+    smart_router_request_id: str = ""
 
     def redacted(self) -> dict[str, Any]:
         public_model_profiles: dict[str, dict[str, Any]] = {}
@@ -152,7 +171,9 @@ class ProviderConfig:
             "name": self.name,
             "type": self.type,
             "base_url": self.base_url,
-            "api_key_set": bool(self.api_key),
+            "api_key_set": bool(self.api_key) if self.name not in SMART_ROUTER_PROVIDER_NAMES else bool(
+                self.api_key and os.environ.get("CLOUDFLARE_SMART_ROUTER_URL", "").strip()
+            ),
             "api_key_env": self.api_key_env,
             "default_model": self.default_model,
             "model_options": list(self.model_options),
@@ -179,6 +200,9 @@ class ProviderConfig:
             "responses_fallback_to_chat": self.responses_fallback_to_chat,
             "responses_streaming": self.responses_streaming,
             "user_agent": self.user_agent,
+            "gateway_ready": bool(self.name in SMART_ROUTER_PROVIDER_NAMES and self.api_key and os.environ.get("CLOUDFLARE_SMART_ROUTER_URL", "").strip()),
+            "gateway_token_set": bool(self.api_key) if self.name in SMART_ROUTER_PROVIDER_NAMES else False,
+            "smart_router_url": os.environ.get("CLOUDFLARE_SMART_ROUTER_URL", "").strip() if self.name in SMART_ROUTER_PROVIDER_NAMES else "",
         }
 
 
@@ -203,7 +227,12 @@ def load_provider_config_file() -> dict[str, Any]:
     local = LOCAL_CONFIG_DIR / "providers.local.json"
     example = CONFIG_DIR / "providers.example.json"
     base = _read_json(example)
-    ensure_provider_registry_sync(base)
+    # Runtime provider discovery must remain forward-compatible with cloud
+    # smart-router candidates. A stale local protocol snapshot must not make
+    # the fixed smart-router entry disappear or block task setup. Direct
+    # provider probes still enforce the capability and protocol records when
+    # a user explicitly selects a concrete provider/model.
+    ensure_provider_registry_sync(base, enforce_protocol_verification=False)
     merged = _merge_config(base, _read_json(local)) if local.exists() else base
     # Retired routes must not be restored by a copied local configuration.
     for name, public in base.get("providers", {}).items():
@@ -277,7 +306,7 @@ def list_providers() -> dict[str, ProviderConfig]:
         if name == "ark_image":
             default_image_model = ARK_SEEDREAM_IMAGE_MODELS[0]
         if name == "bailian":
-            default_image_model = "qwen-image-2.0-pro"
+            default_image_model = "qwen-image-3.0"
         supports_image_generation = bool(item.get("supports_image_generation", True))
         image_model = str(
             item.get("image_model", "")
@@ -448,6 +477,110 @@ def list_providers() -> dict[str, ProviderConfig]:
                 else str(item.get("user_agent", "") or "").strip()
             ),
         )
+    gateway_token = str(os.environ.get("CLOUDFLARE_SMART_ROUTER_ACCESS_KEY", "")).strip()
+    providers["gemini_smart_router"] = ProviderConfig(
+        name="gemini_smart_router",
+        type="openai_compatible",
+        base_url="",
+        api_key=gateway_token,
+        api_key_env="CLOUDFLARE_SMART_ROUTER_ACCESS_KEY",
+        default_model="gemini-smart-router",
+        model_options=("gemini-smart-router",),
+        model_option_labels={"gemini-smart-router": "自动选择"},
+        allow_custom_model=False,
+        model_hint="由 Cloudflare 在具体模型级别选择路线，并统一管理供应商并发、排队、切换和用量。",
+        temperature=0.1,
+        max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+        supports_text_generation=True,
+        supports_image_generation=False,
+        vision_model="gemini-smart-router",
+        vision_model_options=("gemini-smart-router",),
+        supports_vision=True,
+        model_capabilities={"gemini-smart-router": ("text", "vision")},
+        model_profiles={
+            "gemini-smart-router": {
+                "api_protocol": "chat_completions",
+                "supports_tool_calls": True,
+            }
+        },
+        api_protocol="chat_completions",
+    )
+    providers["gpt_smart_router"] = ProviderConfig(
+        name="gpt_smart_router",
+        type="openai_compatible",
+        base_url="",
+        api_key=gateway_token,
+        api_key_env="CLOUDFLARE_SMART_ROUTER_ACCESS_KEY",
+        default_model="gpt-smart-router",
+        model_options=("gpt-smart-router",),
+        model_option_labels={"gpt-smart-router": "自动选择"},
+        allow_custom_model=False,
+        model_hint="由 Cloudflare 在具体 GPT 模型级别选择路线，并与其他模型家族共享供应商总并发。",
+        temperature=0.1,
+        max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+        supports_text_generation=True,
+        supports_image_generation=False,
+        vision_model="gpt-smart-router",
+        vision_model_options=("gpt-smart-router",),
+        supports_vision=True,
+        model_capabilities={"gpt-smart-router": ("text", "vision")},
+        model_profiles={
+            "gpt-smart-router": {
+                "api_protocol": "responses",
+                "supports_tool_calls": True,
+            }
+        },
+        api_protocol="responses",
+        responses_streaming=True,
+    )
+    providers["claude_smart_router"] = ProviderConfig(
+        name="claude_smart_router",
+        type="openai_compatible",
+        base_url="",
+        api_key=gateway_token,
+        api_key_env="CLOUDFLARE_SMART_ROUTER_ACCESS_KEY",
+        default_model="claude-smart-router",
+        model_options=("claude-smart-router",),
+        model_option_labels={"claude-smart-router": "自动选择"},
+        allow_custom_model=False,
+        model_hint="由 Cloudflare 在灵算和 WawAPI 的 Claude 模型中选择路线，并统一管理并发、排队、切换和用量。",
+        temperature=0.1,
+        max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+        supports_text_generation=True,
+        supports_image_generation=False,
+        vision_model="claude-smart-router",
+        vision_model_options=("claude-smart-router",),
+        supports_vision=True,
+        model_capabilities={"claude-smart-router": ("text", "vision")},
+        model_profiles={"claude-smart-router": {"api_protocol": "chat_completions", "supports_tool_calls": True}},
+        api_protocol="chat_completions",
+    )
+    providers["image_smart_router"] = ProviderConfig(
+        name="image_smart_router",
+        type="openai_compatible",
+        base_url="",
+        api_key=gateway_token,
+        api_key_env="CLOUDFLARE_SMART_ROUTER_ACCESS_KEY",
+        default_model="",
+        model_options=(),
+        model_option_labels={},
+        allow_custom_model=False,
+        model_hint="由 Cloudflare 在图片模型级别选择路线，并统一管理供应商并发、排队、失败切换和用量。",
+        temperature=0.1,
+        max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+        image_model="image-smart-router",
+        image_model_options=("image-smart-router",),
+        image_model_option_labels={"image-smart-router": "自动选择"},
+        image_size="1024x1024",
+        supports_text_generation=False,
+        supports_image_generation=True,
+        vision_model="",
+        vision_model_options=(),
+        supports_vision=False,
+        model_capabilities={"image-smart-router": ("image_generation",)},
+        model_profiles={"image-smart-router": {"api_protocol": "images"}},
+        api_protocol="chat_completions",
+    )
     return providers
 
 

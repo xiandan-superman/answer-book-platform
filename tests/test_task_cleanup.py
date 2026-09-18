@@ -27,7 +27,7 @@ def test_cleanup_only_recommends_eligible_tasks_older_than_newest_40(tmp_path, m
     result = task_cleanup.build_cleanup_recommendation(rows)
 
     assert result["task_count"] == 45
-    assert result["overflow_count"] == 5
+    assert result["overflow_count"] == 15
     assert {item["task_id"] for item in result["recommended"]} == {
         "task-01", "task-02", "task-03", "task-04"
     }
@@ -35,7 +35,7 @@ def test_cleanup_only_recommends_eligible_tasks_older_than_newest_40(tmp_path, m
 
 def test_cleanup_never_offers_live_or_waiting_overflow_tasks(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(task_cleanup, "DOWNLOAD_LEDGER_PATH", tmp_path / "missing.json")
-    rows = [_row(index) for index in range(42)]
+    rows = [_row(index) for index in range(32)]
     rows[0].update(status="running", progress_percent=20)
     rows[1].update(status="needs_input", progress_percent=20)
 
@@ -43,6 +43,15 @@ def test_cleanup_never_offers_live_or_waiting_overflow_tasks(tmp_path, monkeypat
 
     assert result["safe_overflow_count"] == 0
     assert result["show_prompt"] is False
+
+
+def test_cleanup_prompt_waits_until_more_than_50_tasks(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(task_cleanup, "DOWNLOAD_LEDGER_PATH", tmp_path / "missing.json")
+    rows = [_row(index) for index in range(51)]
+    result = task_cleanup.build_cleanup_recommendation(rows)
+    assert result["keep_newest"] == 30
+    assert result["overflow_count"] == 21
+    assert result["show_prompt"] is True
 
 
 def test_download_ledger_is_durable_and_forgettable(tmp_path, monkeypatch) -> None:

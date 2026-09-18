@@ -1,0 +1,14 @@
+{
+  "name": "answer-book-smart-router",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260918.1",
+    "typescript": "^5.9.2",
+    "wrangler": "4.134.0"
+  }
+}

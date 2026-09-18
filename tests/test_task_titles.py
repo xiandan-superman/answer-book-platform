@@ -16,6 +16,7 @@ def test_task_name_structure_uses_dynamic_kind_model_and_content() -> None:
 
 
 def test_model_label_is_concise_and_truthful() -> None:
+    assert short_model_label("gpt-smart-router", "gpt_smart_router") == "GPT"
     assert short_model_label("gpt-5.6-sol") == "Sol"
     assert short_model_label("deepseek-chat") == "DeepSeek"
     assert short_model_label("sensenova-6.8-flash-lite") == "SenseNova"

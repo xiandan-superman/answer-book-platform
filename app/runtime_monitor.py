@@ -61,12 +61,14 @@ HEARTBEAT_ERROR_SECONDS = max(30, int(os.environ.get("RUNTIME_HEARTBEAT_ERROR_SE
 MODEL_WAIT_SECONDS = max(30, int(os.environ.get("RUNTIME_MODEL_WAIT_SECONDS", "150")))
 PROGRESS_WARNING_SECONDS = max(MODEL_WAIT_SECONDS, int(os.environ.get("RUNTIME_PROGRESS_WARNING_SECONDS", "240")))
 _MODEL_CALL_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar("model_call_context", default=None)
+_SMART_THINKING_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar("smart_thinking_context", default=None)
 _LAST_MODEL_INVOCATION: ContextVar[dict[str, str] | None] = ContextVar(
     "last_model_invocation",
     default=None,
 )
 _MODEL_LOCK = threading.RLock()
 _MODEL_ACTIVE: dict[str, dict[str, Any]] = {}
+_SMART_ROUTE_WAITS: dict[tuple[str, str], dict[str, Any]] = {}
 _MODEL_HISTORY: deque[dict[str, Any]] = deque(maxlen=240)
 _MODEL_SEQUENCE = 0
 _RUN_MODEL_BUDGETS: dict[tuple[str, str], dict[str, Any]] = {}
@@ -205,7 +207,7 @@ def _model_call_route_summary_from_rows(rows: list[dict[str, Any]]) -> dict[str,
         and not str(row.get("provider") or "").endswith(":litellm_shadow")
     ]
     if not rows:
-        return {"actual_model": "", "actual_provider": "", "actual_model_routes": []}
+        return {"actual_model": "", "actual_provider": "", "actual_model_routes": [], "model_route_timeline": [], "question_model_routes": {}}
     answer_rows = [row for row in rows if str(row.get("stage") or "") == "answer_generation"]
     successful_answer_rows = [row for row in answer_rows if row.get("outcome") == "succeeded"]
     primary = (successful_answer_rows or answer_rows)[-1] if answer_rows else None
@@ -220,15 +222,67 @@ def _model_call_route_summary_from_rows(rows: list[dict[str, Any]]) -> dict[str,
                 "model": key[1],
                 "call_count": 0,
                 "success_count": 0,
+                "failed_count": 0,
+                "running_count": 0,
+                "first_at": str(row.get("started_at") or ""),
+                "last_at": str(row.get("finished_at") or row.get("started_at") or ""),
+                "elapsed_ms": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "provider_reported_cost": None,
             }
             by_route[key] = route
             routes.append(route)
         route["call_count"] += 1
         route["success_count"] += int(row.get("outcome") == "succeeded")
+        route["failed_count"] += int(row.get("outcome") not in {"succeeded", "running"})
+        route["running_count"] += int(row.get("outcome") == "running")
+        route["last_at"] = str(row.get("finished_at") or row.get("started_at") or route["last_at"])
+        route["elapsed_ms"] += int(row.get("elapsed_ms") or 0)
+        route["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
+        route["completion_tokens"] += int(row.get("completion_tokens") or 0)
+        if isinstance(row.get("provider_cost"), (int, float)):
+            route["provider_reported_cost"] = float(route["provider_reported_cost"] or 0) + float(row["provider_cost"])
+    timeline: list[dict[str, Any]] = []
+    previous: tuple[str, str] | None = None
+    for row in rows:
+        current = (str(row.get("provider") or ""), str(row.get("model") or ""))
+        previous_event = timeline[-1] if timeline else None
+        timeline.append({
+            "provider": current[0],
+            "model": current[1],
+            "outcome": str(row.get("outcome") or "unknown"),
+            "started_at": str(row.get("started_at") or ""),
+            "finished_at": str(row.get("finished_at") or ""),
+            "elapsed_ms": int(row.get("elapsed_ms") or 0),
+            "reason": str(row.get("error") or "")[:300],
+            "switched": bool(previous and previous != current),
+            "from_provider": previous[0] if previous and previous != current else "",
+            "from_model": previous[1] if previous and previous != current else "",
+            "switch_reason": str(previous_event.get("reason") or "") if previous_event and previous and previous != current else "",
+            "switched_at": str(row.get("started_at") or "") if previous and previous != current else "",
+            "thinking_trace": dict(row["thinking_trace"]) if isinstance(row.get("thinking_trace"), dict) else {},
+            "stage": str(row.get("stage") or ""),
+            "active_item": str(row.get("active_item") or ""),
+            "smart_route": dict(row["smart_route"]) if isinstance(row.get("smart_route"), dict) else {},
+        })
+        previous = current
+    question_routes: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if row.get("outcome") != "succeeded":
+            continue
+        for item in [part.strip() for part in str(row.get("active_item") or "").split(",") if part.strip()]:
+            question_routes[item] = {
+                "provider": str(row.get("provider") or ""),
+                "model": str(row.get("model") or ""),
+                "stage": str(row.get("stage") or ""),
+            }
     return {
         "actual_model": str(primary.get("model") or "") if primary else "",
         "actual_provider": str(primary.get("provider") or "") if primary else "",
         "actual_model_routes": routes,
+        "model_route_timeline": timeline,
+        "question_model_routes": question_routes,
     }
 
 
@@ -241,8 +295,17 @@ def model_call_route_summaries(task_ids: list[str]) -> dict[str, dict[str, Any]]
         task_id = str(row.get("task_id") or "")
         if task_id in grouped:
             grouped[task_id].append(row)
+    with _MODEL_LOCK:
+        active_rows = [dict(row) for row in _MODEL_ACTIVE.values()]
+    for row in active_rows:
+        task_id = str(row.get("task_id") or "")
+        if task_id in grouped:
+            grouped[task_id].append({**row, "outcome": "running"})
     return {
-        task_id: _model_call_route_summary_from_rows(rows)
+        task_id: {
+            **_model_call_route_summary_from_rows(rows),
+            "smart_route_status": smart_route_wait_summary(task_id),
+        }
         for task_id, rows in grouped.items()
     }
 
@@ -250,16 +313,53 @@ def model_call_route_summaries(task_ids: list[str]) -> dict[str, dict[str, Any]]
 def model_call_route_summary(task_id: str) -> dict[str, Any]:
     """Project the provider/model routes that were actually attempted for one task."""
 
-    return model_call_route_summaries([task_id]).get(
+    summary = model_call_route_summaries([task_id]).get(
         str(task_id),
-        {"actual_model": "", "actual_provider": "", "actual_model_routes": []},
+        {"actual_model": "", "actual_provider": "", "actual_model_routes": [], "model_route_timeline": [], "question_model_routes": {}},
     )
+    return {**summary, "smart_route_status": smart_route_wait_summary(str(task_id))}
 
 
 def current_model_call_context() -> dict[str, str]:
     """Return a detached snapshot for local diagnostics and shadow observers."""
 
     return dict(_MODEL_CALL_CONTEXT.get() or {})
+
+
+@contextmanager
+def smart_thinking_context(*, selected: str, minimum: str) -> Iterator[None]:
+    """Observe caller intent separately from the final wire payload; never alter it."""
+    token = _SMART_THINKING_CONTEXT.set({"selected": selected, "minimum": minimum})
+    try:
+        yield
+    finally:
+        _SMART_THINKING_CONTEXT.reset(token)
+
+
+def _smart_thinking_trace(payload: Any) -> dict[str, str]:
+    context = _SMART_THINKING_CONTEXT.get()
+    if context is None or not isinstance(payload, dict):
+        return {}
+    levels = ("minimal", "low", "medium", "high", "xhigh")
+    modes = (*levels, "auto", "enabled", "disabled")
+    selected = context["selected"] if context["selected"] in modes else "unknown"
+    minimum = context["minimum"] if context["minimum"] in levels else "unknown"
+    effort = payload.get("reasoning_effort")
+    actual = effort if isinstance(effort, str) and effort in levels else "unknown"
+    if "reasoning_effort" not in payload and "thinking" not in payload:
+        actual = "provider_default"
+    reason = "request_parameter"
+    if selected == "unknown":
+        reason = "selection_unrecorded"
+    elif actual == "provider_default":
+        reason = "provider_default"
+    elif actual == "unknown":
+        reason = "unrecognized_parameter"
+    elif actual == minimum and (selected == "disabled" or selected in levels and levels.index(selected) < levels.index(actual)):
+        reason = "model_minimum"
+    elif selected == actual:
+        reason = "unchanged"
+    return {"selected": selected, "actual_requested": actual, "minimum": minimum, "reason": reason}
 
 
 def current_model_invocation_reference() -> dict[str, str]:
@@ -398,6 +498,8 @@ def _model_error_kind(error: BaseException) -> str:
 
 
 def _provider_circuit_eligible(error: BaseException) -> bool:
+    if getattr(error, "gateway_failure", False):
+        return False
     if isinstance(error, (ModelRequestAborted, ModelBudgetExhausted)):
         return False
     info = classify_provider_error(
@@ -448,6 +550,40 @@ def record_model_call_usage(record: dict[str, Any] | None, raw: dict[str, Any] |
         record["total_tokens"] = int(record.get("prompt_tokens") or 0) + int(record.get("completion_tokens") or 0)
     if provider_reported:
         record["usage_source"] = "provider_reported"
+    smart_route = raw.get("_smart_route")
+    if isinstance(smart_route, dict):
+        actual_provider = str(smart_route.get("provider") or "").strip()
+        actual_model = str(smart_route.get("model") or raw.get("model") or "").strip()
+        if actual_provider:
+            record["provider"] = _safe_text(actual_provider, 120)
+        if actual_model:
+            record["model"] = _safe_text(actual_model, 160)
+        record["smart_route"] = _safe_payload(smart_route)
+
+
+def set_smart_route_wait(*, task_id: str, request_id: str, family: str, stage: str, active_item: str, waited_seconds: int, message: str) -> None:
+    if not task_id or not request_id:
+        return
+    with _MODEL_LOCK:
+        _SMART_ROUTE_WAITS[(task_id, request_id)] = {
+            "state": "waiting_concurrency", "family": family, "stage": stage,
+            "active_item": active_item, "waited_seconds": max(0, int(waited_seconds)),
+            "message": _safe_text(message, 240), "updated_at": _now(),
+        }
+
+
+def clear_smart_route_wait(*, task_id: str, request_id: str) -> None:
+    with _MODEL_LOCK:
+        _SMART_ROUTE_WAITS.pop((task_id, request_id), None)
+
+
+def smart_route_wait_summary(task_id: str) -> dict[str, Any]:
+    with _MODEL_LOCK:
+        rows = [dict(value) for (owner, _), value in _SMART_ROUTE_WAITS.items() if owner == str(task_id)]
+    if not rows:
+        return {}
+    latest = max(rows, key=lambda row: str(row.get("updated_at") or ""))
+    return {**latest, "waiting_count": len(rows)}
 
 
 def estimate_model_tokens(value: Any) -> int:
@@ -596,6 +732,7 @@ def _append_model_execution_event(event_type: str, record: dict[str, Any], **pay
             "stage": str(record.get("stage") or ""),
             "operation": str(record.get("operation") or ""),
             "active_item": str(record.get("active_item") or ""),
+            **({"thinking_trace": dict(record["thinking_trace"])} if record.get("thinking_trace") else {}),
             **payload,
         }
         line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -1081,6 +1218,9 @@ def track_model_call(
         }
         if request_payload is not None:
             record_model_call_estimate(record, request_payload)
+        thinking_trace = _smart_thinking_trace(request_payload)
+        if thinking_trace:
+            record["thinking_trace"] = thinking_trace
         route_snapshot = _route_decision_snapshot(
             provider=provider,
             model=model,
@@ -1174,6 +1314,7 @@ def track_model_call(
     error_text = ""
     circuit_breaker_eligible = False
     terminal_route_blocked = False
+    gateway_failure = False
     provider_error: dict[str, str] = {}
     provider_request_id = ""
     result_ledger_error: ModelExecutionLedgerError | None = None
@@ -1181,8 +1322,12 @@ def track_model_call(
     try:
         yield record
     except BaseException as exc:
+        gateway_failure = bool(getattr(exc, "gateway_failure", False))
         outcome = _model_error_kind(exc)
         error_text = _safe_text(exc, 300)
+        smart_attempts = getattr(exc, "smart_route_attempts", None)
+        if isinstance(smart_attempts, list):
+            record["smart_route"] = {"attempts": _safe_payload(smart_attempts)}
         circuit_breaker_eligible = _provider_circuit_eligible(exc)
         error_info = classify_provider_error(
             exc,
@@ -1193,7 +1338,7 @@ def track_model_call(
         terminal_route_blocked = error_info.failure_state in {
             "route_blocked",
             "configuration_blocked",
-        }
+        } and not gateway_failure
         provider_error = {
             key: _safe_text(getattr(exc, f"provider_error_{key}", ""), 300)
             for key in ("code", "type", "param", "message")
@@ -1355,7 +1500,10 @@ def track_model_call(
                 )
                 configured_provider = get_provider(str(provider or "").strip())
                 observed_protocol = str(transport.get("protocol") or protocol or "unknown")
-                if is_approved_route(str(provider or ""), str(model or ""), observed_protocol, capability):
+                if (
+                    not gateway_failure
+                    and is_approved_route(str(provider or ""), str(model or ""), observed_protocol, capability)
+                ):
                     record_provider_observation(
                         provider=str(provider or ""), model=str(model or ""), protocol=observed_protocol,
                         capability=capability, api_key=str(configured_provider.api_key or ""),

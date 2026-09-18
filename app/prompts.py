@@ -189,6 +189,13 @@ def _prompt_question_record(question: dict[str, Any]) -> dict[str, Any]:
         "score_reviewed": bool(question.get("score_reviewed")),
         "stem": clean_source_markup(question.get("stem", "")),
         "subquestions": clean_source_markup(question.get("subquestions", [])),
+        # Tables are part of the confirmed question surface. Keep them in the
+        # main answer prompt even when no vision model is used.
+        "tables": clean_source_markup(
+            question.get("tables")
+            or (question.get("attachments") or {}).get("tables")
+            or []
+        ),
         "needs_figure": drawing_required,
         "drawing_generation_mode": drawing_mode,
         "figure_schema_plan": question.get("figure_schema_plan", {}) if drawing_required else {},

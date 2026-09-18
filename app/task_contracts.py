@@ -437,6 +437,9 @@ def present_error(error: str, *, stage: str = "", support_id: str = "") -> Error
     if missing_key_match:
         provider_name = missing_key_match.group(1).lower()
         provider_label = {
+            "gemini_smart_router": "Gemini 智能路由",
+            "gpt_smart_router": "GPT 智能路由",
+            "image_smart_router": "生图智能路由",
             "ark": "火山方舟",
             "bailian": "阿里云百炼",
             "deepseek": "DeepSeek 官方",

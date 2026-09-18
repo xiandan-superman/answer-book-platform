@@ -322,7 +322,8 @@ def test_main_model_image_route_is_fixed_and_requires_configuration() -> None:
     assert 'id="knowledgeImageOrchestrationSwitch"' not in INDEX_HTML
     assert "function imageOrchestrationMode(" in APP_JS
     assert 'return "main_model_tool_loop";' in APP_JS
-    assert "const imageFallbackConfigured = Boolean" in APP_JS
+    assert "const imageSmartRouterSelected = imageProviderName === \"image_smart_router\";" in APP_JS
+    assert "const imageFallbackConfigured = imageSmartRouterSelected || Boolean" in APP_JS
     assert 'image_provider: imageFallbackConfigured ?' in APP_JS
     assert 'image_model: imageFallbackConfigured ?' in APP_JS
     assert 'image_orchestration: imageOrchestrationMode("exam")' in APP_JS
@@ -645,7 +646,17 @@ def test_exam_confirmation_counts_textbook_groups_instead_of_file_parts() -> Non
 
 def test_action_required_task_cards_do_not_present_as_fully_completed() -> None:
     assert 'const currentStageText = reviewPending\n      ? "等待确认"' in APP_JS
-    assert 'const progressMessage = reviewPending\n      ? "当前步骤已完成，等待你确认后继续。"' in APP_JS
+    assert 'const progressMessage = smartWaiting' in APP_JS
+    assert '? (task.smart_route_status.message || "模型并发已满，正在等待可用名额；任务本身没有异常。")' in APP_JS
+    assert ': reviewPending\n      ? "当前步骤已完成，等待你确认后继续。"' in APP_JS
+
+
+def test_smart_router_wait_and_per_question_model_are_user_visible_only() -> None:
+    assert "模型并发已满，正在等待可用名额；任务本身没有异常。" in APP_JS
+    assert "本题最终模型：" in APP_JS
+    assert "最终模型：" in APP_JS
+    assert "practiceSmartGeminiRoute" not in INDEX_HTML
+    assert "renderSmartGeminiRouteResult" not in APP_JS
 
 
 def test_generation_task_title_can_be_renamed_from_task_manager() -> None:

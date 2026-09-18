@@ -2,11 +2,29 @@ from __future__ import annotations
 
 from io import BytesIO
 
+import pytest
 from docx import Document
 
 from app.exercise_generation import normalize_practice_set
 from app.practice_export import build_practice_question_docx
 from app.practice_question_format import OBJECTIVE_ANSWER_SLOT, ensure_objective_answer_slot
+
+
+@pytest.mark.parametrize("suffix", ["（ ）。", "( )！", "（ ）。（      ）", "（ ） （ ）", "（\u3000）？"])
+def test_punctuated_and_duplicated_answer_slots(suffix):
+    result = ensure_objective_answer_slot("选择正确项" + suffix, "单选题")
+    assert result.count("（") == 1
+    assert ensure_objective_answer_slot(result, "单选题") == result
+    assert ensure_objective_answer_slot("条件（x≠0），选择正确项" + suffix, "单选题").startswith("条件（x≠0），")
+
+
+def test_word_export_repairs_punctuated_duplicate_slot():
+    document = Document(BytesIO(build_practice_question_docx({"exercises": [{
+        "number": 1, "question_type": "单选题", "stem": "选择正确项（ ）。（      ）",
+        "options": [{"text": "甲"}, {"text": "乙"}],
+    }]})))
+    stems = [p.text for p in document.paragraphs if "选择正确项" in p.text]
+    assert len(stems) == 1 and stems[0].count("（") == 1
 
 
 def test_objective_answer_slot_is_exact_and_idempotent() -> None:

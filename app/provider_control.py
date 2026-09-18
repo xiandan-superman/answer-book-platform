@@ -200,6 +200,10 @@ def approved_catalog() -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for provider in list_providers().values():
+        if provider.name in {"gemini_smart_router", "gpt_smart_router", "image_smart_router"}:
+            # This is a virtual route. Its candidates are the real LingSuan and
+            # WawAPI routes below; probing it would create an extra paid call.
+            continue
         account = account_fingerprint(provider.api_key)
         if getattr(provider, "supports_text_generation", True):
             models = tuple(dict.fromkeys((*provider.model_options, provider.default_model)))
@@ -271,6 +275,7 @@ def _responsibility(info: ProviderErrorInfo) -> str:
     if info.kind in {
         "provider_concurrency_limit", "provider_conflict", "provider_gateway_client_blocked",
         "provider_internal_error", "provider_network", "provider_overloaded",
+        "provider_empty_response",
         "provider_rate_limit", "provider_route_degraded", "provider_route_pool_unavailable",
         "provider_timeout",
     }:
@@ -686,6 +691,65 @@ def probe_route(
     from .settings import get_provider
 
     provider = provider_config if provider_config is not None else get_provider(provider_name)
+    smart_provider = provider.name in {"gemini_smart_router", "gpt_smart_router", "image_smart_router"}
+    valid_smart_capability = (
+        provider.name == "image_smart_router" and capability in {"image_generation", "image_edit"}
+    ) or (
+        provider.name in {"gemini_smart_router", "gpt_smart_router"} and capability in {"text", "vision", "tool_call"}
+    )
+    if smart_provider and valid_smart_capability:
+        smart_protocol = (
+            "responses" if provider.name == "gpt_smart_router"
+            else "images" if provider.name == "image_smart_router"
+            else "chat_completions"
+        )
+        return {
+            # A smart-router entry is a delegated route, not a locally
+            # probeable provider.  Its candidate keys, health and failover
+            # are owned by Cloudflare, so local task preflight must never
+            # block on this installation's gateway key or model health.
+            "ok": True,
+            "skipped": True,
+            "reason": "智能路由复用云端真实调用状态，不额外发送付费探针。",
+            "route": {
+                "provider": provider.name,
+                "model": model,
+                "protocol": smart_protocol,
+                "capability": capability,
+                "verification_status": "delegated_to_candidate_routes",
+                "eligibility": "delegated",
+            },
+        }
+    if source == "task_preflight" and capability == "image_generation":
+        # All task entry points (including resume) share this boundary. Checking
+        # a configured image tool must not itself generate a billable image.
+        # Do not record an observation: configuration is not connection evidence.
+        from .model_capability_registry import get_model_capability
+
+        record = get_model_capability(provider.name, model) or {}
+        configured_models = {provider.image_model, *provider.image_model_options}
+        valid = bool(
+            str(api_key or provider.api_key or "").strip()
+            and provider.base_url
+            and provider.supports_image_generation
+            and model in configured_models
+            and record.get("kind") == "image_generation"
+            and record.get("task_support", {}).get("image_generation") in {"recommended", "allowed", "limited", "unknown"}
+        )
+        return {
+            "ok": valid,
+            "skipped": True,
+            "reason": "仅检查生图配置，不生成测试图；真实连接由任务需要生图时验证。",
+            **({} if valid else {"error": "生图路线缺少密钥、地址或有效的已登记模型，请检查配置。"}),
+            "route": {
+                "provider": provider.name,
+                "model": model,
+                "protocol": "images",
+                "capability": capability,
+                "verification_status": "configuration_only",
+                "eligibility": "allowed" if valid else "blocked",
+            },
+        }
     selected_key = str(api_key or provider.api_key or "").strip()
     selected_protocol = str(protocol or _protocol_for(provider, model)).strip().lower()
     if capability == "tool_call":

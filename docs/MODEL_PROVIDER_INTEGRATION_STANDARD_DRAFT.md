@@ -392,3 +392,6 @@ Word B 版直接核验 `https://github.com/iOfficeAI/OfficeCLI.git` 默认分支
 核对时间：2026-09-05（Asia/Shanghai）。通过官方远端 HEAD 动态确认并校验本地 origin：OpenAI Codex `https://github.com/openai/codex.git`，默认分支 main，完整 SHA `ddf04ad26789d040f9ef6a96736f76602e35a6cc`；DeepSeek Harness `https://github.com/deepseek-ai/deepseek-harness.git`，默认分支 master，完整 SHA `d347e703908d0406b7a7ef80e3a0e594d86b2215`。读取前者 `codex-rs/core/src/rollout_budget.rs`，后者 `packages/llm/llm/src/retry-policy.ts`。Codex 的此预算对象在未 configure 时不触发预算耗尽，并在配置后按权重累计使用量和提醒；DeepSeek 将网络重试作为独立的提供商策略，normal 模式有限次退避。两者均不构成教学任务固定 200 万 token 阈值的依据。
 
 本项目此前默认固定 200 万 token 与正常多阶段教材任务冲突，用户明确要求取消默认值。现以 0 表示不启用整任务 token 硬上限；仍累积真实 usage，显式设置正数环境预算保持生效。调用次数、运行时间、提供商熔断、单次请求超时、内容修复及工具循环上限不变。不修改模型输入、响应、上下文、质量门或已完成内容，不增加失败重试次数；没有付费模型验证。此前任务级 token 必须始终有固定上限的历史约束被本次用户指令取代。
+## 智能路由产品分类
+
+智能路由只按能力分为两类：多模态模型路由和生图模型路由。Gemini、GPT 及后续其他非生图智能路线统一归入多模态模型路由，其候选模型必须支持文字输入、图片输入和文字输出；不再新增纯文本智能路由。多模态路线不得混入图片生成模型，“多模态”也不表示具备图片生成能力。图片生成模型后续接入独立的生图智能路由，候选池、调用链和用户展示与多模态路线分开。模型家族、供应商和请求协议仍作为多模态候选池内部的精确路由属性，不再作为产品层面的能力分类。

@@ -230,11 +230,14 @@ def validate_protocol_verification_sync(
     return errors
 
 
-def ensure_provider_registry_sync(provider_config: dict[str, Any]) -> None:
-    errors = [
-        *validate_provider_registry_sync(provider_config),
-        *validate_protocol_verification_sync(provider_config),
-    ]
+def ensure_provider_registry_sync(
+    provider_config: dict[str, Any],
+    *,
+    enforce_protocol_verification: bool = True,
+) -> None:
+    errors = list(validate_provider_registry_sync(provider_config))
+    if enforce_protocol_verification:
+        errors.extend(validate_protocol_verification_sync(provider_config))
     if errors:
         details = "\n- ".join(errors)
         raise ValueError(f"服务商配置与模型能力注册表不同步：\n- {details}")
@@ -242,14 +245,16 @@ def ensure_provider_registry_sync(provider_config: dict[str, Any]) -> None:
 
 def get_model_capability(provider_name: str, model_name: str) -> dict[str, Any] | None:
     registry = load_model_capability_registry()
-    provider = registry.get("providers", {}).get(str(provider_name or "").strip(), {})
+    name = str(provider_name or "").strip()
+    provider = registry.get("providers", {}).get(name) or registry.get("virtual_providers", {}).get(name, {})
     record = provider.get("models", {}).get(str(model_name or "").strip()) if isinstance(provider, dict) else None
     return dict(record) if isinstance(record, dict) else None
 
 
 def provider_has_capability_registry(provider_name: str) -> bool:
     registry = load_model_capability_registry()
-    return str(provider_name or "").strip() in registry.get("providers", {})
+    name = str(provider_name or "").strip()
+    return name in registry.get("providers", {}) or name in registry.get("virtual_providers", {})
 
 
 def get_native_tool_route(provider_name: str, model_name: str) -> dict[str, Any] | None:
@@ -316,7 +321,8 @@ def render_model_capability_markdown(registry: dict[str, Any] | None = None) -> 
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     task_labels = payload.get("task_labels", {})
-    for provider_name, provider in payload.get("providers", {}).items():
+    all_providers = {**payload.get("virtual_providers", {}), **payload.get("providers", {})}
+    for provider_name, provider in all_providers.items():
         display_name = str(provider.get("display_name") or provider_name)
         for model_name, record in provider.get("models", {}).items():
             provider_tool_routes = payload.get("native_tool_routes", {}).get(provider_name, {})
@@ -326,7 +332,7 @@ def render_model_capability_markdown(registry: dict[str, Any] | None = None) -> 
                 else None
             )
             if str(record.get("kind") or "") == "text_generation":
-                tool_summary = "已开启（无需探测）"
+                tool_summary = "委托实际候选（试运行）" if provider_name in payload.get("virtual_providers", {}) else "已开启（无需探测）"
                 if tool_route:
                     tool_summary += f"；历史实测 {tool_route.get('protocol')}@{tool_route.get('last_verified_at')}"
             else:

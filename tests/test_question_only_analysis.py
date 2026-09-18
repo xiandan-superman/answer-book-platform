@@ -62,6 +62,27 @@ def test_question_only_prompt_is_derived_without_textbook_payload() -> None:
     assert "不得要求用户补教材" in messages[0]["content"]
 
 
+def test_answer_prompt_includes_extracted_question_tables() -> None:
+    messages = build_answer_draft_prompt(
+        {
+            "question_id": "q-table",
+            "number": "1",
+            "stem": "根据下表回答问题。",
+            "question_type": "简答题",
+            "attachments": {
+                "tables": [
+                    {"rows": [["项目", "数值"], ["A", "12"]], "text": "项目 | 数值\nA | 12"}
+                ]
+            },
+        },
+        [],
+        include_textbook_evidence=False,
+    )
+    payload = _user_payload(messages)
+    assert payload["question"]["tables"][0]["rows"][1] == ["A", "12"]
+    assert "项目 | 数值" in payload["question"]["tables"][0]["text"]
+
+
 def test_question_only_repair_prompts_do_not_restore_evidence_context() -> None:
     question = {"question_id": "q1", "number": "1", "stem": "解释测试概念。", "question_type": "名词解释"}
     audit_messages = build_audit_repair_prompt(

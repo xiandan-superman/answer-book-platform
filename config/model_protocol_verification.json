@@ -12,8 +12,8 @@
     "pass_meaning": "A short real request completed on the exact provider/model/protocol and satisfied its output contract."
   },
   "summary": {
-    "providers": 14,
-    "models": 42,
+    "providers": 17,
+    "models": 47,
     "routes": 66,
     "passed_routes": 59,
     "failed_snapshot_routes": 7,
@@ -235,94 +235,6 @@
     },
     "bailian": {
       "models": {
-        "qwen-image-2.0": {
-          "kind": "image_generation",
-          "routes": {
-            "images_generations": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 10.073,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen-image-2.0-pro": {
-          "kind": "image_generation",
-          "routes": {
-            "images_generations": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 34.472,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen-image-max": {
-          "kind": "image_generation",
-          "routes": {
-            "images_generations": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 27.854,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
-        "qwen-image-plus": {
-          "kind": "image_generation",
-          "routes": {
-            "images_generations": {
-              "status": "passed",
-              "observations": [
-                {
-                  "attempt": 1,
-                  "status": "passed",
-                  "elapsed_seconds": 19.188,
-                  "structured_output": null,
-                  "streaming_complete": null,
-                  "error_kind": "",
-                  "error_title": "",
-                  "responsibility": "",
-                  "retryable": null,
-                  "http_status": null
-                }
-              ]
-            }
-          }
-        },
         "qwen-vl-ocr": {
           "kind": "text_generation",
           "routes": {
@@ -469,6 +381,50 @@
                   "elapsed_seconds": 5.314,
                   "structured_output": true,
                   "streaming_complete": true,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        },
+        "qwen-image-3.0": {
+          "kind": "image_generation",
+          "routes": {
+            "images_generations": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": null,
+                  "structured_output": null,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        },
+        "qwen-image-2.0-2026-03-03": {
+          "kind": "image_generation",
+          "routes": {
+            "images_generations": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": null,
+                  "structured_output": null,
+                  "streaming_complete": null,
                   "error_kind": "",
                   "error_title": "",
                   "responsibility": "",
@@ -1719,6 +1675,172 @@
                   "error_title": "模型服务网络连接异常",
                   "responsibility": "provider_service",
                   "retryable": true,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "topapi_google": {
+      "models": {
+        "gemini-3.8-flash-high": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": null,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        },
+        "gemini-3.7-flash-high": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": null,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        },
+        "gemini-3.6-flash-high": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": 1,
+                  "status": "passed",
+                  "elapsed_seconds": null,
+                  "structured_output": true,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "lingsuan_claude": {
+      "models": {
+        "claude-opus-5": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": null,
+                  "status": "catalog_confirmed_pending_live_probe",
+                  "elapsed_seconds": 0.0,
+                  "structured_output": null,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "platform_configuration",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        },
+        "claude-sonnet-5": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": null,
+                  "status": "catalog_confirmed_pending_live_probe",
+                  "elapsed_seconds": 0.0,
+                  "structured_output": null,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "platform_configuration",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "wawapi_claude": {
+      "models": {
+        "claude-opus-5": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": null,
+                  "status": "catalog_confirmed_pending_live_probe",
+                  "elapsed_seconds": 0.0,
+                  "structured_output": null,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "platform_configuration",
+                  "retryable": null,
+                  "http_status": null
+                }
+              ]
+            }
+          }
+        },
+        "claude-sonnet-5": {
+          "kind": "text_generation",
+          "routes": {
+            "chat_completions": {
+              "status": "passed",
+              "observations": [
+                {
+                  "attempt": null,
+                  "status": "catalog_confirmed_pending_live_probe",
+                  "elapsed_seconds": 0.0,
+                  "structured_output": null,
+                  "streaming_complete": null,
+                  "error_kind": "",
+                  "error_title": "",
+                  "responsibility": "platform_configuration",
+                  "retryable": null,
                   "http_status": null
                 }
               ]
