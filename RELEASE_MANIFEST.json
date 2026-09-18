@@ -1,13 +1,13 @@
 {
   "package_name": "answer_book_platform_v1",
   "product_name": "真题解析与生题平台",
-  "version": "0.9.55",
+  "version": "0.9.56",
   "version_source": "APP_VERSION",
-  "source_revision": "release-v0.9.55",
+  "source_revision": "release-v0.9.56",
   "build_kind": "stable-source-release",
   "created_at": "2026-09-18T00:00:00+08:00",
   "validation": {
-    "release_readiness": "Local Python 3.12 and Cloudflare Worker checks passed; GitHub workflow pending.",
+    "release_readiness": "Local Python 3.12 and Cloudflare Worker checks passed; version 0.9.56 ready for GitHub workflow.",
     "browser_regression": "Existing browser contract tests passed in local full suite.",
     "paid_model_regression": "Claude smart router minimal live request passed; no task-scale paid regression run.",
     "unverified_scope": "Windows physical-machine workflows and complex real Word/PDF tasks require the release matrix.",
