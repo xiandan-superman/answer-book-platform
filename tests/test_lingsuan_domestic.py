@@ -55,4 +55,4 @@ def test_domestic_key_is_allowed_but_not_inherited_from_legacy_key():
 def test_domestic_group_is_visible_in_shared_api_navigation():
     source = (ROOT / "web/app.js").read_text()
     assert 'lingsuan_domestic: "灵算 · 国模分组"' in source
-    assert '["lingsuan_openai", "lingsuan_google", "lingsuan_domestic"]' in source
+    assert '["lingsuan_openai", "lingsuan_google", "lingsuan_domestic", "lingsuan_claude"]' in source
