@@ -10018,9 +10018,10 @@ function apiProviderGroup(name) {
   return "官方";
 }
 
-// GPT and Gemini smart routing share one Cloudflare address and user access
-// key, so the configuration center exposes a single card for that connection.
-const HIDDEN_API_CONFIG_PROVIDER_NAMES = new Set(["gpt_smart_router", "image_smart_router"]);
+// All smart-routing families share one Cloudflare address and user access key.
+// The configuration center exposes one card for that connection; the virtual
+// GPT, Claude and image providers remain available to task model selection.
+const HIDDEN_API_CONFIG_PROVIDER_NAMES = new Set(["gpt_smart_router", "claude_smart_router", "image_smart_router"]);
 
 function buildApiProviderNavigation(entries) {
   const byName = new Map(entries);
@@ -10028,7 +10029,7 @@ function buildApiProviderNavigation(entries) {
   const item = (id, label, section, names, icon = "fa-cloud") => ({ id, label, section, icon, entries: take(names) });
   const officialNames = entries.map(([name]) => name).filter((name) => apiProviderGroup(name) === "官方");
   const catalog = [
-    item("smart:gemini", "智能路由", "智能路由", ["gemini_smart_router", "claude_smart_router"], "fa-route"),
+    item("smart:gemini", "智能路由", "智能路由", ["gemini_smart_router"], "fa-route"),
     ...officialNames.map((name) => item(`official:${name}`, displayProviderName(name), "官方", [name])),
     item("image:ark", "火山方舟图片", "图片", ["ark_image"], "fa-image"),
     item("image:lingsuan", "灵算图片", "图片", ["lingsuan_image"], "fa-image"),
