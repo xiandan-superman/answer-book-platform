@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .network_routing import open_url
 from .paths import DATA_ROOT
 from .provider_errors import ProbeValidationError, ProviderErrorInfo, classify_provider_error
 from .runtime_capacity import provider_request_max_concurrency
@@ -541,7 +542,7 @@ def discover_provider_models(provider_name: str, *, source: str = "scheduled_dis
                 "User-Agent": str(provider.user_agent or "AnswerBookProviderControl/1.0"),
             },
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with open_url(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
         raw_models = payload.get("data") if isinstance(payload, dict) else []
         if not isinstance(payload, dict) or not isinstance(raw_models, list):

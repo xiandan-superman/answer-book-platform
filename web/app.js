@@ -11651,11 +11651,25 @@ function taskManagerDataSignature(tasks = []) {
 function taskManagerInteractionActive() {
   const list = $("taskManagerList");
   if (!list) return false;
+  const activeElement = document.activeElement;
+  const technicalToggleFocused = activeElement instanceof Element
+    && activeElement.matches(".task-technical-details > summary");
   return Boolean(
     list.matches(":hover")
-    || list.contains(document.activeElement)
-    || list.querySelector(".task-card-more[open], .task-technical-details[open]")
+    || (list.contains(activeElement) && !technicalToggleFocused)
+    || list.querySelector(".task-card-more[open]")
   );
+}
+
+function taskManagerHasTerminalTransition(previousTasks = [], currentTasks = []) {
+  const previousById = new Map(previousTasks.map((task) => [taskResourceId(task), taskDisplayStatus(task)]));
+  const terminalStatuses = new Set(["completed", "completed_with_issues", "failed", "cancelled"]);
+  return currentTasks.some((task) => {
+    const resourceId = taskResourceId(task);
+    const previousStatus = previousById.get(resourceId);
+    const currentStatus = taskDisplayStatus(task);
+    return previousStatus && previousStatus !== currentStatus && terminalStatuses.has(currentStatus);
+  });
 }
 
 function renderTaskManagerPagination(total) {
@@ -14843,6 +14857,7 @@ async function hydrateLiveTaskDetails(tasks) {
 async function loadTasks(options = {}) {
   const { silent = false, includeLiveDetails = false } = options;
   const requestVersion = ++taskLoadVersion;
+  const previousTasks = latestTasks;
   taskManagerLoading = true;
   if (currentPage === "tasks" && !silent) renderTaskManager(latestTasks);
   if (!silent && currentPage !== "task") $("runResult").textContent = "读取任务列表中...";
@@ -14883,7 +14898,8 @@ async function loadTasks(options = {}) {
     if (requestVersion === taskLoadVersion) {
       taskManagerLoading = false;
       const taskDataChanged = taskManagerDataSignature(latestTasks) !== taskManagerRenderedDataSignature;
-      if (currentPage === "tasks" && (!silent || (taskDataChanged && !taskManagerInteractionActive()))) {
+      const terminalTransition = taskManagerHasTerminalTransition(previousTasks, latestTasks);
+      if (currentPage === "tasks" && (!silent || (taskDataChanged && (!taskManagerInteractionActive() || terminalTransition)))) {
         renderTaskManager(latestTasks);
       }
     }
@@ -15306,7 +15322,6 @@ function startTaskManagerPolling() {
   if (taskManagerPollTimer) return;
   taskManagerPollTimer = setInterval(async () => {
     if (currentPage !== "tasks" || document.hidden || taskManagerPollInFlight) return;
-    if (document.querySelector("#taskManagerList .task-card-more[open], #taskManagerList .task-technical-details[open]")) return;
     taskManagerPollInFlight = true;
     try {
       await loadTasks({ silent: true, includeLiveDetails: true });

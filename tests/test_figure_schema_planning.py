@@ -696,6 +696,8 @@ def draw(output_path: str) -> None:
         self.assertIn("try:\n    import resource", RUNNER_TEMPLATE)
         self.assertIn("except ImportError:\n    resource = None", RUNNER_TEMPLATE)
         self.assertIn("if resource is not None:", RUNNER_TEMPLATE)
+        self.assertIn('DIRECT_FIRST_FONT_HOSTS = {{"github.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com"}}', RUNNER_TEMPLATE)
+        self.assertIn("urllib.request.ProxyHandler({{}})", RUNNER_TEMPLATE)
 
     def test_drawing_code_forces_cjk_font_before_tight_layout(self) -> None:
         from matplotlib import font_manager

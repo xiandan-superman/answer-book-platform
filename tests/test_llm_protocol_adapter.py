@@ -10,7 +10,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -91,6 +91,32 @@ class LLMProtocolAdapterTests(unittest.TestCase):
 
         handlers = build_opener.call_args.args
         self.assertFalse(any(isinstance(handler, urllib.request.ProxyHandler) for handler in handlers))
+
+    def test_cloudflare_transport_tries_direct_then_system_proxy(self):
+        from app.llm_client import _DEFAULT_URLOPEN, _open_provider_response
+
+        request = urllib.request.Request(
+            "https://answer-book-smart-router.answer-book-smart-router.workers.dev/v1/responses"
+        )
+        direct = MagicMock()
+        direct.open.side_effect = urllib.error.URLError(ConnectionResetError("reset"))
+        system = MagicMock()
+        system.open.return_value = _FakeResponse(b"{}")
+        with patch("app.llm_client.urllib.request.build_opener", side_effect=[direct, system]) as build:
+            response = _open_provider_response(
+                _DEFAULT_URLOPEN,
+                request,
+                connect_timeout=15,
+                first_byte_timeout=120,
+                hard_deadline_monotonic=time.monotonic() + 480,
+            )
+
+        self.assertIs(response, system.open.return_value)
+        self.assertEqual(2, build.call_count)
+        direct_handlers = build.call_args_list[0].args
+        system_handlers = build.call_args_list[1].args
+        self.assertTrue(any(isinstance(handler, urllib.request.ProxyHandler) for handler in direct_handlers))
+        self.assertFalse(any(isinstance(handler, urllib.request.ProxyHandler) for handler in system_handlers))
 
     def test_responses_stream_enforces_total_wall_clock_deadline(self):
         from app.llm_client import _consume_responses_sse

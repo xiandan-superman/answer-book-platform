@@ -22,6 +22,7 @@ from typing import Any, Callable, Protocol, TypeVar
 from .concurrency import ModelRequestAborted, ensure_model_request_active, model_request_slot
 from .model_context_planner import build_model_context_plan, context_plan_block_reason
 from .model_diagnostics import model_diagnostic_hint, record_model_diagnostic
+from .network_routing import is_connection_error, open_url, prefers_direct
 from .provider_errors import classify_provider_error
 from .redaction import redact_credentials
 from .runtime_monitor import (
@@ -421,27 +422,39 @@ def _open_provider_response(
         raise LLMError("模型请求超过单次硬截止时间。", transport_phase="hard_timeout")
     try:
         if urlopen is _DEFAULT_URLOPEN:
-            handlers: list[Any] = [
-                _LayeredHTTPHandler(
-                    connect_timeout=min(float(connect_timeout), remaining),
-                    first_byte_timeout=min(float(first_byte_timeout), remaining),
-                    hard_deadline_monotonic=hard_deadline_monotonic,
-                ),
-                _LayeredHTTPSHandler(
-                    connect_timeout=min(float(connect_timeout), remaining),
-                    first_byte_timeout=min(float(first_byte_timeout), remaining),
-                    hard_deadline_monotonic=hard_deadline_monotonic,
-                ),
-            ]
             host = str(urllib.parse.urlparse(request.full_url).hostname or "").lower()
             allow_proxy = str(os.environ.get("ANSWER_BOOK_LINGSUAN_USE_SYSTEM_PROXY") or "").strip().lower()
-            if host in {"lingsuan.top", "lingsuan.org", "edge.lingsuan.org"} and allow_proxy not in {"1", "true", "yes"}:
-                # Local proxy interception has caused TLS EOFs and misleading
-                # gateway 502s. TUN/fake-IP routing still belongs to the OS, but
-                # urllib must not add a second configured proxy hop by default.
-                handlers.insert(0, urllib.request.ProxyHandler({}))
-            opener = urllib.request.build_opener(*handlers)
-            return opener.open(request, timeout=min(float(connect_timeout), remaining))
+            lingsuan_direct_only = host in {"lingsuan.top", "lingsuan.org", "edge.lingsuan.org"} and allow_proxy not in {"1", "true", "yes"}
+            modes = ("direct",) if lingsuan_direct_only else (("direct", "system") if prefers_direct(request) else ("system",))
+            last_error: BaseException | None = None
+            for mode in modes:
+                remaining = hard_deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    raise LLMError("模型请求超过单次硬截止时间。", transport_phase="hard_timeout")
+                handlers: list[Any] = [
+                    _LayeredHTTPHandler(
+                        connect_timeout=min(float(connect_timeout), remaining),
+                        first_byte_timeout=min(float(first_byte_timeout), remaining),
+                        hard_deadline_monotonic=hard_deadline_monotonic,
+                    ),
+                    _LayeredHTTPSHandler(
+                        connect_timeout=min(float(connect_timeout), remaining),
+                        first_byte_timeout=min(float(first_byte_timeout), remaining),
+                        hard_deadline_monotonic=hard_deadline_monotonic,
+                    ),
+                ]
+                if mode == "direct":
+                    handlers.insert(0, urllib.request.ProxyHandler({}))
+                opener = urllib.request.build_opener(*handlers)
+                try:
+                    return opener.open(request, timeout=min(float(connect_timeout), remaining))
+                except Exception as exc:
+                    last_error = exc
+                    if mode != "direct" or not is_connection_error(exc):
+                        raise
+            if last_error is not None:
+                raise last_error
+            raise AssertionError("unreachable provider route state")
         return urlopen(request, timeout=min(float(first_byte_timeout), remaining))
     except LLMError:
         raise
@@ -2904,7 +2917,7 @@ def _image_bytes_from_response(raw: dict[str, Any]) -> bytes:
     url = item.get("url")
     if isinstance(url, str) and url.strip():
         try:
-            with urllib.request.urlopen(url, timeout=120) as resp:
+            with open_url(url, timeout=120) as resp:
                 return resp.read()
         except Exception as exc:
             raise LLMError(f"Failed to download generated image: {exc}") from exc
@@ -2940,7 +2953,7 @@ def _dashscope_image_bytes_from_response(raw: dict[str, Any]) -> bytes:
                         raise LLMError("Provider returned invalid base64 image data") from exc
                 if image.startswith(("http://", "https://")):
                     try:
-                        with urllib.request.urlopen(image, timeout=120) as resp:
+                        with open_url(image, timeout=120) as resp:
                             return resp.read()
                     except Exception as exc:
                         raise LLMError(f"Failed to download generated image: {exc}") from exc

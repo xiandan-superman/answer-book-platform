@@ -554,9 +554,14 @@ def _build_task_list_payload() -> dict:
         task_id = str(task.get("task_id") or "")
         row = dict(task)
         row.update(routes.get(task_id) or {})
+        status = str(row.get("status") or "")
+        if status in {"failed", "cancelled"}:
+            current_progress = _task_current_progress(task_id, row.get("current_stage"))
+            if isinstance(current_progress, dict):
+                row["current_progress"] = current_progress
         row["progress_percent"] = (
             100
-            if str(row.get("status") or "") in {"completed", "completed_with_issues"}
+            if status in {"completed", "completed_with_issues"}
             else exam_stage_progress_percent(row.get("current_stage"))
         )
         row["review_decision_pending"] = (

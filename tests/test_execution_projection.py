@@ -5,6 +5,7 @@ import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
 
+import app.server as server
 from app.execution_projection import (
     build_execution_projection_report,
     project_exam_task,
@@ -78,6 +79,36 @@ def test_failed_exam_after_all_units_complete_remains_a_failure() -> None:
     assert projection["presentation_progress"]["reported_percent"] < 100
     assert "terminal_failure_after_output_units_complete" in _finding_codes(projection)
     assert not any(item["contradiction"] for item in projection["findings"])
+
+
+def test_failed_exam_task_list_includes_durable_stage_progress(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server,
+        "list_tasks",
+        lambda: [
+            {
+                "task_id": "failed-answer-generation",
+                "status": "failed",
+                "current_stage": "answer_generation",
+                "exam_path": "exam.docx",
+            }
+        ],
+    )
+    monkeypatch.setattr(server, "model_call_route_summaries", lambda _task_ids: {})
+    monkeypatch.setattr(
+        server,
+        "_task_current_progress",
+        lambda task_id, stage: {"completed": 9, "total": 28, "status": "running"},
+    )
+    monkeypatch.setattr(server, "list_practice_jobs", lambda **_kwargs: [])
+    monkeypatch.setattr(server, "list_practice_records", lambda **_kwargs: [])
+    monkeypatch.setattr(server, "list_word_format_tasks", lambda: [])
+
+    task = server._build_task_list_payload()["tasks"][0]
+
+    assert task["status"] == "failed"
+    assert task["current_stage"] == "answer_generation"
+    assert task["current_progress"] == {"completed": 9, "total": 28, "status": "running"}
 
 
 def test_completed_with_issues_is_a_success_terminal_state() -> None:

@@ -461,13 +461,23 @@ def test_failed_plan_retry_has_one_confirmation_and_replaces_loading_state() -> 
 
 
 def test_task_polling_preserves_open_technical_details() -> None:
-    assert '#taskManagerList .task-card-more[open], #taskManagerList .task-technical-details[open]' in APP_JS
+    polling_start = APP_JS.index("function startTaskManagerPolling()")
+    polling_end = APP_JS.index("function startTaskPolling(taskId)", polling_start)
+    polling = APP_JS[polling_start:polling_end]
+    interaction_start = APP_JS.index("function taskManagerInteractionActive()")
+    interaction_end = APP_JS.index("function taskManagerHasTerminalTransition", interaction_start)
+    interaction = APP_JS[interaction_start:interaction_end]
+
+    assert ".task-technical-details[open]" not in polling
+    assert ".task-technical-details[open]" not in interaction
+    assert 'activeElement.matches(".task-technical-details > summary")' in interaction
     assert 'const expandedTaskSections = new Map(' in APP_JS
     assert 'expandedSections?.technical' in APP_JS
     assert 'expandedSections?.more' in APP_JS
     assert 'currentPage === "tasks" && !silent' in APP_JS
     assert "taskManagerRenderedDataSignature" in APP_JS
     assert "taskManagerInteractionActive()" in APP_JS
+    assert "taskManagerHasTerminalTransition(previousTasks, latestTasks)" in APP_JS
 
 
 def test_cancelled_practice_job_stops_polling_and_clears_resume_pointer() -> None:

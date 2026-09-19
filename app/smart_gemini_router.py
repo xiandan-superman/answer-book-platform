@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
+from .network_routing import is_connection_error, open_url
 from .runtime_monitor import clear_smart_route_wait, current_model_call_context, set_smart_route_wait
 from .settings import ProviderConfig, get_provider
 
@@ -28,6 +29,9 @@ SMART_ROUTER_FAMILIES = {
     SMART_IMAGE_PROVIDER_NAME: "image",
 }
 SMART_ROUTER_USER_AGENT = "AnswerBookPlatform-SmartRouter/1.0"
+SMART_ROUTER_REQUEST_ATTEMPTS = 3
+SMART_ROUTER_REQUEST_DEADLINE_SECONDS = 32
+SMART_ROUTER_RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 _T = TypeVar("_T")
 
 
@@ -66,18 +70,38 @@ def _json_request(url: str, access_key: str, *, method: str = "GET", payload: di
         "Authorization": f"Bearer {access_key}", "Content-Type": "application/json", "Accept": "application/json",
         "User-Agent": SMART_ROUTER_USER_AGENT,
     })
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+    last_error: BaseException | None = None
+    result: Any = None
+    deadline = time.monotonic() + max(float(timeout), SMART_ROUTER_REQUEST_DEADLINE_SECONDS)
+    for attempt in range(1, SMART_ROUTER_REQUEST_ATTEMPTS + 1):
         try:
-            message = str(json.loads(detail).get("error") or detail)
-        except (TypeError, ValueError):
-            message = detail
-        raise SmartGeminiRoutingError(message or f"Cloudflare 智能路由返回 HTTP {exc.code}") from exc
-    except (OSError, ValueError) as exc:
-        raise SmartGeminiRoutingError(f"无法连接 Cloudflare 智能路由：{exc}") from exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SmartGeminiRoutingError(
+                    f"无法连接 Cloudflare 智能路由：{last_error or '请求超时'}"
+                ) from last_error
+            with open_url(request, timeout=min(float(timeout), remaining)) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in SMART_ROUTER_RETRYABLE_HTTP_CODES and attempt < SMART_ROUTER_REQUEST_ATTEMPTS:
+                last_error = exc
+                time.sleep(0.4 * (2 ** (attempt - 1)))
+                continue
+            try:
+                message = str(json.loads(detail).get("error") or detail)
+            except (TypeError, ValueError):
+                message = detail
+            raise SmartGeminiRoutingError(message or f"Cloudflare 智能路由返回 HTTP {exc.code}") from exc
+        except (OSError, ValueError) as exc:
+            if is_connection_error(exc) and attempt < SMART_ROUTER_REQUEST_ATTEMPTS:
+                last_error = exc
+                time.sleep(0.4 * (2 ** (attempt - 1)))
+                continue
+            raise SmartGeminiRoutingError(f"无法连接 Cloudflare 智能路由：{exc}") from exc
+    else:
+        raise SmartGeminiRoutingError(f"无法连接 Cloudflare 智能路由：{last_error}") from last_error
     if not isinstance(result, dict):
         raise SmartGeminiRoutingError("Cloudflare 智能路由返回了无效响应。")
     return result

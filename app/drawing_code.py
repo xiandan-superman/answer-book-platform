@@ -513,6 +513,7 @@ ALLOW_INSECURE_FONT_URLS = {allow_insecure_font_urls_python}
 REQUIRE_FONT_SHA256 = {require_font_sha256_python}
 FONT_MAX_BYTES = {font_max_bytes}
 fallback_fonts = {fallback_fonts_json}
+DIRECT_FIRST_FONT_HOSTS = {{"github.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com"}}
 FONT_DOWNLOAD_LOG = []
 font_file_candidates = [
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -590,7 +591,15 @@ def _copy_or_download_to_tmp(url, tmp_path):
         return hasher.hexdigest()
 
     request = urllib.request.Request(str(url), headers={{"User-Agent": "answer-book-platform/1.0"}})
-    with urllib.request.urlopen(request, timeout=30) as response, Path(tmp_path).open("wb") as dst:
+    if str(parsed.hostname or "").lower() in DIRECT_FIRST_FONT_HOSTS:
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({{}}))
+        try:
+            response = direct.open(request, timeout=30)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            response = urllib.request.urlopen(request, timeout=30)
+    else:
+        response = urllib.request.urlopen(request, timeout=30)
+    with response, Path(tmp_path).open("wb") as dst:
         for chunk in iter(lambda: response.read(1024 * 1024), b""):
             if not chunk:
                 break

@@ -20,6 +20,8 @@ from zipfile import ZipFile
 from docx.oxml import parse_xml
 from lxml import etree
 
+from .network_routing import open_url
+
 PANDOC_VERSION = "3.11"
 PANDOC_CONTRACT = "pandoc-3.11-omml-v2-c-only"
 # Extracted from the hash-verified upstream 3.11 Windows x64/macOS arm64 archives.
@@ -64,7 +66,7 @@ def _install_runtime() -> Path:
                         f"https://github.com/jgm/pandoc/releases/download/{PANDOC_VERSION}/{name}",
                         headers={"User-Agent": "answer-book-platform"},
                     )
-                    with urllib.request.urlopen(request, timeout=60) as response, archive.open("wb") as out:
+                    with open_url(request, timeout=60) as response, archive.open("wb") as out:
                         shutil.copyfileobj(response, out)
                     break
                 except OSError:

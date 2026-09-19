@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import base64
+import io
+import urllib.error
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from app import smart_gemini_router as router
 from app import settings
+from app import smart_gemini_router as router
 from app.llm_client import LLMError, OpenAICompatibleClient, ResponsesAPIClient, _provider_request_headers
 from app.provider_errors import classify_provider_error
 
@@ -139,6 +141,47 @@ def test_router_requests_use_explicit_user_agent(monkeypatch) -> None:
 
     assert router._json_request("https://router.example.workers.dev/status", "user-key") == {"ok": True}
     assert captured["headers"]["User-agent"] == router.SMART_ROUTER_USER_AGENT
+
+
+def test_router_retries_transient_connection_errors_with_a_bound(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def open_request(_request, *, timeout):
+        nonlocal calls
+        calls += 1
+        if calls < router.SMART_ROUTER_REQUEST_ATTEMPTS:
+            raise urllib.error.URLError(ConnectionResetError("reset"))
+        return Response(b'{"ok":true}')
+
+    monkeypatch.setattr(router, "open_url", open_request)
+    monkeypatch.setattr(router.time, "sleep", sleeps.append)
+
+    assert router._json_request("https://router.example.workers.dev/status", "user-key") == {"ok": True}
+    assert calls == router.SMART_ROUTER_REQUEST_ATTEMPTS
+    assert sleeps == [0.4, 0.8]
+
+
+def test_router_does_not_retry_authentication_errors(monkeypatch) -> None:
+    calls = 0
+
+    def open_request(request, *, timeout):
+        nonlocal calls
+        calls += 1
+        raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, io.BytesIO(b'{"error":"bad key"}'))
+
+    monkeypatch.setattr(router, "open_url", open_request)
+
+    with pytest.raises(router.SmartGeminiRoutingError, match="bad key"):
+        router._json_request("https://router.example.workers.dev/status", "user-key")
+    assert calls == 1
 
 
 def test_gateway_candidate_uses_explicit_user_agent(monkeypatch) -> None:

@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from .network_routing import open_url
 from .paths import CONFIG_DIR, DATA_ROOT, LOCAL_CONFIG_DIR, PROJECT_ROOT
 from .version import get_app_version
 
@@ -255,7 +256,7 @@ def _github_json(
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with open_url(request, timeout=timeout) as response:
                 return _decode_json_payload(response.read())
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -563,7 +564,7 @@ def _download_asset(
             headers["Range"] = f"bytes={written}-"
         request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with open_url(request, timeout=60) as response:
                 response_status = int(getattr(response, "status", 200) or 200)
                 resume = bool(written and response_status == 206)
                 if not resume:
