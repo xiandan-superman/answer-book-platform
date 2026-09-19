@@ -359,6 +359,15 @@ def test_local_privilege_token_is_server_injected_and_sent_by_shared_api_client(
     assert '"X-Answer-Book-Local-Token": localPrivilegeToken' in platform_api
 
 
+def test_update_progress_recovers_after_service_restart_and_refreshes_assets() -> None:
+    assert "const PLATFORM_UPDATE_ACTIVE_STATUSES = new Set" in APP_JS
+    for status in ["extracting", "checking_dependencies", "dependencies_ready", "starting"]:
+        assert f'"{status}"' in APP_JS
+    assert "PLATFORM_UPDATE_ACTIVE_STATUSES.has" in APP_JS
+    assert 'window.location.reload()' in APP_JS
+    assert 'answerBook.refreshedAfterUpdateVersion' in APP_JS
+
+
 def test_practice_status_banner_tracks_blueprint_confirmation_stage() -> None:
     assert 'setPracticeStatusBanner("等待确认训练蓝图", "loading");' in APP_JS
 
@@ -526,6 +535,28 @@ def test_new_practice_session_invalidates_old_recovery_observer() -> None:
     assert "invalidatePracticeRecoveryObserver();" in new_session
     assert "practiceSessionVersion += 1;" in new_session
     assert "rememberPracticeJob(\"\");" in new_session
+
+
+def test_task_manager_navigation_clears_previous_task_before_showing_target() -> None:
+    detail_start = APP_JS.index("async function openTaskDetail(task, showDiagnostics = false)")
+    detail_end = APP_JS.index("function prepareTaskDetailLoading", detail_start)
+    detail = APP_JS[detail_start:detail_end]
+    assert detail.index("prepareTaskDetailLoading(task);") < detail.index('goToPage("task");')
+
+    result_start = APP_JS.index("async function openTaskResult(task)")
+    result_end = APP_JS.index("function renderDiagnosticsList", result_start)
+    result = APP_JS[result_start:result_end]
+    assert result.index("prepareTaskResultLoading(task);") < result.index('goToPage("result");')
+
+    result_reset_start = APP_JS.index("function prepareTaskResultLoading(task = {})")
+    result_reset_end = APP_JS.index("async function openTaskResult(task)", result_reset_start)
+    result_reset = APP_JS[result_reset_start:result_reset_end]
+    for stale_surface in ["resultQuestionList", "resultQuestionDetail", "reviewList", "resultFileList"]:
+        assert stale_surface in result_reset
+
+    tasks_start = APP_JS.index("async function loadTasks(options = {})")
+    tasks_end = APP_JS.index("async function runStartupTaskCleanup", tasks_start)
+    assert "latestTasks[0]" not in APP_JS[tasks_start:tasks_end]
 
 
 def test_reusing_knowledge_generation_restores_files_as_a_new_session() -> None:

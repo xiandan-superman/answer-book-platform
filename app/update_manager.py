@@ -51,6 +51,23 @@ _STATUS_CACHE_LOCK = threading.Lock()
 _UPDATE_PROGRESS: dict[str, Any] = {}
 _UPDATE_PROGRESS_LOCK = threading.RLock()
 _UPDATE_THREAD: threading.Thread | None = None
+_OFFLINE_UPDATE_ACTIVE_STATUSES = {
+    "restarting",
+    "awaiting_restart",
+    "extracting",
+    "backing_up",
+    "installing",
+    "verifying_install",
+    "checking_dependencies",
+    "creating_environment",
+    "dependencies_found",
+    "resolving_dependencies",
+    "downloading_dependencies",
+    "installing_dependencies",
+    "verifying_dependencies",
+    "dependencies_ready",
+    "starting",
+}
 
 
 class UpdateError(RuntimeError):
@@ -818,10 +835,7 @@ def update_progress() -> dict[str, Any]:
             "message": "尚未开始更新。",
         }
     target_version = str(current.get("latest_version") or "")
-    if target_version and current.get("status") in {
-        "restarting", "awaiting_restart", "extracting", "backing_up",
-        "installing", "verifying_install", "dependencies", "starting",
-    }:
+    if target_version and current.get("status") in _OFFLINE_UPDATE_ACTIVE_STATUSES:
         if not is_newer_version(target_version, get_app_version()):
             return _set_update_progress(
                 "completed",

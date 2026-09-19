@@ -106,6 +106,13 @@ def test_atomic_selection_deduplication_restore_and_final_request_body() -> None
                     config["api_key_set"] = True
                 route.fulfill(response=response, json=providers)
                 return
+            if parsed.path == "/api/provider-control/probe" and request.method == "POST":
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({"ok": True, "source": "e2e_fixture"}),
+                )
+                return
             if parsed.path == "/api/practice/jobs" and request.method == "POST":
                 captured_requests.append(json.loads(request.post_data or "{}"))
                 route.fulfill(

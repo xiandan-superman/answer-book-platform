@@ -15,6 +15,19 @@ def test_python_311_uses_a_separate_managed_runtime() -> None:
     assert source_launcher.RUNTIME_ENV_NAME == "python-env-py311"
 
 
+def test_supervisor_reuses_valid_local_privilege_token(monkeypatch) -> None:
+    token = "stable_local_token_1234567890"
+    monkeypatch.setenv("ANSWER_BOOK_LOCAL_PRIVILEGE_TOKEN", token)
+    assert source_launcher.supervisor_local_privilege_token() == token
+
+
+def test_supervisor_replaces_invalid_local_privilege_token(monkeypatch) -> None:
+    monkeypatch.setenv("ANSWER_BOOK_LOCAL_PRIVILEGE_TOKEN", "too-short")
+    token = source_launcher.supervisor_local_privilege_token()
+    assert token != "too-short"
+    assert source_launcher._LOCAL_PRIVILEGE_TOKEN_PATTERN.fullmatch(token)
+
+
 def test_incompatible_managed_runtime_is_preserved_before_rebuild(tmp_path) -> None:
     env_dir = tmp_path / "runtime" / source_launcher.RUNTIME_ENV_NAME
     env_dir.mkdir(parents=True)

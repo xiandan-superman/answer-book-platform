@@ -100,6 +100,32 @@ def test_local_privileged_endpoint_requires_process_token(monkeypatch) -> None:
         worker.join(timeout=2)
 
 
+def test_local_update_progress_survives_service_token_rotation(monkeypatch) -> None:
+    monkeypatch.setattr(platform_server, "append_runtime_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        platform_server,
+        "update_progress",
+        lambda: {"ok": True, "status": "completed", "percent": 100, "latest_version": "1.0.0"},
+    )
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), platform_server.PlatformHandler)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_port}/api/update/progress",
+            headers={"X-Answer-Book-Local-Token": "stale-token-from-previous-process"},
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        assert response.status == 200
+        assert payload["status"] == "completed"
+        assert payload["percent"] == 100
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        worker.join(timeout=2)
+
+
 def test_unknown_get_api_returns_json_404(monkeypatch) -> None:
     monkeypatch.setattr(platform_server, "append_runtime_log", lambda *_args, **_kwargs: None)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), platform_server.PlatformHandler)

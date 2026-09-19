@@ -3198,13 +3198,28 @@ const PLATFORM_UPDATE_STAGE_LABELS = {
   backing_up: "备份当前版本",
   installing: "安装更新",
   verifying_install: "验证安装结果",
-  dependencies: "准备运行依赖",
+  checking_dependencies: "检查运行组件",
+  creating_environment: "创建专用环境",
+  dependencies_found: "发现待安装组件",
+  resolving_dependencies: "解析组件版本",
+  downloading_dependencies: "下载运行组件",
+  installing_dependencies: "安装运行组件",
+  verifying_dependencies: "验证运行组件",
+  dependencies_ready: "运行组件已就绪",
   starting: "启动新版程序",
   restarting: "自动重启",
   awaiting_restart: "等待重启",
   completed: "更新完成",
   failed: "更新失败"
 };
+
+const PLATFORM_UPDATE_ACTIVE_STATUSES = new Set([
+  "checking", "downloading", "verifying", "preparing", "restarting",
+  "extracting", "backing_up", "installing", "verifying_install",
+  "checking_dependencies", "creating_environment", "dependencies_found",
+  "resolving_dependencies", "downloading_dependencies", "installing_dependencies",
+  "verifying_dependencies", "dependencies_ready", "starting"
+]);
 
 function showPlatformUpdateNotice(status) {
   const latest = String(status?.latest_version || "").trim();
@@ -3283,6 +3298,15 @@ function finishPlatformUpdatePolling(progress = {}) {
   if (label) label.textContent = progress.status === "completed" ? "已是最新版" : "检查更新";
   if (progress.status === "completed") button?.classList.remove("update-available");
   platformUpdateReconnectStartedAt = 0;
+  const latestVersion = String(progress.latest_version || "").trim();
+  const previousVersion = String(progress.current_version || "").trim();
+  if (progress.status === "completed" && latestVersion && latestVersion !== previousVersion) {
+    const refreshKey = "answerBook.refreshedAfterUpdateVersion";
+    if (sessionStorage.getItem(refreshKey) !== latestVersion) {
+      sessionStorage.setItem(refreshKey, latestVersion);
+      window.setTimeout(() => window.location.reload(), 900);
+    }
+  }
 }
 
 async function pollPlatformUpdateProgress() {
@@ -3315,7 +3339,7 @@ async function pollPlatformUpdateProgress() {
 async function resumePlatformUpdateProgress() {
   try {
     const progress = await api("/api/update/progress");
-    if (!["checking", "downloading", "verifying", "preparing", "installing", "restarting"].includes(String(progress.status || ""))) return;
+    if (!PLATFORM_UPDATE_ACTIVE_STATUSES.has(String(progress.status || ""))) return;
     platformUpdateInProgress = true;
     openPlatformUpdateProgress(progress);
     pollPlatformUpdateProgress();
@@ -10572,7 +10596,20 @@ function renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, sele
     </div>`;
   mount.querySelectorAll("[data-model-family]").forEach((button) => {
     button.addEventListener("click", () => {
-      mount.dataset.activeFamily = button.dataset.modelFamily || "";
+      const nextFamily = button.dataset.modelFamily || "";
+      mount.dataset.activeFamily = nextFamily;
+      // A family tab is a model choice, not just a visual filter.  Previously
+      // clicking “智能路由” only changed the tab while the hidden native
+      // select kept the previous provider (often Ark), so the task payload
+      // silently submitted the old model.  Select the first candidate when
+      // entering a different family; the user can still click another
+      // candidate afterwards.
+      const firstRoute = routes.find((route) => route.family === nextFamily);
+      const currentFamily = routes.find((route) => route.provider === selectedProvider && route.model === selectedModel)?.family;
+      if (firstRoute && currentFamily !== nextFamily) {
+        onChoose(firstRoute.provider, firstRoute.model);
+        return;
+      }
       renderModelRoutePicker({ mountId, kind, purpose, selectedProvider, selectedModel, onChoose });
     });
   });
@@ -13740,6 +13777,7 @@ async function openTaskDetail(task, showDiagnostics = false) {
   activeTaskAnalysisProfile = task.analysis_profile || "evidence_backed";
   if ($("taskIdInput")) $("taskIdInput").value = task.task_id;
   clearTaskDiagnostics();
+  prepareTaskDetailLoading(task);
   goToPage("task");
   const navigationVersion = taskNavigationVersion;
   try {
@@ -13758,14 +13796,67 @@ async function openTaskDetail(task, showDiagnostics = false) {
   }
 }
 
+function prepareTaskDetailLoading(task = {}) {
+  updateTaskSummary(task);
+  renderTaskStepList("", "");
+  renderTaskExecutionDetail({
+    badge: "正在读取",
+    title: "正在读取本次任务的最新进度",
+    stageProgress: { percent: 0, label: "同步中", measurable: false },
+    metrics: [],
+    events: [],
+  }, "running");
+  renderAnswerProgressDetails(null);
+  setProgress("正在读取本次任务的最新进度，请稍候。", 0, "info");
+  setVisual("runVisualResult", "正在读取任务状态", `当前任务：${task.exam_display_name || shortName(task.exam_path || task.task_id)}`, "info");
+  if ($("runResult")) $("runResult").textContent = "正在读取本次任务的最新状态...";
+  const deliveryPanel = $("taskUnitDeliveryPanel");
+  if (deliveryPanel) {
+    deliveryPanel.replaceChildren();
+    deliveryPanel.classList.add("hidden");
+    deliveryPanel.dataset.taskId = String(task.task_id || "");
+  }
+}
+
+function prepareTaskResultLoading(task = {}) {
+  resultViewData = null;
+  activeResultQuestionId = "";
+  updateTaskSummary(task);
+  setResultPageState("loading", task);
+  setText("metricQuestionCount", "--");
+  setText("metricCoveredCount", "--");
+  setText("metricReviewCount", "--");
+  setText("metricFileCount", "--");
+  if ($("resultQuestionList")) $("resultQuestionList").replaceChildren();
+  if ($("resultQuestionDetail")) {
+    $("resultQuestionDetail").className = "question-detail-empty";
+    $("resultQuestionDetail").textContent = "正在读取本次任务的解析内容...";
+  }
+  if ($("reviewList")) $("reviewList").innerHTML = '<div class="review-empty">正在读取本次任务的审查信息...</div>';
+  if ($("reviewResult")) $("reviewResult").textContent = "正在读取本次任务的审查信息...";
+  for (const id of ["fileList", "resultFileList", "resultSupportFileList"]) {
+    const list = $(id);
+    if (list) list.textContent = "正在读取本次任务的文件...";
+  }
+  $("resultSupportFilesDetails")?.classList.add("hidden");
+  renderFinalAcceptanceSummary(task, null);
+  renderResultDeliveryVerdict({}, null);
+  const deliveryPanel = $("resultUnitDeliveryPanel");
+  if (deliveryPanel) {
+    deliveryPanel.replaceChildren();
+    deliveryPanel.classList.add("hidden");
+    deliveryPanel.dataset.taskId = String(task.task_id || "");
+  }
+}
+
 async function openTaskResult(task) {
   if (!task?.task_id) return;
   activeTaskId = task.task_id;
   activeTaskAnalysisProfile = task.analysis_profile || "evidence_backed";
   if ($("taskIdInput")) $("taskIdInput").value = task.task_id;
+  prepareTaskResultLoading(task);
   goToPage("result");
   const navigationVersion = taskNavigationVersion;
-  updateTaskSummary(task);
   await Promise.allSettled([
     loadTaskResultView(task.task_id, navigationVersion),
     taskFiles(task.task_id, navigationVersion),
@@ -14770,13 +14861,11 @@ async function loadTasks(options = {}) {
     }
     const activeTask = latestTasks.find((task) => task.task_id === activeTaskId);
     if (activeTask && ["task", "result"].includes(currentPage)) updateTaskSummary(activeTask);
-    else if (currentPage === "task" && !activeTaskId && latestTasks.length) {
-      activeTaskId = latestTasks[0].task_id || "";
-      if (activeTaskId) $("taskIdInput").value = activeTaskId;
-      updateTaskSummary(latestTasks[0]);
-      renderTasks(latestTasks);
-    } else if (currentPage === "task" && !activeTask) {
+    else if (currentPage === "task" && !activeTask) {
+      if (!activeTaskId && $("taskIdInput")) $("taskIdInput").value = "";
       updateTaskSummary(null);
+      renderTaskStepList("", "");
+      renderAnswerProgressDetails(null);
     }
     if (!silent && currentPage !== "task") {
       $("runResult").textContent = pretty({ task_count: latestTasks.length });

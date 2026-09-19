@@ -522,3 +522,34 @@ def test_offline_install_stage_is_completed_after_new_version_starts(tmp_path, m
     assert progress["status"] == "completed"
     assert progress["percent"] == 100
     assert progress["current_version"] == "0.9.19"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "checking_dependencies",
+        "creating_environment",
+        "dependencies_found",
+        "resolving_dependencies",
+        "downloading_dependencies",
+        "installing_dependencies",
+        "verifying_dependencies",
+        "dependencies_ready",
+        "starting",
+    ],
+)
+def test_new_service_completes_every_offline_update_stage(status, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(update_manager, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(update_manager, "get_app_version", lambda: "1.0.0")
+    update_manager._UPDATE_PROGRESS.clear()
+    update_manager._persist_update_progress({
+        "status": status,
+        "percent": 99,
+        "current_version": "0.9.19",
+        "latest_version": "1.0.0",
+    })
+
+    progress = update_manager.update_progress()
+
+    assert progress["status"] == "completed"
+    assert progress["percent"] == 100

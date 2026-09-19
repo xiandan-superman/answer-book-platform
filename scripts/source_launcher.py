@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from app.dependency_profiles import (  # noqa: E402
 
 RUNTIME_ENV_NAME = "python-env-py311"
 RESTART_EXIT_CODE = 75
+_LOCAL_PRIVILEGE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{24,256}$")
 
 
 class DependencyInstallError(RuntimeError):
@@ -169,6 +171,13 @@ def combined_progress_reporter(
             update_progress.update(status, 99 if dependency_stage else percent, message, **details)
 
     return report
+
+
+def supervisor_local_privilege_token() -> str:
+    configured = str(os.environ.get("ANSWER_BOOK_LOCAL_PRIVILEGE_TOKEN") or "").strip()
+    if _LOCAL_PRIVILEGE_TOKEN_PATTERN.fullmatch(configured):
+        return configured
+    return secrets.token_urlsafe(32)
 
 
 def user_data_root() -> Path:
@@ -853,6 +862,7 @@ def main() -> int:
     )
 
     report_progress = combined_progress_reporter(startup_progress, update_progress)
+    local_privilege_token = supervisor_local_privilege_token()
 
     update_failed = False
     browser_opened = False
@@ -916,6 +926,10 @@ def main() -> int:
         env = os.environ.copy()
         env["ANSWER_BOOK_DATA_DIR"] = str(data_root)
         env["ANSWER_BOOK_LAUNCHED_BY_SUPERVISOR"] = "1"
+        # Keep the browser's local-only authorization valid when this
+        # supervisor replaces the service during an update.  A fresh launcher
+        # session still receives a fresh token and injects it into a fresh page.
+        env["ANSWER_BOOK_LOCAL_PRIVILEGE_TOKEN"] = local_privilege_token
         process = subprocess.Popen(
             [str(python), str(project_root / "scripts" / "start_platform.py"), "--host", args.host, "--port", str(args.port)],
             cwd=project_root,

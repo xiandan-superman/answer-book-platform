@@ -65,18 +65,37 @@ const json = (value: unknown, status = 200): Response => Response.json(value, { 
 const routeKey = (id: string): string => `health:${id}`;
 const reservationKey = (id: string): string => `reservation:${id}`;
 
+/**
+ * Wrangler bindings are normally strings, but local bindings, KV-backed
+ * configuration, and some deployment pipelines can provide an already parsed
+ * object.  Never stringify an object before parsing it: String({}) becomes
+ * "[object Object]" and causes the authentication failure seen in production.
+ */
+function parseJsonValue(value: unknown, fallback: unknown): unknown {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value !== "string") return value;
+  return JSON.parse(value);
+}
+
+function parseJsonObject(name: string, value: unknown): Record<string, unknown> {
+  const parsed = parseJsonValue(value, {});
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${name} 必须是对象或对象 JSON 字符串`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function routes(env: Env): RouteConfig[] {
   const parse = (name: string, value: unknown): unknown[] => {
     if (Array.isArray(value)) return value;
-    const parsed: unknown = JSON.parse(String(value || "[]"));
+    const parsed = parseJsonValue(value, []);
     if (!Array.isArray(parsed)) throw new Error(`${name} 必须是数组`);
     return parsed;
   };
   let unifiedRoutes: unknown[] = [];
   if (env.ROUTER_CONFIG_JSON) {
-    const unified = JSON.parse(env.ROUTER_CONFIG_JSON) as unknown;
-    if (!unified || typeof unified !== "object" || Array.isArray(unified)) throw new Error("ROUTER_CONFIG_JSON 必须是对象");
-    unifiedRoutes = parse("ROUTER_CONFIG_JSON.routes", (unified as Record<string, unknown>).routes);
+    const unified = parseJsonObject("ROUTER_CONFIG_JSON", env.ROUTER_CONFIG_JSON);
+    unifiedRoutes = parse("ROUTER_CONFIG_JSON.routes", unified.routes);
   }
   const routeBundles = Object.entries(env)
     .filter(([name, value]) => name.startsWith("ROUTE_BUNDLE_") && name.endsWith("_JSON") && typeof value === "string")
@@ -127,10 +146,9 @@ function equalHash(left: string, right: string): boolean {
 async function authenticate(request: Request, env: Env): Promise<string> {
   const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
   if (!supplied) return "";
-  const configured: unknown = JSON.parse(String(env.CLIENT_KEYS_JSON || "{}"));
-  if (!configured || typeof configured !== "object" || Array.isArray(configured)) return "";
+  const configured = parseJsonObject("CLIENT_KEYS_JSON", env.CLIENT_KEYS_JSON);
   const suppliedHash = await sha256(supplied);
-  for (const [key, userId] of Object.entries(configured as Record<string, unknown>)) {
+  for (const [key, userId] of Object.entries(configured)) {
     if (equalHash(suppliedHash, await sha256(key))) return String(userId || "");
   }
   return "";
@@ -143,6 +161,9 @@ function switchable(status: number, body: unknown): boolean {
     return [
       "upstream_error", "upstream request failed", "model_not_found", "model not found",
       "unsupported model", "model is not supported", "overloaded", "unavailable",
+      // Aggregators do not expose identical Responses API feature sets. A
+      // route can reject a valid shared payload while another accepts it.
+      "invalid_request", "invalid request", "invalid_request_error",
     ].some((marker) => detail.includes(marker));
   }
   if ([401, 403, 408, 409, 425, 429].includes(status) || status >= 500) return true;
@@ -305,17 +326,15 @@ export class RouterCoordinator extends DurableObject<Env> {
     const configuredJson = this.env.PROVIDER_CONCURRENCY_JSON || (() => {
       if (!this.env.ROUTER_CONFIG_JSON) return "";
       try {
-        const unified = JSON.parse(this.env.ROUTER_CONFIG_JSON) as Record<string, unknown>;
-        return typeof unified.provider_concurrency === "object" && unified.provider_concurrency !== null
-          ? JSON.stringify(unified.provider_concurrency)
-          : "";
+        const unified = parseJsonObject("ROUTER_CONFIG_JSON", this.env.ROUTER_CONFIG_JSON);
+        return unified.provider_concurrency || "";
       } catch {
         return "";
       }
     })();
     if (configuredJson) {
       try {
-        const parsed = JSON.parse(configuredJson);
+        const parsed = parseJsonObject("PROVIDER_CONCURRENCY_JSON", configuredJson);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) configuredByPool = parsed as Record<string, unknown>;
       } catch {
         configuredByPool = {};

@@ -1328,7 +1328,17 @@ class PlatformHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
         if parsed.path == "/api/update/progress":
-            if not self.require_local_privilege("只能在运行程序的本机查看更新进度。"):
+            # The browser keeps polling this read-only status while the service
+            # process is replaced.  A process-local privilege token changes at
+            # that boundary, so requiring it here strands the old page at 99%
+            # even though the new service is healthy.  The response contains
+            # only public version/progress metadata and remains loopback-only.
+            if not self.is_local_client():
+                self.send_json({
+                    "ok": False,
+                    "error": "只能在运行程序的本机查看更新进度。",
+                    "error_code": "local_access_required",
+                }, status=403)
                 return
             self.send_json(update_progress())
             return
